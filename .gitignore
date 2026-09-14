@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Datos: NADA de datos reales entra a este repositorio, nunca.
+# El generador produce todo lo que el proyecto necesita.
+datos/*
+!datos/.gitkeep
+*.xlsx
+*.xls
+*.csv
+*.zip

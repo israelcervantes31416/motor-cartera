@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: motor
+          POSTGRES_PASSWORD: motor
+          POSTGRES_DB: cartera_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U motor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Python 3.12
+        run: uv python install 3.12
+
+      - name: Dependencias
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Formato
+        run: ruff format --check .
+
+      - name: Migraciones
+        run: alembic upgrade head
+
+      - name: Pruebas
+        run: pytest --cov=motor_cartera --cov-report=term-missing

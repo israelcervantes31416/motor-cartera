@@ -1,0 +1,41 @@
+[project]
+name = "motor-cartera"
+version = "0.1.0"
+description = "Motor de ingesta, validación y segmentación de cartera de crédito al consumo, sobre datos sintéticos"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.2",
+    "pandera>=0.20",
+    "sqlmodel>=0.0.22",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pydantic-settings>=2.4",
+    "faker>=28.0",
+    "typer>=0.12",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.6"]
+
+[project.scripts]
+motor-cartera = "motor_cartera.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/motor_cartera"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

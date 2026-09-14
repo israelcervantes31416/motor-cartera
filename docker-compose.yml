@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: motor-cartera-postgres
+    environment:
+      POSTGRES_USER: motor
+      POSTGRES_PASSWORD: motor
+      POSTGRES_DB: cartera_dev
+    ports:
+      # 5434 a proposito: 5432 suele estar ocupado y 5433 lo usa otro proyecto.
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motor -d cartera_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    container_name: motor-cartera-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MC_DATABASE_URL: postgresql+psycopg://motor:motor@postgres:5432/cartera_dev
+    volumes:
+      - ./:/app
+    command: ["sleep", "infinity"]
+
+volumes:
+  pgdata:
