@@ -1,0 +1,9 @@
+# Normaliza finales de linea en el repositorio: siempre LF.
+# Sin esto, trabajar entre Windows y WSL produce diffs de miles de lineas
+# que no cambian nada. Es el problema clasico de CRLF/LF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.xlsx binary
+*.zip binary
