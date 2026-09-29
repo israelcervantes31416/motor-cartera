@@ -12,6 +12,7 @@ from sqlmodel import func, select
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
+    EJEMPLO_CORRIDA_EN_PROCESO,
     CorridaRespuesta,
     Paginacion,
     PaginaRechazos,
@@ -36,15 +37,21 @@ NO_EXISTE = (404, "CORRIDA_NO_ENCONTRADA", "No existe una corrida con ese run_id
     status_code=201,
     response_model=CorridaRespuesta,
     summary="Inicia una corrida de ingesta sobre un archivo de cartera",
-    responses=errores(
-        *SIN_CLAVE,
-        (409, "ARCHIVO_YA_PUBLICADO", "Ese archivo ya lo publico otra corrida; run_id dice cual."),
-        (409, "ARCHIVO_EN_PROCESO", "Ese archivo se esta procesando en otra corrida; run_id."),
-        (413, "ARCHIVO_DEMASIADO_GRANDE", "El archivo pasa del tope (MC_TAMANO_MAXIMO_MB)."),
-        (415, "FORMATO_NO_SOPORTADO", "El archivo no es xlsx, csv ni zip."),
-        (422, "ARCHIVO_VACIO", "El archivo llego vacio."),
-        (422, "ENTRADA_INVALIDA", "La peticion no trae el campo archivo."),
-    ),
+    responses={
+        201: {
+            "description": "La corrida quedo registrada y se procesa en segundo plano.",
+            "content": {"application/json": {"example": EJEMPLO_CORRIDA_EN_PROCESO}},
+        },
+        **errores(
+            *SIN_CLAVE,
+            (409, "ARCHIVO_YA_PUBLICADO", "Otra corrida ya publico ese archivo; run_id dice cual."),
+            (409, "ARCHIVO_EN_PROCESO", "Otra corrida lo esta procesando; run_id dice cual."),
+            (413, "ARCHIVO_DEMASIADO_GRANDE", "El archivo pasa del tope (MC_TAMANO_MAXIMO_MB)."),
+            (415, "FORMATO_NO_SOPORTADO", "El archivo no es xlsx, csv ni zip."),
+            (422, "ARCHIVO_VACIO", "El archivo llego vacio."),
+            (422, "ENTRADA_INVALIDA", "La peticion no trae el campo archivo."),
+        ),
+    },
 )
 def crear_corrida(
     request: Request,

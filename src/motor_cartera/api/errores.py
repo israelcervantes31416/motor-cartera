@@ -73,9 +73,10 @@ def errores(*casos: tuple[int, str, str]) -> dict[int | str, dict[str, Any]]:
             estado,
             {"model": ErrorRespuesta, "description": "", "content": {"application/json": {}}},
         )
-        respuesta["description"] = " ".join(filter(None, [respuesta["description"], cuando]))
+        # Una linea por codigo: es lo que el cliente compara, asi que es lo que se ve primero.
+        respuesta["description"] += f"- `{codigo}`: {cuando}\n"
         ejemplos = respuesta["content"]["application/json"].setdefault("examples", {})
-        ejemplos[codigo] = {"summary": cuando, "value": {"codigo": codigo, "mensaje": cuando}}
+        ejemplos[codigo] = {"summary": codigo, "value": {"codigo": codigo, "mensaje": cuando}}
     return respuestas
 
 

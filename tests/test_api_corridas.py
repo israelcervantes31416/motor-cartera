@@ -249,6 +249,10 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
 
     post = rutas["/corridas"]["post"]
     assert set(post["responses"]) == {"201", "401", "409", "413", "415", "422"}
+    # El ejemplo del 201 es lo que de verdad responde el POST, no una corrida terminada.
+    ejemplo = post["responses"]["201"]["content"]["application/json"]["example"]
+    assert ejemplo["estado"] == "EN_PROCESO"
+    assert "`ARCHIVO_EN_PROCESO`" in post["responses"]["409"]["description"]
     for codigo in ("401", "409", "413", "415", "422"):
         esquema = post["responses"][codigo]["content"]["application/json"]["schema"]
         assert esquema["$ref"].endswith("/ErrorRespuesta")

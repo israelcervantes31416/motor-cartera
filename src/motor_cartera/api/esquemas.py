@@ -62,6 +62,19 @@ EJEMPLO_CORRIDA = {
     "hoja 'LEEME': ...",
 }
 
+# Lo que responde POST /corridas: la corrida recien registrada, antes de leer nada.
+EJEMPLO_CORRIDA_EN_PROCESO = {
+    **EJEMPLO_CORRIDA,
+    "estado": "EN_PROCESO",
+    "fecha_corte": None,
+    "filas_leidas": 0,
+    "filas_validas": 0,
+    "filas_rechazadas": 0,
+    "terminada_en": None,
+    "duracion_segundos": None,
+    "detalle": None,
+}
+
 
 class CorridaRespuesta(BaseModel):
     """Una corrida: que archivo, como va o como termino, y cuanto tardo."""
