@@ -134,6 +134,17 @@ def test_csv_en_cp1252_se_lee_y_queda_registrado():
     assert len(lectura.datos) == 1
 
 
+def test_bytes_que_no_son_texto_son_un_error_de_lectura():
+    # 0x81 y 0x8D no existen ni en UTF-8 ni en cp1252.
+    with pytest.raises(ErrorDeLectura, match="ni en cp1252"):
+        leer_contenido(b"\x81\x8d\x81\x8d", "c.csv")
+
+
+def test_csv_con_comillas_sin_cerrar_es_un_error_de_lectura():
+    with pytest.raises(ErrorDeLectura, match="no es un CSV legible"):
+        leer_contenido(_csv(ENCABEZADO, '"CU00000001,1500.50,45'), "c.csv")
+
+
 def test_csv_sin_registros_es_un_error_de_lectura():
     with pytest.raises(ErrorDeLectura, match="no trae ningun registro"):
         leer_contenido(_csv(ENCABEZADO, "", ","), "c.csv")

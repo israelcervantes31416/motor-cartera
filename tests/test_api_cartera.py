@@ -92,6 +92,15 @@ def test_filtrar_por_canal_resume_solo_esas_cuentas(cliente, tmp_path):
     assert resumen["total_cuentas"] == (cartera["canal"] == "CAMPO").sum()
 
 
+def test_filtrar_por_producto_resume_solo_esas_cuentas(cliente, tmp_path):
+    _publicar(cliente, tmp_path)
+    cartera = generar_cartera(300, semilla=1, fecha_corte=CORTE)
+
+    resumen = _resumen(cliente, producto="AUTOMOTRIZ", por="canal").json()
+
+    assert resumen["total_cuentas"] == (cartera["producto"] == "AUTOMOTRIZ").sum()
+
+
 def test_los_segmentos_se_paginan(cliente, tmp_path):
     _publicar(cliente, tmp_path, n=2_000)
 
