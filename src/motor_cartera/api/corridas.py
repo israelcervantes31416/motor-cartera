@@ -19,7 +19,7 @@ from motor_cartera.api.esquemas import (
 )
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import EstadoCorrida, Rechazo
-from motor_cartera.ingesta.corridas import ArchivoYaPublicado, abrir_corrida, procesar_corrida
+from motor_cartera.ingesta.corridas import ArchivoDuplicado, abrir_corrida, procesar_corrida
 from motor_cartera.ingesta.lectores import FORMATOS
 
 router = APIRouter(prefix="/corridas", tags=["corridas"])
@@ -39,6 +39,7 @@ NO_EXISTE = (404, "CORRIDA_NO_ENCONTRADA", "No existe una corrida con ese run_id
     responses=errores(
         *SIN_CLAVE,
         (409, "ARCHIVO_YA_PUBLICADO", "Ese archivo ya lo publico otra corrida; run_id dice cual."),
+        (409, "ARCHIVO_EN_PROCESO", "Ese archivo se esta procesando en otra corrida; run_id."),
         (413, "ARCHIVO_DEMASIADO_GRANDE", "El archivo pasa del tope (MC_TAMANO_MAXIMO_MB)."),
         (415, "FORMATO_NO_SOPORTADO", "El archivo no es xlsx, csv ni zip."),
         (422, "ARCHIVO_VACIO", "El archivo llego vacio."),
@@ -62,8 +63,10 @@ def crear_corrida(
     valida y crea la corrida; el veredicto sobre el contenido llega en el estado de la
     corrida y en `/rechazos`. Los 4xx son solo para lo que se decide sin leer el archivo.
 
-    **409 si el mismo archivo ya se publico**: volver a ingerirlo duplicaria la cartera.
-    Un archivo que no llego a publicarse (RECHAZADA o FALLIDA) si se puede reintentar.
+    **409 si el mismo archivo ya se publico o se esta procesando**: volver a ingerirlo
+    duplicaria la cartera o repetiria el trabajo, y un doble clic o un reintento por
+    timeout son justo como pasa. La respuesta dice que corrida lo tiene (`run_id`). Un
+    archivo que no llego a publicarse (RECHAZADA o FALLIDA) si se puede reintentar.
     """
     config: Config = request.app.state.config
     nombre = PurePosixPath((archivo.filename or "").replace("\\", "/")).name
@@ -89,8 +92,10 @@ def crear_corrida(
         corrida = abrir_corrida(
             s, origen=nombre, contenido=contenido, tolerancia=config.tolerancia_rechazo
         )
-    except ArchivoYaPublicado as exc:
-        raise ErrorDeApi(409, "ARCHIVO_YA_PUBLICADO", str(exc), run_id=exc.previa.run_id) from exc
+    except ArchivoDuplicado as exc:
+        publicado = exc.previa.estado == EstadoCorrida.EXITOSA
+        codigo = "ARCHIVO_YA_PUBLICADO" if publicado else "ARCHIVO_EN_PROCESO"
+        raise ErrorDeApi(409, codigo, str(exc), run_id=exc.previa.run_id) from exc
 
     fondo.add_task(procesar_corrida, corrida.id, contenido)
     response.headers["Location"] = f"/corridas/{corrida.run_id}"

@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 from sqlmodel import func, select
 
-from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo
+from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
-    ArchivoYaPublicado,
+    ABANDONO,
+    ArchivoDuplicado,
     abrir_corrida,
     corrida_vigente,
     decidir,
+    firmar,
     ingerir_archivo,
     procesar_corrida,
 )
@@ -191,12 +193,40 @@ def test_el_mismo_archivo_no_se_publica_dos_veces(tmp_path):
     ruta = _archivo(tmp_path)
     primera = ingerir_archivo(ruta)
 
-    with pytest.raises(ArchivoYaPublicado) as exc:
+    with pytest.raises(ArchivoDuplicado, match="ya lo publico") as exc:
         ingerir_archivo(ruta)
 
     assert exc.value.previa.run_id == primera.run_id
     with sesion() as s:
         assert s.exec(select(func.count()).select_from(Cuenta)).one() == 200
+
+
+def test_un_archivo_que_se_esta_procesando_no_se_abre_otra_vez(tmp_path):
+    # Un doble clic, o un cliente que reintenta por timeout mientras la primera sigue.
+    contenido = _archivo(tmp_path).read_bytes()
+    with sesion() as s:
+        primera = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    with sesion() as s, pytest.raises(ArchivoDuplicado, match="se esta procesando") as exc:
+        abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    assert exc.value.previa.run_id == primera.run_id
+
+
+def test_una_corrida_abandonada_no_bloquea_el_reintento(tmp_path):
+    # La API se reinicio a media corrida: esa corrida ya no la termina nadie.
+    contenido = _archivo(tmp_path).read_bytes()
+    with sesion() as s:
+        abandonada = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+        abandonada.iniciada_en = ahora() - ABANDONO - timedelta(minutes=1)
+        s.add(abandonada)
+        s.commit()
+        s.refresh(abandonada)
+
+    with sesion() as s:
+        reintento = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    assert reintento.run_id != abandonada.run_id
 
 
 def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
@@ -210,13 +240,17 @@ def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
 
 
 def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
-    # Dos subidas simultaneas del mismo archivo: ambas pasan la revision previa porque
-    # ninguna ha publicado todavia. Lo que impide la doble publicacion es el indice unico.
+    # Dos subidas simultaneas del mismo archivo pueden pasar la revision previa en el mismo
+    # instante, antes de que exista cualquiera de las dos. La segunda se inserta aqui sin
+    # revision, como si eso hubiera pasado. Lo que impide la doble publicacion es el indice.
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
         una = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-    with sesion() as s:
-        otra = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+        otra = Corrida(origen="cartera.csv", firma=firmar(contenido), tolerancia_rechazo=0.05)
+        s.add(otra)
+        s.commit()
+        s.refresh(una)
+        s.refresh(otra)
 
     procesar_corrida(una.id, contenido)
     procesar_corrida(otra.id, contenido)

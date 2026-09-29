@@ -16,11 +16,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import asdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import insert
+from sqlalchemy import and_, case, insert, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -34,12 +35,20 @@ log = logging.getLogger(__name__)
 
 INDICE_FIRMA_PUBLICADA = "ux_corrida_firma_publicada"
 
+ABANDONO = timedelta(minutes=15)
+"""Una corrida EN_PROCESO por mas de esto se da por abandonada: la API se reinicio a media
+corrida y nadie la va a terminar. Deja de impedir que se reintente el mismo archivo."""
 
-class ArchivoYaPublicado(Exception):
-    """El mismo archivo ya lo publico otra corrida: ingerirlo de nuevo duplicaria la cartera."""
+
+class ArchivoDuplicado(Exception):
+    """Ese mismo archivo ya lo publico otra corrida, o se esta procesando en otra."""
 
     def __init__(self, previa: Corrida) -> None:
-        super().__init__(f"Este archivo ya lo publico la corrida {previa.run_id}.")
+        if previa.estado == EstadoCorrida.EXITOSA:
+            mensaje = f"Este archivo ya lo publico la corrida {previa.run_id}."
+        else:
+            mensaje = f"Este archivo ya se esta procesando en la corrida {previa.run_id}."
+        super().__init__(mensaje)
         self.previa = previa
 
 
@@ -53,16 +62,22 @@ def abrir_corrida(
 ) -> Corrida:
     """Registra la corrida EN_PROCESO, antes de leer nada: si algo falla, queda rastro.
 
-    Si otra corrida ya publico este mismo archivo, levanta ArchivoYaPublicado. Esta
-    revision es la via amable, porque sabe decir cual corrida fue; la garantia es el
+    Si ese mismo archivo ya se publico, o se esta procesando en otra corrida, levanta
+    ArchivoDuplicado: ingerirlo otra vez duplicaria la cartera o repetiria el trabajo.
+    Esta revision es la via amable, porque sabe decir cual corrida fue; la garantia es el
     indice unico sobre la firma, que atrapa las carreras al publicar.
     """
     firma = firmar(contenido)
+    en_curso = and_(
+        Corrida.estado == EstadoCorrida.EN_PROCESO, Corrida.iniciada_en > ahora() - ABANDONO
+    )
     previa = s.exec(
-        select(Corrida).where(Corrida.firma == firma, Corrida.estado == EstadoCorrida.EXITOSA)
+        select(Corrida)
+        .where(Corrida.firma == firma, or_(Corrida.estado == EstadoCorrida.EXITOSA, en_curso))
+        .order_by(case((Corrida.estado == EstadoCorrida.EXITOSA, 0), else_=1))
     ).first()
     if previa is not None:
-        raise ArchivoYaPublicado(previa)
+        raise ArchivoDuplicado(previa)
 
     corrida = Corrida(
         origen=origen,

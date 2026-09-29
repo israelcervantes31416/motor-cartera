@@ -110,6 +110,18 @@ def test_el_mismo_archivo_otra_vez_409_con_la_corrida_que_ya_lo_publico(cliente,
     assert _corridas_registradas() == 1
 
 
+def test_el_mismo_archivo_mientras_otra_corrida_lo_procesa_409(cliente, tmp_path):
+    contenido = _cartera(tmp_path)
+    with sesion() as s:
+        en_curso = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    respuesta = _subir(cliente, contenido)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json()["codigo"] == "ARCHIVO_EN_PROCESO"
+    assert respuesta.json()["run_id"] == str(en_curso.run_id)
+
+
 def test_formato_no_soportado_415(cliente):
     respuesta = _subir(cliente, b"%PDF-1.7", nombre="cartera.pdf")
 

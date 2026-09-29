@@ -46,11 +46,11 @@ def cargar(ruta: str) -> None:
     codigo 1 si la corrida no publico, para que un script o un programador de tareas lo note.
     """
     from motor_cartera.db.modelos import EstadoCorrida
-    from motor_cartera.ingesta.corridas import ArchivoYaPublicado, ingerir_archivo
+    from motor_cartera.ingesta.corridas import ArchivoDuplicado, ingerir_archivo
 
     try:
         corrida = ingerir_archivo(ruta)
-    except ArchivoYaPublicado as exc:
+    except ArchivoDuplicado as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
