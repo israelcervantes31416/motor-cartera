@@ -120,6 +120,16 @@ def test_un_valor_que_no_se_convierte_cuenta_como_un_solo_motivo(cartera_valida)
     assert separacion.rechazos[0] == [Motivo("dias_atraso", "coerce_dtype('int64')")]
 
 
+def test_una_fecha_que_no_es_iso_se_rechaza_con_el_motivo_de_conversion(cartera_valida):
+    texto = cartera_valida.astype(str)
+    texto.loc[1, "fecha_corte"] = "31/01/2026"
+
+    separacion = separar_rechazos(texto)
+
+    assert separacion.rechazos == {1: [Motivo("fecha_corte", "coerce_dtype('datetime64[ns]')")]}
+    assert separacion.validas.index.tolist() == [0, 2]
+
+
 def test_un_vacio_se_rechaza(cartera_valida):
     texto = cartera_valida.astype(str)
     texto.loc[1, "saldo_total"] = None

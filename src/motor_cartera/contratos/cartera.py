@@ -134,11 +134,34 @@ def separar_rechazos(
     motivos: dict[int, list[Motivo]] = {}
     for nombre, columna in esquema.columns.items():
         parcial = pa.DataFrameSchema({nombre: columna}, coerce=esquema.coerce)
-        _descartar_hasta_cumplir(parcial, df[[nombre]], motivos)
+        convertibles = _descartar_fechas_inconvertibles(columna, df[[nombre]], motivos)
+        _descartar_hasta_cumplir(parcial, convertibles, motivos)
 
     validas = _descartar_hasta_cumplir(esquema, df.drop(index=list(motivos)), motivos)
     rechazos = {fila: _sin_redundancias(motivos[fila]) for fila in sorted(motivos)}
     return Separacion(validas=validas, rechazos=rechazos)
+
+
+def _descartar_fechas_inconvertibles(
+    columna: pa.Column, datos: pd.DataFrame, motivos: dict[int, list[Motivo]]
+) -> pd.DataFrame:
+    """Rechaza de un golpe las fechas que no se pueden convertir, y devuelve el resto.
+
+    Es solo por velocidad. Cuando una fecha no convierte, pandera busca las culpables
+    celda por celda: 3 segundos por cada 10,000 filas. Aqui se convierte la columna
+    entera con las mismas opciones que declara el contrato (no se repiten: se leen del
+    esquema) y pandera recibe solo lo que si convirtio. El motivo es el mismo que daria el.
+    """
+    tipo = columna.dtype
+    if not isinstance(tipo, DateTime):
+        return datos
+    crudo = datos[columna.name]
+    convertido = pd.to_datetime(crudo, errors="coerce", **(tipo.to_datetime_kwargs or {}))
+    inconvertibles = crudo.notna() & convertido.isna()
+    motivo = Motivo(columna.name, f"coerce_dtype('{tipo}')")
+    for fila in datos.index[inconvertibles]:
+        motivos.setdefault(int(fila), []).append(motivo)
+    return datos[~inconvertibles]
 
 
 def _descartar_hasta_cumplir(
