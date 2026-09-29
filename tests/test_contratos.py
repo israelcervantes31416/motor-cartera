@@ -145,6 +145,5 @@ def test_una_columna_faltante_no_es_un_rechazo_por_fila(cartera_valida):
         separar_rechazos(cartera_valida.astype(str).drop(columns=["canal"]))
 
 
-# TODO(israel): cuando el generador exista, agrega una prueba basada en propiedades:
-# generar 10,000 filas sinteticas y afirmar que el contrato las acepta siempre.
-# Esa prueba encuentra los casos que a mano no se te ocurren.
+# La prueba basada en propiedades (10,000 filas sinteticas, el contrato las acepta siempre)
+# vive en test_generador.py, junto al generador que la hace posible.

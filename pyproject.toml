@@ -11,7 +11,6 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
     "pydantic-settings>=2.4",
-    "faker>=28.0",
     "typer>=0.12",
     "openpyxl>=3.1",
 ]
