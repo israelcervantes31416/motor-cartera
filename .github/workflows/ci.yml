@@ -25,6 +25,7 @@ jobs:
 
     env:
       MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_test
+      MC_DATABASE_URL_PRUEBAS: postgresql+psycopg://motor:motor@localhost:5432/cartera_test
 
     steps:
       - uses: actions/checkout@v7
@@ -46,8 +47,40 @@ jobs:
       - name: Formato
         run: ruff format --check .
 
+      # Que el esquema suba desde cero, que coincida con los modelos (si alguien cambia un
+      # modelo sin migracion, `alembic check` falla) y que la migracion tambien baje.
       - name: Migraciones
-        run: alembic upgrade head
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
 
+      # Contra la PostgreSQL de servicio, no contra una base simulada.
       - name: Pruebas
         run: pytest --cov=motor_cartera --cov-report=term-missing
+
+  # La definicion de terminado, en una maquina limpia: un solo comando levanta todo, se
+  # genera una cartera sintetica y el flujo completo funciona por la API.
+  compose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: docker compose up
+        run: docker compose up -d --build
+
+      - name: Generar una cartera sintetica
+        run: docker compose exec -T api motor-cartera generar --destino datos/humo.xlsx
+
+      - name: Prueba de humo por la API
+        run: python3 scripts/prueba_de_humo.py datos/humo.xlsx
+
+      - name: Bitacora de los contenedores
+        if: failure()
+        run: docker compose logs
+
+      - name: Apagar
+        if: always()
+        run: docker compose down -v
