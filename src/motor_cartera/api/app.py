@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
-from motor_cartera.api import corridas, salud
+from motor_cartera.api import cartera, corridas, salud
 from motor_cartera.api.errores import registrar_manejadores
 from motor_cartera.api.seguridad import exigir_api_key
 from motor_cartera.config import Config
@@ -27,6 +27,7 @@ sinteticos**: los produce el generador del proyecto.
 2. `GET /corridas/{run_id}` hasta que el estado sea `EXITOSA`, `RECHAZADA` o `FALLIDA`.
 3. `GET /corridas/{run_id}/rechazos`: cada registro que no cumplio el contrato, con su
    fila y el motivo.
+4. `GET /cartera/resumen`: cuentas y saldo por segmento de la cartera vigente.
 
 **Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
 `X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.
@@ -40,6 +41,11 @@ ETIQUETAS = [
         "name": "corridas",
         "description": "Una corrida es una ingesta: un archivo leido, juzgado registro por "
         "registro y, si pasa, publicado. Todo lo que se escribe cuelga de una.",
+    },
+    {
+        "name": "cartera",
+        "description": "La cartera publicada: la que resulta de la ultima corrida EXITOSA "
+        "con el corte mas reciente.",
     },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
@@ -64,5 +70,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     registrar_manejadores(app)
     protegidas = [Depends(exigir_api_key)]
     app.include_router(corridas.router, dependencies=protegidas)
+    app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

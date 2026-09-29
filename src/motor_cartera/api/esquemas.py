@@ -7,12 +7,21 @@ Si el contrato cambia, la API cambia con el, sin que nadie tenga que acordarse.
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
+from motor_cartera.contratos.cartera import CANALES, PRODUCTOS
 from motor_cartera.db.modelos import EstadoCorrida
 from motor_cartera.ingesta.lectores import REQUERIDAS
+from motor_cartera.segmentacion import Dimension
+
+# Los catalogos del contrato, como tipos de la API: un filtro con un producto que el
+# contrato no conoce es un 422, sin que la lista se haya escrito dos veces.
+Producto = StrEnum("Producto", {p: p for p in PRODUCTOS})
+Canal = StrEnum("Canal", {c: c for c in CANALES})
 
 
 class Paginacion(BaseModel):
@@ -113,3 +122,44 @@ class RechazoRespuesta(BaseModel):
 class PaginaRechazos(Pagina[RechazoRespuesta]):
     run_id: UUID
     estado: EstadoCorrida
+
+
+class ParametrosResumen(Paginacion):
+    run_id: UUID | None = Field(
+        default=None,
+        description="Resume esa corrida y no la vigente. Para paginar, fija el run_id de la "
+        "primera respuesta: si entre pagina y pagina se publica otra cartera, no se mezclan.",
+    )
+    por: list[Dimension] = Field(
+        default_factory=lambda: [Dimension.CANAL, Dimension.TRAMO_ATRASO],
+        min_length=1,
+        description="Dimensiones del segmento, en orden. Se repite el parametro: "
+        "`?por=canal&por=tramo_atraso`.",
+    )
+    producto: Producto | None = Field(default=None, description="Solo cuentas de ese producto.")
+    canal: Canal | None = Field(default=None, description="Solo cuentas de ese canal.")
+
+    @field_validator("por")
+    @classmethod
+    def _sin_repetir(cls, por: list[Dimension]) -> list[Dimension]:
+        if len(set(por)) != len(por):
+            raise ValueError("Una dimension no puede repetirse.")
+        return por
+
+
+class SegmentoRespuesta(BaseModel):
+    segmento: dict[str, str] = Field(
+        description="El valor de cada dimension.",
+        examples=[{"canal": "CAMPO", "tramo_atraso": "91+"}],
+    )
+    cuentas: int
+    saldo_total: Decimal = Field(description="En pesos, como texto para no perder centavos.")
+    saldo_promedio: Decimal
+
+
+class ResumenCartera(Pagina[SegmentoRespuesta]):
+    run_id: UUID = Field(description="La corrida que se resume: de ahi sale cada numero.")
+    fecha_corte: date
+    dimensiones: list[Dimension]
+    total_cuentas: int = Field(description="Cuentas que pasan los filtros, en todos los segmentos.")
+    saldo_total: Decimal = Field(description="Su saldo sumado, en todos los segmentos.")
