@@ -1,3 +1,17 @@
-from motor_cartera.contratos.cartera import CarteraCruda, ErrorDeContrato, validar
+from motor_cartera.contratos.cartera import (
+    CarteraCruda,
+    ErrorDeContrato,
+    Motivo,
+    Separacion,
+    separar_rechazos,
+    validar,
+)
 
-__all__ = ["CarteraCruda", "ErrorDeContrato", "validar"]
+__all__ = [
+    "CarteraCruda",
+    "ErrorDeContrato",
+    "Motivo",
+    "Separacion",
+    "separar_rechazos",
+    "validar",
+]
