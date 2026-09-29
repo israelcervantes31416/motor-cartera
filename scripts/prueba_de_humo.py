@@ -113,14 +113,18 @@ def main(archivo: Path) -> None:
         motivos = ", ".join(f"{m['campo']}: {m['regla']}" for m in rechazo["motivos"])
         print(f"      fila {rechazo['fila']}: {motivos}")
 
-    estado, _, resumen = pedir("GET", "/cartera/resumen")
+    # Con run_id: el resumen de esta corrida. Sin el, el de la cartera vigente, que puede ser
+    # otra si ya hay publicada una con fecha de corte mas reciente.
+    estado, _, resumen = pedir("GET", f"/cartera/resumen?run_id={corrida['run_id']}")
     esperar(
         estado == 200
         and resumen["run_id"] == corrida["run_id"]
         and resumen["total_cuentas"] == corrida["filas_validas"],
-        f"GET /cartera/resumen: {resumen.get('total_cuentas')} cuentas, "
+        f"GET /cartera/resumen?run_id=...: {resumen.get('total_cuentas')} cuentas, "
         f"saldo {resumen.get('saldo_total')}, {resumen.get('total')} segmentos",
     )
+    estado, _, vigente = pedir("GET", "/cartera/resumen")
+    esperar(estado == 200, f"GET /cartera/resumen: vigente la corrida {vigente.get('run_id')}")
 
     estado, _, _ = pedir("GET", "/openapi.json", con_clave=False)
     esperar(estado == 200, "GET /openapi.json 200")
