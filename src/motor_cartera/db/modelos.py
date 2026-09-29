@@ -44,6 +44,7 @@ class Cuenta(SQLModel, table=True):
     cve_municipio: str = Field(max_length=3)
     fecha_corte: datetime = Field(index=True)
 
+
 # TODO(israel): decide si cliente_unico debe ser unico por corrida o global, y agrega
 # el indice compuesto correspondiente en una migracion de Alembic. Es una decision de
 # modelado, no un detalle: cambia que significa "duplicado" en todo el sistema.
