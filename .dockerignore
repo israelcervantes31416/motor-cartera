@@ -1,0 +1,11 @@
+# Lo que no debe viajar al contexto de construccion: pesa, no hace falta, o no es del
+# proyecto. El .venv local, sobre todo, puede pesar cientos de megas.
+.git
+.venv
+.env
+datos/*
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov

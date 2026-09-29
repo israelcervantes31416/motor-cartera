@@ -59,10 +59,24 @@ def esperar(condicion: bool, descripcion: str) -> None:
         sys.exit(1)
 
 
+def esperar_a_la_api() -> tuple[int, dict]:
+    """La API puede estar arrancando todavia (docker compose up -d no espera)."""
+    limite = time.monotonic() + ESPERA_MAXIMA
+    while True:
+        try:
+            estado, _, salud = pedir("GET", "/salud", con_clave=False)
+            if estado == 200 or time.monotonic() > limite:
+                return estado, salud
+        except (urllib.error.URLError, ConnectionError):
+            if time.monotonic() > limite:
+                return 0, {}
+        time.sleep(1)
+
+
 def main(archivo: Path) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
-    estado, _, salud = pedir("GET", "/salud", con_clave=False)
+    estado, salud = esperar_a_la_api()
     esperar(estado == 200 and salud.get("base_de_datos") == "ok", "GET /salud 200, base ok")
 
     estado, _, error = subir(archivo, con_clave=False)

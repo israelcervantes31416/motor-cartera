@@ -1,3 +1,18 @@
+# `docker compose up` levanta PostgreSQL, aplica las migraciones y arranca la API, en ese
+# orden y sin pasos manuales. La API queda en http://localhost:8000 (documentacion en /docs).
+
+x-app: &app
+  build: .
+  image: motor-cartera:dev
+  environment:
+    MC_DATABASE_URL: postgresql+psycopg://motor:motor@postgres:5432/cartera_dev
+    MC_DATABASE_URL_PRUEBAS: postgresql+psycopg://motor:motor@postgres:5432/cartera_test
+    # Clave solo para desarrollo local. En cualquier otro entorno MC_API_KEY se define
+    # fuera del repositorio; la API se niega a arrancar sin una.
+    MC_API_KEY: ${MC_API_KEY:-clave-local-de-desarrollo}
+  volumes:
+    - ./:/app
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,17 +32,34 @@ services:
       timeout: 3s
       retries: 10
 
-  app:
-    build: .
-    container_name: motor-cartera-app
+  # Migrar es un paso propio y no un efecto del arranque de la API: si las migraciones
+  # fallan, la API no arranca sobre un esquema a medias, y con varias replicas de la API
+  # no competirian por migrar a la vez.
+  migraciones:
+    <<: *app
+    container_name: motor-cartera-migraciones
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      MC_DATABASE_URL: postgresql+psycopg://motor:motor@postgres:5432/cartera_dev
-    volumes:
-      - ./:/app
-    command: ["sleep", "infinity"]
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    container_name: motor-cartera-api
+    depends_on:
+      migraciones:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    command:
+      ["uvicorn", "--factory", "motor_cartera.api.app:crear_app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/salud', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
 volumes:
   pgdata:

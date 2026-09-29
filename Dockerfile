@@ -12,4 +12,10 @@ COPY src ./src
 
 RUN uv pip install --system -e ".[dev]"
 
-CMD ["sleep", "infinity"]
+COPY alembic.ini ./
+COPY migraciones ./migraciones
+
+EXPOSE 8000
+
+# --factory: la app se construye con crear_app(), que se niega a arrancar sin MC_API_KEY.
+CMD ["uvicorn", "--factory", "motor_cartera.api.app:crear_app", "--host", "0.0.0.0", "--port", "8000"]
