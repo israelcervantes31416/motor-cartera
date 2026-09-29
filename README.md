@@ -241,4 +241,6 @@ tolerancia se juzgó, cuántos registros se leyeron, validaron y rechazaron, y p
 
 ## Licencia
 
-MIT
+Todos los derechos reservados. El código es público para que se pueda leer y evaluar, pero
+no se concede licencia para copiarlo, modificarlo ni redistribuirlo sin permiso del autor.
+Ver [LICENSE](LICENSE).
