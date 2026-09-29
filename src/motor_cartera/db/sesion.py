@@ -15,7 +15,14 @@ _motor = None
 def crear_motor(url: str | None = None):
     global _motor
     if _motor is None or url is not None:
-        _motor = create_engine(url or config.database_url, echo=False, pool_pre_ping=True)
+        # connect_timeout: si la base no contesta, /salud debe responder 503 en segundos,
+        # no quedarse colgada hasta que el sistema operativo se rinda.
+        _motor = create_engine(
+            url or config.database_url,
+            echo=False,
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": 5},
+        )
     return _motor
 
 

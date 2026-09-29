@@ -70,6 +70,31 @@ def bd(_esquema) -> Iterator[None]:
     yield
 
 
+CLAVE = "clave-de-prueba"
+
+
+@pytest.fixture
+def clave_api() -> str:
+    return CLAVE
+
+
+@pytest.fixture
+def app():
+    from motor_cartera.api import crear_app
+    from motor_cartera.config import Config
+
+    return crear_app(Config(api_key=CLAVE, tolerancia_rechazo=0.05, tamano_maximo_mb=1))
+
+
+@pytest.fixture
+def cliente(app):
+    """Cliente con la API key puesta. Para probar sin ella, quitala en la peticion."""
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, headers={"X-API-Key": CLAVE}) as cliente:
+        yield cliente
+
+
 def _crear_base_si_falta(url: str) -> None:
     destino = make_url(url)
     servidor = create_engine(destino.set(database="postgres"), isolation_level="AUTOCOMMIT")

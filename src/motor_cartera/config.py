@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,13 @@ class Config(BaseSettings):
     fijarla, la barrera seria opcional. 0 es todo o nada. 1 no se admite: publicaria
     aunque no pasara ningun registro.
     """
+    api_key: SecretStr | None = None
+    """Clave que la API exige en la cabecera X-API-Key. Sin ella la API no arranca.
+
+    Es opcional aqui solo porque el CLI, Alembic y las pruebas no la necesitan.
+    """
+    tamano_maximo_mb: int = Field(default=50, gt=0)
+    """Tope del archivo que acepta POST /corridas, en MiB."""
 
 
 config = Config()
