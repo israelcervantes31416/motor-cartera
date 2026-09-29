@@ -40,16 +40,28 @@ def generar(
 
 @app.command()
 def cargar(ruta: str) -> None:
-    """Lee un archivo, valida el contrato y persiste el resultado en una corrida.
+    """Lee un archivo, lo juzga contra el contrato y lo publica como una corrida.
 
-    TODO(israel): este es el hilo que amarra todo. El orden importa:
-      1. abre una Corrida y registra el origen
-      2. lee el archivo
-      3. valida contra el contrato; si falla, marca la corrida como fallida y NO escribe
-      4. solo si paso, inserta las Cuenta ligadas a esa corrida
-      5. cierra la corrida con sus conteos
+    Es el mismo proceso que usa la API (ingesta.corridas), en primer plano. Termina con
+    codigo 1 si la corrida no publico, para que un script o un programador de tareas lo note.
     """
-    raise NotImplementedError("Pendiente.")
+    from motor_cartera.db.modelos import EstadoCorrida
+    from motor_cartera.ingesta.corridas import ArchivoYaPublicado, ingerir_archivo
+
+    try:
+        corrida = ingerir_archivo(ruta)
+    except ArchivoYaPublicado as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Corrida {corrida.run_id}: {corrida.estado}")
+    typer.echo(
+        f"  leidas {corrida.filas_leidas}, validas {corrida.filas_validas}, "
+        f"rechazadas {corrida.filas_rechazadas}"
+    )
+    typer.echo(f"  {corrida.detalle}")
+    if corrida.estado != EstadoCorrida.EXITOSA:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
