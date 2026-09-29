@@ -181,7 +181,7 @@ def _cerrar(s: Session, corrida: Corrida, lectura: Lectura, separacion: Separaci
     corrida.filas_rechazadas = rechazadas
     if not separacion.validas.empty:
         corrida.fecha_corte = separacion.validas["fecha_corte"].max().date()
-    corrida.detalle = f"{veredicto} Origen: {lectura.origen}."
+    corrida.detalle = f"{veredicto} Origen: {lectura.origen.rstrip('.')}."
     corrida.terminada_en = ahora()
     s.add(corrida)
     s.commit()

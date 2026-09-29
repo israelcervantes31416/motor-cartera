@@ -17,11 +17,13 @@ def crear_motor(url: str | None = None):
     if _motor is None or url is not None:
         # connect_timeout: si la base no contesta, /salud debe responder 503 en segundos,
         # no quedarse colgada hasta que el sistema operativo se rinda.
+        # timezone=UTC: los instantes salen igual sin importar como este configurado el
+        # servidor de PostgreSQL.
         _motor = create_engine(
             url or config.database_url,
             echo=False,
             pool_pre_ping=True,
-            connect_args={"connect_timeout": 5},
+            connect_args={"connect_timeout": 5, "options": "-c timezone=UTC"},
         )
     return _motor
 
