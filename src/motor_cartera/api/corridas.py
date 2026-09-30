@@ -63,8 +63,10 @@ def crear_corrida(
     """Registra la corrida y la procesa en segundo plano. Responde de inmediato, con la
     corrida `EN_PROCESO` y su direccion en `Location`: consultala hasta que termine.
 
-    **201 y no 202.** La corrida ya existe cuando llega la respuesta: tiene `run_id` y se
-    puede consultar. Lo que sigue en curso es su procesamiento, y eso es su `estado`.
+    **201.** La peticion crea la corrida antes de responder: ya tiene `run_id` y se puede
+    consultar. Lo que sigue en curso es su procesamiento, y eso es su `estado`. Un 202
+    tambien seria valido, para subrayar que el procesamiento es asincrono; se eligio 201
+    porque lo que la peticion hace, crear la corrida, ya esta hecho.
 
     **Un archivo con registros invalidos no es un error de la peticion.** La peticion es
     valida y crea la corrida; el veredicto sobre el contenido llega en el estado de la

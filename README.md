@@ -14,7 +14,8 @@ Este proyecto **lee, valida contra un contrato, persiste con trazabilidad y resu
 cartera. La regla de diseño es *fail-closed*: nada entra sin pasar el contrato, y lo que no
 entra dice por qué. Cada registro se juzga por separado y el que no cumple se rechaza con
 su motivo. Si los rechazos pasan de una tolerancia, el archivo entero se rechaza y no se
-publica nada. Es preferible no producir salida a producir salida incorrecta.
+publica nada; tampoco si trae más de una fecha de corte, porque una cartera es la foto de un
+día. Es preferible no producir salida a producir salida incorrecta.
 
 ## Datos
 
@@ -25,6 +26,15 @@ Puebla; el resto son datos inventados con distribuciones parecidas a las reales:
 con cola larga, atraso por tramos y concentración geográfica desigual. El generador mete filas inválidas a
 propósito para que el contrato tenga de dónde agarrarse.
 
+El `.gitignore` lo cuida por nombre, pero solo frena lo que todavía no está trackeado. Lo
+trackeado lo revisa `scripts/verificar_archivos_trackeados.py` en el CI: falla si entró algo
+que el `.gitignore` excluye (con `git add -f`, o en mayúsculas donde git las distingue) o una
+hoja de cálculo o un zip con cualquier nombre. Antes de un commit también se corre a mano:
+
+```bash
+python scripts/verificar_archivos_trackeados.py
+```
+
 ## Estado
 
 Fase 1 terminada: una rebanada vertical que funciona de punta a punta.
@@ -32,7 +42,8 @@ Fase 1 terminada: una rebanada vertical que funciona de punta a punta.
 - [x] Contrato de datos *fail-closed*, registro por registro, con el motivo de cada rechazo
 - [x] Generador de cartera sintética en xlsx, csv y zip, con filas inválidas a propósito
 - [x] Lectores de Excel, CSV y ZIP con detección flexible de columnas
-- [x] Persistencia con trazabilidad por corrida; esquema versionado con Alembic
+- [x] Persistencia con trazabilidad por corrida, incluidas la versión del contrato con que se
+  juzgó y la firma de su contenido; esquema versionado con Alembic
 - [x] API REST: corridas, rechazos, resumen segmentado y salud, con OpenAPI
 - [x] `docker compose up` levanta todo; CI con PostgreSQL y prueba del compose en limpio
 - [ ] Motor de segmentación: hoy hay resumen por dimensiones, no reglas que asignen cuentas a canales
@@ -84,9 +95,11 @@ curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<r
 {
   "run_id": "…",
   "estado": "EXITOSA",
+  "firma_contenido": "…",
   "filas_leidas": 10000,
   "filas_validas": 9800,
   "filas_rechazadas": 200,
+  "version_contrato": "cartera/v1",
   "duracion_segundos": 2.82,
   "detalle": "Se publicaron 9,800 cuentas; 200 registros (2.0%) se rechazaron, dentro de la tolerancia de 5.0%. Origen: hoja 'cartera' de 'cartera.xlsx'. …"
 }
@@ -162,13 +175,13 @@ en [docs/decisiones.md](docs/decisiones.md).
 
 ## Sin Docker
 
-Hace falta un PostgreSQL 16. El del compose sirve (`docker compose up -d postgres`, puerto
-5434).
+Hace falta un PostgreSQL 16 (el del compose sirve: `docker compose up -d postgres`, puerto
+5434) y [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
-python -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+uv sync --extra dev                                  # .venv con las versiones del uv.lock
+source .venv/bin/activate                            # en Windows: .venv\Scripts\activate
 alembic upgrade head
 motor-cartera generar --destino datos/cartera.xlsx
 motor-cartera cargar datos/cartera.xlsx              # la misma corrida, sin pasar por la API
@@ -177,6 +190,12 @@ uvicorn --factory motor_cartera.api.app:crear_app --reload
 
 `cargar` usa exactamente el mismo proceso que la API y termina con código 1 si la corrida
 no publica, para que un script lo note.
+
+Las versiones exactas de todas las dependencias están en `uv.lock`, y el CI y la imagen
+instalan esas mismas. Si cambias una dependencia en `pyproject.toml`, corre `uv lock` y sube
+los dos archivos juntos: con el lock desfasado, el CI falla. El lock sirve para cualquier
+Python desde 3.12 (el piso de `requires-python` y la versión del CI), no solo para el que
+tengas instalado.
 
 ## Pruebas
 
@@ -190,9 +209,9 @@ migraciones (no por `create_all`), así que también prueban la migración. Usan
 existe. Como vacían la base antes de cada prueba, **se niegan a correr sobre una base que no
 se llame `*_test`**. Dentro del compose: `docker compose exec api pytest`.
 
-El CI tiene dos trabajos: lint, formato, migraciones (suben, coinciden con los modelos y
-bajan) y pruebas contra una PostgreSQL de servicio; y el `docker compose up` completo en un
-runner limpio, con la prueba de humo.
+El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
+migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
+servicio; y el `docker compose up` completo en un runner limpio, con la prueba de humo.
 
 ## Arquitectura
 
@@ -209,13 +228,15 @@ src/motor_cartera/
 ├── api/               FastAPI: rutas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar y cargar
 migraciones/           Versiones de Alembic
-scripts/               Prueba de humo del flujo completo
+scripts/               Prueba de humo del flujo completo y control de archivos trackeados
 docs/decisiones.md     Por qué está hecho así, y qué haría distinto
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
-número, la respuesta es una fila de esa tabla: qué archivo (con su firma SHA-256), con qué
-tolerancia se juzgó, cuántos registros se leyeron, validaron y rechazaron, y por qué.
+número, la respuesta es una fila de esa tabla: qué archivo llegó (con su firma SHA-256) y
+qué cartera traía (con la firma de su contenido, la misma en cualquier formato), con qué
+tolerancia y qué versión del contrato se juzgó, cuántos registros se leyeron, validaron y
+rechazaron, y por qué.
 
 ## Limitaciones conocidas
 
@@ -223,10 +244,13 @@ tolerancia se juzgó, cuántos registros se leyeron, validaron y rechazaron, y p
   reinicia a media corrida, esa corrida queda `EN_PROCESO` para siempre. Después de 15
   minutos deja de bloquear que se reintente el mismo archivo, pero nadie la cierra. Un
   worker con cola y reintentos es trabajo de la orquestación, fase 3.
-- **La firma identifica el archivo, no su contenido.** La misma cartera en xlsx y en csv
-  tiene dos firmas y se publicaría dos veces.
-- **No hay *lock file*.** Las dependencias tienen mínimos, no versiones fijas; una versión
-  nueva de pandas o pandera puede cambiar el comportamiento sin que cambie el código.
+- **Una cartera se publica una vez por archivo, no por contenido.** La misma cartera en
+  xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
+  que es la misma, lo deja a la vista, pero todavía no lo impide.
+- **El control de archivos revisa lo trackeado, no la historia.** Un archivo que se subió y
+  después se borró sigue en la historia, y en un repositorio público ya salió. Un csv con
+  otro nombre no se reconoce por sus bytes, y el control confía en el `.gitignore` del mismo
+  commit: quitar una regla también la quita del control.
 - **Límites de tamaño incompletos.** El tope de subida (`MC_TAMANO_MAXIMO_MB`) se revisa
   cuando el archivo ya llegó completo, y no hay tope a lo que un zip descomprime. El límite
   real le toca a un proxy delante de la API.
@@ -238,6 +262,17 @@ tolerancia se juzgó, cuántos registros se leyeron, validaron y rechazaron, y p
 - **Una sola API key**, sin usuarios, permisos ni rotación.
 - **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se construyó
   esta fase no tiene Docker, así que en Windows y macOS no está probado.
+
+## Desarrollo asistido por IA
+
+Este proyecto se desarrolla con asistentes y agentes de IA como herramientas de ingeniería:
+para explorar alternativas, escribir código y pruebas, y revisar cambios. Las decisiones de
+arquitectura, los criterios de aceptación, la revisión y la responsabilidad sobre cada cambio
+siguen bajo control humano.
+
+Ningún cambio se da por terminado solo porque lo haya generado un agente. Las pruebas, el CI
+y la revisión técnica son parte de la aceptación, con el mismo criterio para cualquier
+cambio.
 
 ## Licencia
 

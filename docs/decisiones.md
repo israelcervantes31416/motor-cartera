@@ -16,14 +16,16 @@ decisión. El uso está en el [README](../README.md); aquí va el porqué.
 11. [Procesar en segundo plano, dentro de la API](#11-procesar-en-segundo-plano-dentro-de-la-api)
 12. [Detalles de modelado](#12-detalles-de-modelado)
 13. [Migraciones y pruebas](#13-migraciones-y-pruebas)
+14. [Versiones fijadas, con 3.12 como piso](#14-versiones-fijadas-con-312-como-piso)
+15. [El control de archivos complementa al .gitignore, no lo repite](#15-el-control-de-archivos-complementa-al-gitignore-no-lo-repite)
 
 ---
 
 ## 1. La corrida es una entidad, no un campo
 
-**Decisión.** `Corrida` es una tabla con vida propia: estado, firma del archivo, tolerancia
-con la que se juzgó, conteos, tiempos y detalle. Cada cuenta y cada rechazo la referencian
-con una llave foránea.
+**Decisión.** `Corrida` es una tabla con vida propia: estado, firma del archivo y de su
+contenido, la tolerancia y la versión del contrato con que se juzgó, conteos, tiempos y
+detalle. Cada cuenta y cada rechazo la referencian con una llave foránea.
 
 **Por qué.** La corrida tiene que existir aunque no se escriba nada. Si el `run_id` fuera
 solo una columna de `cuenta`, una corrida rechazada o fallida no dejaría ningún rastro, y es
@@ -60,6 +62,14 @@ la barrera sería opcional. Queda guardada en cada corrida, para saber con qué 
 decidió aunque la configuración cambie después. `0` significa todo o nada; `1` no se
 admite, porque publicaría aunque no pasara ningún registro.
 
+**Una cartera, un corte.** Una cartera es la foto de un día, así que la barrera también
+exige que sus registros válidos traigan una sola fecha de corte. Con dos no hay filas
+culpables: no se sabe cuál de los cortes es el de la cartera, y tomar el más reciente, como
+se hacía antes, publicaría una foto mezclada como si fuera de un día. La cartera entera se
+rechaza, y el detalle dice qué cortes trae y cuántos registros tiene cada uno. Es
+`RECHAZADA` y no `FALLIDA`: el contenido se pudo juzgar, y no cumple. Cuentan solo los
+registros válidos, porque son los que se publicarían.
+
 **Tres estados finales, no un "exitosa sí/no".** `RECHAZADA` (se juzgó y no pasó) y
 `FALLIDA` (no se pudo juzgar: archivo ilegible, columnas faltantes, error interno) piden
 acciones distintas. La primera se arregla corrigiendo datos; la segunda, corrigiendo el
@@ -85,9 +95,17 @@ Lo que la API sí valida con Pydantic sale del contrato, sin reescribirse. Los f
 que `?producto=HIPOTECARIO` es un 422 porque el contrato no conoce ese producto, no porque
 alguien haya copiado la lista. Las columnas que el lector exige también salen del contrato.
 
+**Cada corrida guarda la versión del contrato.** `VERSION_CONTRATO` (hoy `cartera/v1`)
+nombra las reglas vigentes: las de cada registro, la de un solo corte y la forma canónica
+con que se firma el contenido. La corrida la registra al abrirse, como la tolerancia, y así
+se sabe con qué reglas se juzgó aunque el contrato cambie después. Es una constante escrita
+a mano y no el número de versión del paquete ni un commit, porque lo que importa es cuándo
+cambian las reglas, no cuándo cambia el código. A las corridas que ya existían cuando se
+empezó a guardar se les puso `sin-registro`, en lugar de suponerles una.
+
 **Qué haría distinto.** Nada en lo esencial. Si las reglas crecieran (validaciones cruzadas,
-catálogo INEGI), el contrato seguiría siendo el lugar. Lo que agregaría es una versión del
-contrato guardada en cada corrida, para saber con qué reglas se juzgó.
+catálogo INEGI), el contrato seguiría siendo el lugar. Hoy nada impide cambiar una regla sin
+cambiar la versión: lo cuidan la revisión y la prueba que fija la forma canónica.
 
 ## 4. Validar columna por columna
 
@@ -131,7 +149,7 @@ esa corrida, no el código de una respuesta que ya se envió.
 
 | Código | Cuándo | Por qué ese y no otro |
 |---|---|---|
-| `201` | `POST /corridas` registró la corrida | La corrida ya existe cuando llega la respuesta: tiene `run_id` y se consulta en `Location`. Lo que sigue en curso es su procesamiento, y eso es su `estado`. `202` diría "acepté la petición, pero el recurso todavía no existe". |
+| `201` | `POST /corridas` registró la corrida | La petición crea la corrida antes de responder: ya tiene `run_id` y se consulta en `Location`. Lo que sigue en curso es su procesamiento, y eso es su `estado`. `202` también sería válido: pondría el acento en que el procesamiento es asíncrono, y RFC 9110 no exige que el recurso todavía no exista. Se eligió `201` porque lo que la petición hace, crear la corrida, ya está hecho. |
 | `400` | El cuerpo no se puede ni interpretar | Reservado para peticiones ilegibles. |
 | `422` | La petición se entiende pero no cumple el contrato de la API: falta el archivo o está vacío, paginación fuera de rango, un `run_id` que no es UUID, un producto que el contrato no conoce | La petición es sintácticamente correcta y semánticamente inválida (RFC 9110, §15.5.21). Eso separa 422 de 400. |
 | `409` | El archivo ya se publicó o se está procesando; se piden los rechazos de una corrida que no ha terminado; se pide el resumen de una corrida que no publicó | La petición es válida pero choca con el estado de lo que toca. |
@@ -241,9 +259,23 @@ recibía `201` las tres veces, y por eso un archivo en proceso también responde
 `EN_PROCESO` y nadie la termina. Para que no bloquee ese archivo para siempre, una corrida
 `EN_PROCESO` de más de 15 minutos deja de contar.
 
-**Qué haría distinto.** Firmar el contenido y no el archivo. Hoy la misma cartera en xlsx y
-en csv tiene dos firmas distintas. Una firma de los registros válidos, normalizados y
-ordenados, lo detectaría, a cambio de tener que leer el archivo antes de decidir.
+**La firma del archivo y la del contenido.** `firma` identifica el archivo: los bytes que
+llegaron. `firma_contenido` identifica la cartera: es el SHA-256 de la forma canónica de sus
+registros válidos, y es la misma si llega en xlsx, en csv o en zip, con las filas en
+cualquier orden. La forma canónica está descrita en `firmar_contenido` y fijada por una
+prueba: columnas en orden alfabético, filas ordenadas, cada valor como texto (fechas
+AAAA-MM-DD, saldos con dos decimales), JSON en UTF-8. Se calcula cuando la corrida se
+juzga; una `FALLIDA` no la tiene.
+
+**La forma canónica es parte del contrato `cartera/v1`.** Un cambio incompatible en ella
+cambiaría todas las firmas, y dos corridas con la misma cartera ya no coincidirían. Por eso
+exige una versión nueva del contrato, o una decisión explícita equivalente que diga cómo
+comparar las firmas de antes con las de después.
+
+**Por ahora es trazabilidad, no una regla.** La unicidad sigue siendo por archivo: la misma
+cartera en xlsx y en csv se publica dos veces, pero su firma de contenido deja ver que es la
+misma. Impedirlo cambiaría qué se publica (¿una corrección con el mismo contenido es un
+duplicado?), y eso es otra decisión, no un efecto de agregar la firma.
 
 ## 10. La cartera vigente es la del corte más reciente
 
@@ -255,8 +287,10 @@ pasada, no debe reemplazar a la de hoy. Operar con cartera vieja es justo el err
 barrera existe para evitar. Y solo cuenta lo publicado: lo rechazado o fallido nunca es
 vigente.
 
-**Qué haría distinto.** Exigir que un archivo traiga una sola fecha de corte. Hoy la corrida
-toma la más reciente de sus registros.
+**El corte de una corrida no se elige.** Una cartera con más de una fecha de corte no se
+publica (ver 2), así que el corte de una corrida publicada es el de todos sus registros.
+Antes la corrida tomaba el más reciente, y un archivo con dos cortes quedaba vigente con la
+fecha de uno solo.
 
 ## 11. Procesar en segundo plano, dentro de la API
 
@@ -310,3 +344,56 @@ tome las corridas `EN_PROCESO` con reintentos, tiempos límite y barrido de hué
 - **Una prueba de humo** (`scripts/prueba_de_humo.py`) corre en el CI contra el compose, en
   un runner limpio: es la definición de terminado verificada donde no hay nada instalado de
   antemano.
+
+## 14. Versiones fijadas, con 3.12 como piso
+
+**Decisión.** `uv.lock` fija la versión exacta y el hash de cada dependencia, directa o no.
+El CI y la imagen instalan con `uv sync --locked`, que falla si el lock ya no corresponde al
+`pyproject.toml`, y con la misma versión de uv con que se generó el lock: 0.12.21, fijada en
+el CI y en el Dockerfile (ahí también por digest, porque una etiqueta se puede mover).
+Subirla es cambiar los dos lugares a la vez. Los mínimos del `pyproject.toml` siguen siendo
+lo que el proyecto admite; el lock es la combinación que se probó.
+
+**Por qué.** Lo que el contrato rechaza depende de pandas y pandera, no solo del código: la
+validación columna por columna (ver 4) existe por un comportamiento de pandera que una
+versión nueva podría cambiar. Sin lock, eso cambiaba sin que cambiara una línea. Con el lock,
+cambiar de versión es un diff en un commit, y el CI lo prueba antes de que llegue a `main`.
+
+**Por qué universal y no el del Python local.** El lock resuelve para cualquier Python que
+admita `requires-python = ">=3.12"`, que es el contrato del proyecto y la versión del CI y de
+la imagen. Que la máquina donde se genera tenga otro Python (hoy, un 3.14) no mueve ese piso:
+el lock no se genera para ese intérprete. Hoy cada dependencia tiene una sola versión para
+3.12 y para 3.14; si alguna se separara, el lock guardaría una para cada tramo.
+
+**Qué haría distinto.** Un bot que proponga las actualizaciones (Dependabot o Renovate),
+para que el lock y uv no se queden viejos sin que nadie lo note.
+
+## 15. El control de archivos complementa al .gitignore, no lo repite
+
+**Decisión.** `scripts/verificar_archivos_trackeados.py` corre en el CI sobre el índice de
+git. Falla si un archivo trackeado lo excluye el `.gitignore`, si lo excluiría sin distinguir
+mayúsculas, o si por dentro es un zip (xlsx, xlsm, ods) o un documento OLE2 (xls), se llame
+como se llame.
+
+**Por qué.** El `.gitignore` frena lo que todavía no está trackeado, y nada más. No ve un
+`git add -f` ni un archivo que ya estaba antes de la regla. En Linux distingue mayúsculas,
+así que `*.xlsx` no detiene `CARTERA.XLSX`, que el lector del motor sí abre. Y solo conoce
+nombres: un xlsx renombrado pasa.
+
+**Por qué no una lista propia.** El control no tiene reglas de nombres: le pregunta al mismo
+`.gitignore` qué excluye. Una segunda lista terminaría diciendo otra cosa, como una regla de
+validación escrita dos veces (ver 3). Lo único propio es reconocer el formato por sus
+primeros bytes, que es justo lo que un nombre no puede decir.
+
+**Por qué el índice y no la carpeta.** Lo que se sube es el índice. Un archivo que en disco ya
+cambió puede seguir siendo la cartera en el índice, y es esa versión la que entra al commit.
+
+**Lo que no cubre.** La historia: un archivo que se subió y después se borró sigue ahí, y en
+un repositorio público ya salió; el control es una alarma, no una bóveda. Un csv no se
+reconoce por sus bytes, así que con otro nombre pasa. Y confía en el `.gitignore` del mismo
+commit: quitar una regla también la quita del control, y ese cambio tiene que verse en la
+revisión.
+
+**Qué haría distinto.** Correrlo también como *hook* de pre-commit, para que detenga el
+archivo antes del commit y no después del push. Y en los pull requests revisar cada commit,
+no solo el último.
