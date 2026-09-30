@@ -8,12 +8,26 @@ salida a producir salida incorrecta, porque una salida incorrecta se usa para op
 
 from __future__ import annotations
 
+import hashlib
+import json
+import numbers
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import pandas as pd
 import pandera.pandas as pa
 from pandera.engines.pandas_engine import DateTime
 from pandera.typing import Series
+
+VERSION_CONTRATO = "cartera/v1"
+"""La version del contrato. Cada corrida guarda con cual se juzgo.
+
+Cambia cuando cambia lo que decide si una cartera se publica o como se firma su contenido:
+las reglas de cada registro, la de un solo corte por cartera (`fechas_de_corte`) o la forma
+canonica de `firmar_contenido`. Asi, de cualquier corrida se sabe con que reglas se juzgo,
+aunque el contrato cambie despues.
+"""
 
 PRODUCTOS = ("CONSUMO", "TARJETA", "NOMINA", "AUTOMOTRIZ")
 CANALES = ("CAMPO", "TELEFONICA", "DIGITAL")
@@ -25,6 +39,9 @@ No es una regla de negocio: es que el contrato no puede aceptar lo que la base n
 guardar. Sin este tope, una sola fila absurda haria fallar la corrida entera al insertar,
 en lugar de rechazarse con su motivo.
 """
+
+CENTAVO = Decimal("0.01")
+"""El saldo se guarda con dos decimales, y con dos se escribe en la forma canonica."""
 
 
 class ErrorDeContrato(RuntimeError):
@@ -198,3 +215,67 @@ def _sin_redundancias(motivos: list[Motivo]) -> list[Motivo]:
     convertidas = {m.campo for m in motivos if m.regla.startswith("coerce_dtype(")}
     unicos = dict.fromkeys(motivos)
     return [m for m in unicos if not (m.regla.startswith("dtype(") and m.campo in convertidas)]
+
+
+def fechas_de_corte(validas: pd.DataFrame) -> dict[date, int]:
+    """Cuantos registros validos trae cada fecha de corte, de la mas antigua a la mas reciente.
+
+    Una cartera es la foto de un dia: para publicarse tiene que traer exactamente un corte.
+    Con mas de uno no se elige ninguno (ni el mas reciente ni el mas comun) y la cartera se
+    rechaza. Cuentan solo los registros validos, que son los que se publicarian.
+    """
+    if validas.empty:
+        return {}
+    dias = validas["fecha_corte"].dt.date
+    return {dia: int(n) for dia, n in sorted(dias.value_counts().items())}
+
+
+def firmar_contenido(validas: pd.DataFrame, modelo: type[pa.DataFrameModel] = CarteraCruda) -> str:
+    """SHA-256 de la forma canonica de los registros validos: identifica la cartera, no el
+    archivo que la trajo.
+
+    La misma cartera da la misma firma venga en xlsx, csv o zip, y con sus filas en
+    cualquier orden. La forma canonica:
+
+      - una linea con los nombres de las columnas del contrato en orden alfabetico, y una
+        por registro, con sus valores en ese orden;
+      - cada linea es un arreglo JSON sin espacios, en UTF-8, terminado en salto de linea;
+      - las lineas de registros van ordenadas: el orden de las filas del archivo no
+        significa nada;
+      - cada valor es texto. La fecha, AAAA-MM-DD; un entero, sin ceros a la izquierda; el
+        saldo, con dos decimales, como se guarda; lo demas, tal como lo deja el contrato.
+        Un vacio es null.
+
+    Es parte del contrato, igual que sus reglas: un cambio incompatible en esta forma cambia
+    todas las firmas, y exige una VERSION_CONTRATO nueva.
+    """
+    columnas = sorted(modelo.to_schema().columns)
+    registros = sorted(
+        _linea([_canonico(valor) for valor in fila])
+        for fila in validas[columnas].itertuples(index=False, name=None)
+    )
+    firma = hashlib.sha256()
+    for linea in (_linea(columnas), *registros):
+        firma.update(linea.encode("utf-8") + b"\n")
+    return firma.hexdigest()
+
+
+def _linea(valores: list[str | None]) -> str:
+    return json.dumps(valores, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonico(valor: object) -> str | None:
+    """Un valor, ya convertido por el contrato, en su texto canonico."""
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, datetime):  # pd.Timestamp tambien lo es
+        return valor.date().isoformat()
+    if isinstance(valor, date):
+        return valor.isoformat()
+    if isinstance(valor, numbers.Integral):
+        return str(int(valor))
+    if isinstance(valor, float):
+        if valor == 0:
+            valor = 0.0  # -0.0 y 0.0 son el mismo saldo
+        return str(Decimal(str(valor)).quantize(CENTAVO, rounding=ROUND_HALF_UP))
+    return str(valor)

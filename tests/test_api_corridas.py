@@ -8,6 +8,8 @@ from uuid import uuid4
 import pytest
 from sqlmodel import func, select
 
+from motor_cartera.api.esquemas import EJEMPLO_CORRIDA, EJEMPLO_CORRIDA_EN_PROCESO, CorridaRespuesta
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import Corrida
 from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo
@@ -49,6 +51,8 @@ def test_post_crea_la_corrida_201_con_location_y_estado_inicial(cliente, tmp_pat
     assert corrida["terminada_en"] is None
     assert corrida["duracion_segundos"] is None
     assert corrida["tolerancia_rechazo"] == 0.05
+    assert corrida["version_contrato"] == VERSION_CONTRATO
+    assert corrida["firma_contenido"] is None  # todavia no se juzga
 
 
 def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
@@ -65,6 +69,9 @@ def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
         3,
     )
     assert corrida["fecha_corte"] == "2026-09-30"
+    assert corrida["version_contrato"] == VERSION_CONTRATO
+    assert len(corrida["firma_contenido"]) == 64
+    assert corrida["firma_contenido"] != corrida["firma"]  # el contenido no es el archivo
     assert corrida["duracion_segundos"] >= 0
     assert corrida["detalle"].startswith("Se publicaron 97 cuentas")
     assert not corrida["detalle"].endswith("..")
@@ -252,6 +259,10 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
     # El ejemplo del 201 es lo que de verdad responde el POST, no una corrida terminada.
     ejemplo = post["responses"]["201"]["content"]["application/json"]["example"]
     assert ejemplo["estado"] == "EN_PROCESO"
+    # Y los ejemplos traen cada campo de la respuesta. Se revisan en su origen porque el
+    # OpenAPI omite los que valen null.
+    campos = set(CorridaRespuesta.model_json_schema(mode="serialization")["properties"])
+    assert set(EJEMPLO_CORRIDA) == set(EJEMPLO_CORRIDA_EN_PROCESO) == campos
     assert "`ARCHIVO_EN_PROCESO`" in post["responses"]["409"]["description"]
     for codigo in ("401", "409", "413", "415", "422"):
         esquema = post["responses"][codigo]["content"]["application/json"]["schema"]

@@ -99,6 +99,10 @@ def main(archivo: Path) -> None:
         _, _, corrida = pedir("GET", ubicacion)
     esperar(corrida["estado"] == "EXITOSA", f"la corrida termina EXITOSA: {corrida['detalle']}")
     esperar(
+        bool(corrida["version_contrato"]) and len(corrida["firma_contenido"] or "") == 64,
+        f"contrato {corrida['version_contrato']}, contenido firmado aparte del archivo",
+    )
+    esperar(
         corrida["filas_leidas"] == corrida["filas_validas"] + corrida["filas_rechazadas"],
         f"leidas {corrida['filas_leidas']} = validas {corrida['filas_validas']} "
         f"+ rechazadas {corrida['filas_rechazadas']}",

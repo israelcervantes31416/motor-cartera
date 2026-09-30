@@ -5,12 +5,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from sqlmodel import func, select
 
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
-from motor_cartera.generador.sintetico import generar_archivo
+from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
     ABANDONO,
@@ -94,6 +96,9 @@ def test_un_archivo_malformado_falla_sin_escribir_nada(tmp_path):
     assert corrida.filas_leidas == 0
     assert _cuantas(Cuenta, corrida) == 0
     assert _cuantas(Rechazo, corrida) == 0
+    # No se juzgo, asi que no hay contenido que firmar; con que contrato se iba a juzgar, si.
+    assert corrida.firma_contenido is None
+    assert corrida.version_contrato == VERSION_CONTRATO
 
 
 def test_un_excel_que_no_es_excel_falla(tmp_path):
@@ -184,6 +189,23 @@ def test_la_corrida_queda_registrada_antes_de_leer_nada(tmp_path):
     assert corrida.estado == EstadoCorrida.EN_PROCESO
     assert corrida.terminada_en is None
     assert len(corrida.firma) == 64
+    # Con que reglas se va a juzgar queda fijo desde que se registra; el contenido, no.
+    assert corrida.version_contrato == VERSION_CONTRATO
+    assert corrida.firma_contenido is None
+
+
+def test_la_misma_cartera_en_csv_y_en_xlsx_tiene_la_misma_firma_de_contenido(tmp_path):
+    # Dos archivos, dos firmas: se publica dos veces, porque la unicidad sigue siendo por
+    # archivo. La firma del contenido deja ver que es la misma cartera.
+    csv = ingerir_archivo(_archivo(tmp_path, "cartera.csv", tasa=0.03))
+    xlsx = ingerir_archivo(_archivo(tmp_path, "cartera.xlsx", tasa=0.03))
+    otra = ingerir_archivo(_archivo(tmp_path, "otra.csv", tasa=0.03, semilla=2))
+
+    assert csv.estado == xlsx.estado == otra.estado == EstadoCorrida.EXITOSA
+    assert csv.firma != xlsx.firma
+    assert csv.firma_contenido == xlsx.firma_contenido
+    assert len(csv.firma_contenido) == 64
+    assert otra.firma_contenido != csv.firma_contenido
 
 
 # --- una cartera se publica una sola vez --------------------------------------------------
@@ -246,7 +268,12 @@ def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
         una = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-        otra = Corrida(origen="cartera.csv", firma=firmar(contenido), tolerancia_rechazo=0.05)
+        otra = Corrida(
+            origen="cartera.csv",
+            firma=firmar(contenido),
+            tolerancia_rechazo=0.05,
+            version_contrato=VERSION_CONTRATO,
+        )
         s.add(otra)
         s.commit()
         s.refresh(una)
@@ -275,6 +302,31 @@ def test_un_error_inesperado_deja_la_corrida_fallida_y_sin_datos(tmp_path, monke
     assert corrida.estado == EstadoCorrida.FALLIDA
     assert corrida.detalle.startswith("Error interno (RuntimeError)")
     assert _cuantas(Cuenta, corrida) == 0
+
+
+# --- una cartera, un corte ------------------------------------------------------------------
+
+
+def test_una_cartera_con_dos_fechas_de_corte_se_rechaza_entera(tmp_path):
+    # 199 cuentas del 30 y una del 29. Ningun registro esta mal por si solo, pero no hay un
+    # corte que sea el de la cartera, y no se elige uno: se juzgo y no cumple.
+    cartera = generar_cartera(200, semilla=1, fecha_corte=CORTE)
+    cartera.loc[0, "fecha_corte"] = pd.Timestamp(CORTE - timedelta(days=1))
+    ruta = tmp_path / "dos_cortes.csv"
+    cartera.to_csv(ruta, index=False)
+
+    corrida = ingerir_archivo(ruta, tolerancia=0.05)
+
+    assert corrida.estado == EstadoCorrida.RECHAZADA
+    assert (corrida.filas_validas, corrida.filas_rechazadas) == (200, 0)
+    assert corrida.fecha_corte is None
+    assert (
+        "La cartera trae 2 fechas de corte (2026-09-29 en 1 registro y 2026-09-30 en 199 "
+        "registros) y debe traer una sola; no se publico nada."
+    ) in corrida.detalle
+    assert corrida.firma_contenido is not None  # se juzgo: su contenido tiene firma
+    assert _cuantas(Cuenta, corrida) == 0
+    assert _cuantas(Rechazo, corrida) == 0
 
 
 # --- la cartera vigente -------------------------------------------------------------------
@@ -323,9 +375,27 @@ def test_una_corrida_rechazada_nunca_es_la_vigente(tmp_path):
     ],
 )
 def test_decidir(leidas, rechazadas, tolerancia, estado):
-    assert decidir(leidas, rechazadas, tolerancia)[0] == estado
+    un_corte = {CORTE: leidas - rechazadas} if leidas > rechazadas else {}
+    assert decidir(leidas, rechazadas, tolerancia, un_corte)[0] == estado
+
+
+def test_decidir_con_dos_cortes_rechaza_aunque_ningun_registro_falle():
+    estado, veredicto = decidir(10_000, 0, 0.05, {date(2026, 9, 28): 1, date(2026, 9, 29): 9_999})
+
+    assert estado == EstadoCorrida.RECHAZADA
+    assert veredicto == (
+        "La cartera trae 2 fechas de corte (2026-09-28 en 1 registro y 2026-09-29 en 9,999 "
+        "registros) y debe traer una sola; no se publico nada."
+    )
+
+
+def test_decidir_dice_todas_las_razones_para_no_publicar():
+    _, veredicto = decidir(100, 10, 0.05, {date(2026, 9, 28): 45, date(2026, 9, 29): 45})
+
+    assert veredicto.startswith("El 10.0% de los registros no cumple el contrato")
+    assert "; la cartera trae 2 fechas de corte" in veredicto
 
 
 def test_decidir_sin_registros_es_un_error():
     with pytest.raises(ValueError):
-        decidir(0, 0, 0.05)
+        decidir(0, 0, 0.05, {})

@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from motor_cartera.contratos.cartera import CANALES, PRODUCTOS
+from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
 from motor_cartera.db.modelos import EstadoCorrida
 from motor_cartera.ingesta.lectores import REQUERIDAS
 from motor_cartera.segmentacion import Dimension
@@ -49,11 +49,13 @@ EJEMPLO_CORRIDA = {
     "estado": "EXITOSA",
     "origen": "cartera_sintetica.xlsx",
     "firma": "9f2c4e6a8b0d1f3e5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f",
+    "firma_contenido": "4b8d2f6a0c4e8a2d6f0b4d8e2a6c0f4b8d2e6a0c4f8b2d6e0a4c8f2b6d0e4a8c",
     "fecha_corte": "2026-09-30",
     "filas_leidas": 10000,
     "filas_validas": 9800,
     "filas_rechazadas": 200,
     "tolerancia_rechazo": 0.05,
+    "version_contrato": VERSION_CONTRATO,
     "iniciada_en": "2026-09-30T15:04:05.123456Z",
     "terminada_en": "2026-09-30T15:04:09.654321Z",
     "duracion_segundos": 4.531,
@@ -66,6 +68,7 @@ EJEMPLO_CORRIDA = {
 EJEMPLO_CORRIDA_EN_PROCESO = {
     **EJEMPLO_CORRIDA,
     "estado": "EN_PROCESO",
+    "firma_contenido": None,
     "fecha_corte": None,
     "filas_leidas": 0,
     "filas_validas": 0,
@@ -86,18 +89,27 @@ class CorridaRespuesta(BaseModel):
     run_id: UUID
     estado: EstadoCorrida = Field(
         description="EN_PROCESO mientras trabaja. Al terminar: EXITOSA (publico sus cuentas), "
-        "RECHAZADA (demasiados registros no cumplen el contrato; no publico nada) o FALLIDA "
-        "(no se pudo juzgar: archivo ilegible o error; no publico nada)."
+        "RECHAZADA (demasiados registros no cumplen el contrato, o la cartera trae mas de una "
+        "fecha de corte; no publico nada) o FALLIDA (no se pudo juzgar: archivo ilegible o "
+        "error; no publico nada)."
     )
     origen: str = Field(description="Nombre del archivo recibido.")
     firma: str = Field(description="SHA-256 del archivo: misma firma, mismo archivo.")
-    fecha_corte: date | None = Field(description="La mas reciente del archivo, si se leyo.")
+    firma_contenido: str | None = Field(
+        description="SHA-256 de la cartera ya normalizada (sus registros validos): la misma "
+        "cartera en xlsx, csv o zip tiene la misma, aunque cada archivo tenga su firma. Vacia "
+        "mientras esta en proceso, y si no se pudo juzgar."
+    )
+    fecha_corte: date | None = Field(
+        description="El corte de la cartera. Vacio si no se leyo, o si trae mas de uno."
+    )
     filas_leidas: int
     filas_validas: int = Field(
         description="Cumplen el contrato. Se publican solo si la corrida termina EXITOSA."
     )
     filas_rechazadas: int = Field(description="No cumplen el contrato; ver /rechazos.")
     tolerancia_rechazo: float = Field(description="Fraccion maxima de rechazos que se admitio.")
+    version_contrato: str = Field(description="La version del contrato con que se juzga.")
     iniciada_en: datetime
     terminada_en: datetime | None
     detalle: str | None = Field(description="Que paso, en palabras, y de donde se leyo.")
