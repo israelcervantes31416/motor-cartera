@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from sqlmodel import func, select
 
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
-from motor_cartera.generador.sintetico import generar_archivo
+from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
     ABANDONO,
@@ -186,6 +187,7 @@ def test_la_corrida_queda_registrada_antes_de_leer_nada(tmp_path):
     assert len(corrida.firma) == 64
 
 
+
 # --- una cartera se publica una sola vez --------------------------------------------------
 
 
@@ -277,6 +279,30 @@ def test_un_error_inesperado_deja_la_corrida_fallida_y_sin_datos(tmp_path, monke
     assert _cuantas(Cuenta, corrida) == 0
 
 
+# --- una cartera, un corte ------------------------------------------------------------------
+
+
+def test_una_cartera_con_dos_fechas_de_corte_se_rechaza_entera(tmp_path):
+    # 199 cuentas del 30 y una del 29. Ningun registro esta mal por si solo, pero no hay un
+    # corte que sea el de la cartera, y no se elige uno: se juzgo y no cumple.
+    cartera = generar_cartera(200, semilla=1, fecha_corte=CORTE)
+    cartera.loc[0, "fecha_corte"] = pd.Timestamp(CORTE - timedelta(days=1))
+    ruta = tmp_path / "dos_cortes.csv"
+    cartera.to_csv(ruta, index=False)
+
+    corrida = ingerir_archivo(ruta, tolerancia=0.05)
+
+    assert corrida.estado == EstadoCorrida.RECHAZADA
+    assert (corrida.filas_validas, corrida.filas_rechazadas) == (200, 0)
+    assert corrida.fecha_corte is None
+    assert (
+        "La cartera trae 2 fechas de corte (2026-09-29 en 1 registro y 2026-09-30 en 199 "
+        "registros) y debe traer una sola; no se publico nada."
+    ) in corrida.detalle
+    assert _cuantas(Cuenta, corrida) == 0
+    assert _cuantas(Rechazo, corrida) == 0
+
+
 # --- la cartera vigente -------------------------------------------------------------------
 
 
@@ -323,9 +349,27 @@ def test_una_corrida_rechazada_nunca_es_la_vigente(tmp_path):
     ],
 )
 def test_decidir(leidas, rechazadas, tolerancia, estado):
-    assert decidir(leidas, rechazadas, tolerancia)[0] == estado
+    un_corte = {CORTE: leidas - rechazadas} if leidas > rechazadas else {}
+    assert decidir(leidas, rechazadas, tolerancia, un_corte)[0] == estado
+
+
+def test_decidir_con_dos_cortes_rechaza_aunque_ningun_registro_falle():
+    estado, veredicto = decidir(10_000, 0, 0.05, {date(2026, 9, 28): 1, date(2026, 9, 29): 9_999})
+
+    assert estado == EstadoCorrida.RECHAZADA
+    assert veredicto == (
+        "La cartera trae 2 fechas de corte (2026-09-28 en 1 registro y 2026-09-29 en 9,999 "
+        "registros) y debe traer una sola; no se publico nada."
+    )
+
+
+def test_decidir_dice_todas_las_razones_para_no_publicar():
+    _, veredicto = decidir(100, 10, 0.05, {date(2026, 9, 28): 45, date(2026, 9, 29): 45})
+
+    assert veredicto.startswith("El 10.0% de los registros no cumple el contrato")
+    assert "; la cartera trae 2 fechas de corte" in veredicto
 
 
 def test_decidir_sin_registros_es_un_error():
     with pytest.raises(ValueError):
-        decidir(0, 0, 0.05)
+        decidir(0, 0, 0.05, {})

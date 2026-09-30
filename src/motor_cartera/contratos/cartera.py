@@ -9,6 +9,7 @@ salida a producir salida incorrecta, porque una salida incorrecta se usa para op
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 import pandas as pd
 import pandera.pandas as pa
@@ -198,3 +199,16 @@ def _sin_redundancias(motivos: list[Motivo]) -> list[Motivo]:
     convertidas = {m.campo for m in motivos if m.regla.startswith("coerce_dtype(")}
     unicos = dict.fromkeys(motivos)
     return [m for m in unicos if not (m.regla.startswith("dtype(") and m.campo in convertidas)]
+
+
+def fechas_de_corte(validas: pd.DataFrame) -> dict[date, int]:
+    """Cuantos registros validos trae cada fecha de corte, de la mas antigua a la mas reciente.
+
+    Una cartera es la foto de un dia: para publicarse tiene que traer exactamente un corte.
+    Con mas de uno no se elige ninguno (ni el mas reciente ni el mas comun) y la cartera se
+    rechaza. Cuentan solo los registros validos, que son los que se publicarian.
+    """
+    if validas.empty:
+        return {}
+    dias = validas["fecha_corte"].dt.date
+    return {dia: int(n) for dia, n in sorted(dias.value_counts().items())}

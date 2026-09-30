@@ -31,7 +31,7 @@ class EstadoCorrida(StrEnum):
 
     EN_PROCESO = "EN_PROCESO"  # registrada; se esta leyendo, validando o escribiendo
     EXITOSA = "EXITOSA"  # publico sus cuentas; sus rechazos, si hubo, caben en la tolerancia
-    RECHAZADA = "RECHAZADA"  # se juzgo y no paso: demasiados rechazos; no publico nada
+    RECHAZADA = "RECHAZADA"  # se juzgo y no paso: demasiados rechazos o mas de un corte
     FALLIDA = "FALLIDA"  # no se pudo juzgar: archivo ilegible o error; no publico nada
 
 
@@ -82,7 +82,9 @@ class Corrida(SQLModel, table=True):
         description="Fraccion maxima de rechazos con la que se juzgo; queda con la corrida "
         "para saber con que regla se decidio aunque la configuracion cambie despues"
     )
-    fecha_corte: date | None = Field(default=None, description="La mas reciente del archivo")
+    fecha_corte: date | None = Field(
+        default=None, description="El corte de la cartera, si trae uno solo"
+    )
     filas_leidas: int = 0
     filas_validas: int = 0
     filas_rechazadas: int = 0

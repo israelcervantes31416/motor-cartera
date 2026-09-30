@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
-from motor_cartera.contratos import ErrorDeContrato, Motivo, separar_rechazos, validar
+from motor_cartera.contratos import (
+    ErrorDeContrato,
+    Motivo,
+    fechas_de_corte,
+    separar_rechazos,
+    validar,
+)
 from motor_cartera.contratos.cartera import SALDO_MAXIMO
 
 
@@ -153,6 +161,34 @@ def test_los_rechazos_y_las_validas_conservan_la_etiqueta_de_fila(cartera_valida
 def test_una_columna_faltante_no_es_un_rechazo_por_fila(cartera_valida):
     with pytest.raises(ErrorDeContrato, match="canal"):
         separar_rechazos(cartera_valida.astype(str).drop(columns=["canal"]))
+
+
+# --- una cartera, un corte ------------------------------------------------------------------
+
+
+def test_fechas_de_corte_cuenta_los_registros_validos_de_cada_corte(cartera_valida):
+    texto = cartera_valida.astype(str)
+    texto.loc[2, "fecha_corte"] = "2026-01-30"
+
+    cortes = fechas_de_corte(separar_rechazos(texto).validas)
+
+    assert cortes == {date(2026, 1, 30): 1, date(2026, 1, 31): 2}
+
+
+def test_un_registro_rechazado_no_cuenta_como_otro_corte(cartera_valida):
+    # Lo rechazado no se publica: su fecha no parte la cartera en dos.
+    texto = cartera_valida.astype(str)
+    texto.loc[2, ["fecha_corte", "saldo_total"]] = ["2026-01-30", "-1"]
+
+    assert fechas_de_corte(separar_rechazos(texto).validas) == {date(2026, 1, 31): 2}
+
+
+def test_la_hora_no_parte_un_corte(cartera_valida):
+    # Un corte es un dia del calendario, traiga o no una hora.
+    texto = cartera_valida.astype(str)
+    texto.loc[0, "fecha_corte"] = "2026-01-31 10:30:00"
+
+    assert fechas_de_corte(separar_rechazos(texto).validas) == {date(2026, 1, 31): 3}
 
 
 # La prueba basada en propiedades (10,000 filas sinteticas, el contrato las acepta siempre)

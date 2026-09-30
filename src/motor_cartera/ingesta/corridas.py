@@ -4,7 +4,8 @@ El orden importa:
   1. abre una Corrida y registra el origen y la firma del archivo
   2. lee el archivo
   3. juzga cada registro contra el contrato
-  4. decide: publica solo si los rechazos caben en la tolerancia
+  4. decide: publica solo si los rechazos caben en la tolerancia y la cartera trae un solo
+     corte
   5. cierra la corrida con sus conteos, en la misma transaccion que publica
 
 La API y el CLI usan este mismo modulo. La validacion vive en el contrato y la decision
@@ -16,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from motor_cartera.config import config
-from motor_cartera.contratos import ErrorDeContrato, Motivo, Separacion, separar_rechazos
+from motor_cartera.contratos import (
+    ErrorDeContrato,
+    Motivo,
+    Separacion,
+    fechas_de_corte,
+    separar_rechazos,
+)
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
 from motor_cartera.ingesta.lectores import ErrorDeLectura, Lectura, leer_contenido
@@ -137,12 +144,19 @@ def ingerir_archivo(ruta: str | Path, *, tolerancia: float | None = None) -> Cor
         return s.get_one(Corrida, corrida.id)
 
 
-def decidir(leidas: int, rechazadas: int, tolerancia: float) -> tuple[EstadoCorrida, str]:
-    """La barrera: publica solo si la fraccion de rechazos cabe en la tolerancia.
+def decidir(
+    leidas: int, rechazadas: int, tolerancia: float, cortes: dict[date, int]
+) -> tuple[EstadoCorrida, str]:
+    """La barrera: publica solo si los rechazos caben en la tolerancia y la cartera trae un
+    solo corte.
 
     Rechazar por registro sin un tope seria fail-open: un archivo con media cartera rota
     publicaria la otra media, y la operacion trabajaria sobre ella sin saberlo. Pasado el
     tope, el problema ya no son filas sueltas sino el archivo, y no se publica nada.
+
+    Con mas de un corte tampoco hay filas culpables: no se sabe cual de los cortes es el de
+    la cartera, asi que se rechaza entera. Es RECHAZADA y no FALLIDA, porque el contenido se
+    pudo juzgar y no cumple; FALLIDA es para lo que no se pudo juzgar.
     """
     if leidas <= 0:
         raise ValueError("Una corrida sin registros no se juzga: es un error de lectura.")
@@ -150,12 +164,21 @@ def decidir(leidas: int, rechazadas: int, tolerancia: float) -> tuple[EstadoCorr
     publicadas = leidas - rechazadas
     if publicadas == 0:
         return EstadoCorrida.RECHAZADA, "Ningun registro cumple el contrato; no se publico nada."
+
+    problemas = []
     if tasa > tolerancia:
-        return (
-            EstadoCorrida.RECHAZADA,
-            f"El {tasa:.1%} de los registros no cumple el contrato y la tolerancia es "
-            f"{tolerancia:.1%}; no se publico nada.",
+        problemas.append(
+            f"el {tasa:.1%} de los registros no cumple el contrato y la tolerancia es "
+            f"{tolerancia:.1%}"
         )
+    if len(cortes) > 1:
+        problemas.append(
+            f"la cartera trae {len(cortes)} fechas de corte ({_listar_cortes(cortes)}) y debe "
+            "traer una sola"
+        )
+    if problemas:
+        veredicto = "; ".join(problemas) + "; no se publico nada."
+        return EstadoCorrida.RECHAZADA, veredicto[0].upper() + veredicto[1:]
     if rechazadas == 0:
         return EstadoCorrida.EXITOSA, f"Se publicaron {publicadas:,} cuentas."
     return (
@@ -183,7 +206,8 @@ def corrida_vigente(s: Session) -> Corrida | None:
 def _cerrar(s: Session, corrida: Corrida, lectura: Lectura, separacion: Separacion) -> None:
     leidas = len(lectura.datos)
     rechazadas = len(separacion.rechazos)
-    estado, veredicto = decidir(leidas, rechazadas, corrida.tolerancia_rechazo)
+    cortes = fechas_de_corte(separacion.validas)
+    estado, veredicto = decidir(leidas, rechazadas, corrida.tolerancia_rechazo, cortes)
 
     if separacion.rechazos:
         s.execute(insert(Rechazo), _filas_rechazo(corrida.id, lectura.datos, separacion.rechazos))
@@ -194,13 +218,22 @@ def _cerrar(s: Session, corrida: Corrida, lectura: Lectura, separacion: Separaci
     corrida.filas_leidas = leidas
     corrida.filas_validas = len(separacion.validas)
     corrida.filas_rechazadas = rechazadas
-    if not separacion.validas.empty:
-        corrida.fecha_corte = separacion.validas["fecha_corte"].max().date()
+    # El corte de la cartera, si trae uno solo. Con varios no hay uno que elegir.
+    corrida.fecha_corte = next(iter(cortes)) if len(cortes) == 1 else None
     corrida.detalle = f"{veredicto} Origen: {lectura.origen.rstrip('.')}."
     corrida.terminada_en = ahora()
     s.add(corrida)
     s.commit()
     log.info("corrida %s: %s", corrida.run_id, veredicto)
+
+
+def _listar_cortes(cortes: dict[date, int], hasta: int = 5) -> str:
+    partes = [
+        f"{dia.isoformat()} en {n:,} registro{'' if n == 1 else 's'}" for dia, n in cortes.items()
+    ]
+    if len(partes) > hasta:
+        partes = [*partes[:hasta], f"{len(partes) - hasta} fechas mas"]
+    return ", ".join(partes[:-1]) + " y " + partes[-1]
 
 
 def _fallar(s: Session, corrida: Corrida, motivo: str) -> None:

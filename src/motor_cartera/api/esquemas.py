@@ -86,12 +86,15 @@ class CorridaRespuesta(BaseModel):
     run_id: UUID
     estado: EstadoCorrida = Field(
         description="EN_PROCESO mientras trabaja. Al terminar: EXITOSA (publico sus cuentas), "
-        "RECHAZADA (demasiados registros no cumplen el contrato; no publico nada) o FALLIDA "
-        "(no se pudo juzgar: archivo ilegible o error; no publico nada)."
+        "RECHAZADA (demasiados registros no cumplen el contrato, o la cartera trae mas de una "
+        "fecha de corte; no publico nada) o FALLIDA (no se pudo juzgar: archivo ilegible o "
+        "error; no publico nada)."
     )
     origen: str = Field(description="Nombre del archivo recibido.")
     firma: str = Field(description="SHA-256 del archivo: misma firma, mismo archivo.")
-    fecha_corte: date | None = Field(description="La mas reciente del archivo, si se leyo.")
+    fecha_corte: date | None = Field(
+        description="El corte de la cartera. Vacio si no se leyo, o si trae mas de uno."
+    )
     filas_leidas: int
     filas_validas: int = Field(
         description="Cumplen el contrato. Se publican solo si la corrida termina EXITOSA."
