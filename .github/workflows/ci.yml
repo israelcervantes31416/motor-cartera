@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  # Lo que el .gitignore no alcanza a ver: un archivo trackeado aunque sus reglas lo excluyan,
+  # o una hoja de calculo con otro nombre. Revisa el commit que se sube, no una lista aparte.
+  archivos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Archivos trackeados
+        run: python3 scripts/verificar_archivos_trackeados.py
+
   pruebas:
     runs-on: ubuntu-latest
 
@@ -33,15 +44,19 @@ jobs:
       # El Python del sistema del runner esta marcado como "externally managed" (PEP 668):
       # instalar ahi con --system falla. Un entorno virtual activado evita el problema.
       # setup-uv no publica etiquetas de version mayor (no existe @v10): se fija al commit
-      # de una version exacta, que ademas no se puede mover como una etiqueta.
+      # de una version exacta, que ademas no se puede mover como una etiqueta. uv, en la
+      # version con que se genero el uv.lock; el Dockerfile usa la misma.
       - name: uv y Python 3.12
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.21"
           python-version: "3.12"
           activate-environment: true
 
+      # Las versiones exactas del uv.lock. Con --locked, si el lock ya no corresponde al
+      # pyproject.toml el paso falla, en lugar de resolver otra vez en silencio.
       - name: Dependencias
-        run: uv pip install -e ".[dev]"
+        run: uv sync --locked --extra dev
 
       - name: Lint
         run: ruff check .

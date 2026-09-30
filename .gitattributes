@@ -7,3 +7,7 @@
 *.jpg binary
 *.xlsx binary
 *.zip binary
+
+# La plantilla que genera Alembic para cada migracion: no es codigo del proyecto, pero GitHub
+# la contaba como Mako en las estadisticas de lenguajes.
+migraciones/script.py.mako linguist-generated
