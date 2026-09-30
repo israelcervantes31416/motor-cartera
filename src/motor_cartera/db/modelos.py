@@ -68,6 +68,13 @@ class Corrida(SQLModel, table=True):
     terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     origen: str = Field(description="Archivo o proceso que la disparo")
     firma: str = Field(max_length=64, description="SHA-256 del archivo tal como llego")
+    firma_contenido: str | None = Field(
+        default=None,
+        max_length=64,
+        description="SHA-256 de la forma canonica de los registros validos: identifica la "
+        "cartera y no el archivo, asi que es la misma en xlsx, csv o zip. Vacia hasta que la "
+        "corrida se juzga, y si no se pudo juzgar",
+    )
     estado: EstadoCorrida = Field(
         default=EstadoCorrida.EN_PROCESO,
         sa_type=sa.Enum(
@@ -81,6 +88,11 @@ class Corrida(SQLModel, table=True):
     tolerancia_rechazo: float = Field(
         description="Fraccion maxima de rechazos con la que se juzgo; queda con la corrida "
         "para saber con que regla se decidio aunque la configuracion cambie despues"
+    )
+    version_contrato: str = Field(
+        max_length=32,
+        description="Con que version del contrato se juzgo. Como la tolerancia, queda con la "
+        "corrida aunque el contrato cambie despues",
     )
     fecha_corte: date | None = Field(
         default=None, description="El corte de la cartera, si trae uno solo"

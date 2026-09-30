@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 from sqlmodel import func, select
 
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
@@ -95,6 +96,9 @@ def test_un_archivo_malformado_falla_sin_escribir_nada(tmp_path):
     assert corrida.filas_leidas == 0
     assert _cuantas(Cuenta, corrida) == 0
     assert _cuantas(Rechazo, corrida) == 0
+    # No se juzgo, asi que no hay contenido que firmar; con que contrato se iba a juzgar, si.
+    assert corrida.firma_contenido is None
+    assert corrida.version_contrato == VERSION_CONTRATO
 
 
 def test_un_excel_que_no_es_excel_falla(tmp_path):
@@ -185,7 +189,23 @@ def test_la_corrida_queda_registrada_antes_de_leer_nada(tmp_path):
     assert corrida.estado == EstadoCorrida.EN_PROCESO
     assert corrida.terminada_en is None
     assert len(corrida.firma) == 64
+    # Con que reglas se va a juzgar queda fijo desde que se registra; el contenido, no.
+    assert corrida.version_contrato == VERSION_CONTRATO
+    assert corrida.firma_contenido is None
 
+
+def test_la_misma_cartera_en_csv_y_en_xlsx_tiene_la_misma_firma_de_contenido(tmp_path):
+    # Dos archivos, dos firmas: se publica dos veces, porque la unicidad sigue siendo por
+    # archivo. La firma del contenido deja ver que es la misma cartera.
+    csv = ingerir_archivo(_archivo(tmp_path, "cartera.csv", tasa=0.03))
+    xlsx = ingerir_archivo(_archivo(tmp_path, "cartera.xlsx", tasa=0.03))
+    otra = ingerir_archivo(_archivo(tmp_path, "otra.csv", tasa=0.03, semilla=2))
+
+    assert csv.estado == xlsx.estado == otra.estado == EstadoCorrida.EXITOSA
+    assert csv.firma != xlsx.firma
+    assert csv.firma_contenido == xlsx.firma_contenido
+    assert len(csv.firma_contenido) == 64
+    assert otra.firma_contenido != csv.firma_contenido
 
 
 # --- una cartera se publica una sola vez --------------------------------------------------
@@ -248,7 +268,12 @@ def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
         una = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-        otra = Corrida(origen="cartera.csv", firma=firmar(contenido), tolerancia_rechazo=0.05)
+        otra = Corrida(
+            origen="cartera.csv",
+            firma=firmar(contenido),
+            tolerancia_rechazo=0.05,
+            version_contrato=VERSION_CONTRATO,
+        )
         s.add(otra)
         s.commit()
         s.refresh(una)
@@ -299,6 +324,7 @@ def test_una_cartera_con_dos_fechas_de_corte_se_rechaza_entera(tmp_path):
         "La cartera trae 2 fechas de corte (2026-09-29 en 1 registro y 2026-09-30 en 199 "
         "registros) y debe traer una sola; no se publico nada."
     ) in corrida.detalle
+    assert corrida.firma_contenido is not None  # se juzgo: su contenido tiene firma
     assert _cuantas(Cuenta, corrida) == 0
     assert _cuantas(Rechazo, corrida) == 0
 

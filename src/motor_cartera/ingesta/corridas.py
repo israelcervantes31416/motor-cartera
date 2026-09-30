@@ -1,12 +1,13 @@
 """La corrida: leer, juzgar, decidir y publicar, con trazabilidad de punta a punta.
 
 El orden importa:
-  1. abre una Corrida y registra el origen y la firma del archivo
+  1. abre una Corrida y registra el origen, la firma del archivo y la version del contrato
   2. lee el archivo
   3. juzga cada registro contra el contrato
   4. decide: publica solo si los rechazos caben en la tolerancia y la cartera trae un solo
      corte
-  5. cierra la corrida con sus conteos, en la misma transaccion que publica
+  5. cierra la corrida con sus conteos y la firma de su contenido, en la misma transaccion
+     que publica
 
 La API y el CLI usan este mismo modulo. La validacion vive en el contrato y la decision
 aqui, no en un endpoint: asi ninguna puerta de entrada puede saltarse la barrera.
@@ -28,10 +29,12 @@ from sqlmodel import Session, select
 
 from motor_cartera.config import config
 from motor_cartera.contratos import (
+    VERSION_CONTRATO,
     ErrorDeContrato,
     Motivo,
     Separacion,
     fechas_de_corte,
+    firmar_contenido,
     separar_rechazos,
 )
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
@@ -60,7 +63,8 @@ class ArchivoDuplicado(Exception):
 
 
 def firmar(contenido: bytes) -> str:
-    """SHA-256 del archivo tal como llego. Identifica el archivo, no su contenido."""
+    """SHA-256 del archivo tal como llego. Identifica el archivo, no su contenido: eso lo
+    hace `firmar_contenido`, del contrato."""
     return hashlib.sha256(contenido).hexdigest()
 
 
@@ -68,6 +72,9 @@ def abrir_corrida(
     s: Session, *, origen: str, contenido: bytes, tolerancia: float | None = None
 ) -> Corrida:
     """Registra la corrida EN_PROCESO, antes de leer nada: si algo falla, queda rastro.
+
+    Desde aqui quedan fijas las reglas con que se va a juzgar: la tolerancia y la version
+    del contrato.
 
     Si ese mismo archivo ya se publico, o se esta procesando en otra corrida, levanta
     ArchivoDuplicado: ingerirlo otra vez duplicaria la cartera o repetiria el trabajo.
@@ -90,6 +97,7 @@ def abrir_corrida(
         origen=origen,
         firma=firma,
         tolerancia_rechazo=config.tolerancia_rechazo if tolerancia is None else tolerancia,
+        version_contrato=VERSION_CONTRATO,
     )
     s.add(corrida)
     s.commit()
@@ -220,6 +228,7 @@ def _cerrar(s: Session, corrida: Corrida, lectura: Lectura, separacion: Separaci
     corrida.filas_rechazadas = rechazadas
     # El corte de la cartera, si trae uno solo. Con varios no hay uno que elegir.
     corrida.fecha_corte = next(iter(cortes)) if len(cortes) == 1 else None
+    corrida.firma_contenido = firmar_contenido(separacion.validas)
     corrida.detalle = f"{veredicto} Origen: {lectura.origen.rstrip('.')}."
     corrida.terminada_en = ahora()
     s.add(corrida)
