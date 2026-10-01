@@ -14,7 +14,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
-from motor_cartera.db.modelos import EstadoCorrida
+from motor_cartera.db.modelos import EstadoCorrida, EstadoDecision
+from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.ingesta.lectores import REQUERIDAS
 from motor_cartera.segmentacion import Dimension
 
@@ -188,3 +189,128 @@ class ResumenCartera(Pagina[SegmentoRespuesta]):
     dimensiones: list[Dimension]
     total_cuentas: int = Field(description="Cuentas que pasan los filtros, en todos los segmentos.")
     saldo_total: Decimal = Field(description="Su saldo sumado, en todos los segmentos.")
+
+
+# --- el Decision Engine --------------------------------------------------------------------------
+#
+# El estado de una ejecucion sale del modelo, como el de una corrida. El vocabulario de una decision
+# (segmento, prioridad, canal recomendado, codigo de cada motivo) no: es el de la version de las
+# reglas que decidio, y una API que lee el historial no puede dejar de servir una decision vieja o
+# futura porque este proceso conozca otro. Por eso viaja como texto.
+
+EJEMPLO_EJECUCION = {
+    "decision_run_id": "7d3f5b1e-9a2c-4e6f-8b0d-3c5e7a9b1d2f",
+    "run_id": EJEMPLO_CORRIDA["run_id"],
+    "version_reglas": VERSION_REGLAS_DECISION,
+    "estado": "EXITOSA",
+    "iniciada_en": "2026-09-30T15:10:00.000000Z",
+    "terminada_en": "2026-09-30T15:10:01.840000Z",
+    "duracion_segundos": 1.84,
+    "cuentas_evaluadas": 9800,
+    "cuentas_decididas": 9800,
+    "detalle": f"Se decidieron 9,800 cuentas con {VERSION_REGLAS_DECISION}.",
+}
+
+# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ninguna decision.
+EJEMPLO_EJECUCION_FALLIDA = {
+    **EJEMPLO_EJECUCION,
+    "estado": "FALLIDA",
+    "terminada_en": "2026-09-30T15:10:00.910000Z",
+    "duracion_segundos": 0.91,
+    "cuentas_evaluadas": 4000,
+    "cuentas_decididas": 0,
+    "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Una cuenta con 65 dias de atraso y 62,000.00 de saldo, decidida con decision/v1.
+EJEMPLO_DECISION_CUENTA = {
+    "cliente_unico": "CU0000004521",
+    "segmento": "MORA_MEDIA",
+    "prioridad": "MUY_ALTA",
+    "canal_recomendado": "CAMPO",
+    "motivos": [
+        {"codigo": "MORA_31_90", "campo": "dias_atraso", "valor": "65"},
+        {"codigo": "SALDO_ALTO", "campo": "saldo_total", "valor": "62000.00"},
+        {"codigo": "PRIORIDAD_MUY_ALTA", "campo": "prioridad", "valor": "MUY_ALTA"},
+        {"codigo": "CANAL_CAMPO", "campo": "canal_recomendado", "valor": "CAMPO"},
+    ],
+}
+
+
+class EjecucionDecisionRespuesta(BaseModel):
+    """Una ejecucion del Decision Engine sobre una corrida: con que reglas, como va o como termino,
+    y cuantas cuentas decidio."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION]})
+
+    decision_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
+    run_id: UUID = Field(description="La corrida que se decidio.")
+    version_reglas: str = Field(description="Con que reglas se decidio, p. ej. `decision/v1`.")
+    estado: EstadoDecision = Field(
+        description="EN_PROCESO mientras decide. Al terminar: EXITOSA (publico una decision por "
+        "cada cuenta de la corrida) o FALLIDA (no publico ninguna; `detalle` dice por que)."
+    )
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    cuentas_evaluadas: int = Field(
+        description="Cuantas cuentas alcanzo a evaluar el motor. En una FALLIDA puede ser mayor "
+        "que cero aunque no se haya publicado ninguna decision."
+    )
+    cuentas_decididas: int = Field(
+        description="Cuantas decisiones publico: todas las cuentas de la corrida, o ninguna."
+    )
+    detalle: str | None = Field(description="Que paso, en palabras.")
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class MotivoDecisionRespuesta(BaseModel):
+    """Un paso de una decision: que regla aplico, sobre que campo y con que valor. No es el motivo
+    de un rechazo, que es una regla del contrato que un registro no cumplio."""
+
+    codigo: str = Field(
+        description="Del catalogo de la version de las reglas con que se decidio.",
+        examples=["SALDO_ALTO"],
+    )
+    campo: str = Field(
+        description="El campo que la regla leyo o el que produjo.", examples=["saldo_total"]
+    )
+    valor: str = Field(
+        description="En texto canonico: los dias como entero y el saldo con dos decimales.",
+        examples=["62000.00"],
+    )
+
+
+class DecisionCuentaRespuesta(BaseModel):
+    """Lo que el motor decidio de una cuenta, y por que."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_DECISION_CUENTA]})
+
+    cliente_unico: str = Field(description="La cuenta, como la identifica la cartera.")
+    segmento: str = Field(description="En que situacion de mora esta la cuenta.")
+    prioridad: str = Field(description="Que tan pronto hay que gestionarla.")
+    canal_recomendado: str = Field(
+        description="La decision del motor. No es el canal de la cartera, que es un dato de "
+        "entrada."
+    )
+    motivos: list[MotivoDecisionRespuesta] = Field(
+        description="Por que salio asi, en el orden en que se aplicaron las reglas."
+    )
+
+
+class PaginaEjecucionesDecision(Pagina[EjecucionDecisionRespuesta]):
+    run_id: UUID = Field(description="La corrida de la que son las ejecuciones.")
+
+
+class PaginaDecisionCuentas(Pagina[DecisionCuentaRespuesta]):
+    decision_run_id: UUID
+    run_id: UUID = Field(description="La corrida de la que son las cuentas.")
+    version_reglas: str = Field(
+        description="Las reglas que decidieron: el vocabulario de las decisiones es el suyo."
+    )
+    estado: EstadoDecision

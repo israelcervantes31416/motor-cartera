@@ -191,8 +191,8 @@ def ejecutar_decision(ejecucion_id: int, *, tamano_lote: int = TAMANO_LOTE) -> N
 
 
 def decidir_corrida(corrida_id: int, *, tamano_lote: int = TAMANO_LOTE) -> EjecucionDecision:
-    """Una ejecucion completa en primer plano, y como termino. La API hara lo mismo en dos tiempos:
-    abrir la ejecucion al recibir la peticion y ejecutarla en segundo plano.
+    """Una ejecucion completa en primer plano, y como termino. La API sincrona usa esta funcion para
+    crear y ejecutar la decision antes de responder.
 
     Propaga CorridaNoDecidible y DecisionYaGenerada. Un fallo del motor no se propaga: la ejecucion
     ya existe, y se devuelve FALLIDA.
