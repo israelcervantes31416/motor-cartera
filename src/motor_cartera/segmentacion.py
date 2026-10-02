@@ -9,19 +9,10 @@ from enum import StrEnum
 from sqlalchemy import ColumnElement, case, func
 from sqlmodel import Session, select
 
+# Los tramos viven en atraso.py, la unica fuente de sus fronteras. tramo_de_atraso no se usa en
+# este modulo: se importa para que quien lo importaba desde aqui siga funcionando.
+from motor_cartera.atraso import TRAMOS_ATRASO, tramo_de_atraso  # noqa: F401
 from motor_cartera.db.modelos import Cuenta
-
-TRAMOS_ATRASO: tuple[tuple[str, int, int | None], ...] = (
-    ("0", 0, 0),
-    ("1-30", 1, 30),
-    ("31-60", 31, 60),
-    ("61-90", 61, 90),
-    ("91+", 91, None),
-)
-"""Cubetas de dias de atraso: (etiqueta, desde, hasta). `None` es "sin tope".
-
-Es la forma habitual de leer una cartera en cobranza: la gestion cambia con el tramo.
-"""
 
 
 class Dimension(StrEnum):
@@ -47,14 +38,6 @@ class Resumen:
     total_segmentos: int
     cuentas: int
     saldo_total: Decimal
-
-
-def tramo_de_atraso(dias: int) -> str:
-    """Etiqueta del tramo al que pertenece `dias` de atraso."""
-    for etiqueta, desde, hasta in TRAMOS_ATRASO:
-        if dias >= desde and (hasta is None or dias <= hasta):
-            return etiqueta
-    raise ValueError(f"Dias de atraso fuera de todo tramo: {dias}")
 
 
 def resumir(
