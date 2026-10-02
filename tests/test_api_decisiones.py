@@ -563,6 +563,27 @@ def test_una_ejecucion_se_consulta_por_su_decision_run_id(cliente, cartera_valid
 
 
 @en_la_base
+def test_una_ejecucion_en_proceso_se_consulta_sin_fin_ni_duracion(cliente, cartera_valida):
+    # Abierta por el servicio y todavia sin decidir: como la ve otra peticion mientras el POST
+    # decide, o como queda si el proceso muere a la mitad. Existe y se consulta: 200, con el fin y
+    # la duracion en null, no en cero.
+    run_id = _publicar(cliente, _csv(cartera_valida))
+    with sesion() as s:
+        corrida = s.exec(select(Corrida).where(Corrida.run_id == UUID(run_id))).one()
+        decision_run_id = str(abrir_ejecucion(s, corrida).decision_run_id)
+
+    respuesta = cliente.get(f"/decisiones/{decision_run_id}")
+
+    assert respuesta.status_code == 200
+    ejecucion = respuesta.json()
+    assert set(ejecucion) == CAMPOS_DE_EJECUCION
+    assert (ejecucion["decision_run_id"], ejecucion["run_id"]) == (decision_run_id, run_id)
+    assert (ejecucion["version_reglas"], ejecucion["estado"]) == ("decision/v1", "EN_PROCESO")
+    assert (ejecucion["terminada_en"], ejecucion["duracion_segundos"]) == (None, None)
+    assert (ejecucion["cuentas_evaluadas"], ejecucion["cuentas_decididas"]) == (0, 0)
+
+
+@en_la_base
 @pytest.mark.parametrize("ruta", ["/decisiones/{}", "/decisiones/{}/cuentas"])
 def test_una_ejecucion_que_no_existe_404_sin_run_id(cliente, ruta):
     # A10. No hay corrida que nombrar.

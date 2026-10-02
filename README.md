@@ -1,7 +1,7 @@
 # motor-cartera
 
-Motor de ingesta, validación y segmentación de cartera de crédito al consumo, construido
-sobre **datos sintéticos**, con una API REST para operarlo.
+Motor de ingesta, validación, segmentación y decisión de cartera de crédito al consumo,
+construido sobre **datos sintéticos**, con una API REST para operarlo.
 
 ## De qué se trata
 
@@ -16,6 +16,11 @@ entra dice por qué. Cada registro se juzga por separado y el que no cumple se r
 su motivo. Si los rechazos pasan de una tolerancia, el archivo entero se rechaza y no se
 publica nada; tampoco si trae más de una fecha de corte, porque una cartera es la foto de un
 día. Es preferible no producir salida a producir salida incorrecta.
+
+Sobre la cartera ya publicada, el **Decision Engine** decide cada cuenta con reglas explícitas y
+versionadas: en qué segmento de mora está, qué prioridad tiene, por qué canal conviene
+gestionarla y por qué. Publica las decisiones de toda la corrida o ninguna, y cada una se puede
+volver a explicar.
 
 ## Datos
 
@@ -37,7 +42,13 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Fase 1 terminada: una rebanada vertical que funciona de punta a punta.
+Hay dos versiones terminadas, y cada una es una rebanada vertical que funciona de punta a punta:
+
+- **v0.1.0 — ingesta y certificación** (la fase 1): una cartera se publica solo si pasa el
+  contrato, y lo que no pasa queda con su motivo.
+- **v0.2.0 — Decision Engine**: sobre la cartera publicada, una decisión explicable por cuenta.
+
+Lo que ya hace:
 
 - [x] Contrato de datos *fail-closed*, registro por registro, con el motivo de cada rechazo
 - [x] Generador de cartera sintética en xlsx, csv y zip, con filas inválidas a propósito
@@ -45,10 +56,17 @@ Fase 1 terminada: una rebanada vertical que funciona de punta a punta.
 - [x] Persistencia con trazabilidad por corrida, incluidas la versión del contrato con que se
   juzgó y la firma de su contenido; esquema versionado con Alembic
 - [x] API REST: corridas, rechazos, resumen segmentado y salud, con OpenAPI
+- [x] Decision Engine (`decision/v1`): asigna a cada cuenta un segmento, una prioridad y un
+  canal recomendado, y explica cada decisión con sus motivos
+- [x] Ejecuciones de decisión persistidas y auditables: todas las decisiones de una corrida o
+  ninguna, una sola vez por versión de las reglas, con su historial por la API
 - [x] `docker compose up` levanta todo; CI con PostgreSQL y prueba del compose en limpio
-- [ ] Motor de segmentación: hoy hay resumen por dimensiones, no reglas que asignen cuentas a canales
+
+Lo que todavía no hace:
+
 - [ ] Motor territorial: agrupamiento y ruteo
-- [ ] Orquestación (fase 3) y despliegue en nube (fase 4)
+- [ ] Orquestación durable (v0.5.0): colas, reintentos y trabajo que sobrevive a un reinicio
+- [ ] Despliegue en nube y observabilidad
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -133,9 +151,72 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/cartera/re
 Devuelve cuentas, saldo y saldo promedio por segmento, junto con el `run_id` del que sale
 cada número.
 
-Los cinco pasos, con la verificación de cada código HTTP, están en un solo script que corre
-igual en tu máquina que en el CI. Necesita un archivo que no se haya subido antes, porque el
-mismo archivo no se publica dos veces:
+**6. Decidir la corrida** con el Decision Engine:
+
+```bash
+curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/decisiones
+```
+
+Es síncrono: cuando responde, ya decidió todas las cuentas. Devuelve `201` con la ejecución
+terminada y su dirección en `Location`:
+
+```json
+{
+  "decision_run_id": "…",
+  "run_id": "…",
+  "version_reglas": "decision/v1",
+  "estado": "EXITOSA",
+  "cuentas_evaluadas": 9800,
+  "cuentas_decididas": 9800,
+  "detalle": "Se decidieron 9,800 cuentas con decision/v1."
+}
+```
+
+**7. Consultar la ejecución** por su `decision_run_id`: versión de las reglas, estado, tiempos
+y conteos.
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>
+```
+
+**8. Listar el historial de la corrida:** todas sus ejecuciones, en cualquier estado y versión
+de las reglas, de la más reciente a la más antigua.
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/decisiones
+```
+
+**9. Ver la decisión de cada cuenta**, con sus motivos:
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/decisiones/<decision_run_id>/cuentas?por_pagina=2"
+```
+
+```json
+{
+  "decision_run_id": "…", "run_id": "…", "version_reglas": "decision/v1", "estado": "EXITOSA",
+  "total": 9800, "pagina": 1, "por_pagina": 2,
+  "elementos": [
+    {
+      "cliente_unico": "CU…",
+      "segmento": "MORA_MEDIA",
+      "prioridad": "MUY_ALTA",
+      "canal_recomendado": "CAMPO",
+      "motivos": [
+        {"codigo": "MORA_31_90", "campo": "dias_atraso", "valor": "65"},
+        {"codigo": "SALDO_ALTO", "campo": "saldo_total", "valor": "62000.00"},
+        {"codigo": "PRIORIDAD_MUY_ALTA", "campo": "prioridad", "valor": "MUY_ALTA"},
+        {"codigo": "CANAL_CAMPO", "campo": "canal_recomendado", "valor": "CAMPO"}
+      ]
+    }
+  ]
+}
+```
+
+Todo el flujo, con la verificación de cada código HTTP, está en un solo script que corre igual
+en tu máquina que en el CI; al final pide decidir la misma corrida otra vez y exige el `409`.
+Necesita un archivo que no se haya subido antes, porque el mismo archivo no se publica dos
+veces:
 
 ```bash
 docker compose exec api motor-cartera generar --destino datos/humo.xlsx --semilla 7
@@ -145,6 +226,56 @@ python scripts/prueba_de_humo.py datos/humo.xlsx
 Solo usa la biblioteca estándar de Python; también corre dentro del contenedor con
 `docker compose exec api python scripts/prueba_de_humo.py datos/humo.xlsx`.
 
+## El Decision Engine
+
+**Entrada:** una cuenta certificada, es decir, de una corrida `EXITOSA`. De ella, las reglas
+solo leen los días de atraso y el saldo; producto, canal y claves geográficas no entran.
+
+**Salida:** por cada cuenta,
+
+- `segmento`: en qué situación de mora está;
+- `prioridad`: qué tan pronto hay que gestionarla;
+- `canal_recomendado`: por dónde conviene gestionarla. Es una decisión, no el canal con que la
+  cuenta llegó en la cartera;
+- `motivos`: por qué, paso a paso, cada uno con su `codigo`, el `campo` que la regla leyó o
+  produjo y su `valor`.
+
+Las reglas tienen su propia versión, `VERSION_REGLAS_DECISION = decision/v1`, independiente de
+la del contrato, `VERSION_CONTRATO = cartera/v1`. Cada corrida guarda con qué contrato entró la
+cartera, y cada ejecución, con qué reglas se tomó la decisión. Si cambia una regla, cambia la
+versión de las reglas y no la del contrato, y una decisión vieja se sigue explicando con las
+reglas que la tomaron.
+
+Las reglas de `decision/v1`, en el orden en que se aplican:
+
+| Días de atraso | Tramo del resumen | Segmento | Prioridad base |
+|---|---|---|---|
+| 0 | `0` | `AL_CORRIENTE` | `BAJA` |
+| 1 a 30 | `1-30` | `MORA_TEMPRANA` | `MEDIA` |
+| 31 a 90 | `31-60` y `61-90` | `MORA_MEDIA` | `ALTA` |
+| 91 o más | `91+` | `MORA_ALTA` | `MUY_ALTA` |
+
+- **Saldo alto.** Con atraso y un saldo de al menos `UMBRAL_SALDO_ALTO = 50,000.00`, la
+  prioridad sube un nivel, con tope en `MUY_ALTA`. Una cuenta al corriente nunca sube por saldo.
+- **Canal.** Sale solo de la prioridad final: `BAJA` y `MEDIA` van por `DIGITAL`, `ALTA` por
+  `TELEFONICA` y `MUY_ALTA` por `CAMPO`.
+- **Motivos.** Uno por paso: el tramo (`SIN_MORA`, `MORA_1_30`, `MORA_31_90` o `MORA_91_MAS`),
+  `SALDO_ALTO` si la regla aplicó (aunque la prioridad ya estuviera en el tope), la prioridad
+  final y el canal. Salen de un catálogo cerrado de doce códigos.
+
+Así, una cuenta con 65 días de atraso y 62,000.00 de saldo queda en `MORA_MEDIA`, sube de
+`ALTA` a `MUY_ALTA` por su saldo y se recomienda por `CAMPO`: es la del ejemplo del paso 9.
+
+**Las reglas y el umbral son sintéticos**, propios de este proyecto público: no vienen de
+ninguna operación real, no son reglas propietarias y no son una recomendación de cobranza.
+Existen para que el motor tenga algo concreto que decidir, probar y explicar. El umbral vive en
+el código y no en la configuración: si se pudiera cambiar por entorno, la misma versión daría
+resultados distintos.
+
+El núcleo de las reglas es puro: no lee la base, la configuración ni el reloj, así que la misma
+cuenta con la misma versión da siempre la misma decisión. Guardar las decisiones de una corrida
+es trabajo de otra capa, que las publica todas o ninguna.
+
 ## La API
 
 | Método y ruta | Qué hace | Respuestas |
@@ -153,6 +284,10 @@ Solo usa la biblioteca estándar de Python; también corre dentro del contenedor
 | `GET /corridas/{run_id}` | Estado: conteos, tiempos y resultado | 200, 401, 404, 422 |
 | `GET /corridas/{run_id}/rechazos` | Registros rechazados con su fila y motivo, paginados | 200, 401, 404, 409, 422 |
 | `GET /cartera/resumen` | Cuentas y saldo por segmento de la cartera vigente, paginado | 200, 401, 404, 409, 422 |
+| `POST /corridas/{run_id}/decisiones` | Decide cada cuenta de una corrida `EXITOSA` con `decision/v1`, en la misma petición | 201, 401, 404, 409, 422 |
+| `GET /corridas/{run_id}/decisiones` | Historial: todas las ejecuciones de la corrida, la más reciente primero, paginado | 200, 401, 404, 422 |
+| `GET /decisiones/{decision_run_id}` | Una ejecución: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
+| `GET /decisiones/{decision_run_id}/cuentas` | La decisión de cada cuenta con sus motivos, paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -169,9 +304,21 @@ Todas las respuestas de error tienen la misma forma, también las que genera el 
 El cliente compara `codigo`, que es estable; `mensaje` es para personas. En `/docs`, cada
 ruta lista sus códigos de error con un ejemplo de cada uno.
 
+Dos reglas del Decision Engine que un cliente tiene que conocer:
+
+- **`201` quiere decir que la ejecución se creó, no que el motor tuvo éxito.** El POST de
+  decisiones responde `201` con `Location` cuando la ejecución ya existe y terminó, tanto si
+  quedó `EXITOSA` como `FALLIDA`. Una `FALLIDA` no publica ninguna decisión, trae el motivo en
+  `detalle` y se reintenta con otro POST. El código HTTP describe la petición; el `estado`,
+  cómo terminó el motor.
+- **Una corrida se decide con éxito una sola vez por versión de las reglas.** Si ya tiene una
+  ejecución `EXITOSA` con `decision/v1`, el POST responde `409 DECISION_YA_GENERADA`, sin
+  `Location` y sin nombrar la ejecución. La que publicó se encuentra en
+  `GET /corridas/{run_id}/decisiones`, y su detalle en `GET /decisiones/{decision_run_id}`.
+
 Por qué cada código es el que es (201 y no 202, 422 y no 400, cuándo 409, por qué un
-archivo con registros inválidos no es un error HTTP), y el resto de las decisiones, están
-en [docs/decisiones.md](docs/decisiones.md).
+archivo con registros inválidos no es un error HTTP, por qué una ejecución `FALLIDA` también
+es `201`), y el resto de las decisiones, están en [docs/decisiones.md](docs/decisiones.md).
 
 ## Sin Docker
 
@@ -209,9 +356,16 @@ migraciones (no por `create_all`), así que también prueban la migración. Usan
 existe. Como vacían la base antes de cada prueba, **se niegan a correr sobre una base que no
 se llame `*_test`**. Dentro del compose: `docker compose exec api pytest`.
 
+Las reglas de decisión no necesitan base: `pytest tests/test_decision_reglas.py` corre sus
+golden tests, que fijan la decisión exacta, motivos incluidos, en cada frontera de días y de
+saldo, y exigen que el núcleo sea determinista y no cargue nada fuera de la biblioteca estándar.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
-servicio; y el `docker compose up` completo en un runner limpio, con la prueba de humo.
+servicio, que también cubren el Decision Engine: la transacción todo o nada, la concurrencia
+entre ejecuciones, la idempotencia y la API del historial, incluidas decisiones de otras
+versiones de las reglas; y el `docker compose up` completo en un runner limpio, con la prueba de
+humo de la ingesta y del Decision Engine vía HTTP.
 
 ## Arquitectura
 
@@ -222,10 +376,14 @@ src/motor_cartera/
 ├── ingesta/
 │   ├── lectores.py    Excel, CSV y ZIP a nombres canónicos; elige la hoja o el archivo útil
 │   └── corridas.py    La corrida: lee, juzga, decide y publica. La usan la API y el CLI
-├── segmentacion.py    Tramos de atraso y el resumen por segmento, agregado en la base
-├── db/                Modelo persistente: Corrida, Cuenta y Rechazo
+├── atraso.py          Tramos de atraso: la única fuente de sus fronteras
+├── segmentacion.py    El resumen por segmento, agregado en la base
+├── decision/
+│   ├── reglas.py      decision/v1: el núcleo puro y determinista, sin base ni framework
+│   └── ejecuciones.py Aplica el núcleo sobre PostgreSQL, en una transacción: todo o nada
+├── db/                Modelo: Corrida, Cuenta, Rechazo, EjecucionDecision y DecisionCuenta
 ├── generador/         Cartera sintética, único origen de datos del proyecto
-├── api/               FastAPI: rutas, esquemas, errores y autenticación
+├── api/               FastAPI: corridas, cartera, decisiones; esquemas, errores y autenticación
 └── cli.py             Comandos: generar y cargar
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo del flujo completo y control de archivos trackeados
@@ -238,12 +396,29 @@ qué cartera traía (con la firma de su contenido, la misma en cualquier formato
 tolerancia y qué versión del contrato se juzgó, cuántos registros se leyeron, validaron y
 rechazaron, y por qué.
 
+Las decisiones cuelgan de una **EjecucionDecision**, y la ejecución, de la corrida que decidió.
+Si alguien pregunta por qué a una cuenta se le recomienda `CAMPO`, la respuesta son sus motivos
+y una fila de esa tabla: con qué versión de las reglas se decidió, cuándo, cómo terminó y
+cuántas cuentas evaluó y publicó. Cada capa hace una sola cosa: `reglas.py` decide una cuenta
+sin saber de bases ni de HTTP, `ejecuciones.py` aplica ese núcleo a toda la corrida y publica
+todo o nada, y `api/decisiones.py` solo traduce el resultado a HTTP.
+
 ## Limitaciones conocidas
 
-- **El procesamiento corre dentro del proceso de la API** (`BackgroundTasks`). Si la API se
+- **La ingesta corre dentro del proceso de la API** (`BackgroundTasks`). Si la API se
   reinicia a media corrida, esa corrida queda `EN_PROCESO` para siempre. Después de 15
   minutos deja de bloquear que se reintente el mismo archivo, pero nadie la cierra. Un
-  worker con cola y reintentos es trabajo de la orquestación, fase 3.
+  worker con cola y reintentos es trabajo de la orquestación durable, v0.5.0.
+- **El POST de decisiones es síncrono.** `POST /corridas/{run_id}/decisiones` decide la
+  corrida entera antes de responder, así que la conexión HTTP queda abierta hasta que termina.
+  La conexión a la base con que encuentra la corrida sí se libera antes de decidir, pero con una
+  cartera mucho más grande que las de prueba, el cliente o un proxy podrían cortar la espera.
+- **Una ejecución de decisión no sobrevive a su proceso.** Si la API muere con una ejecución
+  `EN_PROCESO`, la transacción revierte sus decisiones a medias, pero la ejecución queda
+  `EN_PROCESO` y nadie la cierra: todavía no hay reconciliación durable. No bloquea otro
+  intento sobre la misma corrida, porque solo bloquea una `EXITOSA`, pero el historial la sigue
+  mostrando en proceso. Cerrarla, reintentarla y sacar la decisión de la petición HTTP es
+  trabajo de la orquestación durable, v0.5.0.
 - **Una cartera se publica una vez por archivo, no por contenido.** La misma cartera en
   xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
   que es la misma, lo deja a la vista, pero todavía no lo impide.
@@ -258,10 +433,12 @@ rechazaron, y por qué.
   claves, no que existan. Y un saldo con más de dos decimales se redondea al guardarse en
   lugar de rechazarse.
 - **Rendimiento medido solo hasta 10,000 filas**: menos de 3 s por corrida en una laptop,
-  casi todo leyendo el Excel. A la escala de cientos de miles de cuentas no está medido.
+  casi todo leyendo el Excel. A la escala de cientos de miles de cuentas no está medido. El
+  Decision Engine se prueba en el CI con las 9,800 cuentas de la prueba de humo, y tampoco está
+  medido más allá.
 - **Una sola API key**, sin usuarios, permisos ni rotación.
-- **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se construyó
-  esta fase no tiene Docker, así que en Windows y macOS no está probado.
+- **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se desarrolla el
+  proyecto no tiene Docker, así que en Windows y macOS no está probado.
 
 ## Desarrollo asistido por IA
 
