@@ -11,6 +11,7 @@ los modelos, sin migrar nada, y corren sin servidor.
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -21,13 +22,29 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config as ConfigAlembic
-from sqlalchemy import BigInteger, Engine, Numeric, UniqueConstraint, create_engine, make_url, text
+from alembic.script import ScriptDirectory
+from sqlalchemy import (
+    BigInteger,
+    Engine,
+    Integer,
+    Numeric,
+    UniqueConstraint,
+    create_engine,
+    make_url,
+    text,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
 from motor_cartera.config import config
-from motor_cartera.db.modelos import EjecucionTerritorial, ResultadoTerritorial
+from motor_cartera.db.modelos import (
+    EjecucionRuteo,
+    EjecucionTerritorial,
+    ParadaRuta,
+    ResultadoTerritorial,
+    RutaTerritorial,
+)
 
 RAIZ = Path(__file__).resolve().parents[1]
 
@@ -1159,3 +1176,726 @@ def test_la_0004_baja_sin_perder_lo_anterior_y_vuelve_a_subir(base_en_0004):
     assert _consultar(motor, "SELECT count(*) FROM resultado_territorial") == [0]
     assert _previas_a_la_0004(motor) == base_en_0004.previas
     assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0004"]
+
+
+# --- la 0005: las ejecuciones de ruteo, sus rutas y sus paradas ---------------------------------
+
+INSERTAR_CUENTA_0005 = text(
+    "INSERT INTO cuenta (corrida_id, cliente_unico, saldo_total, dias_atraso, producto, canal, "
+    "cve_entidad, cve_municipio, fecha_corte) VALUES (:corrida_id, :cliente_unico, 1000.00, 120, "
+    "'CONSUMO', 'DIGITAL', '21', :cve_municipio, '2026-09-30') RETURNING id"
+)
+INSERTAR_RUTEO = text(
+    "INSERT INTO ejecucion_ruteo (ruteo_run_id, ejecucion_territorial_id, version_reglas, estado, "
+    "iniciada_en, rutas_evaluadas, rutas_publicadas, paradas_evaluadas, paradas_publicadas) "
+    "VALUES (:ruteo_run_id, :ejecucion_territorial_id, :version_reglas, :estado, now(), 0, 0, 0, "
+    "0) RETURNING id"
+)
+INSERTAR_RUTA = text(
+    "INSERT INTO ruta_territorial (ejecucion_ruteo_id, resultado_territorial_id, paradas, "
+    "distancia_inicial_m, distancia_total_m, distancia_regreso_deposito_m, mejora_2opt_m) "
+    "VALUES (:ejecucion_ruteo_id, :resultado_territorial_id, :paradas, :distancia_inicial_m, "
+    ":distancia_total_m, :distancia_regreso_deposito_m, :mejora_2opt_m) RETURNING id"
+)
+INSERTAR_PARADA = text(
+    "INSERT INTO parada_ruta (ejecucion_ruteo_id, ruta_territorial_id, decision_cuenta_id, "
+    "secuencia, x_m, y_m, distancia_desde_anterior_m) VALUES (:ejecucion_ruteo_id, "
+    ":ruta_territorial_id, :decision_cuenta_id, :secuencia, :x_m, :y_m, "
+    ":distancia_desde_anterior_m) RETURNING id"
+)
+TERMINAR_RUTEO_EXITOSA = text(
+    "UPDATE ejecucion_ruteo SET estado = 'EXITOSA', terminada_en = now() WHERE id = :id"
+)
+
+# La ruta golden de ruteo/v1 en 21114: cinco paradas, y la primera, a 3086 m del deposito.
+RUTA = {
+    "paradas": 5,
+    "distancia_inicial_m": 37878,
+    "distancia_total_m": 28770,
+    "distancia_regreso_deposito_m": 7633,
+    "mejora_2opt_m": 9108,
+}
+PARADA = {"x_m": 1016, "y_m": -2070, "distancia_desde_anterior_m": 3086}
+
+TABLAS_DE_RUTEO = {"ejecucion_ruteo", "ruta_territorial", "parada_ruta"}
+# Las tablas que existen antes de la 0005. Se comparan completas, columna por columna.
+PREVIAS_A_LA_0005 = (*PREVIAS_A_LA_0004, "ejecucion_territorial", "resultado_territorial")
+
+# Las mismas consultas de la 0003, sobre las tablas de la 0005.
+RESTRICCIONES_0005 = RESTRICCIONES.replace(
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'ejecucion_ruteo', 'ruta_territorial', 'parada_ruta'",
+)
+INDICES_0005 = INDICES.replace(
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'ejecucion_ruteo', 'ruta_territorial', 'parada_ruta'",
+)
+
+# Con nombre propio en los modelos y en la 0005: la convencion los dejaria largos, o justo en el
+# limite de 63 caracteres. Son parte del contrato del esquema.
+FK_EJECUCION_RUTEO = "fk_ejecucion_ruteo_territorial"
+FK_RUTA_RESULTADO = "fk_ruta_territorial_resultado"
+UQ_RUTA = "uq_ruta_ruteo_territorio"
+UQ_PARADA_DECISION = "uq_parada_ruteo_decision"
+UQ_PARADA_SECUENCIA = "uq_parada_ruta_secuencia"
+# Los de la convencion, que caben.
+FK_RUTA_EJECUCION = "fk_ruta_territorial_ejecucion_ruteo_id_ejecucion_ruteo"
+FK_PARADA_EJECUCION = "fk_parada_ruta_ejecucion_ruteo_id_ejecucion_ruteo"
+FK_PARADA_RUTA = "fk_parada_ruta_ruta_territorial_id_ruta_territorial"
+FK_PARADA_DECISION = "fk_parada_ruta_decision_cuenta_id_decision_cuenta"
+
+RESTRICCIONES_DE_RUTEO = {
+    "pk_ejecucion_ruteo",
+    "uq_ejecucion_ruteo_ruteo_run_id",
+    FK_EJECUCION_RUTEO,
+    "ck_ejecucion_ruteo_estado_ruteo",
+    "pk_ruta_territorial",
+    FK_RUTA_EJECUCION,
+    FK_RUTA_RESULTADO,
+    UQ_RUTA,
+    "pk_parada_ruta",
+    FK_PARADA_EJECUCION,
+    FK_PARADA_RUTA,
+    FK_PARADA_DECISION,
+    UQ_PARADA_DECISION,
+    UQ_PARADA_SECUENCIA,
+}
+INDICES_DE_RUTEO = {"ix_ejecucion_ruteo_ejecucion_territorial_id", "ux_ejecucion_ruteo_exitosa"}
+"""Los indices que no salen de una llave ni de una restriccion unica."""
+
+
+def test_los_modelos_de_ruteo_declaran_el_esquema_de_la_0005():
+    # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base
+    # subida hasta la 0005.
+    ejecucion, ruta, parada = tablas = (
+        EjecucionRuteo.__table__,
+        RutaTerritorial.__table__,
+        ParadaRuta.__table__,
+    )
+    assert [tabla.name for tabla in tablas] == [
+        "ejecucion_ruteo",
+        "ruta_territorial",
+        "parada_ruta",
+    ]
+
+    columnas = {columna.name: columna for columna in ejecucion.columns}
+    assert list(columnas) == [
+        "id",
+        "ruteo_run_id",
+        "ejecucion_territorial_id",
+        "version_reglas",
+        "estado",
+        "iniciada_en",
+        "terminada_en",
+        "rutas_evaluadas",
+        "rutas_publicadas",
+        "paradas_evaluadas",
+        "paradas_publicadas",
+        "detalle",
+    ]
+    assert [nombre for nombre, columna in columnas.items() if columna.nullable] == [
+        "terminada_en",
+        "detalle",
+    ]
+    assert columnas["iniciada_en"].type.timezone and columnas["terminada_en"].type.timezone
+    assert columnas["version_reglas"].type.length == 32
+    estado = columnas["estado"].type
+    assert (estado.native_enum, estado.length, estado.enums) == (
+        False,
+        12,
+        ["EN_PROCESO", "EXITOSA", "FALLIDA"],
+    )
+    # Los contadores, BIGINT, como los COUNT con que se comparan.
+    for nombre in list(columnas)[7:11]:
+        assert isinstance(columnas[nombre].type, BigInteger), nombre
+
+    columnas = {columna.name: columna for columna in ruta.columns}
+    assert list(columnas) == [
+        "id",
+        "ejecucion_ruteo_id",
+        "resultado_territorial_id",
+        "paradas",
+        "distancia_inicial_m",
+        "distancia_total_m",
+        "distancia_regreso_deposito_m",
+        "mejora_2opt_m",
+    ]
+    for nombre in list(columnas)[3:]:
+        assert isinstance(columnas[nombre].type, BigInteger), nombre
+
+    columnas = {columna.name: columna for columna in parada.columns}
+    assert list(columnas) == [
+        "id",
+        "ejecucion_ruteo_id",
+        "ruta_territorial_id",
+        "decision_cuenta_id",
+        "secuencia",
+        "x_m",
+        "y_m",
+        "distancia_desde_anterior_m",
+    ]
+    for nombre in list(columnas)[4:]:
+        assert isinstance(columnas[nombre].type, BigInteger), nombre
+    # Las llaves son INTEGER, como los id a los que apuntan.
+    for nombre in list(columnas)[1:4]:
+        assert type(columnas[nombre].type) is Integer, nombre
+    assert not any(columna.nullable for tabla in (ruta, parada) for columna in tabla.columns)
+
+    # Ni cliente, ni clave o lugar del municipio, ni algoritmo, ni metrica, ni geografia: se leen
+    # por JOIN, o son el contrato de la version, o no existen.
+    todas = {columna.name for tabla in tablas for columna in tabla.columns}
+    assert not todas & {
+        "cliente_unico",
+        "clave_territorio",
+        "cve_entidad",
+        "cve_municipio",
+        "posicion_campo",
+        "algoritmo",
+        "metrica",
+        "latitud",
+        "longitud",
+    }
+
+    # Ningun valor por omision en la base, ni cascadas.
+    assert all(columna.server_default is None for tabla in tablas for columna in tabla.columns)
+    llaves = {
+        (tabla.name, llave.parent.name): (llave.target_fullname, llave.ondelete)
+        for tabla in tablas
+        for llave in tabla.foreign_keys
+    }
+    assert llaves == {
+        ("ejecucion_ruteo", "ejecucion_territorial_id"): ("ejecucion_territorial.id", None),
+        ("ruta_territorial", "ejecucion_ruteo_id"): ("ejecucion_ruteo.id", None),
+        ("ruta_territorial", "resultado_territorial_id"): ("resultado_territorial.id", None),
+        ("parada_ruta", "ejecucion_ruteo_id"): ("ejecucion_ruteo.id", None),
+        ("parada_ruta", "ruta_territorial_id"): ("ruta_territorial.id", None),
+        ("parada_ruta", "decision_cuenta_id"): ("decision_cuenta.id", None),
+    }
+
+    # Una ruta por municipio y ejecucion; una parada por lugar de la ruta, y una por decision en
+    # toda la ejecucion. Y los dos indices, con sus columnas y su predicado.
+    unicas = {
+        restriccion.name: [columna.name for columna in restriccion.columns]
+        for tabla in (ruta, parada)
+        for restriccion in tabla.constraints
+        if isinstance(restriccion, UniqueConstraint)
+    }
+    assert unicas == {
+        UQ_RUTA: ["ejecucion_ruteo_id", "resultado_territorial_id"],
+        UQ_PARADA_DECISION: ["ejecucion_ruteo_id", "decision_cuenta_id"],
+        UQ_PARADA_SECUENCIA: ["ruta_territorial_id", "secuencia"],
+    }
+    indices = {
+        indice.name: (
+            [c.name for c in indice.columns],
+            indice.unique,
+            str(indice.dialect_options["postgresql"]["where"]),
+        )
+        for tabla in tablas
+        for indice in tabla.indexes
+    }
+    assert indices == {
+        "ix_ejecucion_ruteo_ejecucion_territorial_id": (
+            ["ejecucion_territorial_id"],
+            False,
+            "None",
+        ),
+        "ux_ejecucion_ruteo_exitosa": (
+            ["ejecucion_territorial_id", "version_reglas"],
+            True,
+            "estado = 'EXITOSA'",
+        ),
+    }
+
+    # Los nombres con que quedan en PostgreSQL son los que las pruebas de abajo esperan en la base,
+    # tal cual: ninguno pasa de 63 caracteres, asi que nada se recorta.
+    preparador = postgresql.dialect().identifier_preparer
+    nombres = {preparador.format_constraint(c) for t in tablas for c in t.constraints} | {
+        preparador.format_index(i) for t in tablas for i in t.indexes
+    }
+    assert nombres == RESTRICCIONES_DE_RUTEO | INDICES_DE_RUTEO
+    assert all(len(nombre) <= 63 for nombre in nombres)
+
+
+def test_la_cabeza_es_la_0005():
+    # Sin base: la 0005 sube sobre la 0004, y no hay nada despues de ella.
+    scripts = ScriptDirectory.from_config(_alembic())
+
+    assert scripts.get_heads() == ["0005"]
+    assert scripts.get_revision("0005").down_revision == "0004"
+
+
+@dataclass(frozen=True)
+class BaseEn0005:
+    """Una base con todo lo anterior a la 0005, territorial incluido, subida hasta la 0005."""
+
+    motor: Engine
+    decisiones: tuple[int, ...]
+    """Las cuatro decisiones por cuenta, por id: las dos de la 0004 y dos mas de decision/v1."""
+    territorial_id: int
+    """Una ejecucion territorial EXITOSA con tres municipios: dos con lugar y uno SIN_CARGA."""
+    otra_territorial_id: int
+    """Otra EXITOSA, de las decisiones de decision/v2 y sin municipios."""
+    resultados: dict[str, int]
+    """Los municipios de la primera, por clave."""
+    previas: dict[str, list[tuple]]
+    """Las tablas anteriores a la 0005, completas, justo antes de subir."""
+
+
+@pytest.fixture
+def base_en_0005(base_en_0004) -> BaseEn0005:
+    """Todo lo de la 0004 con dos cuentas mas y sus decisiones, dos ejecuciones territoriales y tres
+    municipios publicados, y la base ya en la 0005."""
+    motor, corrida = base_en_0004.motor, base_en_0004.corrida_id
+    cuentas = _insertar(
+        motor,
+        INSERTAR_CUENTA_0005,
+        {"corrida_id": corrida, "cliente_unico": "CU00000002", "cve_municipio": "114"},
+        {"corrida_id": corrida, "cliente_unico": "CU00000003", "cve_municipio": "156"},
+    )
+    _insertar(
+        motor, INSERTAR_DECISION, *(_decision(base_en_0004.decision_v1_id, c) for c in cuentas)
+    )
+    territorial, otra = _insertar(
+        motor,
+        INSERTAR_TERRITORIAL,
+        _territorial(base_en_0004.decision_v1_id, "EXITOSA"),
+        _territorial(base_en_0004.decision_v2_id, "EXITOSA"),
+    )
+    resultados = _insertar(
+        motor,
+        INSERTAR_RESULTADO,
+        _resultado(territorial, "114", 1),
+        _resultado(territorial, "156", 2),
+        _resultado(territorial, "001", None),
+    )
+    decisiones = tuple(_consultar(motor, "SELECT id FROM decision_cuenta ORDER BY id"))
+    previas = _filas(motor, PREVIAS_A_LA_0005)
+
+    command.upgrade(_alembic(), "0005")
+    por_clave = dict(zip(("21114", "21156", "21001"), resultados, strict=True))
+    return BaseEn0005(motor, decisiones, territorial, otra, por_clave, previas)
+
+
+def _filas(motor: Engine, tablas: tuple[str, ...]) -> dict[str, list[tuple]]:
+    """Cada tabla completa, en el orden de su id."""
+    with motor.connect() as conexion:
+        return {
+            tabla: [
+                tuple(fila) for fila in conexion.execute(text(f"SELECT * FROM {tabla} ORDER BY id"))
+            ]
+            for tabla in tablas
+        }
+
+
+def _ruteo(
+    ejecucion_territorial_id: int,
+    estado: str = "EN_PROCESO",
+    version: str = "ruteo/v1",
+    ruteo_run_id: UUID | None = None,
+) -> dict:
+    return {
+        "ruteo_run_id": ruteo_run_id or uuid4(),
+        "ejecucion_territorial_id": ejecucion_territorial_id,
+        "version_reglas": version,
+        "estado": estado,
+    }
+
+
+def _ruta(ejecucion_ruteo_id: int, resultado_territorial_id: int, **cambios: object) -> dict:
+    return {
+        "ejecucion_ruteo_id": ejecucion_ruteo_id,
+        "resultado_territorial_id": resultado_territorial_id,
+        **RUTA,
+        **cambios,
+    }
+
+
+def _parada(
+    ejecucion_ruteo_id: int,
+    ruta_territorial_id: int,
+    decision_cuenta_id: int,
+    secuencia: int,
+    **cambios: object,
+) -> dict:
+    return {
+        "ejecucion_ruteo_id": ejecucion_ruteo_id,
+        "ruta_territorial_id": ruta_territorial_id,
+        "decision_cuenta_id": decision_cuenta_id,
+        "secuencia": secuencia,
+        **PARADA,
+        **cambios,
+    }
+
+
+def test_la_0005_agrega_las_tablas_de_ruteo_sin_tocar_lo_anterior(base_en_0005):
+    motor, territorial = base_en_0005.motor, base_en_0005.territorial_id
+
+    # A. Lo de antes sigue igual, fila por fila y columna por columna: la fase 1, las decisiones y
+    # lo territorial.
+    assert _filas(motor, PREVIAS_A_LA_0005) == base_en_0005.previas
+    cuantas = [len(base_en_0005.previas[tabla]) for tabla in PREVIAS_A_LA_0005]
+    assert cuantas == [2, 3, 1, 2, 4, 2, 3]
+
+    # B. Las tablas nuevas existen, vacias, con sus restricciones por nombre.
+    assert TABLAS_DE_RUTEO <= set(_consultar(motor, TABLAS))
+    for tabla in sorted(TABLAS_DE_RUTEO):
+        assert _consultar(motor, f"SELECT count(*) FROM {tabla}") == [0]
+    assert set(_consultar(motor, RESTRICCIONES_0005)) == RESTRICCIONES_DE_RUTEO
+    # El estado es VARCHAR con CHECK y no un tipo de PostgreSQL: no hay tipo que migrar ni borrar.
+    assert _consultar(motor, "SELECT count(*) FROM pg_type WHERE typname = 'estado_ruteo'") == [0]
+
+    # Los tres estados entran. RECHAZADA no existe en el ruteo: no se vuelve a juzgar nada.
+    _insertar(
+        motor,
+        INSERTAR_RUTEO,
+        _ruteo(territorial),
+        _ruteo(territorial, "EXITOSA"),
+        _ruteo(territorial, "FALLIDA"),
+    )
+    _rechaza(
+        motor, "ck_ejecucion_ruteo_estado_ruteo", INSERTAR_RUTEO, _ruteo(territorial, "RECHAZADA")
+    )
+    # La version de las reglas no tiene valor por omision: cada ejecucion trae la suya.
+    _rechaza(
+        motor,
+        "version_reglas",
+        text(
+            "INSERT INTO ejecucion_ruteo (ruteo_run_id, ejecucion_territorial_id, estado, "
+            "iniciada_en, rutas_evaluadas, rutas_publicadas, paradas_evaluadas, "
+            "paradas_publicadas) VALUES (:ruteo_run_id, :ejecucion_territorial_id, 'EN_PROCESO', "
+            "now(), 0, 0, 0, 0)"
+        ),
+        {"ruteo_run_id": uuid4(), "ejecucion_territorial_id": territorial},
+    )
+
+
+def test_la_0005_indexa_las_ejecuciones_las_rutas_y_las_paradas(base_en_0005):
+    with base_en_0005.motor.connect() as conexion:
+        filas = conexion.execute(text(INDICES_0005)).all()
+    indices = {
+        indice: (tabla, unico, columnas, parcial)
+        for tabla, indice, unico, columnas, parcial in filas
+    }
+
+    exitosas = indices["ux_ejecucion_ruteo_exitosa"][3]
+    assert "estado" in exitosas and "'EXITOSA'" in exitosas
+    # Y no hay mas indices que el de todas las ejecuciones de ruteo de una territorial, el de la
+    # idempotencia y los de las llaves y restricciones unicas. Las unicas de rutas y paradas
+    # empiezan por la columna con que se consultan, asi que no hace falta ningun indice suelto.
+    assert indices == {
+        "pk_ejecucion_ruteo": ("ejecucion_ruteo", True, ["id"], None),
+        "uq_ejecucion_ruteo_ruteo_run_id": ("ejecucion_ruteo", True, ["ruteo_run_id"], None),
+        "ix_ejecucion_ruteo_ejecucion_territorial_id": (
+            "ejecucion_ruteo",
+            False,
+            ["ejecucion_territorial_id"],
+            None,
+        ),
+        "ux_ejecucion_ruteo_exitosa": (
+            "ejecucion_ruteo",
+            True,
+            ["ejecucion_territorial_id", "version_reglas"],
+            exitosas,
+        ),
+        "pk_ruta_territorial": ("ruta_territorial", True, ["id"], None),
+        UQ_RUTA: (
+            "ruta_territorial",
+            True,
+            ["ejecucion_ruteo_id", "resultado_territorial_id"],
+            None,
+        ),
+        "pk_parada_ruta": ("parada_ruta", True, ["id"], None),
+        UQ_PARADA_DECISION: (
+            "parada_ruta",
+            True,
+            ["ejecucion_ruteo_id", "decision_cuenta_id"],
+            None,
+        ),
+        UQ_PARADA_SECUENCIA: ("parada_ruta", True, ["ruta_territorial_id", "secuencia"], None),
+    }
+
+
+def test_una_ejecucion_territorial_se_rutea_con_exito_una_sola_vez_por_version(base_en_0005):
+    motor = base_en_0005.motor
+    territorial, otra = base_en_0005.territorial_id, base_en_0005.otra_territorial_id
+
+    # C. El identificador publico de una ejecucion de ruteo no se repite.
+    repetido = uuid4()
+    _insertar(motor, INSERTAR_RUTEO, _ruteo(territorial, "FALLIDA", ruteo_run_id=repetido))
+    _rechaza(
+        motor,
+        "uq_ejecucion_ruteo_ruteo_run_id",
+        INSERTAR_RUTEO,
+        _ruteo(territorial, "FALLIDA", ruteo_run_id=repetido),
+    )
+
+    # D. Lo que no termino EXITOSA no cuenta: dos FALLIDA, una EN_PROCESO y una EXITOSA conviven...
+    _, en_proceso = _insertar(
+        motor, INSERTAR_RUTEO, _ruteo(territorial, "FALLIDA"), _ruteo(territorial)
+    )
+    _insertar(motor, INSERTAR_RUTEO, _ruteo(territorial, "EXITOSA"))
+    # ...pero una segunda EXITOSA de la misma version no entra: ni insertada, ni al terminar la que
+    # estaba en proceso, que es como se daria la carrera entre dos ejecuciones simultaneas.
+    _rechaza(motor, "ux_ejecucion_ruteo_exitosa", INSERTAR_RUTEO, _ruteo(territorial, "EXITOSA"))
+    _rechaza(motor, "ux_ejecucion_ruteo_exitosa", TERMINAR_RUTEO_EXITOSA, {"id": en_proceso})
+
+    # E. ruteo/v2 si rutea la misma ejecucion territorial, y ruteo/v1, otra.
+    _insertar(
+        motor,
+        INSERTAR_RUTEO,
+        _ruteo(territorial, "EXITOSA", "ruteo/v2"),
+        _ruteo(otra, "EXITOSA"),
+    )
+
+    with motor.connect() as conexion:
+        ejecuciones = conexion.execute(
+            text(
+                "SELECT ejecucion_territorial_id, version_reglas, estado, count(*) "
+                "FROM ejecucion_ruteo GROUP BY ejecucion_territorial_id, version_reglas, estado"
+            )
+        ).all()
+    assert sorted(tuple(fila) for fila in ejecuciones) == sorted(
+        [
+            (territorial, "ruteo/v1", "FALLIDA", 2),
+            (territorial, "ruteo/v1", "EN_PROCESO", 1),
+            (territorial, "ruteo/v1", "EXITOSA", 1),
+            (territorial, "ruteo/v2", "EXITOSA", 1),
+            (otra, "ruteo/v1", "EXITOSA", 1),
+        ]
+    )
+
+
+def test_una_ejecucion_publica_una_sola_ruta_por_municipio(base_en_0005):
+    motor, resultados = base_en_0005.motor, base_en_0005.resultados
+    una, otra = _insertar(
+        motor,
+        INSERTAR_RUTEO,
+        _ruteo(base_en_0005.territorial_id, "EXITOSA"),
+        _ruteo(base_en_0005.territorial_id, "EXITOSA", "ruteo/v2"),
+    )
+    _insertar(
+        motor, INSERTAR_RUTA, _ruta(una, resultados["21114"]), _ruta(una, resultados["21156"])
+    )
+
+    # F. Cada municipio, una ruta por ejecucion, aunque llegue con otras distancias...
+    _rechaza(motor, UQ_RUTA, INSERTAR_RUTA, _ruta(una, resultados["21114"], paradas=7))
+    # ...y otra ejecucion si publica su propia ruta del mismo municipio.
+    _insertar(motor, INSERTAR_RUTA, _ruta(otra, resultados["21114"]))
+
+    with motor.connect() as conexion:
+        publicadas = conexion.execute(
+            text(
+                "SELECT r.ejecucion_ruteo_id, t.cve_entidad || t.cve_municipio, t.posicion_campo, "
+                "r.paradas, r.distancia_total_m FROM ruta_territorial r "
+                "JOIN resultado_territorial t ON t.id = r.resultado_territorial_id ORDER BY r.id"
+            )
+        ).all()
+    # La clave y el lugar del municipio no se guardan en la ruta: salen del resultado territorial.
+    assert [tuple(fila) for fila in publicadas] == [
+        (una, "21114", 1, 5, 28770),
+        (una, "21156", 2, 5, 28770),
+        (otra, "21114", 1, 5, 28770),
+    ]
+
+
+def test_cada_parada_tiene_su_lugar_y_cada_decision_una_sola_parada_por_ejecucion(base_en_0005):
+    motor, resultados = base_en_0005.motor, base_en_0005.resultados
+    a, b, c, _ = base_en_0005.decisiones
+    una, otra = _insertar(
+        motor,
+        INSERTAR_RUTEO,
+        _ruteo(base_en_0005.territorial_id, "EXITOSA"),
+        _ruteo(base_en_0005.territorial_id, "EXITOSA", "ruteo/v2"),
+    )
+    norte, sur, de_la_otra = _insertar(
+        motor,
+        INSERTAR_RUTA,
+        _ruta(una, resultados["21114"]),
+        _ruta(una, resultados["21156"]),
+        _ruta(otra, resultados["21114"]),
+    )
+    _insertar(motor, INSERTAR_PARADA, _parada(una, norte, a, 1), _parada(una, norte, b, 2))
+
+    # G. Cada lugar de la secuencia es de una sola parada por ruta...
+    _rechaza(motor, UQ_PARADA_SECUENCIA, INSERTAR_PARADA, _parada(una, norte, c, 2))
+    # ...y una decision es a lo mas una parada en toda la ejecucion, aunque sea en otra de sus
+    # rutas. Para eso ParadaRuta repite ejecucion_ruteo_id.
+    _rechaza(motor, UQ_PARADA_DECISION, INSERTAR_PARADA, _parada(una, sur, a, 1))
+    # Otra ruta tiene su propia secuencia, desde 1.
+    _insertar(motor, INSERTAR_PARADA, _parada(una, sur, c, 1))
+    # Y otra ejecucion si puede volver a rutear las mismas decisiones.
+    _insertar(
+        motor, INSERTAR_PARADA, _parada(otra, de_la_otra, a, 1), _parada(otra, de_la_otra, b, 2)
+    )
+
+    with motor.connect() as conexion:
+        paradas = conexion.execute(
+            text(
+                "SELECT ejecucion_ruteo_id, ruta_territorial_id, decision_cuenta_id, secuencia "
+                "FROM parada_ruta ORDER BY id"
+            )
+        ).all()
+    assert [tuple(fila) for fila in paradas] == [
+        (una, norte, a, 1),
+        (una, norte, b, 2),
+        (una, sur, c, 1),
+        (otra, de_la_otra, a, 1),
+        (otra, de_la_otra, b, 2),
+    ]
+
+
+def test_la_base_guarda_coordenadas_negativas_y_numeros_que_no_caben_en_integer(base_en_0005):
+    motor = base_en_0005.motor
+    (ejecucion,) = _insertar(motor, INSERTAR_RUTEO, _ruteo(base_en_0005.territorial_id, "EXITOSA"))
+    # H. Valores que no caben en INTEGER. No son el tamano real del sistema: prueban los tipos.
+    grande = 3_000_000_000
+    with motor.begin() as conexion:
+        conexion.execute(
+            text(
+                "UPDATE ejecucion_ruteo SET rutas_evaluadas = :n, rutas_publicadas = :n, "
+                "paradas_evaluadas = :n, paradas_publicadas = :n WHERE id = :id"
+            ),
+            {"n": grande, "id": ejecucion},
+        )
+    distancias = {
+        "paradas": grande,
+        "distancia_inicial_m": 9_000_000_001,
+        "distancia_total_m": 9_000_000_000,
+        "distancia_regreso_deposito_m": 2**33,
+        "mejora_2opt_m": 1,
+    }
+    (ruta,) = _insertar(
+        motor, INSERTAR_RUTA, _ruta(ejecucion, base_en_0005.resultados["21114"], **distancias)
+    )
+    # Coordenadas a los dos lados del deposito, en las orillas del plano de ruteo/v1 y fuera de el:
+    # la base no ata las coordenadas al plano de una version, y no lleva CHECK.
+    coordenadas = [(-5000, 5000), (4999, -1), (-(2**40), 2**40), (0, 0)]
+    _insertar(
+        motor,
+        INSERTAR_PARADA,
+        *(
+            _parada(
+                ejecucion, ruta, decision, 2**31 + n, x_m=x, y_m=y, distancia_desde_anterior_m=0
+            )
+            for n, (decision, (x, y)) in enumerate(
+                zip(base_en_0005.decisiones, coordenadas, strict=True)
+            )
+        ),
+    )
+
+    with motor.connect() as conexion:
+        contadores = conexion.execute(
+            text(
+                "SELECT rutas_evaluadas, rutas_publicadas, paradas_evaluadas, paradas_publicadas "
+                "FROM ejecucion_ruteo WHERE id = :id"
+            ),
+            {"id": ejecucion},
+        ).one()
+        guardada = conexion.execute(
+            text(
+                "SELECT paradas, distancia_inicial_m, distancia_total_m, "
+                "distancia_regreso_deposito_m, mejora_2opt_m FROM ruta_territorial WHERE id = :id"
+            ),
+            {"id": ruta},
+        ).one()
+        paradas = conexion.execute(
+            text("SELECT secuencia, x_m, y_m FROM parada_ruta ORDER BY secuencia")
+        ).all()
+    assert tuple(contadores) == (grande,) * 4
+    assert tuple(guardada) == tuple(distancias.values())
+    assert [tuple(fila) for fila in paradas] == [
+        (2**31 + n, x, y) for n, (x, y) in enumerate(coordenadas)
+    ]
+
+
+def test_nada_del_ruteo_apunta_a_lo_que_no_existe_ni_se_borra_en_cascada(base_en_0005):
+    motor, resultados = base_en_0005.motor, base_en_0005.resultados
+    a, b, *_ = base_en_0005.decisiones
+    # Una ejecucion con una ruta y su parada; otra, de la territorial sin municipios, con una ruta
+    # sin paradas; y una tercera sin rutas pero con una parada. La base no exige que una parada y su
+    # ruta sean de la misma ejecucion, ni que la ruta sea de un municipio de su territorial: eso lo
+    # cuida el servicio. Aqui sirve para que cada borrado choque con una sola llave.
+    una, sin_paradas, sin_rutas = _insertar(
+        motor,
+        INSERTAR_RUTEO,
+        _ruteo(base_en_0005.territorial_id, "EXITOSA"),
+        _ruteo(base_en_0005.otra_territorial_id, "EXITOSA"),
+        _ruteo(base_en_0005.territorial_id, "FALLIDA"),
+    )
+    ruta, sola = _insertar(
+        motor,
+        INSERTAR_RUTA,
+        _ruta(una, resultados["21114"]),
+        _ruta(sin_paradas, resultados["21156"]),
+    )
+    _insertar(motor, INSERTAR_PARADA, _parada(una, ruta, a, 1), _parada(sin_rutas, ruta, b, 2))
+
+    # I. Nada apunta a lo que no existe.
+    no_existe = 999_999
+    _rechaza(motor, FK_EJECUCION_RUTEO, INSERTAR_RUTEO, _ruteo(no_existe))
+    _rechaza(motor, FK_RUTA_EJECUCION, INSERTAR_RUTA, _ruta(no_existe, resultados["21001"]))
+    _rechaza(motor, FK_RUTA_RESULTADO, INSERTAR_RUTA, _ruta(una, no_existe))
+    _rechaza(motor, FK_PARADA_EJECUCION, INSERTAR_PARADA, _parada(no_existe, ruta, b, 3))
+    _rechaza(motor, FK_PARADA_RUTA, INSERTAR_PARADA, _parada(una, no_existe, b, 3))
+    _rechaza(motor, FK_PARADA_DECISION, INSERTAR_PARADA, _parada(una, ruta, no_existe, 3))
+
+    # Y sin cascada: borrar algo de lo que cuelga una ruta o una parada falla, en lugar de llevarse
+    # la evidencia.
+    borrados = [
+        (FK_EJECUCION_RUTEO, "ejecucion_territorial", base_en_0005.otra_territorial_id),
+        (FK_RUTA_RESULTADO, "resultado_territorial", resultados["21156"]),
+        (FK_RUTA_EJECUCION, "ejecucion_ruteo", sin_paradas),
+        (FK_PARADA_EJECUCION, "ejecucion_ruteo", sin_rutas),
+        (FK_PARADA_RUTA, "ruta_territorial", ruta),
+        (FK_PARADA_DECISION, "decision_cuenta", a),
+    ]
+    for restriccion, tabla, fila in borrados:
+        _rechaza(motor, restriccion, text(f"DELETE FROM {tabla} WHERE id = :id"), {"id": fila})
+    # Una ruta sin paradas si se borra: nada cuelga de ella.
+    with motor.begin() as conexion:
+        conexion.execute(text("DELETE FROM ruta_territorial WHERE id = :id"), {"id": sola})
+
+
+def test_la_0005_baja_sin_perder_lo_anterior_y_vuelve_a_subir(base_en_0005):
+    motor, resultados = base_en_0005.motor, base_en_0005.resultados
+    a, b, *_ = base_en_0005.decisiones
+    (ejecucion,) = _insertar(motor, INSERTAR_RUTEO, _ruteo(base_en_0005.territorial_id, "EXITOSA"))
+    (ruta,) = _insertar(motor, INSERTAR_RUTA, _ruta(ejecucion, resultados["21114"]))
+    _insertar(
+        motor, INSERTAR_PARADA, _parada(ejecucion, ruta, a, 1), _parada(ejecucion, ruta, b, 2)
+    )
+
+    command.downgrade(_alembic(), "0004")
+
+    # J. Bajar quita el ruteo, con sus datos, y nada mas.
+    tablas = set(_consultar(motor, TABLAS))
+    assert not TABLAS_DE_RUTEO & tablas
+    assert set(PREVIAS_A_LA_0005) <= tablas
+    assert _filas(motor, PREVIAS_A_LA_0005) == base_en_0005.previas
+    assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0004"]
+    assert _consultar(motor, "SELECT count(*) FROM pg_type WHERE typname = 'estado_ruteo'") == [0]
+
+    # Y la 0005 vuelve a subir limpia sobre la misma base, sin lo que se fue al bajar.
+    command.upgrade(_alembic(), "0005")
+
+    assert TABLAS_DE_RUTEO <= set(_consultar(motor, TABLAS))
+    assert set(_consultar(motor, RESTRICCIONES_0005)) == RESTRICCIONES_DE_RUTEO
+    for tabla in sorted(TABLAS_DE_RUTEO):
+        assert _consultar(motor, f"SELECT count(*) FROM {tabla}") == [0]
+    assert _filas(motor, PREVIAS_A_LA_0005) == base_en_0005.previas
+    assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0005"]
+
+
+def test_desde_cero_hasta_la_cabeza_alembic_check_no_ve_diferencias(base_en_0001):
+    # Lo mismo que el paso de migraciones del CI, dentro de las pruebas: el esquema que dejan las
+    # migraciones, la 0005 incluida, es el que declaran los modelos.
+    command.upgrade(_alembic(), "head")
+    salida = io.StringIO()
+    cfg = ConfigAlembic(str(RAIZ / "alembic.ini"), stdout=salida)
+    cfg.set_main_option("script_location", str(RAIZ / "migraciones"))
+
+    command.check(cfg)  # con cualquier diferencia levantaria AutogenerateDiffsDetected
+
+    assert salida.getvalue().strip() == "No new upgrade operations detected."
+    assert _consultar(base_en_0001, "SELECT version_num FROM alembic_version") == ["0005"]

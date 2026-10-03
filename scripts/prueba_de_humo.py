@@ -2,11 +2,13 @@
 
 Sube una cartera, espera a que su corrida termine y consulta estado, rechazos y resumen.
 Despues la decide con el Decision Engine: consulta la ejecucion, la busca en el historial, lee
-sus decisiones por cuenta y comprueba que no se decide dos veces. Al final organiza esas
-decisiones por municipio con el Motor Territorial: consulta la ejecucion territorial, la busca en
-el historial, lee sus municipios y comprueba que no se organizan dos veces. Verifica los codigos
-HTTP de cada paso. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
-contenedor o en una laptop:
+sus decisiones por cuenta y comprueba que no se decide dos veces. Luego organiza esas decisiones
+por municipio con el Motor Territorial: consulta la ejecucion territorial, la busca en el
+historial, lee sus municipios y comprueba que no se organizan dos veces. Al final rutea esos
+municipios con el Motor de Ruteo: consulta la ejecucion de ruteo, la busca en el historial, lee
+sus rutas y las paradas de la primera, y comprueba que no se rutean dos veces. Verifica los
+codigos HTTP de cada paso. Solo usa la biblioteca estandar, para correr igual en el CI, dentro
+del contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
 
@@ -314,12 +316,140 @@ def main(archivo: Path) -> None:
         f"{error.get('codigo')}, sin Location",
     )
 
+    # El Motor de Ruteo sobre los municipios recien organizados. Tambien es sincrono: responde
+    # cuando ya trazo la ruta de cada municipio con trabajo de campo.
+    ruta_ruteos = f"/territoriales/{territorial['territorial_run_id']}/ruteos"
+    estado, encabezados, ruteo = pedir("POST", ruta_ruteos, timeout=ESPERA_MAXIMA)
+    esperar(
+        estado == 201 and ruteo["estado"] == "EXITOSA",
+        f"POST /territoriales/{{territorial_run_id}}/ruteos: {estado} "
+        f"{ruteo.get('estado', ruteo.get('codigo'))}: "
+        f"{ruteo.get('detalle', ruteo.get('mensaje'))}",
+    )
+    esperar(
+        ruteo["version_reglas"] == "ruteo/v1"
+        and ruteo["territorial_run_id"] == territorial["territorial_run_id"]
+        and ruteo["decision_run_id"] == ejecucion["decision_run_id"]
+        and ruteo["run_id"] == corrida["run_id"]
+        and ruteo["rutas_evaluadas"] > 0
+        and ruteo["rutas_publicadas"] == ruteo["rutas_evaluadas"]
+        and ruteo["paradas_evaluadas"] > 0
+        and ruteo["paradas_publicadas"] == ruteo["paradas_evaluadas"],
+        f"reglas {ruteo['version_reglas']}: {ruteo['rutas_publicadas']} rutas = evaluadas "
+        f"{ruteo['rutas_evaluadas']}, {ruteo['paradas_publicadas']} paradas = evaluadas "
+        f"{ruteo['paradas_evaluadas']}, en {ruteo['duracion_segundos']} s",
+    )
+    ubicacion_ruteo = encabezados.get("location") or encabezados.get("Location")
+    esperar(
+        ubicacion_ruteo == f"/ruteos/{ruteo['ruteo_run_id']}",
+        f"Location: {ubicacion_ruteo}",
+    )
+
+    estado, _, consultada = pedir("GET", ubicacion_ruteo)
+    mismos = (
+        "ruteo_run_id",
+        "territorial_run_id",
+        "decision_run_id",
+        "run_id",
+        "version_reglas",
+        "estado",
+        "rutas_evaluadas",
+        "rutas_publicadas",
+        "paradas_evaluadas",
+        "paradas_publicadas",
+    )
+    esperar(
+        estado == 200 and all(consultada.get(campo) == ruteo[campo] for campo in mismos),
+        f"GET /ruteos/{{ruteo_run_id}}: {estado}, la misma ejecucion",
+    )
+
+    estado, _, historial = pedir("GET", ruta_ruteos)
+    en_el_historial = [e["ruteo_run_id"] for e in historial.get("elementos", [])]
+    esperar(
+        estado == 200 and historial["total"] >= 1 and ruteo["ruteo_run_id"] in en_el_historial,
+        f"GET /territoriales/{{territorial_run_id}}/ruteos: {estado}, {historial.get('total')} "
+        "ejecucion(es), entre ellas la nueva",
+    )
+
+    estado, _, rutas = pedir("GET", f"{ubicacion_ruteo}/rutas?por_pagina=5")
+    esperar(
+        estado == 200 and rutas["total"] == ruteo["rutas_publicadas"] and bool(rutas["elementos"]),
+        f"GET /ruteos/{{ruteo_run_id}}/rutas: {estado}, {rutas.get('total')} rutas, todas las "
+        "publicadas",
+    )
+    # Que cada ruta traiga lo que es publico. Las coordenadas, la metrica y el recorrido exactos ya
+    # los fijan las pruebas; aqui no se vuelven a escribir.
+    publicos = {
+        "clave_territorio",
+        "posicion_territorial",
+        "cuentas_campo",
+        "paradas",
+        "distancia_inicial_m",
+        "distancia_total_m",
+        "distancia_regreso_deposito_m",
+        "mejora_2opt_m",
+    }
+    esperar(
+        all(set(r) == publicos for r in rutas["elementos"]),
+        "cada ruta trae su municipio, su lugar territorial, sus paradas y sus distancias",
+    )
+    for ruta in rutas["elementos"][:3]:
+        print(
+            f"      {ruta['clave_territorio']} (lugar {ruta['posicion_territorial']}): "
+            f"{ruta['paradas']} paradas, {ruta['distancia_total_m']:,} m sinteticos, "
+            f"{ruta['mejora_2opt_m']:,} menos que el vecino mas cercano"
+        )
+
+    primera = rutas["elementos"][0]
+    estado, _, paradas = pedir(
+        "GET", f"{ubicacion_ruteo}/rutas/{primera['clave_territorio']}/paradas?por_pagina=5"
+    )
+    esperar(
+        estado == 200 and paradas["total"] == primera["paradas"] and bool(paradas["elementos"]),
+        f"GET /ruteos/{{ruteo_run_id}}/rutas/{primera['clave_territorio']}/paradas: {estado}, "
+        f"{paradas.get('total')} paradas, todas las de la ruta",
+    )
+    publicos = {"secuencia", "cliente_unico", "x_m", "y_m", "distancia_desde_anterior_m"}
+    esperar(
+        all(set(p) == publicos for p in paradas["elementos"])
+        and [p["secuencia"] for p in paradas["elementos"]]
+        == list(range(1, len(paradas["elementos"]) + 1)),
+        "cada parada trae su secuencia, su cliente, su punto sintetico y su distancia",
+    )
+    for parada in paradas["elementos"][:3]:
+        print(
+            f"      {parada['secuencia']}. {parada['cliente_unico']} en "
+            f"({parada['x_m']}, {parada['y_m']}), a {parada['distancia_desde_anterior_m']:,} m"
+        )
+    # Una sola invariante, la que cualquier ruta cumple: el 2-opt nunca la alarga.
+    esperar(
+        primera["distancia_total_m"] <= primera["distancia_inicial_m"]
+        and primera["mejora_2opt_m"]
+        == primera["distancia_inicial_m"] - primera["distancia_total_m"],
+        f"la ruta de {primera['clave_territorio']}: {primera['distancia_total_m']:,} <= "
+        f"{primera['distancia_inicial_m']:,}, mejora {primera['mejora_2opt_m']:,}",
+    )
+
+    # Una ejecucion territorial se rutea con exito una sola vez por version de las reglas. Igual
+    # que en los otros motores, el 409 no dice cual ejecucion fue: eso lo dice el historial.
+    estado, encabezados, error = pedir("POST", ruta_ruteos, timeout=ESPERA_MAXIMA)
+    esperar(
+        estado == 409
+        and error["codigo"] == "RUTEO_YA_GENERADO"
+        and error["run_id"] == corrida["run_id"]
+        and not (encabezados.get("location") or encabezados.get("Location")),
+        f"POST /territoriales/{{territorial_run_id}}/ruteos otra vez: {estado} "
+        f"{error.get('codigo')}, sin Location",
+    )
+
     estado, _, openapi = pedir("GET", "/openapi.json", con_clave=False)
+    documentadas = openapi.get("paths", {})
     esperar(
         estado == 200
-        and "/territoriales/{territorial_run_id}/municipios" in openapi.get("paths", {}),
+        and "/territoriales/{territorial_run_id}/municipios" in documentadas
+        and "/ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas" in documentadas,
         f"GET /openapi.json {estado}: version {openapi.get('info', {}).get('version')}, con el "
-        "Motor Territorial",
+        "Motor Territorial y el Motor de Ruteo",
     )
     print("Todo en orden.")
 

@@ -87,6 +87,7 @@ _PROBLEMAS = {
     "less_than_equal": "Debe ser menor o igual a {le}.",
     "int_parsing": "Debe ser un numero entero.",
     "uuid_parsing": "Debe ser un UUID.",
+    "string_pattern_mismatch": "Debe cumplir el patron {pattern}.",
     "enum": "Debe ser uno de: {expected}.",
 }
 

@@ -14,9 +14,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
-from motor_cartera.db.modelos import EstadoCorrida, EstadoDecision, EstadoTerritorial
+from motor_cartera.db.modelos import (
+    EstadoCorrida,
+    EstadoDecision,
+    EstadoRuteo,
+    EstadoTerritorial,
+)
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.ingesta.lectores import REQUERIDAS
+from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 from motor_cartera.segmentacion import Dimension
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
 
@@ -452,3 +458,175 @@ class PaginaMunicipios(Pagina[ResultadoTerritorialRespuesta]):
         description="Las reglas que organizaron: el vocabulario de los municipios es el suyo."
     )
     estado: EstadoTerritorial
+
+
+# --- el Motor de Ruteo ---------------------------------------------------------------------------
+#
+# Como en las otras ejecuciones, el estado sale del modelo. Las distancias y las coordenadas son
+# enteros en metros sinteticos: los de un plano operativo local, propio de cada municipio, con el
+# deposito en (0, 0). No son latitud ni longitud, domicilios, calles ni tiempos.
+
+EJEMPLO_EJECUCION_RUTEO = {
+    "ruteo_run_id": "3a9c5e7f-1b2d-4c6e-8f0a-2b4d6f8a0c1e",
+    "territorial_run_id": EJEMPLO_EJECUCION_TERRITORIAL["territorial_run_id"],
+    "decision_run_id": EJEMPLO_EJECUCION["decision_run_id"],
+    "run_id": EJEMPLO_CORRIDA["run_id"],
+    "version_reglas": VERSION_REGLAS_RUTEO,
+    "estado": "EXITOSA",
+    "iniciada_en": "2026-09-30T15:14:00.000000Z",
+    "terminada_en": "2026-09-30T15:14:01.120000Z",
+    "duracion_segundos": 1.12,
+    "rutas_evaluadas": 403,
+    "rutas_publicadas": 403,
+    "paradas_evaluadas": 2968,
+    "paradas_publicadas": 2968,
+    "detalle": f"Se rutearon 2,968 cuentas de campo en 403 municipios con {VERSION_REGLAS_RUTEO}.",
+}
+
+# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ninguna ruta.
+EJEMPLO_EJECUCION_RUTEO_FALLIDA = {
+    **EJEMPLO_EJECUCION_RUTEO,
+    "estado": "FALLIDA",
+    "terminada_en": "2026-09-30T15:14:00.830000Z",
+    "duracion_segundos": 0.83,
+    "rutas_publicadas": 0,
+    "paradas_publicadas": 0,
+    "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Un municipio con cinco cuentas de campo, ruteado con ruteo/v1: el 2-opt le quito 9,108 metros
+# sinteticos a la ruta del vecino mas cercano.
+EJEMPLO_RUTA = {
+    "clave_territorio": "21114",
+    "posicion_territorial": 1,
+    "cuentas_campo": 5,
+    "paradas": 5,
+    "distancia_inicial_m": 37878,
+    "distancia_total_m": 28770,
+    "distancia_regreso_deposito_m": 7633,
+    "mejora_2opt_m": 9108,
+}
+
+# La primera parada de esa ruta.
+EJEMPLO_PARADA = {
+    "secuencia": 1,
+    "cliente_unico": "CU00000041",
+    "x_m": 1016,
+    "y_m": -2070,
+    "distancia_desde_anterior_m": 3086,
+}
+
+
+class EjecucionRuteoRespuesta(BaseModel):
+    """Una ejecucion del Motor de Ruteo sobre una ejecucion territorial: con que reglas, como va o
+    como termino, y cuantas rutas y paradas calculo y publico."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION_RUTEO]})
+
+    ruteo_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
+    territorial_run_id: UUID = Field(
+        description="La ejecucion territorial cuyos municipios se rutearon."
+    )
+    decision_run_id: UUID = Field(description="La ejecucion de decision debajo de ella.")
+    run_id: UUID = Field(description="La corrida de esas decisiones.")
+    version_reglas: str = Field(description="Con que reglas se ruteo, p. ej. `ruteo/v1`.")
+    estado: EstadoRuteo = Field(
+        description="EN_PROCESO mientras rutea. Al terminar: EXITOSA (publico una ruta por cada "
+        "municipio con cuentas de campo) o FALLIDA (no publico ninguna; `detalle` dice por que)."
+    )
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    rutas_evaluadas: int = Field(
+        description="Cuantas rutas calculo el nucleo. Cero si no termino de calcularlas; en una "
+        "FALLIDA puede ser mayor que cero aunque no se haya publicado ninguna."
+    )
+    rutas_publicadas: int = Field(description="Cuantas rutas publico: todas, o ninguna.")
+    paradas_evaluadas: int = Field(description="Cuantas paradas tienen las rutas calculadas.")
+    paradas_publicadas: int = Field(
+        description="Cuantas paradas publico: una por cuenta con CAMPO como canal recomendado, o "
+        "ninguna."
+    )
+    detalle: str | None = Field(description="Que paso, en palabras.")
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class RutaTerritorialRespuesta(BaseModel):
+    """La ruta de un municipio: cuantas paradas tiene y cuanto mide, en metros sinteticos. Sale del
+    deposito del municipio, en (0, 0), visita cada cuenta de campo una vez y regresa."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_RUTA]})
+
+    clave_territorio: str = Field(description="El municipio: cve_entidad + cve_municipio.")
+    posicion_territorial: int = Field(
+        description="El lugar del municipio entre los que tienen cuentas de campo, como lo publico "
+        "la ejecucion territorial (`posicion_campo`). Es una prioridad entre municipios, no el "
+        "orden de visita, que es la `secuencia` de cada parada."
+    )
+    cuentas_campo: int = Field(
+        description="Cuantas cuentas del municipio tienen CAMPO como canal recomendado."
+    )
+    paradas: int = Field(description="Cuantas paradas tiene la ruta: una por cuenta de campo.")
+    distancia_inicial_m: int = Field(
+        description="La ruta del vecino mas cercano, antes del 2-opt, con el regreso al deposito. "
+        "Metros sinteticos."
+    )
+    distancia_total_m: int = Field(
+        description="La ruta publicada, con el regreso al deposito. Metros sinteticos, no la "
+        "distancia de ninguna calle real."
+    )
+    distancia_regreso_deposito_m: int = Field(
+        description="De la ultima parada al deposito. Metros sinteticos."
+    )
+    mejora_2opt_m: int = Field(
+        description="distancia_inicial_m - distancia_total_m: lo que el 2-opt le quito a la ruta."
+    )
+
+
+class ParadaRutaRespuesta(BaseModel):
+    """Una cuenta en la ruta: en que lugar se visita, en que punto del plano sintetico de su
+    municipio y a que distancia de la parada anterior."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_PARADA]})
+
+    secuencia: int = Field(description="El orden de visita dentro de la ruta, desde 1.")
+    cliente_unico: str = Field(description="La cuenta, como la identifica la cartera.")
+    x_m: int = Field(
+        description="Coordenada sintetica en metros, de -5000 a 5000, en el plano del municipio "
+        "con el deposito en (0, 0). No es una longitud geografica ni un domicilio."
+    )
+    y_m: int = Field(
+        description="Coordenada sintetica en metros, de -5000 a 5000. No es una latitud."
+    )
+    distancia_desde_anterior_m: int = Field(
+        description="Distancia Manhattan desde la parada anterior; la primera, desde el deposito. "
+        "Metros sinteticos."
+    )
+
+
+class PaginaEjecucionesRuteo(Pagina[EjecucionRuteoRespuesta]):
+    territorial_run_id: UUID = Field(description="La ejecucion territorial de la que son.")
+    decision_run_id: UUID = Field(description="La ejecucion de decision debajo de ella.")
+    run_id: UUID = Field(description="La corrida de esas decisiones.")
+
+
+class PaginaRutas(Pagina[RutaTerritorialRespuesta]):
+    ruteo_run_id: UUID
+    territorial_run_id: UUID
+    decision_run_id: UUID
+    run_id: UUID = Field(description="La corrida de las decisiones ruteadas.")
+    version_reglas: str = Field(description="Las reglas que trazaron las rutas.")
+    estado: EstadoRuteo
+
+
+class PaginaParadas(Pagina[ParadaRutaRespuesta]):
+    ruteo_run_id: UUID
+    run_id: UUID = Field(description="La corrida de las decisiones ruteadas.")
+    version_reglas: str = Field(description="Las reglas que trazaron la ruta.")
+    estado: EstadoRuteo
+    clave_territorio: str = Field(description="El municipio de la ruta.")
