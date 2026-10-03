@@ -233,3 +233,150 @@ class DecisionCuenta(SQLModel, table=True):
     """La decision del motor. No es `cuenta.canal`, que es un dato de la cartera."""
     motivos: list[dict[str, str]] = Field(sa_type=JSONB)
     """Por que salio asi, paso por paso: [{"codigo": ..., "campo": ..., "valor": ...}]."""
+
+
+class EstadoTerritorial(StrEnum):
+    """En que quedo una ejecucion del motor territorial. Solo una EXITOSA publica resultados.
+
+    No hay RECHAZADA: el motor territorial no vuelve a juzgar la cartera ni sus decisiones. Organiza
+    por municipio las decisiones de una ejecucion de decision, y termina o falla.
+    """
+
+    EN_PROCESO = "EN_PROCESO"  # registrada; se estan calculando sus territorios
+    EXITOSA = "EXITOSA"  # publico el resultado de cada municipio de la ejecucion de decision
+    FALLIDA = "FALLIDA"  # no termino; no publica ningun resultado
+
+
+class EjecucionTerritorial(SQLModel, table=True):
+    """Una ejecucion del motor territorial sobre una ejecucion de decision.
+
+    Cuelga de la ejecucion de decision y no de la corrida: una corrida se puede decidir con varias
+    versiones de las reglas, y lo territorial tiene que decir exactamente de que decisiones salio.
+    La corrida, su run_id y la version de decision se obtienen siguiendo esa llave; no se copian.
+
+    Es una entidad, como la ejecucion de decision, porque tiene que existir aunque no deje
+    resultados: una ejecucion fallida es justo la que hay que poder auditar. Guarda con que version
+    de las reglas territoriales se calculo, para que cada resultado se pueda volver a explicar
+    aunque las reglas cambien despues.
+    """
+
+    __tablename__ = "ejecucion_territorial"
+    __table_args__ = (
+        # Con nombre propio: el de la convencion pasaria de 63 caracteres, el limite de PostgreSQL,
+        # y la base guardaria uno recortado. Es parte del contrato del esquema: sale en los
+        # IntegrityError y una migracion futura se refiere a el.
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_id"],
+            ["ejecucion_decision.id"],
+            name="fk_ejecucion_territorial_decision",
+        ),
+        # Una ejecucion de decision se organiza con exito una sola vez por version de las reglas
+        # territoriales. Lo garantiza la base y no solo el codigo: dos ejecuciones simultaneas no
+        # pueden quedar EXITOSA las dos. Las que no terminaron EXITOSA no cuentan, asi que una
+        # FALLIDA se puede reintentar, y otra version puede organizar las mismas decisiones.
+        sa.Index(
+            "ux_ejecucion_territorial_exitosa",
+            "ejecucion_decision_id",
+            "version_reglas",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    territorial_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. No se llama run_id, que es el de la corrida, ni decision_run_id, que
+    es el de la ejecucion de decision."""
+    ejecucion_decision_id: int = Field(index=True)
+    """La ejecucion de decision cuyas decisiones se organizaron; su llave foranea, con su nombre,
+    esta en __table_args__. Sin cascada: borrar una ejecucion de decision con ejecuciones
+    territoriales falla, en lugar de llevarse la evidencia. Lleva su propio indice porque hay que
+    encontrar todas las ejecuciones territoriales de una ejecucion de decision, en cualquier estado,
+    y el indice parcial solo cubre las EXITOSA."""
+    version_reglas: str = Field(max_length=32)
+    """Con que reglas se calculo: territorial/v1, territorial/v2... No tiene valor por omision en
+    la base: cada ejecucion trae la suya."""
+    estado: EstadoTerritorial = Field(
+        default=EstadoTerritorial.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoTerritorial,
+            name="estado_territorial",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    territorios_evaluados: int = 0
+    """Cuantos municipios alcanzo a evaluar el motor. En una FALLIDA puede ser mayor que cero."""
+    territorios_publicados: int = 0
+    """Cuantos resultados publico. En una FALLIDA es cero."""
+    detalle: str | None = None
+    """Que paso, para una persona. No es la explicacion de cada municipio: esa son sus motivos."""
+
+
+class ResultadoTerritorial(SQLModel, table=True):
+    """Lo que una ejecucion territorial publico de un municipio, y por que.
+
+    Guarda los agregados de los que salio, ademas de la carga, el lugar y los motivos, para que cada
+    resultado se pueda volver a explicar sin rehacer la agregacion. No guarda la clave del
+    territorio, que es cve_entidad + cve_municipio, ni nombres de entidad o municipio, que la
+    cartera no trae. Tampoco copia la ejecucion de decision: se llega a ella por la territorial.
+
+    El vocabulario de las reglas (la carga y el codigo de cada motivo) se guarda como texto y sin
+    CHECK, igual que el lugar: es el de la version que lo calculo, y una version nueva puede traer
+    otro sin migrar esta tabla. Las reglas de territorial/v1, sus cargas, sus umbrales y la
+    consistencia entre agregados, las protege el nucleo puro y no la base.
+    """
+
+    __tablename__ = "resultado_territorial"
+    __table_args__ = (
+        # La llave foranea y la restriccion unica llevan nombre propio: los de la convencion
+        # pasarian de 63 caracteres, el limite de PostgreSQL, y la base guardaria unos recortados.
+        # Son parte del contrato del esquema: salen en los IntegrityError y una migracion futura se
+        # refiere a ellos.
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_id"],
+            ["ejecucion_territorial.id"],
+            name="fk_resultado_territorial_ejecucion",
+        ),
+        # Una ejecucion publica cada municipio a lo mas una vez.
+        sa.UniqueConstraint(
+            "ejecucion_territorial_id",
+            "cve_entidad",
+            "cve_municipio",
+            name="uq_resultado_territorial_municipio",
+        ),
+        # Cada lugar del orden de campo es de un solo municipio por ejecucion. Los que no tienen
+        # cuentas de campo no tienen lugar (NULL), y de esos puede haber muchos. El mismo indice
+        # sirve para leer en orden los que si lo tienen.
+        sa.Index(
+            "ux_resultado_territorial_posicion_campo",
+            "ejecucion_territorial_id",
+            "posicion_campo",
+            unique=True,
+            postgresql_where=sa.text("posicion_campo IS NOT NULL"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    # Su llave foranea esta en __table_args__, con su nombre, y la restriccion unica ya la indexa.
+    ejecucion_territorial_id: int
+    # Texto con sus ceros a la izquierda, como en `cuenta`, y sin llave hacia un catalogo del INEGI,
+    # que todavia no existe.
+    cve_entidad: str = Field(max_length=2)
+    cve_municipio: str = Field(max_length=3)
+    cuentas_total: int = Field(sa_type=sa.BigInteger)
+    """BIGINT, como el COUNT que lo va a calcular: el esquema no le achica el dominio a INTEGER."""
+    saldo_total: Decimal = Field(max_digits=24, decimal_places=2)
+    """NUMERIC(24, 2) y no el (14, 2) de `cuenta`: aquel es el saldo de una cuenta, y este suma el
+    de todas las cuentas de un municipio."""
+    cuentas_campo: int = Field(sa_type=sa.BigInteger)
+    saldo_campo: Decimal = Field(max_digits=24, decimal_places=2)
+    carga: str = Field(max_length=20)
+    posicion_campo: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """El lugar del municipio entre los que tienen cuentas de campo, desde 1. NULL si no tiene
+    ninguna: nunca 0."""
+    motivos: list[dict[str, str]] = Field(sa_type=JSONB)
+    """Por que salio asi: [{"codigo": ..., "campo": ..., "valor": ...}]."""
