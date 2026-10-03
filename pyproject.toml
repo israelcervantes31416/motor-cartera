@@ -1,7 +1,7 @@
 [project]
 name = "motor-cartera"
-version = "0.2.0"
-description = "Motor de ingesta, validación, segmentación y decisión de cartera de crédito al consumo, sobre datos sintéticos"
+version = "0.3.0"
+description = "Motor de ingesta, validación, segmentación, decisión y priorización territorial de cartera de crédito al consumo, sobre datos sintéticos"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -2,9 +2,11 @@
 
 Sube una cartera, espera a que su corrida termine y consulta estado, rechazos y resumen.
 Despues la decide con el Decision Engine: consulta la ejecucion, la busca en el historial, lee
-sus decisiones por cuenta y comprueba que no se decide dos veces. Verifica los codigos HTTP de
-cada paso. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o
-en una laptop:
+sus decisiones por cuenta y comprueba que no se decide dos veces. Al final organiza esas
+decisiones por municipio con el Motor Territorial: consulta la ejecucion territorial, la busca en
+el historial, lee sus municipios y comprueba que no se organizan dos veces. Verifica los codigos
+HTTP de cada paso. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
+contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
 
@@ -214,8 +216,111 @@ def main(archivo: Path) -> None:
         "sin Location",
     )
 
-    estado, _, _ = pedir("GET", "/openapi.json", con_clave=False)
-    esperar(estado == 200, "GET /openapi.json 200")
+    # El Motor Territorial sobre las decisiones recien publicadas. Tambien es sincrono: responde
+    # cuando ya organizo todos los municipios.
+    ruta_territoriales = f"/decisiones/{ejecucion['decision_run_id']}/territoriales"
+    estado, encabezados, territorial = pedir("POST", ruta_territoriales, timeout=ESPERA_MAXIMA)
+    esperar(
+        estado == 201 and territorial["estado"] == "EXITOSA",
+        f"POST /decisiones/{{decision_run_id}}/territoriales: {estado} "
+        f"{territorial.get('estado', territorial.get('codigo'))}: "
+        f"{territorial.get('detalle', territorial.get('mensaje'))}",
+    )
+    esperar(
+        territorial["version_reglas"] == "territorial/v1"
+        and territorial["decision_run_id"] == ejecucion["decision_run_id"]
+        and territorial["run_id"] == corrida["run_id"]
+        and territorial["territorios_evaluados"] > 0
+        and territorial["territorios_publicados"] == territorial["territorios_evaluados"],
+        f"reglas {territorial['version_reglas']}: evaluados "
+        f"{territorial['territorios_evaluados']} = publicados "
+        f"{territorial['territorios_publicados']} municipios, en "
+        f"{territorial['duracion_segundos']} s",
+    )
+    ubicacion_territorial = encabezados.get("location") or encabezados.get("Location")
+    esperar(
+        ubicacion_territorial == f"/territoriales/{territorial['territorial_run_id']}",
+        f"Location: {ubicacion_territorial}",
+    )
+
+    estado, _, consultada = pedir("GET", ubicacion_territorial)
+    mismos = (
+        "territorial_run_id",
+        "decision_run_id",
+        "run_id",
+        "version_reglas",
+        "estado",
+        "territorios_evaluados",
+        "territorios_publicados",
+    )
+    esperar(
+        estado == 200 and all(consultada.get(campo) == territorial[campo] for campo in mismos),
+        f"GET /territoriales/{{territorial_run_id}}: {estado}, la misma ejecucion",
+    )
+
+    estado, _, historial = pedir("GET", ruta_territoriales)
+    en_el_historial = [e["territorial_run_id"] for e in historial.get("elementos", [])]
+    esperar(
+        estado == 200
+        and historial["total"] >= 1
+        and territorial["territorial_run_id"] in en_el_historial,
+        f"GET /decisiones/{{decision_run_id}}/territoriales: {estado}, "
+        f"{historial.get('total')} ejecucion(es), entre ellas la nueva",
+    )
+
+    estado, _, municipios = pedir("GET", f"{ubicacion_territorial}/municipios?por_pagina=5")
+    esperar(
+        estado == 200
+        and municipios["total"] == territorial["territorios_publicados"]
+        and bool(municipios["elementos"]),
+        f"GET /territoriales/{{territorial_run_id}}/municipios: {estado}, "
+        f"{municipios.get('total')} municipios, todos los publicados",
+    )
+    # Que cada municipio traiga lo que es publico y que este explicado. Los umbrales y el orden
+    # exactos ya los fijan las pruebas; aqui no se vuelven a escribir.
+    publicos = {
+        "clave_territorio",
+        "cve_entidad",
+        "cve_municipio",
+        "cuentas_total",
+        "saldo_total",
+        "cuentas_campo",
+        "saldo_campo",
+        "carga",
+        "posicion_campo",
+        "motivos",
+    }
+    esperar(
+        all(set(m) == publicos and m["motivos"] for m in municipios["elementos"]),
+        "cada municipio trae sus agregados, su carga de campo, su lugar y sus motivos",
+    )
+    for municipio in municipios["elementos"][:3]:
+        motivos = ", ".join(motivo["codigo"] for motivo in municipio["motivos"])
+        print(
+            f"      {municipio['clave_territorio']}: {municipio['cuentas_campo']} cuentas de "
+            f"campo de {municipio['cuentas_total']}, {municipio['carga']}, lugar "
+            f"{municipio['posicion_campo']} ({motivos})"
+        )
+
+    # Unas decisiones se organizan con exito una sola vez por version de las reglas. Igual que en
+    # el Decision Engine, el 409 no dice cual ejecucion fue: eso lo dice el historial.
+    estado, encabezados, error = pedir("POST", ruta_territoriales, timeout=ESPERA_MAXIMA)
+    esperar(
+        estado == 409
+        and error["codigo"] == "TERRITORIAL_YA_GENERADO"
+        and error["run_id"] == corrida["run_id"]
+        and not (encabezados.get("location") or encabezados.get("Location")),
+        f"POST /decisiones/{{decision_run_id}}/territoriales otra vez: {estado} "
+        f"{error.get('codigo')}, sin Location",
+    )
+
+    estado, _, openapi = pedir("GET", "/openapi.json", con_clave=False)
+    esperar(
+        estado == 200
+        and "/territoriales/{territorial_run_id}/municipios" in openapi.get("paths", {}),
+        f"GET /openapi.json {estado}: version {openapi.get('info', {}).get('version')}, con el "
+        "Motor Territorial",
+    )
     print("Todo en orden.")
 
 

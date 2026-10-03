@@ -10,15 +10,15 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
-from motor_cartera.api import cartera, corridas, decisiones, salud
+from motor_cartera.api import cartera, corridas, decisiones, salud, territorial
 from motor_cartera.api.errores import registrar_manejadores
 from motor_cartera.api.seguridad import exigir_api_key
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
 
 DESCRIPCION = """
-Ingesta, validacion, resumen y decision por cuenta de una cartera de credito al consumo.
-**Todos los datos son sinteticos**: los produce el generador del proyecto.
+Ingesta, validacion, resumen, decision por cuenta y organizacion territorial de una cartera de
+credito al consumo. **Todos los datos son sinteticos**: los produce el generador del proyecto.
 
 **Flujo.**
 
@@ -41,6 +41,19 @@ Con la cartera publicada, el Decision Engine decide cada cuenta con reglas versi
 8. `GET /decisiones/{decision_run_id}/cuentas`: lo que decidio de cada cuenta (segmento,
    prioridad y canal recomendado) y por que.
 
+Con las decisiones publicadas, el Motor Territorial las organiza por municipio con reglas
+versionadas. Prioriza municipios; no traza rutas:
+
+9. `POST /decisiones/{decision_run_id}/territoriales` organiza las decisiones de una ejecucion
+   `EXITOSA` en la misma peticion. Responde `201` con la ejecucion terminada: `EXITOSA`, con un
+   resultado por municipio, o `FALLIDA`, sin ninguno.
+10. `GET /decisiones/{decision_run_id}/territoriales`: todas las ejecuciones territoriales de esas
+    decisiones, la mas reciente primero.
+11. `GET /territoriales/{territorial_run_id}`: una ejecucion, con su version de las reglas y sus
+    conteos.
+12. `GET /territoriales/{territorial_run_id}/municipios`: cada municipio con su carga de campo, su
+    lugar y por que, en orden de prioridad.
+
 **Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
 `X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.
 
@@ -62,6 +75,11 @@ ETIQUETAS = [
     {
         "name": "decisiones",
         "description": "Ejecuciones versionadas del Decision Engine y sus decisiones por cuenta.",
+    },
+    {
+        "name": "territorial",
+        "description": "Ejecuciones versionadas del Motor Territorial y sus resultados por "
+        "municipio: carga de campo y prioridad, no rutas.",
     },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
@@ -88,5 +106,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(corridas.router, dependencies=protegidas)
     app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(decisiones.router, dependencies=protegidas)
+    app.include_router(territorial.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app
