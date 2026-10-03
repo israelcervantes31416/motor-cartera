@@ -1,11 +1,12 @@
-# Decisiones de diseño — fase 1 y Decision Engine
+# Decisiones de diseño — fase 1, Decision Engine y Motor Territorial
 
-Por qué la fase 1 (v0.1.0) y el Decision Engine (v0.2.0) están hechos como están, y qué haría
-distinto o cuándo cambiaría cada decisión. El uso está en el [README](../README.md); aquí va el
-porqué.
+Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0) y el Motor Territorial (v0.3.0) están
+hechos como están, y qué haría distinto o cuándo cambiaría cada decisión. El uso está en el
+[README](../README.md); aquí va el porqué.
 
-Las secciones 1 a 15 son de la fase 1, y las 16 a 22, del Decision Engine. Donde las de la fase 1
-hablan de la orquestación de la fase 3, hoy es la orquestación durable de v0.5.0.
+Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine, y las 23 a 30, del Motor
+Territorial. Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la
+orquestación durable de v0.5.0.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -29,6 +30,14 @@ hablan de la orquestación de la fase 3, hoy es la orquestación durable de v0.5
 20. [POST síncrono y semántica 201](#20-post-síncrono-y-semántica-201)
 21. [Historial y vocabulario versionado](#21-historial-y-vocabulario-versionado)
 22. [Qué queda para la orquestación, y qué no resuelve v0.2.0](#22-qué-queda-para-la-orquestación-y-qué-no-resuelve-v020)
+23. [El territorio es un municipio](#23-el-territorio-es-un-municipio)
+24. [Carga operativa, no riesgo crediticio](#24-carga-operativa-no-riesgo-crediticio)
+25. [Agregar en PostgreSQL antes de entrar al núcleo](#25-agregar-en-postgresql-antes-de-entrar-al-núcleo)
+26. [territorial/v1 consume decision/v1](#26-territorialv1-consume-decisionv1)
+27. [Persistencia territorial e idempotencia](#27-persistencia-territorial-e-idempotencia)
+28. [Publicación todo-o-nada](#28-publicación-todo-o-nada)
+29. [API e historial territorial](#29-api-e-historial-territorial)
+30. [Por qué v0.3 no es ruteo](#30-por-qué-v03-no-es-ruteo)
 
 ---
 
@@ -686,3 +695,278 @@ nuevos.
 - observabilidad productiva: hay bitácora, pero no métricas, trazas ni alertas.
 
 v0.2.0 decide y explica cada decisión. No la ejecuta.
+
+## 23. El territorio es un municipio
+
+**Decisión.** En `territorial/v1`, un territorio es exactamente un municipio:
+`cve_entidad + cve_municipio`, dos y tres dígitos ASCII como texto (`"09"` y `"002"` dan
+`"09002"`). No hay regiones, zonas, colonias, códigos postales ni coordenadas, y no se guardan
+nombres.
+
+**Por qué.**
+
+- **Es lo que la cartera trae.** `cartera/v1` exige las dos claves en cada cuenta. Un territorio
+  más fino pediría datos que la cartera no tiene; uno más grueso, como la entidad, escondería
+  justo la concentración que importa: casi toda la cartera sintética está en Puebla.
+- **Es una unidad que la operación reconoce.** El trabajo de campo se reparte por municipios, y
+  la clave del Marco Geoestadístico del INEGI es pública y estable.
+- **La clave se deriva, no se guarda.** `ResultadoTerritorial` guarda `cve_entidad` y
+  `cve_municipio`, y `clave_territorio` se arma al responder: una copia podría dejar de
+  coincidir con sus partes.
+
+**Forma, no catálogo.** El núcleo exige dos y tres dígitos ASCII, pero no que el municipio
+exista: el proyecto todavía no tiene el catálogo del INEGI. `cartera/v1` acepta claves con dígitos
+de otros alfabetos; `territorial/v1` no, y si un agregado no cumple la forma, la ejecución queda
+`FALLIDA` sin publicar ningún municipio. Una prueba del servicio lo exige.
+
+**Qué haría distinto.** Con el catálogo del INEGI, validaría las claves en el contrato y no en el
+motor: una clave que no existe es un dato malo de la cartera, no un problema de organización.
+
+## 24. Carga operativa, no riesgo crediticio
+
+**Decisión.** La carga de un municipio sale solo de cuántas de sus cuentas tienen `CAMPO` como
+canal recomendado: `SIN_CARGA` (0), `BAJA` (1 a 4), `MEDIA` (5 a 19) y `ALTA` (20 o más). Los
+municipios con carga se ordenan por `cuentas_campo DESC`, `saldo_campo DESC` y
+`clave_territorio ASC`, y reciben un lugar desde 1; los `SIN_CARGA` van al final, sin lugar.
+
+**Por qué cuentas y no saldo.** La carga mide trabajo: cuántas cuentas hay que gestionar en
+campo. El riesgo y el monto de cada cuenta ya los pesó `decision/v1` al recomendarle un canal
+(ver 16): una cuenta llega a `CAMPO` por su atraso y su saldo. Volver a pesar el saldo en el
+territorio lo contaría dos veces.
+
+**El saldo solo desempata.** Entre dos municipios con las mismas cuentas de campo va primero el
+de más saldo de campo: a igual trabajo, conviene empezar por donde hay más en juego. Pero nunca
+pone delante a un municipio con menos cuentas de campo, y no cambia la carga.
+
+**Sin puntaje.** El orden es lexicográfico, no un número que mezcle cuentas y pesos. Cada lugar
+se explica con los valores que el resultado expone, y no hay pesos que calibrar ni que
+justificar. Cada municipio trae un motivo, de un catálogo cerrado de cuatro códigos, con el
+conteo que decidió su carga.
+
+**Los `SIN_CARGA` también se publican.** Un municipio con cuentas y sin trabajo de campo sigue
+siendo parte de la cartera, y si faltara en el resultado se confundiría con uno sin cuentas. Va
+al final, por clave, con `posicion_campo` en `null`: no tiene lugar en un orden de trabajo de
+campo, y un `0` diría otra cosa.
+
+**Los umbrales son sintéticos.** `5` y `20` son demostrativos y propios de este proyecto público,
+como el umbral de saldo de `decision/v1`: no son propietarios ni una recomendación real de
+cobranza. Viven en el código y no en la configuración, por la misma razón que aquel (ver 16).
+
+**Qué haría distinto.** Con datos reales de capacidad, como cuántas cuentas atiende un gestor al
+día, los umbrales saldrían de ahí y no de números redondos, y la carga podría expresarse en días
+de trabajo. Sería otra versión de las reglas.
+
+## 25. Agregar en PostgreSQL antes de entrar al núcleo
+
+**Decisión.** `territorial/ejecuciones.py` agrega las decisiones con una sola consulta: un
+`GROUP BY cve_entidad, cve_municipio` sobre `decision_cuenta JOIN cuenta`, con `COUNT(*)` y
+`SUM(saldo_total)` y, para lo que es de campo, `COUNT(*) FILTER` y `SUM(saldo_total) FILTER`
+sobre `canal_recomendado = 'CAMPO'`, con `COALESCE` a `0`. A Python llega una fila por municipio,
+que pasa por `EntradaTerritorio`; después `priorizar_territorios` los evalúa y ordena, una sola
+vez.
+
+**Por qué en la base.** Una cartera tiene miles de cuentas y unos cientos de municipios. Agregar
+en Python obligaría a traer cada cuenta para quedarse con unas cuantas filas; la base hace la
+suma sin mover los datos. Una prueba exige que la agregación sea una sola sentencia y que diez
+veces más cuentas no cambien cuántas sentencias se ejecutan.
+
+**El núcleo no agrega.** `territorial/reglas.py` recibe municipios ya agregados y no sabe de
+cuentas, igual que `decision/reglas.py` no sabe de corridas (ver 16). Así se prueba sin base, con
+golden tests en cada frontera y en cada desempate, y no puede volver a decidir una cuenta.
+`EntradaTerritorio` es la barrera: valida tipos exactos y que los agregados sean consistentes
+entre sí, y si uno no lo es, no se publica nada.
+
+**Lo que cuenta como campo es la decisión.** El `FILTER` es sobre
+`DecisionCuenta.canal_recomendado`, nunca sobre `Cuenta.canal`, que es el canal con que la cuenta
+llegó en la cartera. Una prueba arma una cartera en la que los dos se contradicen y exige que
+solo cuente el recomendado.
+
+**Exacto.** Los saldos llegan como `Decimal`, sin pasar por `float`, y sin cuentas de campo la
+suma es `0` y no `NULL`. Los municipios agregados tienen que sumar exactamente las decisiones de
+la ejecución: un JOIN o un filtro que perdiera filas lo descubre esa suma antes de publicar.
+
+**Qué haría distinto.** Con carteras de millones de cuentas, la consulta seguiría siendo una
+sola, pero habría que medirla. Si pesara, se podría agregar al decidir, cuando cada cuenta ya
+pasa por la memoria del Decision Engine.
+
+## 26. territorial/v1 consume decision/v1
+
+**Decisión.** `territorial/v1` solo organiza ejecuciones `EXITOSA` de `decision/v1`. La
+compatibilidad es un literal, `VERSION_DECISION_COMPATIBLE = "decision/v1"`, y no se toma de
+`VERSION_REGLAS_DECISION`. Con cualquier otra fuente, el servicio levanta
+`DecisionNoTerritorializable` antes de registrar nada, y la API responde
+`409 DECISION_NO_TERRITORIALIZABLE`.
+
+**Por qué un literal.** Las reglas territoriales dependen del vocabulario de las decisiones: lo
+que cuenta como campo es el canal `CAMPO` de `decision/v1`. Si `decision/v2` cambiara sus canales
+o lo que quiere decir `CAMPO`, `territorial/v1` seguiría contando como antes y publicaría
+resultados con otro sentido. Si la compatibilidad siguiera a `VERSION_REGLAS_DECISION`, el día que
+el Decision Engine pasara a `decision/v2`, `territorial/v1` la aceptaría sola. Qué versión
+territorial consume qué versión de decisión es parte del contrato histórico, y cambiarlo es otra
+versión.
+
+**Solo una `EXITOSA`.** Una ejecución `EN_PROCESO` o `FALLIDA` no publicó decisiones (ver 18), y
+organizarla daría un territorial vacío o parcial. Por eso es un `409` y no un `201` con una
+`FALLIDA`: no se cumple la precondición, y no hay ejecución territorial que registrar.
+
+**Y completa.** Dentro de la transacción que publica, el servicio vuelve a revisar la fuente: lo
+que la ejecución de decisión dice que evaluó y decidió, las decisiones que de verdad tiene y las
+que son de cuentas de su propia corrida tienen que ser el mismo número, mayor que cero. La base
+garantiza que cada decisión apunta a una cuenta, pero no que sea de esa corrida.
+
+**Qué haría distinto.** Cuando exista `decision/v2`, la pregunta será si `territorial/v1` puede
+consumirla sin cambiar ningún resultado posible. Si puede, la compatibilidad pasaría a ser un
+conjunto de versiones; si no, haría falta `territorial/v2`.
+
+## 27. Persistencia territorial e idempotencia
+
+**Decisión.** Cada vez que se organizan unas decisiones se registra una `EjecucionTerritorial`:
+de qué ejecución de decisión, con qué `version_reglas`, su estado (`EN_PROCESO`, `EXITOSA` o
+`FALLIDA`), cuándo empezó y terminó, cuántos municipios evaluó y cuántos publicó. Cada municipio
+publicado es un `ResultadoTerritorial`: sus cuatro agregados, su carga, su lugar y sus motivos en
+JSONB.
+
+**Cuelga de la ejecución de decisión, no de la corrida.** Una corrida se puede decidir con varias
+versiones de las reglas, y un resultado territorial tiene que decir exactamente de qué decisiones
+salió. La corrida, su `run_id` y la versión de decisión se obtienen siguiendo esa llave; no se
+copian (ver 17). El identificador público es `territorial_run_id`: no se llama `run_id`, que es
+el de la corrida, ni `decision_run_id`.
+
+**Los agregados se guardan.** Además de la carga y el lugar, cada resultado guarda los conteos y
+los saldos de los que salió, para volver a explicarlo sin rehacer la agregación. Los conteos son
+`BIGINT` y los saldos `NUMERIC(24,2)`: suman muchas cuentas y no caben en el `NUMERIC(14,2)` de una
+sola.
+
+**Idempotencia en dos niveles, como en el Decision Engine (ver 19).** La revisión previa en
+`abrir_ejecucion` es la vía amable: si esas decisiones ya tienen una ejecución `EXITOSA` con
+`territorial/v1`, levanta `TerritorialYaGenerado` y no registra nada. La garantía es el índice
+único parcial `ux_ejecucion_territorial_exitosa` sobre `(ejecucion_decision_id, version_reglas)`,
+que solo cuenta las `EXITOSA`. Si dos ejecuciones compiten, la que cierra segunda choca con él:
+revierte sus resultados, queda `FALLIDA` y levanta `TerritorialYaGenerado` con la que ganó. La
+restricción se reconoce por su nombre, `diag.constraint_name`, y no por el texto del error. Una
+`FALLIDA` se reintenta con otra ejecución, y `territorial/v2` podrá organizar las mismas
+decisiones sin chocar con `territorial/v1`.
+
+**Cada municipio y cada lugar, una vez.** `uq_resultado_territorial_municipio` impide publicar un
+municipio dos veces en la misma ejecución, y `ux_resultado_territorial_posicion_campo`, que dos
+municipios compartan lugar. Los `SIN_CARGA` tienen el lugar en `NULL`, y de esos puede haber
+muchos.
+
+**Vocabulario sin `CHECK`.** La carga y el código de cada motivo se guardan como texto, igual que
+las decisiones (ver 21): una versión nueva de las reglas trae su vocabulario sin migrar la tabla.
+El estado sí lleva `CHECK`, porque es estructural.
+
+**Nombres explícitos.** Las llaves foráneas y la restricción única llevan nombre propio
+(`fk_ejecucion_territorial_decision`, `fk_resultado_territorial_ejecucion` y
+`uq_resultado_territorial_municipio`): los de la convención pasarían de los 63 caracteres de
+PostgreSQL, y la base guardaría unos recortados que no coincidirían con los del modelo. Sin
+cascada, como en el Decision Engine: borrar una ejecución con resultados falla en lugar de
+llevarse la evidencia.
+
+**Qué haría distinto.** `resultado_territorial` crece con cada ejecución, como `decision_cuenta`,
+pero mucho menos: una fila por municipio, no por cuenta. Antes de particionarla, archivaría las
+ejecuciones viejas.
+
+## 28. Publicación todo-o-nada
+
+**Decisión.** Como en el Decision Engine (ver 18), una ejecución territorial corre en dos
+transacciones:
+
+- **T0.** Revisa la fuente, registra la ejecución `EN_PROCESO` y hace `COMMIT` antes de calcular
+  nada.
+- **T1.** Toma la ejecución con `SELECT ... FOR UPDATE`, vuelve a revisar la fuente y que esté
+  completa, agrega en PostgreSQL, aplica `territorial/v1`, inserta todos los municipios en un
+  solo `INSERT`, comprueba que estén completos y cierra la ejecución `EXITOSA`. Un solo `COMMIT`
+  publica todo.
+
+Si algo falla en T1, el `ROLLBACK` se lleva los resultados del intento, y en otra transacción la
+ejecución queda `FALLIDA`, con `territorios_publicados = 0` y el motivo en `detalle`, sin trazas.
+
+**Completos antes de publicar.** Los municipios agregados, los evaluados por el núcleo y las
+filas guardadas tienen que ser el mismo número, mayor que cero, y sumar exactamente las
+decisiones de la fuente, contados dentro de la misma transacción. Unas decisiones que no dan
+ningún municipio no se publican con un éxito vacío.
+
+**`territorios_evaluados` es evidencia.** En una `FALLIDA` dice hasta dónde llegó el núcleo,
+aunque no se haya publicado nada; `territorios_publicados` es cero.
+
+**Un worker por ejecución, y un fallo tardío no degrada.** Con el `FOR UPDATE`, un segundo worker
+con la misma ejecución espera y la encuentra terminada. La transición a `FALLIDA` es un `UPDATE`
+condicionado a que la ejecución siga `EN_PROCESO` en la base: si otro worker ya la dejó `EXITOSA`,
+el fallo queda solo en la bitácora (ver 19).
+
+**Un solo `INSERT`.** Los municipios se insertan en bloque, con el lugar de los `SIN_CARGA`
+escrito como `NULL`. Sin eso, el ORM omite las columnas en `None` y parte el bloque en dos
+sentencias; lo descubrió la prueba que cuenta sentencias.
+
+**Qué haría distinto.** Aquí la transacción es corta: unos cientos de filas. Si el territorio se
+volviera más fino que el municipio, revisaría el tamaño del `INSERT` antes que la forma de
+publicar.
+
+## 29. API e historial territorial
+
+**Decisión.** Cuatro operaciones, con las mismas reglas que las del Decision Engine (ver 20 y
+21):
+
+- `POST /decisiones/{decision_run_id}/territoriales` organiza en la misma petición y responde
+  `201` con `Location: /territoriales/{territorial_run_id}`, termine `EXITOSA` o `FALLIDA` (D1).
+- `GET /decisiones/{decision_run_id}/territoriales` es el historial: todas las ejecuciones
+  territoriales de esas decisiones, en cualquier estado y versión, de la más reciente a la más
+  antigua; el id interno solo desempata dos que empezaron en el mismo instante.
+- `GET /territoriales/{territorial_run_id}` es una ejecución, con el `decision_run_id` de sus
+  decisiones y el `run_id` de su corrida, por JOIN.
+- `GET /territoriales/{territorial_run_id}/municipios` son los municipios que publicó.
+
+**Síncrono, como decidir.** Organizar cuesta menos que decidir: la base agrega y al núcleo llega
+una fila por municipio. El POST busca la ejecución de decisión, copia su id interno y el `run_id`
+de su corrida, y termina la transacción de la sesión HTTP antes de llamar al servicio: no retiene
+una conexión mientras organiza ni deja un objeto del ORM que pueda caducar. Una prueba exige que
+esa transacción haya terminado al entrar al servicio.
+
+**D2: `409` sin `Location`.** Si esas decisiones ya se organizaron con éxito con `territorial/v1`,
+el POST responde `409 TERRITORIAL_YA_GENERADO`, también cuando lo detecta el índice en una
+carrera. No nombra la ejecución, por las mismas razones que el `409` de las decisiones (ver 21):
+se descubre en el historial.
+
+**Errores.** Los nuevos usan `ErrorRespuesta` sin cambiarla: `DECISION_NO_TERRITORIALIZABLE`,
+`TERRITORIAL_YA_GENERADO`, `TERRITORIAL_NO_ENCONTRADO` y `TERRITORIAL_NO_PUBLICADO`, y se
+reutiliza `DECISION_NO_ENCONTRADA`. Su `run_id` sigue siendo el de la corrida cuando se conoce:
+convertirlo en `decision_run_id` o en `territorial_run_id` cambiaría lo que el campo quiere decir
+en toda la API.
+
+**Municipios, solo de una `EXITOSA`.** Los de una `EN_PROCESO` o una `FALLIDA` dan
+`409 TERRITORIAL_NO_PUBLICADO`, y no una lista vacía, que diría que no había municipios. Se
+sirven en el orden de `territorial/v1`: `posicion_campo ASC NULLS LAST` y, entre los que no
+tienen lugar, por clave. El `total` es un `COUNT` de la tabla, no el contador de la ejecución, y
+cada página son tres consultas fijas, sin N+1. La paginación es la de siempre, con `OFFSET`
+(ver 8): una ejecución `EXITOSA` ya no cambia, así que las páginas no saltan ni repiten
+municipios.
+
+**Vocabulario histórico.** `carga` y `codigo` viajan como `string`, sin enum, igual que el
+vocabulario de las decisiones (ver 21): la API sirve un `CRITICA` o un `REGLA_TERRITORIAL_FUTURA`
+que guardó otra versión de las reglas, y una prueba lo exige.
+
+**Qué haría distinto.** Si organizar dejara de ser barato, el POST pasaría a ser asíncrono como
+se describe en la sección 20, sin cambiar lo que el `201` quiere decir.
+
+## 30. Por qué v0.3 no es ruteo
+
+**Decisión.** v0.3.0 responde dónde se concentra la carga operativa de campo y qué municipios
+conviene atender primero. No responde qué ruta física seguir, en qué secuencia visitar las
+cuentas ni cuánto se tarda: eso es v0.4.0, el Motor de Ruteo.
+
+**Por qué separarlos.** Son problemas distintos, con datos distintos. Priorizar municipios solo
+necesita lo que la cartera y las decisiones ya tienen. Rutear necesita coordenadas, distancias y
+tiempos entre puntos, gestores con su capacidad y sus horarios, y un algoritmo de ruteo (TSP o
+VRP) con sus aproximaciones. Mezclarlos haría que el orden de los municipios dependiera de datos
+que el proyecto todavía no tiene.
+
+**Lo que v0.3.0 no tiene:** coordenadas, distancias, TSP, VRP, gestores ni rutas. `posicion_campo`
+es una prioridad entre municipios, no una parada en un recorrido.
+
+**Lo que queda para la orquestación durable (v0.5.0).** Lo mismo que en el Decision Engine (ver
+22): reconciliar una ejecución territorial que quedó `EN_PROCESO` porque su proceso murió después
+de T0, sacar el trabajo de la petición HTTP a un worker con cola, y organizar cada ejecución de
+decisión en cuanto se publica.
+
+v0.3.0 organiza el trabajo de campo y explica cada lugar. No lo recorre.

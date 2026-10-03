@@ -1,7 +1,7 @@
 # motor-cartera
 
-Motor de ingesta, validación, segmentación y decisión de cartera de crédito al consumo,
-construido sobre **datos sintéticos**, con una API REST para operarlo.
+Motor de ingesta, validación, segmentación, decisión y priorización territorial de cartera de
+crédito al consumo, construido sobre **datos sintéticos**, con una API REST para operarlo.
 
 ## De qué se trata
 
@@ -21,6 +21,10 @@ Sobre la cartera ya publicada, el **Decision Engine** decide cada cuenta con reg
 versionadas: en qué segmento de mora está, qué prioridad tiene, por qué canal conviene
 gestionarla y por qué. Publica las decisiones de toda la corrida o ninguna, y cada una se puede
 volver a explicar.
+
+Sobre esas decisiones, el **Motor Territorial** organiza el trabajo de campo por municipio:
+cuántas cuentas tienen `CAMPO` como canal recomendado en cada uno, cuánta carga operativa
+concentra y qué municipios conviene atender primero. Prioriza territorios; no traza rutas.
 
 ## Datos
 
@@ -42,11 +46,13 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay dos versiones terminadas, y cada una es una rebanada vertical que funciona de punta a punta:
+Hay tres versiones terminadas, y cada una es una rebanada vertical que funciona de punta a punta:
 
-- **v0.1.0 — ingesta y certificación** (la fase 1): una cartera se publica solo si pasa el
+- **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
   contrato, y lo que no pasa queda con su motivo.
-- **v0.2.0 — Decision Engine**: sobre la cartera publicada, una decisión explicable por cuenta.
+- **v0.2.0 ✅ Decision Engine**: sobre la cartera publicada, una decisión explicable por cuenta.
+- **v0.3.0 ✅ Motor Territorial**: sobre las decisiones publicadas, la carga de campo de cada
+  municipio y el orden en que conviene atenderlos.
 
 Lo que ya hace:
 
@@ -60,13 +66,19 @@ Lo que ya hace:
   canal recomendado, y explica cada decisión con sus motivos
 - [x] Ejecuciones de decisión persistidas y auditables: todas las decisiones de una corrida o
   ninguna, una sola vez por versión de las reglas, con su historial por la API
+- [x] Motor Territorial (`territorial/v1`): agrupa por municipio las decisiones de una ejecución,
+  asigna a cada municipio una carga de campo y un lugar en el orden de atención, y explica cada
+  uno con su motivo
+- [x] Ejecuciones territoriales persistidas y auditables: agregadas en PostgreSQL, todos los
+  municipios o ninguno, una sola vez por versión de las reglas, con su historial por la API
 - [x] `docker compose up` levanta todo; CI con PostgreSQL y prueba del compose en limpio
 
-Lo que todavía no hace:
+Lo que sigue:
 
-- [ ] Motor territorial: agrupamiento y ruteo
-- [ ] Orquestación durable (v0.5.0): colas, reintentos y trabajo que sobrevive a un reinicio
-- [ ] Despliegue en nube y observabilidad
+- [ ] **v0.4.0 — Motor de Ruteo**: qué ruta física seguir, en qué secuencia visitar las cuentas y
+  con qué distancias y tiempos
+- [ ] **v0.5.0 — Orquestación durable**: colas, reintentos y trabajo que sobrevive a un reinicio
+- [ ] **v0.6.0 — Cloud + observabilidad**: despliegue en nube, métricas, trazas y alertas
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -213,10 +225,74 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/decisiones
 }
 ```
 
+**10. Organizar las decisiones por municipio** con el Motor Territorial:
+
+```bash
+curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>/territoriales
+```
+
+También es síncrono: cuando responde, ya organizó todos los municipios. Devuelve `201` con la
+ejecución terminada y su dirección en `Location`:
+
+```json
+{
+  "territorial_run_id": "…",
+  "decision_run_id": "…",
+  "run_id": "…",
+  "version_reglas": "territorial/v1",
+  "estado": "EXITOSA",
+  "territorios_evaluados": 541,
+  "territorios_publicados": 541,
+  "detalle": "Se organizaron 9,800 decisiones en 541 municipios con territorial/v1."
+}
+```
+
+**11. Consultar la ejecución territorial** por su `territorial_run_id`, con el
+`decision_run_id` de las decisiones que organizó y el `run_id` de su corrida:
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>
+```
+
+**12. Listar el historial territorial de esas decisiones:** todas sus ejecuciones, en cualquier
+estado y versión de las reglas, de la más reciente a la más antigua.
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>/territoriales
+```
+
+**13. Ver cada municipio**, en el orden en que conviene atenderlos, con su carga y su motivo:
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/territoriales/<territorial_run_id>/municipios?por_pagina=1"
+```
+
+```json
+{
+  "territorial_run_id": "…", "decision_run_id": "…", "run_id": "…",
+  "version_reglas": "territorial/v1", "estado": "EXITOSA",
+  "total": 541, "pagina": 1, "por_pagina": 1,
+  "elementos": [
+    {
+      "clave_territorio": "21074",
+      "cve_entidad": "21",
+      "cve_municipio": "074",
+      "cuentas_total": 1414,
+      "saldo_total": "48455164.68",
+      "cuentas_campo": 425,
+      "saldo_campo": "22464492.42",
+      "carga": "ALTA",
+      "posicion_campo": 1,
+      "motivos": [{"codigo": "CARGA_CAMPO_20_MAS", "campo": "cuentas_campo", "valor": "425"}]
+    }
+  ]
+}
+```
+
 Todo el flujo, con la verificación de cada código HTTP, está en un solo script que corre igual
-en tu máquina que en el CI; al final pide decidir la misma corrida otra vez y exige el `409`.
-Necesita un archivo que no se haya subido antes, porque el mismo archivo no se publica dos
-veces:
+en tu máquina que en el CI; al final pide decidir la misma corrida y organizar las mismas
+decisiones otra vez, y exige los dos `409`. Necesita un archivo que no se haya subido antes,
+porque el mismo archivo no se publica dos veces:
 
 ```bash
 docker compose exec api motor-cartera generar --destino datos/humo.xlsx --semilla 7
@@ -276,6 +352,73 @@ El núcleo de las reglas es puro: no lee la base, la configuración ni el reloj,
 cuenta con la misma versión da siempre la misma decisión. Guardar las decisiones de una corrida
 es trabajo de otra capa, que las publica todas o ninguna.
 
+## El Motor Territorial
+
+**Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
+el canal recomendado, y de su cuenta, el saldo y el municipio.
+
+**Agrupación:** un territorio es un municipio, `cve_entidad + cve_municipio`: `"21"` y `"074"`
+dan `"21074"`. Las claves son las de la cartera, validadas por su forma.
+
+**Métricas**, por municipio, sobre las decisiones de esa ejecución:
+
+- `cuentas_total`: cuántas cuentas tiene;
+- `saldo_total`: su saldo sumado;
+- `cuentas_campo`: cuántas tienen `CAMPO` como canal recomendado. Cuenta la decisión, no el
+  canal con que la cuenta llegó en la cartera;
+- `saldo_campo`: el saldo de esas cuentas de campo.
+
+Las calcula PostgreSQL con un solo `GROUP BY`: al núcleo llega una fila por municipio, no una por
+cuenta.
+
+**Carga**, solo por las cuentas de campo:
+
+| Cuentas de campo | Carga | Motivo |
+|---|---|---|
+| 0 | `SIN_CARGA` | `SIN_CARGA_CAMPO` |
+| 1 a 4 | `BAJA` | `CARGA_CAMPO_1_4` |
+| 5 a 19 | `MEDIA` | `CARGA_CAMPO_5_19` |
+| 20 o más | `ALTA` | `CARGA_CAMPO_20_MAS` |
+
+**Orden:** los municipios con cuentas de campo reciben un lugar, `posicion_campo`, desde 1 y sin
+huecos, por:
+
+1. `cuentas_campo`, de mayor a menor;
+2. `saldo_campo`, de mayor a menor;
+3. `clave_territorio`, de menor a mayor.
+
+Los `SIN_CARGA` van al final, por clave y sin lugar (`null`). **El saldo no cambia la carga:
+solo desempata.** Un municipio con mucho saldo y pocas cuentas de campo conserva su carga, y
+nunca queda delante de otro con más cuentas de campo. No hay un puntaje que mezcle cuentas y
+pesos: cada lugar se explica con los valores que el resultado expone.
+
+**Los umbrales (5 y 20) son sintéticos y demostrativos**, propios de este proyecto público: no
+son propietarios, no vienen de ninguna operación real y no son una recomendación real de
+cobranza. Como el de `decision/v1`, viven en el código y no en la configuración.
+
+Con la cartera que el generador produce por omisión (semilla 31416), las 9,800 decisiones caen
+en 541 municipios: 27 con carga `ALTA`, 75 `MEDIA`, 301 `BAJA` y 138 `SIN_CARGA`. El primero es
+`21074`, con 425 cuentas de campo de 1,414: es el del ejemplo del paso 13.
+
+**Tres versiones, tres preguntas.** Ninguna es la versión del paquete:
+
+- `cartera/v1` (`VERSION_CONTRATO`): qué datos entran;
+- `decision/v1` (`VERSION_REGLAS_DECISION`): qué decisión recibe cada cuenta;
+- `territorial/v1` (`VERSION_REGLAS_TERRITORIAL`): cómo se organiza por territorio el trabajo de
+  campo.
+
+`territorial/v1` solo organiza decisiones de `decision/v1`. La compatibilidad es un literal:
+cuando el Decision Engine decida con `decision/v2`, `territorial/v1` no la acepta sola. Cada
+ejecución territorial guarda con qué reglas se calculó y cuelga de la ejecución de decisión que
+organizó, así que de un municipio se llega a sus decisiones, de ellas a la corrida y de la
+corrida al archivo.
+
+**v0.3 prioriza; v0.4 traza rutas.** v0.3.0 responde dónde se concentra la carga operativa de
+campo y qué municipios conviene atender primero. v0.4.0 responderá qué ruta física seguir, en
+qué secuencia visitar las cuentas y con qué distancias y tiempos. Por eso v0.3.0 no tiene
+coordenadas, distancias, TSP, VRP, gestores ni rutas: `posicion_campo` es una prioridad
+territorial, no una parada en un recorrido.
+
 ## La API
 
 | Método y ruta | Qué hace | Respuestas |
@@ -288,6 +431,10 @@ es trabajo de otra capa, que las publica todas o ninguna.
 | `GET /corridas/{run_id}/decisiones` | Historial: todas las ejecuciones de la corrida, la más reciente primero, paginado | 200, 401, 404, 422 |
 | `GET /decisiones/{decision_run_id}` | Una ejecución: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
 | `GET /decisiones/{decision_run_id}/cuentas` | La decisión de cada cuenta con sus motivos, paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
+| `POST /decisiones/{decision_run_id}/territoriales` | Organiza por municipio, con `territorial/v1` y en la misma petición, las decisiones de una ejecución `EXITOSA` de `decision/v1` | 201, 401, 404, 409, 422 |
+| `GET /decisiones/{decision_run_id}/territoriales` | Historial: todas las ejecuciones territoriales de esas decisiones, la más reciente primero, paginado | 200, 401, 404, 422 |
+| `GET /territoriales/{territorial_run_id}` | Una ejecución territorial: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
+| `GET /territoriales/{territorial_run_id}/municipios` | Cada municipio con su carga, su lugar y su motivo, en orden de prioridad y paginado; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -315,6 +462,19 @@ Dos reglas del Decision Engine que un cliente tiene que conocer:
   ejecución `EXITOSA` con `decision/v1`, el POST responde `409 DECISION_YA_GENERADA`, sin
   `Location` y sin nombrar la ejecución. La que publicó se encuentra en
   `GET /corridas/{run_id}/decisiones`, y su detalle en `GET /decisiones/{decision_run_id}`.
+
+El Motor Territorial sigue las mismas dos reglas:
+
+- **D1: `201` con `EXITOSA` o con `FALLIDA`.** `POST /decisiones/{decision_run_id}/territoriales`
+  responde `201` con `Location: /territoriales/{territorial_run_id}` siempre que crea la
+  ejecución. Una `FALLIDA` no publica ningún municipio, trae el motivo en `detalle` y se
+  reintenta con otro POST.
+- **D2: `409 TERRITORIAL_YA_GENERADO`, sin `Location`.** Unas decisiones se organizan con éxito
+  una sola vez por versión de las reglas. Si ya lo están con `territorial/v1`, el POST responde
+  `409` sin `Location` y sin nombrar la ejecución; la que publicó se descubre en el historial,
+  `GET /decisiones/{decision_run_id}/territoriales`. Una ejecución de decisión que no terminó
+  `EXITOSA` o que no es de `decision/v1` da `409 DECISION_NO_TERRITORIALIZABLE`, y no se
+  registra nada.
 
 Por qué cada código es el que es (201 y no 202, 422 y no 400, cuándo 409, por qué un
 archivo con registros inválidos no es un error HTTP, por qué una ejecución `FALLIDA` también
@@ -359,13 +519,17 @@ se llame `*_test`**. Dentro del compose: `docker compose exec api pytest`.
 Las reglas de decisión no necesitan base: `pytest tests/test_decision_reglas.py` corre sus
 golden tests, que fijan la decisión exacta, motivos incluidos, en cada frontera de días y de
 saldo, y exigen que el núcleo sea determinista y no cargue nada fuera de la biblioteca estándar.
+Las territoriales tampoco: `pytest tests/test_territorial_reglas.py` fija la carga, el lugar y
+el motivo exactos en cada frontera y en cada desempate, y exige que el resultado no dependa del
+orden en que llegan los municipios.
 
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
-servicio, que también cubren el Decision Engine: la transacción todo o nada, la concurrencia
-entre ejecuciones, la idempotencia y la API del historial, incluidas decisiones de otras
-versiones de las reglas; y el `docker compose up` completo en un runner limpio, con la prueba de
-humo de la ingesta y del Decision Engine vía HTTP.
+servicio, que también cubren el Decision Engine y el Motor Territorial: la agregación en la
+base, la transacción todo o nada, la concurrencia entre ejecuciones, la idempotencia y la API
+del historial, incluidos resultados de otras versiones de las reglas; y el `docker compose up`
+completo en un runner limpio, con la prueba de humo de la ingesta, del Decision Engine y del
+Motor Territorial vía HTTP.
 
 ## Arquitectura
 
@@ -381,9 +545,14 @@ src/motor_cartera/
 ├── decision/
 │   ├── reglas.py      decision/v1: el núcleo puro y determinista, sin base ni framework
 │   └── ejecuciones.py Aplica el núcleo sobre PostgreSQL, en una transacción: todo o nada
-├── db/                Modelo: Corrida, Cuenta, Rechazo, EjecucionDecision y DecisionCuenta
+├── territorial/
+│   ├── reglas.py      territorial/v1: el dominio puro (carga, orden y motivos), sin base
+│   └── ejecuciones.py Agrega en PostgreSQL, aplica el núcleo y persiste: todo o nada
+├── db/                Modelo: la corrida, sus cuentas y rechazos, y las ejecuciones con lo que
+│                      publican (decisiones por cuenta y resultados por municipio)
 ├── generador/         Cartera sintética, único origen de datos del proyecto
-├── api/               FastAPI: corridas, cartera, decisiones; esquemas, errores y autenticación
+├── api/               FastAPI: corridas, cartera, decisiones y territorial; esquemas, errores y
+│                      autenticación
 └── cli.py             Comandos: generar y cargar
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo del flujo completo y control de archivos trackeados
@@ -403,6 +572,13 @@ cuántas cuentas evaluó y publicó. Cada capa hace una sola cosa: `reglas.py` d
 sin saber de bases ni de HTTP, `ejecuciones.py` aplica ese núcleo a toda la corrida y publica
 todo o nada, y `api/decisiones.py` solo traduce el resultado a HTTP.
 
+Los resultados por municipio cuelgan de una **EjecucionTerritorial**, y esta, de la ejecución de
+decisión que organizó, no de la corrida: una corrida se puede decidir con varias versiones de las
+reglas, y lo territorial tiene que decir exactamente de qué decisiones salió. Las capas se
+repiten: `territorial/reglas.py` es el dominio puro, que evalúa y ordena municipios ya
+agregados; `territorial/ejecuciones.py` agrega en PostgreSQL, aplica ese núcleo y persiste todos
+los municipios o ninguno, en una transacción; y `api/territorial.py` solo traduce a HTTP.
+
 ## Limitaciones conocidas
 
 - **La ingesta corre dentro del proceso de la API** (`BackgroundTasks`). Si la API se
@@ -419,6 +595,19 @@ todo o nada, y `api/decisiones.py` solo traduce el resultado a HTTP.
   intento sobre la misma corrida, porque solo bloquea una `EXITOSA`, pero el historial la sigue
   mostrando en proceso. Cerrarla, reintentarla y sacar la decisión de la petición HTTP es
   trabajo de la orquestación durable, v0.5.0.
+- **El POST territorial también es síncrono.** `POST /decisiones/{decision_run_id}/territoriales`
+  organiza todos los municipios antes de responder. Cuesta menos que decidir, porque la base
+  agrega y al núcleo llega una fila por municipio, pero la conexión HTTP queda abierta hasta que
+  termina.
+- **Una ejecución territorial tampoco sobrevive a su proceso.** Si el proceso muere después de
+  registrarla (T0), la transacción que publica revierte, pero la ejecución queda `EN_PROCESO` y
+  nadie la cierra. No bloquea otro intento, porque el índice solo cuenta las `EXITOSA`. Su
+  reconciliación es trabajo de la orquestación durable, v0.5.0.
+- **`territorial/v1` solo consume `decision/v1`.** Las decisiones de otra versión dan
+  `409 DECISION_NO_TERRITORIALIZABLE`; organizarlas pedirá otra versión de las reglas
+  territoriales.
+- **Sin ruteo.** `posicion_campo` dice qué municipio atender primero, no cómo recorrerlo: no hay
+  coordenadas, distancias, secuencia de visitas ni gestores. Eso es v0.4.0, el Motor de Ruteo.
 - **Una cartera se publica una vez por archivo, no por contenido.** La misma cartera en
   xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
   que es la misma, lo deja a la vista, pero todavía no lo impide.
@@ -430,12 +619,13 @@ todo o nada, y `api/decisiones.py` solo traduce el resultado a HTTP.
   cuando el archivo ya llegó completo, y no hay tope a lo que un zip descomprime. El límite
   real le toca a un proxy delante de la API.
 - **El contrato no valida contra el catálogo INEGI completo**: revisa la forma de las
-  claves, no que existan. Y un saldo con más de dos decimales se redondea al guardarse en
-  lugar de rechazarse.
+  claves, no que existan. El Motor Territorial agrupa por esas mismas claves, así que un
+  municipio que no existe se organizaría como cualquier otro. Y un saldo con más de dos
+  decimales se redondea al guardarse en lugar de rechazarse.
 - **Rendimiento medido solo hasta 10,000 filas**: menos de 3 s por corrida en una laptop,
   casi todo leyendo el Excel. A la escala de cientos de miles de cuentas no está medido. El
-  Decision Engine se prueba en el CI con las 9,800 cuentas de la prueba de humo, y tampoco está
-  medido más allá.
+  Decision Engine y el Motor Territorial se prueban en el CI con las 9,800 cuentas de la prueba
+  de humo, y tampoco están medidos más allá.
 - **Una sola API key**, sin usuarios, permisos ni rotación.
 - **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se desarrolla el
   proyecto no tiene Docker, así que en Windows y macOS no está probado.
