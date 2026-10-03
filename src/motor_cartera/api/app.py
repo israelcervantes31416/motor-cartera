@@ -10,15 +10,16 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
-from motor_cartera.api import cartera, corridas, decisiones, salud, territorial
+from motor_cartera.api import cartera, corridas, decisiones, ruteo, salud, territorial
 from motor_cartera.api.errores import registrar_manejadores
 from motor_cartera.api.seguridad import exigir_api_key
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
 
 DESCRIPCION = """
-Ingesta, validacion, resumen, decision por cuenta y organizacion territorial de una cartera de
-credito al consumo. **Todos los datos son sinteticos**: los produce el generador del proyecto.
+Ingesta, validacion, resumen, decision por cuenta, organizacion territorial y ruteo sintetico
+de una cartera de credito al consumo. **Todos los datos son sinteticos**: los produce el generador
+del proyecto.
 
 **Flujo.**
 
@@ -54,6 +55,23 @@ versionadas. Prioriza municipios; no traza rutas:
 12. `GET /territoriales/{territorial_run_id}/municipios`: cada municipio con su carga de campo, su
     lugar y por que, en orden de prioridad.
 
+Con los municipios organizados, el Motor de Ruteo traza, dentro de cada municipio con trabajo de
+campo, en que secuencia visitar sus cuentas `CAMPO`, con reglas versionadas. **Las rutas son
+sinteticas**: cada cuenta recibe un punto determinista en un plano local de 10 km por lado, propio
+de su municipio, y las distancias son Manhattan, en metros sinteticos. No son latitud ni longitud,
+domicilios, calles, trafico ni tiempos:
+
+13. `POST /territoriales/{territorial_run_id}/ruteos` rutea los municipios de una ejecucion
+    territorial `EXITOSA` en la misma peticion. Responde `201` con la ejecucion terminada:
+    `EXITOSA`, con una ruta por municipio con cuentas de campo, o `FALLIDA`, sin ninguna.
+14. `GET /territoriales/{territorial_run_id}/ruteos`: todas las ejecuciones de ruteo de esa
+    ejecucion territorial, la mas reciente primero.
+15. `GET /ruteos/{ruteo_run_id}`: una ejecucion, con su version de las reglas y sus conteos.
+16. `GET /ruteos/{ruteo_run_id}/rutas`: la ruta de cada municipio, en el orden de prioridad
+    territorial, con sus distancias.
+17. `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas`: las paradas de un municipio, en
+    el orden de visita.
+
 **Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
 `X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.
 
@@ -81,6 +99,12 @@ ETIQUETAS = [
         "description": "Ejecuciones versionadas del Motor Territorial y sus resultados por "
         "municipio: carga de campo y prioridad, no rutas.",
     },
+    {
+        "name": "ruteo",
+        "description": "Ejecuciones versionadas del Motor de Ruteo, su ruta por municipio y sus "
+        "paradas en orden de visita. Coordenadas y distancias sinteticas: metros de un plano "
+        "local por municipio, no geografia real.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -107,5 +131,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(decisiones.router, dependencies=protegidas)
     app.include_router(territorial.router, dependencies=protegidas)
+    app.include_router(ruteo.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

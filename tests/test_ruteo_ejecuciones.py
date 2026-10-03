@@ -1044,6 +1044,37 @@ def test_si_una_parada_se_repite_la_base_lo_impide_y_no_es_una_carrera(tmp_path,
     assert _contadores(ejecucion) == (3, 0, 8, 0)
 
 
+@en_la_base
+def test_el_cierre_no_publica_rutas_ni_paradas_que_faltan(tmp_path):
+    # Las dos guardas del cierre, directo y dentro de una transaccion que despues se revierte: con
+    # una ruta menos que municipios con campo, o con las rutas guardadas pero sin sus paradas, la
+    # ejecucion no se cierra EXITOSA.
+    territorial = _organizada(tmp_path, PEQUENA)
+    ejecucion_id = _registrar(territorial.id)
+    with sesion() as s:
+        ejecucion = s.get_one(EjecucionRuteo, ejecucion_id)
+        fuente, cuentas = ejecuciones._comprobar_fuente(s, ejecucion)
+        rutas = ejecuciones._trazar(fuente, cuentas)
+
+        with pytest.raises(ejecuciones._NoSePublica) as falta_una_ruta:
+            ejecuciones._cerrar(s, ejecucion, fuente, rutas[:1])
+        ejecuciones._insertar_rutas(s, ejecucion_id, fuente, rutas)
+        with pytest.raises(ejecuciones._NoSePublica) as faltan_las_paradas:
+            ejecuciones._cerrar(s, ejecucion, fuente, rutas)
+        s.rollback()
+
+    assert str(falta_una_ruta.value) == (
+        "Las rutas estan incompletas: hay 2 municipios con campo, se calcularon 1 rutas y se "
+        "guardaron 0; no se publico ninguna."
+    )
+    assert str(faltan_las_paradas.value) == (
+        "Las paradas estan incompletas: hay 2 decisiones de campo, se calcularon 2 paradas y se "
+        "guardaron 0; no se publico ninguna."
+    )
+    assert _ejecucion(ejecucion_id).estado == EstadoRuteo.EN_PROCESO
+    assert (_cuantas(RutaTerritorial), _cuantas(ParadaRuta)) == (0, 0)
+
+
 # --- un solo worker por ejecucion, y la carrera la decide la base --------------------------------
 
 
