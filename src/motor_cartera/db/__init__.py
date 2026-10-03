@@ -3,12 +3,16 @@ from motor_cartera.db.modelos import (
     Cuenta,
     DecisionCuenta,
     EjecucionDecision,
+    EjecucionRuteo,
     EjecucionTerritorial,
     EstadoCorrida,
     EstadoDecision,
+    EstadoRuteo,
     EstadoTerritorial,
+    ParadaRuta,
     Rechazo,
     ResultadoTerritorial,
+    RutaTerritorial,
 )
 from motor_cartera.db.sesion import crear_motor, sesion
 
@@ -23,6 +27,10 @@ __all__ = [
     "EstadoTerritorial",
     "EjecucionTerritorial",
     "ResultadoTerritorial",
+    "EstadoRuteo",
+    "EjecucionRuteo",
+    "RutaTerritorial",
+    "ParadaRuta",
     "crear_motor",
     "sesion",
 ]

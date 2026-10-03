@@ -380,3 +380,172 @@ class ResultadoTerritorial(SQLModel, table=True):
     ninguna: nunca 0."""
     motivos: list[dict[str, str]] = Field(sa_type=JSONB)
     """Por que salio asi: [{"codigo": ..., "campo": ..., "valor": ...}]."""
+
+
+class EstadoRuteo(StrEnum):
+    """En que quedo una ejecucion del motor de ruteo. Solo una EXITOSA publica rutas.
+
+    No hay RECHAZADA: el ruteo no vuelve a juzgar la cartera, sus decisiones ni su organizacion
+    territorial. Ordena las visitas de una ejecucion territorial publicada, y termina o falla.
+    """
+
+    EN_PROCESO = "EN_PROCESO"  # registrada; se estan calculando sus rutas
+    EXITOSA = "EXITOSA"  # publico una ruta por cada municipio con trabajo de campo
+    FALLIDA = "FALLIDA"  # no termino; no publica ninguna ruta ni ninguna parada
+
+
+class EjecucionRuteo(SQLModel, table=True):
+    """Una ejecucion del motor de ruteo sobre una ejecucion territorial.
+
+    Cuelga de la ejecucion territorial y no de la de decision ni de la corrida: unas decisiones se
+    pueden organizar con varias versiones de las reglas territoriales, y una ruta tiene que decir
+    exactamente de que organizacion salio. La ejecucion de decision, la corrida y sus
+    identificadores se obtienen siguiendo esa llave; no se copian.
+
+    Es una entidad, como las otras ejecuciones, porque tiene que existir aunque no deje rutas: una
+    ejecucion fallida es justo la que hay que poder auditar. Guarda con que version de las reglas de
+    ruteo se calculo, para que cada ruta se pueda volver a explicar aunque las reglas cambien
+    despues.
+    """
+
+    __tablename__ = "ejecucion_ruteo"
+    __table_args__ = (
+        # Con nombre propio: el de la convencion pasaria de 63 caracteres, el limite de PostgreSQL,
+        # y la base guardaria uno recortado. Es parte del contrato del esquema: sale en los
+        # IntegrityError y una migracion futura se refiere a el.
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_id"],
+            ["ejecucion_territorial.id"],
+            name="fk_ejecucion_ruteo_territorial",
+        ),
+        # Una ejecucion territorial se rutea con exito una sola vez por version de las reglas de
+        # ruteo. Lo garantiza la base y no solo el codigo: dos ejecuciones simultaneas no pueden
+        # quedar EXITOSA las dos. Las que no terminaron EXITOSA no cuentan, asi que una FALLIDA se
+        # puede reintentar, y otra version puede rutear la misma organizacion territorial.
+        sa.Index(
+            "ux_ejecucion_ruteo_exitosa",
+            "ejecucion_territorial_id",
+            "version_reglas",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    ruteo_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. No se llama run_id, que es el de la corrida, ni como el de ninguna de
+    las otras ejecuciones."""
+    ejecucion_territorial_id: int = Field(index=True)
+    """La ejecucion territorial cuyos municipios se rutearon; su llave foranea, con su nombre, esta
+    en __table_args__. Sin cascada: borrar una ejecucion territorial con ejecuciones de ruteo falla,
+    en lugar de llevarse la evidencia. Lleva su propio indice porque hay que encontrar todas las
+    ejecuciones de ruteo de una territorial, en cualquier estado, y el indice parcial solo cubre las
+    EXITOSA."""
+    version_reglas: str = Field(max_length=32)
+    """Con que reglas se ruteo: ruteo/v1, ruteo/v2... No tiene valor por omision en la base: cada
+    ejecucion trae la suya."""
+    estado: EstadoRuteo = Field(
+        default=EstadoRuteo.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoRuteo,
+            name="estado_ruteo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    rutas_evaluadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas rutas calculo el nucleo. Cero hasta que las calcula todas; en una FALLIDA puede ser
+    mayor que cero."""
+    rutas_publicadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas rutas publico. En una FALLIDA es cero."""
+    paradas_evaluadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas paradas tienen esas rutas, en total."""
+    paradas_publicadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas paradas publico. En una FALLIDA es cero."""
+    detalle: str | None = None
+    """Que paso, para una persona. No es la explicacion de cada ruta: esa son sus distancias."""
+
+
+class RutaTerritorial(SQLModel, table=True):
+    """La ruta que una ejecucion de ruteo publico para un municipio con trabajo de campo.
+
+    Apunta al ResultadoTerritorial del municipio y no copia su clave ni su lugar: cve_entidad,
+    cve_municipio y posicion_campo se leen de ahi con un JOIN. Guarda cuantas paradas tiene y sus
+    distancias en metros sinteticos: la del vecino mas cercano, la final con el regreso al deposito,
+    el regreso y la mejora del 2-opt, para explicar cada ruta sin volver a calcularla.
+
+    No guarda el algoritmo ni la metrica, ni lleva CHECK sobre las distancias: lo que significan es
+    el contrato de la version de las reglas, y una version nueva puede calcular otras sin migrar
+    esta tabla.
+    """
+
+    __tablename__ = "ruta_territorial"
+    __table_args__ = (
+        # La llave hacia resultado_territorial lleva nombre propio: el de la convencion pasaria de
+        # 63 caracteres. La de ejecucion_ruteo cabe, y lleva el de la convencion.
+        sa.ForeignKeyConstraint(
+            ["resultado_territorial_id"],
+            ["resultado_territorial.id"],
+            name="fk_ruta_territorial_resultado",
+        ),
+        # Una ejecucion publica a lo mas una ruta por municipio. Con nombre corto: el de la
+        # convencion quedaria justo en el limite de 63.
+        sa.UniqueConstraint(
+            "ejecucion_ruteo_id", "resultado_territorial_id", name="uq_ruta_ruteo_territorio"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    # La restriccion unica ya indexa ejecucion_ruteo_id. Sin cascada, como todas las llaves.
+    ejecucion_ruteo_id: int = Field(foreign_key="ejecucion_ruteo.id")
+    resultado_territorial_id: int
+    """El municipio, como lo publico la ejecucion territorial; su llave foranea esta en
+    __table_args__."""
+    paradas: int = Field(sa_type=sa.BigInteger)
+    distancia_inicial_m: int = Field(sa_type=sa.BigInteger)
+    """La de la ruta del vecino mas cercano, antes del 2-opt, con el regreso al deposito."""
+    distancia_total_m: int = Field(sa_type=sa.BigInteger)
+    """La de la ruta publicada, con el regreso al deposito."""
+    distancia_regreso_deposito_m: int = Field(sa_type=sa.BigInteger)
+    mejora_2opt_m: int = Field(sa_type=sa.BigInteger)
+
+
+class ParadaRuta(SQLModel, table=True):
+    """Una cuenta en una ruta: que decision de campo se visita, en que lugar, en que punto
+    sintetico y a que distancia de la parada anterior.
+
+    Apunta a la DecisionCuenta y no copia el cliente ni la cuenta: se leen con un JOIN. Repite
+    ejecucion_ruteo_id aunque se pueda llegar a ella por la ruta, y no por descuido: asi una
+    restriccion de la base garantiza que una decision aparece a lo mas una vez en toda una
+    ejecucion de ruteo, aunque la ejecucion tenga muchas rutas.
+    """
+
+    __tablename__ = "parada_ruta"
+    __table_args__ = (
+        # Una decision, a lo mas una parada por ejecucion de ruteo. Otra ejecucion si puede volver
+        # a visitarla.
+        sa.UniqueConstraint(
+            "ejecucion_ruteo_id", "decision_cuenta_id", name="uq_parada_ruteo_decision"
+        ),
+        # Cada lugar de la secuencia es de una sola parada por ruta. El mismo indice sirve para leer
+        # las paradas de una ruta en orden.
+        sa.UniqueConstraint("ruta_territorial_id", "secuencia", name="uq_parada_ruta_secuencia"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    # Las dos restricciones unicas ya indexan ejecucion_ruteo_id y ruta_territorial_id.
+    ejecucion_ruteo_id: int = Field(foreign_key="ejecucion_ruteo.id")
+    ruta_territorial_id: int = Field(foreign_key="ruta_territorial.id")
+    decision_cuenta_id: int = Field(foreign_key="decision_cuenta.id")
+    secuencia: int = Field(sa_type=sa.BigInteger)
+    """El orden de visita dentro de la ruta, desde 1. No es posicion_campo, que es el lugar del
+    municipio entre los municipios."""
+    x_m: int = Field(sa_type=sa.BigInteger)
+    """La coordenada sintetica de la parada en el plano de su municipio, en metros. No es una
+    longitud geografica, ni la y una latitud."""
+    y_m: int = Field(sa_type=sa.BigInteger)
+    distancia_desde_anterior_m: int = Field(sa_type=sa.BigInteger)
+    """Desde la parada anterior; la primera, desde el deposito."""
