@@ -14,10 +14,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
-from motor_cartera.db.modelos import EstadoCorrida, EstadoDecision
+from motor_cartera.db.modelos import EstadoCorrida, EstadoDecision, EstadoTerritorial
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.ingesta.lectores import REQUERIDAS
 from motor_cartera.segmentacion import Dimension
+from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
 
 # Los catalogos del contrato, como tipos de la API: un filtro con un producto que el
 # contrato no conoce es un 422, sin que la lista se haya escrito dos veces.
@@ -314,3 +315,140 @@ class PaginaDecisionCuentas(Pagina[DecisionCuentaRespuesta]):
         description="Las reglas que decidieron: el vocabulario de las decisiones es el suyo."
     )
     estado: EstadoDecision
+
+
+# --- el Motor Territorial ------------------------------------------------------------------------
+#
+# Como en el Decision Engine: el estado de una ejecucion sale del modelo, y el vocabulario de un
+# municipio (la carga y el codigo de cada motivo) viaja como texto, para que la API sirva el
+# historial de cualquier version de las reglas territoriales.
+
+EJEMPLO_EJECUCION_TERRITORIAL = {
+    "territorial_run_id": "5c1e3a7b-2d4f-4b6a-8e0c-9f1b3d5a7c9e",
+    "decision_run_id": EJEMPLO_EJECUCION["decision_run_id"],
+    "run_id": EJEMPLO_CORRIDA["run_id"],
+    "version_reglas": VERSION_REGLAS_TERRITORIAL,
+    "estado": "EXITOSA",
+    "iniciada_en": "2026-09-30T15:12:00.000000Z",
+    "terminada_en": "2026-09-30T15:12:00.420000Z",
+    "duracion_segundos": 0.42,
+    "territorios_evaluados": 312,
+    "territorios_publicados": 312,
+    "detalle": "Se organizaron 9,800 decisiones en 312 municipios con "
+    f"{VERSION_REGLAS_TERRITORIAL}.",
+}
+
+# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ningun municipio.
+EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA = {
+    **EJEMPLO_EJECUCION_TERRITORIAL,
+    "estado": "FALLIDA",
+    "terminada_en": "2026-09-30T15:12:00.310000Z",
+    "duracion_segundos": 0.31,
+    "territorios_publicados": 0,
+    "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Un municipio con 37 cuentas de campo, organizado con territorial/v1.
+EJEMPLO_MUNICIPIO = {
+    "clave_territorio": "21114",
+    "cve_entidad": "21",
+    "cve_municipio": "114",
+    "cuentas_total": 412,
+    "saldo_total": "6150000.00",
+    "cuentas_campo": 37,
+    "saldo_campo": "1520000.00",
+    "carga": "ALTA",
+    "posicion_campo": 1,
+    "motivos": [{"codigo": "CARGA_CAMPO_20_MAS", "campo": "cuentas_campo", "valor": "37"}],
+}
+
+
+class EjecucionTerritorialRespuesta(BaseModel):
+    """Una ejecucion del Motor Territorial sobre una ejecucion de decision: con que reglas, como va
+    o como termino, y cuantos municipios evaluo y publico."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION_TERRITORIAL]})
+
+    territorial_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
+    decision_run_id: UUID = Field(
+        description="La ejecucion de decision cuyas decisiones se organizaron."
+    )
+    run_id: UUID = Field(description="La corrida de esas decisiones.")
+    version_reglas: str = Field(description="Con que reglas se organizo, p. ej. `territorial/v1`.")
+    estado: EstadoTerritorial = Field(
+        description="EN_PROCESO mientras organiza. Al terminar: EXITOSA (publico un resultado por "
+        "cada municipio con decisiones) o FALLIDA (no publico ninguno; `detalle` dice por que)."
+    )
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    territorios_evaluados: int = Field(
+        description="Cuantos municipios evaluaron las reglas. En una FALLIDA puede ser mayor que "
+        "cero aunque no se haya publicado ninguno."
+    )
+    territorios_publicados: int = Field(
+        description="Cuantos municipios publico: todos los evaluados, o ninguno."
+    )
+    detalle: str | None = Field(description="Que paso, en palabras.")
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class MotivoTerritorialRespuesta(BaseModel):
+    """Por que un municipio tiene su carga: que regla aplico, sobre que campo y con que valor."""
+
+    codigo: str = Field(
+        description="Del catalogo de la version de las reglas territoriales con que se calculo.",
+        examples=["CARGA_CAMPO_5_19"],
+    )
+    campo: str = Field(description="El campo que la regla leyo.", examples=["cuentas_campo"])
+    valor: str = Field(description="En texto canonico: el conteo como entero.", examples=["8"])
+
+
+class ResultadoTerritorialRespuesta(BaseModel):
+    """Lo que una ejecucion territorial publico de un municipio: sus agregados, su carga, su lugar
+    entre los municipios con trabajo de campo, y por que."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_MUNICIPIO]})
+
+    cve_entidad: str = Field(description="Dos digitos, como texto.")
+    cve_municipio: str = Field(description="Tres digitos, como texto.")
+    cuentas_total: int = Field(description="Cuantas decisiones tiene el municipio.")
+    saldo_total: Decimal = Field(description="El saldo de esas cuentas, en pesos, como texto.")
+    cuentas_campo: int = Field(
+        description="Cuantas tienen CAMPO como canal recomendado. No es el canal de la cartera."
+    )
+    saldo_campo: Decimal = Field(description="El saldo de esas cuentas de campo, como texto.")
+    carga: str = Field(
+        description="Cuanto trabajo de campo concentra, en el vocabulario de la version que lo "
+        "calculo; con territorial/v1, SIN_CARGA, BAJA, MEDIA o ALTA."
+    )
+    posicion_campo: int | None = Field(
+        description="Su lugar entre los municipios con cuentas de campo, desde 1. Null si no "
+        "tiene ninguna: es una prioridad territorial, no una ruta."
+    )
+    motivos: list[MotivoTerritorialRespuesta] = Field(description="Por que tiene esa carga.")
+
+    @computed_field(description="La clave del municipio: cve_entidad + cve_municipio.")
+    @property
+    def clave_territorio(self) -> str:
+        return self.cve_entidad + self.cve_municipio
+
+
+class PaginaEjecucionesTerritoriales(Pagina[EjecucionTerritorialRespuesta]):
+    decision_run_id: UUID = Field(description="La ejecucion de decision de la que son.")
+    run_id: UUID = Field(description="La corrida de esas decisiones.")
+
+
+class PaginaMunicipios(Pagina[ResultadoTerritorialRespuesta]):
+    territorial_run_id: UUID
+    decision_run_id: UUID
+    run_id: UUID = Field(description="La corrida de las decisiones organizadas.")
+    version_reglas: str = Field(
+        description="Las reglas que organizaron: el vocabulario de los municipios es el suyo."
+    )
+    estado: EstadoTerritorial
