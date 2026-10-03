@@ -163,8 +163,11 @@ def ejecutar_territorial(ejecucion_territorial_id: int) -> None:
             _comprobar_agregados(entradas, decisiones)
             resultados = priorizar_territorios(entradas)
             evaluados = len(resultados)
+            # render_nulls: el lugar de un SIN_CARGA es NULL a proposito, y se escribe como NULL.
+            # Sin esto, el INSERT en bloque del ORM omite las columnas en None y parte los
+            # municipios en dos sentencias: los que tienen lugar y los que no.
             s.execute(
-                insert(ResultadoTerritorial),
+                insert(ResultadoTerritorial).execution_options(render_nulls=True),
                 [_fila_resultado(ejecucion_territorial_id, r) for r in resultados],
             )
             _cerrar(s, ejecucion, len(entradas), resultados, decisiones)
