@@ -1,12 +1,12 @@
-# Decisiones de diseño — fase 1, Decision Engine y Motor Territorial
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial y Motor de Ruteo
 
-Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0) y el Motor Territorial (v0.3.0) están
-hechos como están, y qué haría distinto o cuándo cambiaría cada decisión. El uso está en el
-[README](../README.md); aquí va el porqué.
+Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0) y el
+Motor de Ruteo (v0.4.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
+decisión. El uso está en el [README](../README.md); aquí va el porqué.
 
-Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine, y las 23 a 30, del Motor
-Territorial. Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la
-orquestación durable de v0.5.0.
+Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
+Territorial, y las 31 a 41, del Motor de Ruteo. Donde las de la fase 1 hablan de la orquestación
+de la fase 3, hoy es la orquestación durable de v0.5.0.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -38,6 +38,17 @@ orquestación durable de v0.5.0.
 28. [Publicación todo-o-nada](#28-publicación-todo-o-nada)
 29. [API e historial territorial](#29-api-e-historial-territorial)
 30. [Por qué v0.3 no es ruteo](#30-por-qué-v03-no-es-ruteo)
+31. [Por qué ruteo usa un plano sintético](#31-por-qué-ruteo-usa-un-plano-sintético)
+32. [Coordenadas deterministas con SHA-256](#32-coordenadas-deterministas-con-sha-256)
+33. [Manhattan como métrica exacta](#33-manhattan-como-métrica-exacta)
+34. [Vecino más cercano como construcción inicial](#34-vecino-más-cercano-como-construcción-inicial)
+35. [2-opt determinista y acotado](#35-2-opt-determinista-y-acotado)
+36. [Una ruta por municipio](#36-una-ruta-por-municipio)
+37. [Persistencia de rutas y paradas](#37-persistencia-de-rutas-y-paradas)
+38. [Completitud y publicación todo-o-nada](#38-completitud-y-publicación-todo-o-nada)
+39. [Concurrencia e idempotencia del ruteo](#39-concurrencia-e-idempotencia-del-ruteo)
+40. [API e historial de ruteo](#40-api-e-historial-de-ruteo)
+41. [Qué no resuelve v0.4.0](#41-qué-no-resuelve-v040)
 
 ---
 
@@ -970,3 +981,261 @@ de T0, sacar el trabajo de la petición HTTP a un worker con cola, y organizar c
 decisión en cuanto se publica.
 
 v0.3.0 organiza el trabajo de campo y explica cada lugar. No lo recorre.
+
+v0.4.0 traza esa secuencia dentro de cada municipio, sin los datos que aquí faltaban: sobre un
+plano sintético, sin gestores ni tiempos (ver 31 a 41).
+
+## 31. Por qué ruteo usa un plano sintético
+
+**Decisión.** `ruteo/v1` no usa geografía real. Cada municipio tiene su propio plano operativo
+sintético: un cuadrado de 10 km por lado, con coordenadas enteras de −5000 a +5000 metros y el
+depósito en el centro, `(0, 0)`. Cada cuenta de campo recibe un punto de ese plano.
+
+**Por qué.** La cartera no trae latitud, longitud, dirección ni código postal, y el proyecto tiene
+una regla dura: ningún dato real entra al repositorio. Había tres caminos:
+
+- **Inventar latitudes y longitudes** dentro de cada municipio: parecerían ubicaciones reales y no
+  lo serían. Un mapa con esos puntos sería engañoso.
+- **Geocodificar** con un servicio externo (Google Maps, Mapbox, OpenStreetMap, el INEGI): pediría
+  direcciones que no existen, y metería red, cuotas y licencias en un cálculo que tiene que ser
+  reproducible.
+- **Un plano sintético que se declara como tal**: no pretende ser geografía, se calcula sin red y
+  da siempre la misma ruta.
+
+Se eligió el tercero. Las rutas existen para demostrar la arquitectura, la optimización, la
+trazabilidad, las transacciones, la API y las pruebas, no para mandar a nadie a una calle.
+
+**Lo que no son.** Las coordenadas no son latitud ni longitud ni domicilios; las distancias no son
+calles, tráfico ni tiempos de conducción; y dos municipios no se comparan: cada plano es local. La
+documentación de la API y el README lo dicen donde aparecen.
+
+**Qué haría distinto.** Con ubicaciones reales y permitidas, el plano se cambiaría por coordenadas
+reales y la métrica por distancias o tiempos sobre una red de calles. Sería `ruteo/v2`, y
+probablemente otro contrato de cartera.
+
+## 32. Coordenadas deterministas con SHA-256
+
+**Decisión.** El punto de una cuenta sale de SHA-256 sobre
+`"ruteo/v1|{clave_territorio}|{cliente_unico}"` en ASCII: los primeros 8 bytes del digest, como
+entero sin signo big-endian, dan `x_m`, y los 8 siguientes, `y_m`; cada uno `% 10001 - 5000`. Son
+siempre enteros.
+
+**Por qué un hash y no el azar.** Un generador aleatorio, aun con semilla, haría depender el punto
+del orden en que llegan las cuentas y de la implementación del generador; el `hash()` de Python
+cambia en cada proceso. SHA-256 da el mismo punto en cualquier máquina, proceso y orden, sin estado
+ni configuración. Una prueba rutea en procesos con otras semillas de hash, con los clientes en un
+`frozenset`, y exige la misma ruta.
+
+**Por qué esos tres campos.** La versión, para que `ruteo/v2` mueva todos los puntos sin
+heredarlos de `v1`; el municipio, para que el mismo cliente tenga otro punto en otro municipio: no
+hay un punto global del cliente, porque no hay geografía; y el cliente, que identifica la cuenta
+dentro de su corrida.
+
+**Uniformidad.** `2^64` no es múltiplo de 10,001: el módulo tiene un sesgo del orden de uno en
+`10^15`, que en un plano sintético no importa.
+
+**Pruebas.** Los golden de las coordenadas se calcularon aparte y se cruzaron con `sha256sum`. Un
+mutation check sobre copias temporales confirma que usar `hash()`, cambiar `10001` por `10000` u
+olvidar el municipio en el payload rompe pruebas.
+
+## 33. Manhattan como métrica exacta
+
+**Decisión.** La distancia entre dos puntos es `|x1 − x2| + |y1 − y2|`, en metros sintéticos
+enteros.
+
+**Por qué.** Con enteros es exacta: sin `float`, raíz cuadrada ni redondeo, la misma en cualquier
+plataforma. Las comparaciones del vecino más cercano y del 2-opt no dependen de errores de
+redondeo, y un empate es un empate de verdad, que resuelve el desempate. Conceptualmente es un
+recorrido sobre una cuadrícula de calles, que es lo más que un plano sintético puede decir.
+Haversine supone latitudes y longitudes, que no hay; una euclidiana en `float` traería redondeos; el
+tráfico y los tiempos necesitan datos que no existen.
+
+**Simetría.** Manhattan es simétrica, y el 2-opt lo aprovecha: invertir un tramo deja sus aristas
+internas con la misma longitud, así que el ahorro sale de los dos bordes que cambian.
+
+## 34. Vecino más cercano como construcción inicial
+
+**Decisión.** La ruta inicial sale del depósito y va siempre a la cuenta pendiente más cercana a
+donde está; a igual distancia, a la de `cliente_unico` menor. El depósito no es una parada, pero la
+salida y el regreso cuentan en la distancia.
+
+**Por qué.** Es simple, explicable y determinista, y da una ruta razonable en `O(n²)`. Como los
+clientes no se repiten, el desempate siempre decide, y la ruta no depende del orden de llegada: una
+prueba recorre las 120 formas de ordenar cinco clientes y exige la misma ruta.
+
+**Lo que no es.** No es óptimo: puede dejar una cuenta lejana para el final y cruzar su propio
+camino. Por eso le sigue el 2-opt, y su distancia se guarda como `distancia_inicial_m`, para que se
+vea cuánto se mejoró.
+
+## 35. 2-opt determinista y acotado
+
+**Decisión.** Después del vecino más cercano, cada pasada evalúa todas las inversiones de un tramo
+`i..j` con solo los dos bordes que cambian (`anterior → i` y `j → siguiente` frente a
+`anterior → j` e `i → siguiente`) y aplica una sola: la de mayor ahorro estrictamente positivo; a
+igual ahorro, la de `i` menor y después la de `j` menor. Se detiene cuando ninguna acorta la ruta o
+con `MAX_PASADAS_2OPT = 10` inversiones aplicadas.
+
+**Por qué la mejor y no la primera.** Elegir la mejor inversión de cada pasada cuesta más, pero
+cada paso se explica solo: era la que más ahorraba. Y con el desempate explícito, el resultado no
+depende del orden en que se recorren las inversiones.
+
+**Por qué un tope fijo.** Un límite de tiempo daría otra ruta en una máquina más lenta. Diez
+inversiones acotan el trabajo sin mirar el reloj, y el tope vive en el código y no en la
+configuración: cambiarlo cambia rutas, así que es parte de la versión. Con la cartera por omisión,
+el 2-opt acorta 119 de las 403 rutas, y 10 llegan al tope.
+
+**Sin heurísticas al azar.** Ni recocido simulado, ni algoritmos genéticos, ni OR-Tools: podrían dar
+rutas más cortas, pero no la misma ruta siempre sin fijar semillas, y meterían dependencias para un
+problema sintético. El núcleo usa solo la biblioteca estándar.
+
+**Garantías.** Cada inversión aplicada acorta estrictamente, así que `distancia_total_m` nunca pasa
+de `distancia_inicial_m` y `mejora_2opt_m` nunca es negativa. Las pruebas comparan la elección con
+la fuerza bruta en 400 rutas al azar, y fijan una ruta de 30 clientes que se detiene en la décima
+inversión aunque la undécima todavía ahorraría.
+
+**Qué haría distinto.** Con rutas de miles de paradas, cada pasada `O(n²)` pesaría; usaría listas
+de vecinos cercanos u Or-opt, en otra versión de las reglas.
+
+## 36. Una ruta por municipio
+
+**Decisión.** Cada municipio con cuentas de campo (`cuentas_campo > 0` y `posicion_campo` no nulo)
+tiene exactamente una ruta, con su propio depósito y su propio plano. Los `SIN_CARGA` no tienen
+ruta, y el motor no conecta municipios entre sí.
+
+**Por qué.** v0.3.0 ya decidió qué municipio va primero, `posicion_campo`; v0.4.0 decide en qué
+orden se visitan las cuentas dentro de cada uno, `secuencia`. Son preguntas distintas y siguen
+separadas: `posicion_campo` es una prioridad territorial, no un orden de visita. Unir municipios
+exigiría distancias entre planos que, por ser sintéticos y locales, no existen.
+
+**Sin gestores.** No hay gestores, vehículos, capacidades, turnos, horarios ni ventanas de tiempo:
+la cartera no los trae, e inventarlos sería decidir con datos que no existen. Una ruta es la
+secuencia de visita sobre todas las cuentas de campo de un municipio, no la jornada de una persona,
+y el problema no es un VRP multi-vehículo.
+
+## 37. Persistencia de rutas y paradas
+
+**Decisión.** Tres tablas nuevas, en la migración `0005`:
+
+- `ejecucion_ruteo`: cada ejecución, colgada de la `EjecucionTerritorial` que ruteó, con
+  `ruteo_run_id` público, `version_reglas`, su estado (`EN_PROCESO`, `EXITOSA` o `FALLIDA`, VARCHAR
+  con CHECK), sus tiempos y sus contadores en `BIGINT`;
+- `ruta_territorial`: la ruta de un municipio, que apunta a su `ResultadoTerritorial` y guarda sus
+  paradas y sus distancias;
+- `parada_ruta`: una cuenta en una ruta, que apunta a la ejecución, a la ruta y a la
+  `DecisionCuenta`, con su secuencia, su punto y la distancia desde la anterior.
+
+**Cuelga de la territorial.** Unas decisiones se pueden organizar con varias versiones de las
+reglas territoriales; una ruta tiene que decir exactamente de qué organización salió. La ejecución
+de decisión y la corrida se obtienen siguiendo las llaves (ver 27).
+
+**No se copia.** Ni `cliente_unico` ni `clave_territorio` se guardan: se leen por JOIN de la cuenta
+y del resultado territorial. Tampoco el algoritmo ni la métrica: son lo que `ruteo/v1` significa.
+No hay CHECK atados al algoritmo, como uno sobre el rango de las coordenadas: eso lo cuida el
+núcleo, y otra versión podría usar otro plano sin migrar las tablas.
+
+**`ejecucion_ruteo_id`, repetido a propósito.** `parada_ruta` repite la ejecución aunque se llegue
+a ella por la ruta: así `uq_parada_ruteo_decision` garantiza en la base que una decisión aparece a
+lo más una vez en toda la ejecución, aunque tenga cientos de rutas. Otra ejecución sí puede volver
+a rutear la misma decisión.
+
+**Restricciones e índices.** `uq_ruta_ruteo_territorio`, una ruta por municipio y ejecución, y
+`uq_parada_ruta_secuencia`, cada lugar de una sola parada, que además sirve para leerlas en orden.
+Las llaves no tienen cascada. Las restricciones compuestas empiezan por la columna con que se
+consulta, así que no hay índices sueltos redundantes; solo `ejecucion_territorial_id` lleva el
+suyo, para el historial.
+
+**Nombres medidos.** Cada nombre se midió contra los 63 caracteres de PostgreSQL antes de aceptar
+la convención. Las dos llaves que la convención dejaría largas (65 y 66 caracteres) y la única de
+rutas, que quedaría justo en 63, llevan nombre corto propio: no se repite el recorte que obligó a
+nombrar a mano las restricciones de la `0004`.
+
+## 38. Completitud y publicación todo-o-nada
+
+**Decisión.** Como en los otros motores (ver 18 y 28), dos transacciones:
+
+- **T0.** Revisa la cadena y registra la ejecución `EN_PROCESO`, con `COMMIT`, antes de calcular
+  nada.
+- **T1.** La toma con `SELECT ... FOR UPDATE`, vuelve a revisar la cadena completa (la territorial
+  `EXITOSA` de `territorial/v1` y sus decisiones `EXITOSA` de `decision/v1`) y que la fuente esté
+  completa y cuadre; lee en una sola consulta las cuentas de campo; llama al núcleo una vez por
+  municipio, en `posicion_campo ASC`; inserta las rutas en bloque, con `RETURNING`, y después las
+  paradas en bloque; comprueba que todo esté completo y cierra `EXITOSA`. Un solo `COMMIT` publica
+  todo.
+
+**Antes de calcular.** La territorial tiene publicados los municipios que dice, y al menos uno;
+cada municipio es coherente, con cuentas de campo y lugar o sin ninguno de los dos; hay al menos un
+municipio con campo; `sum(cuentas_campo)` es igual a las decisiones `CAMPO` reales y a las de
+cuentas de su propia corrida; cada cuenta de campo es de un municipio con ruta y cada municipio
+tiene exactamente las suyas. Lo que cuenta como campo es `DecisionCuenta.canal_recomendado`, nunca
+`Cuenta.canal`.
+
+**Antes de publicar.** Sin volver a calcular nada: cada ruta es de su municipio, tiene exactamente
+sus cuentas, una vez cada una y en secuencia desde 1; la distancia final no pasa de la inicial; la
+mejora es la diferencia; y los tramos más el regreso suman el total. Y antes del `COMMIT`, las rutas
+calculadas, las guardadas y los municipios con campo son el mismo número, como las paradas
+calculadas, las guardadas y las decisiones de campo, todos mayores que cero.
+
+**Si algo falla.** Se revierte todo, y en otra transacción la ejecución queda `FALLIDA`, con cero
+rutas y cero paradas publicadas y el motivo en `detalle`. `rutas_evaluadas` y `paradas_evaluadas`
+solo dicen algo si el núcleo terminó todas las rutas: no se inventan avances a medias.
+
+## 39. Concurrencia e idempotencia del ruteo
+
+**Decisión.** La idempotencia tiene dos niveles, como en los otros motores (ver 19 y 27): la
+revisión amable de `abrir_ejecucion` levanta `RuteoYaGenerado` si la ejecución territorial ya tiene
+una ejecución `EXITOSA` de `ruteo/v1`; la garantía es `ux_ejecucion_ruteo_exitosa`, índice único
+parcial sobre `(ejecucion_territorial_id, version_reglas)` que solo cuenta las `EXITOSA`.
+
+**Carreras.** El mismo `ejecucion_ruteo_id` lo procesa un solo worker: el `FOR UPDATE` serializa, y
+el segundo la encuentra terminada y no hace nada. Dos ejecuciones distintas de la misma fuente
+pueden trabajar a la vez, pero solo una cierra: la segunda choca con el índice, que se reconoce por
+`diag.constraint_name`, revierte, queda `FALLIDA` y levanta `RuteoYaGenerado` con la ganadora. Un
+fallo que llega tarde no degrada una `EXITOSA`: la transición a `FALLIDA` es un `UPDATE`
+condicionado a `EN_PROCESO`.
+
+**Versiones.** Una `FALLIDA` se reintenta con otra ejecución, y `ruteo/v2` podrá rutear la misma
+territorial sin chocar con `ruteo/v1`.
+
+## 40. API e historial de ruteo
+
+**Decisión.** Cinco operaciones, con las reglas de las demás (ver 20, 21 y 29):
+
+- `POST /territoriales/{territorial_run_id}/ruteos` rutea en la misma petición y responde `201` con
+  `Location: /ruteos/{ruteo_run_id}`, termine `EXITOSA` o `FALLIDA` (D1); `409 RUTEO_YA_GENERADO`
+  sin `Location` (D2), también si pierde la carrera; y `409 TERRITORIAL_NO_RUTEABLE`, sin
+  registrar nada, si la cadena no se puede rutear.
+- `GET /territoriales/{territorial_run_id}/ruteos` es el historial, en cualquier estado y versión,
+  de la más reciente a la más antigua.
+- `GET /ruteos/{ruteo_run_id}` es una ejecución, con los identificadores públicos de toda su
+  cadena.
+- `GET /ruteos/{ruteo_run_id}/rutas` son las rutas de una `EXITOSA`, en `posicion_campo ASC`; de
+  otra, `409 RUTEO_NO_PUBLICADO`.
+- `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas` son las paradas de un municipio,
+  en `secuencia ASC`; `404 RUTA_NO_ENCONTRADA` si el municipio no tiene ruta.
+
+**Síncrono.** El POST busca la ejecución territorial, copia lo que necesita, termina la transacción
+de la sesión HTTP y llama al servicio: no retiene una conexión mientras rutea. Con la cartera por
+omisión, trazar 403 rutas con 2,968 paradas toma menos de un segundo de cálculo.
+
+**Sin N+1.** El `total` es un `COUNT` de la tabla, no el contador de la ejecución, y cada página son
+consultas fijas: tres para las rutas y cuatro para las paradas, sea del tamaño que sea.
+
+**Errores.** Los nuevos usan `ErrorRespuesta` sin cambiarla: `TERRITORIAL_NO_RUTEABLE`,
+`RUTEO_YA_GENERADO`, `RUTEO_NO_ENCONTRADO`, `RUTEO_NO_PUBLICADO` y `RUTA_NO_ENCONTRADA`, y se
+reutiliza `TERRITORIAL_NO_ENCONTRADO`. Su `run_id` sigue siendo el de la corrida.
+
+**Lo sintético, dicho en la API.** La descripción de cada operación, y la de cada campo con
+coordenadas o distancias, dice que son metros de un plano sintético por municipio, no latitud,
+longitud, calles ni tiempos.
+
+## 41. Qué no resuelve v0.4.0
+
+- geografía real: geocodificación, calles, tráfico ni tiempos de conducción;
+- gestores, vehículos, capacidades, turnos ni ventanas de tiempo: no es un VRP multi-vehículo;
+- rutas que crucen municipios;
+- orquestación durable: el POST es síncrono, y una ejecución que queda `EN_PROCESO` porque su
+  proceso murió después de T0 no la cierra nadie hasta v0.5.0;
+- despliegue en nube y observabilidad productiva: v0.6.0.
+
+v0.4.0 secuencia las visitas de campo dentro de cada municipio, de forma reproducible y explicable,
+sobre un plano que se declara sintético. No manda a nadie a una dirección.
