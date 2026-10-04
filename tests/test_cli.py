@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 
 import pytest
@@ -202,5 +203,8 @@ def test_el_worker_continuo_corre_hasta_que_lo_detienen(monkeypatch):
 def test_el_worker_se_anuncia_en_la_ayuda():
     resultado = cli.invoke(app, ["worker", "--help"])
 
+    # Con una terminal que acepta color, como la del CI, la ayuda trae secuencias ANSI entre las
+    # letras de cada opcion: se quitan antes de buscarla.
+    ayuda = re.sub(r"\x1b\[[0-9;]*m", "", resultado.output)
     assert resultado.exit_code == 0
-    assert "--una-vez" in resultado.output
+    assert "--una-vez" in ayuda
