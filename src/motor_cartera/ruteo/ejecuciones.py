@@ -3,7 +3,8 @@ sin publicar nada a medias.
 
 El orden importa:
   1. abre una EjecucionRuteo EN_PROCESO y la confirma antes de calcular nada: si algo falla, queda
-     rastro de que se intento
+     rastro de que se intento. La API la confirma junto con el trabajo de la cola que la va a
+     ejecutar, en la misma transaccion
   2. toma la ejecucion con su fila bloqueada, para que la procese un solo worker a la vez, y vuelve
      a revisar toda la cadena de la que sale: la ejecucion territorial, la de decision debajo de
      ella, y que los municipios publicados y las decisiones de campo esten completos y cuadren
@@ -45,7 +46,7 @@ from motor_cartera.db.modelos import (
     RutaTerritorial,
     ahora,
 )
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
 from motor_cartera.ruteo.reglas import (
     VERSION_REGLAS_RUTEO,
     ParadaCalculada,
@@ -70,6 +71,12 @@ compara con DecisionCuenta.canal_recomendado, la decision, y nunca con Cuenta.ca
 de la cartera."""
 
 INDICE_RUTEO_EXITOSA = "ux_ejecucion_ruteo_exitosa"
+INDICE_RUTEO_EN_PROCESO = "ux_ejecucion_ruteo_en_proceso"
+
+INTENTOS_DE_APERTURA = 3
+"""Cuantas veces se revisa y se inserta una ejecucion que pierde la carrera contra otra apertura de
+la misma fuente y version. La segunda revision ya ve a la que gano; solo se vuelve a insertar si
+esa termino FALLIDA entre el rechazo y la revision."""
 
 
 class TerritorialNoRuteable(Exception):
@@ -95,6 +102,18 @@ class RuteoYaGenerado(Exception):
             f"ruteo {previa.ruteo_run_id}."
         )
         self.previa = previa
+
+
+class RuteoEnProceso(Exception):
+    """Los municipios de esa ejecucion territorial ya se estan ruteando con esta version de las
+    reglas de ruteo: hay un intento activo, y otro haria el mismo trabajo a la vez."""
+
+    def __init__(self, activa: EjecucionRuteo) -> None:
+        super().__init__(
+            f"Esta ejecucion territorial ya se esta ruteando con {activa.version_reglas}: la "
+            f"ejecucion de ruteo {activa.ruteo_run_id}."
+        )
+        self.activa = activa
 
 
 class _NoSePublica(Exception):
@@ -124,7 +143,9 @@ class _Fuente:
     """
 
 
-def abrir_ejecucion(s: Session, ejecucion_territorial: EjecucionTerritorial) -> EjecucionRuteo:
+def abrir_ejecucion(
+    s: Session, ejecucion_territorial: EjecucionTerritorial, *, confirmar: bool = True
+) -> EjecucionRuteo:
     """Registra la ejecucion EN_PROCESO antes de calcular nada: si algo falla, queda rastro.
 
     Desde aqui queda fija la version de las reglas de ruteo con que se va a calcular. Solo se rutea
@@ -132,25 +153,44 @@ def abrir_ejecucion(s: Session, ejecucion_territorial: EjecucionTerritorial) -> 
     de decision/v1; con cualquier otra levanta TerritorialNoRuteable y no registra nada.
 
     Si esa ejecucion territorial ya se ruteo con exito con esta version, levanta RuteoYaGenerado:
-    hacerlo otra vez duplicaria sus rutas. Esta revision es la via amable, porque sabe decir cual
-    ejecucion fue; la garantia es el indice unico parcial, que atrapa las carreras al cerrar. Por
-    eso otra ejecucion EN_PROCESO de la misma fuente no impide abrir esta: las dos pueden trabajar,
-    pero solo una puede cerrar EXITOSA.
+    hacerlo otra vez duplicaria sus rutas. Si ya se esta ruteando, levanta RuteoEnProceso: a lo mas
+    hay un intento activo por fuente y version, y uno FALLIDO no cuenta. Estas revisiones son la via
+    amable, porque saben decir cual ejecucion fue; las garantias son los indices unicos parciales.
+    El de las EN_PROCESO atrapa las carreras al abrir: la apertura que pierde choca con el dentro de
+    un SAVEPOINT, vuelve a revisar y levanta lo que corresponda. El de las EXITOSA atrapa, al
+    cerrar, a quien se haya saltado todo lo anterior.
+
+    Con confirmar=False no confirma: deja la ejecucion en la transaccion de quien llama, que la
+    confirma junto con el trabajo que la va a ejecutar. El SAVEPOINT deja esa transaccion usable
+    aunque la apertura falle.
     """
     decision = s.get_one(EjecucionDecision, ejecucion_territorial.ejecucion_decision_id)
     razon = _por_que_no_se_rutea(ejecucion_territorial, decision)
     if razon is not None:
         raise TerritorialNoRuteable(ejecucion_territorial, razon)
-    previa = s.exec(_exitosa(ejecucion_territorial.id, VERSION_REGLAS_RUTEO)).one_or_none()
-    if previa is not None:
-        raise RuteoYaGenerado(previa)
+    fuente_id = ejecucion_territorial.id
+    for _ in range(INTENTOS_DE_APERTURA):
+        previa = s.exec(_exitosa(fuente_id, VERSION_REGLAS_RUTEO)).one_or_none()
+        if previa is not None:
+            raise RuteoYaGenerado(previa)
+        activa = s.exec(_en_proceso(fuente_id, VERSION_REGLAS_RUTEO)).one_or_none()
+        if activa is not None:
+            raise RuteoEnProceso(activa)
 
-    ejecucion = EjecucionRuteo(
-        ejecucion_territorial_id=ejecucion_territorial.id, version_reglas=VERSION_REGLAS_RUTEO
-    )
-    s.add(ejecucion)
-    s.commit()
-    s.refresh(ejecucion)
+        ejecucion = EjecucionRuteo(
+            ejecucion_territorial_id=fuente_id, version_reglas=VERSION_REGLAS_RUTEO
+        )
+        error = insertar_en_savepoint(s, ejecucion)
+        if error is None:
+            break
+        if restriccion(error) != INDICE_RUTEO_EN_PROCESO:
+            raise error
+    else:
+        raise error
+
+    if confirmar:
+        s.commit()
+        s.refresh(ejecucion)
     log.info(
         "ejecucion de ruteo %s abierta para la ejecucion territorial %s",
         ejecucion.ruteo_run_id,
@@ -219,7 +259,7 @@ def ejecutar_ruteo(ejecucion_ruteo_id: int) -> None:
             _fallar(s, ejecucion_ruteo_id, etiqueta, rutas_evaluadas, paradas_evaluadas, str(exc))
         except IntegrityError as exc:
             s.rollback()
-            if _restriccion(exc) != INDICE_RUTEO_EXITOSA:
+            if restriccion(exc) != INDICE_RUTEO_EXITOSA:
                 log.exception("ejecucion de ruteo %s: violacion de integridad inesperada", etiqueta)
                 _fallar(
                     s,
@@ -257,11 +297,13 @@ def ejecutar_ruteo(ejecucion_ruteo_id: int) -> None:
 
 
 def rutear_territorial(ejecucion_territorial_id: int) -> EjecucionRuteo:
-    """Una ejecucion de ruteo completa en primer plano, y como termino.
+    """Una ejecucion de ruteo completa en primer plano, y como termino, en modo directo: sin cola,
+    sin trabajo y sin lease. Si el proceso muere a la mitad, la ejecucion queda EN_PROCESO y nadie
+    la cierra; un trabajo de la cola durable, en cambio, se recupera cuando vence su lease.
 
-    Propaga TerritorialNoRuteable y RuteoYaGenerado. Un fallo del motor no se propaga: la ejecucion
-    ya existe, y se devuelve FALLIDA. Cada paso usa su propia sesion, como territorializar_decision:
-    ninguna queda abierta durante todo el proceso.
+    Propaga TerritorialNoRuteable, RuteoYaGenerado y RuteoEnProceso. Un fallo del motor no se
+    propaga: la ejecucion ya existe, y se devuelve FALLIDA. Cada paso usa su propia sesion, como
+    territorializar_decision: ninguna queda abierta durante todo el proceso.
     """
     with sesion() as s:
         ejecucion = abrir_ejecucion(s, s.get_one(EjecucionTerritorial, ejecucion_territorial_id))
@@ -695,6 +737,11 @@ def _exitosa(ejecucion_territorial_id: int, version: str) -> SelectOfScalar[Ejec
     )
 
 
-def _restriccion(exc: IntegrityError) -> str | None:
-    diagnostico = getattr(exc.orig, "diag", None)
-    return getattr(diagnostico, "constraint_name", None)
+def _en_proceso(ejecucion_territorial_id: int, version: str) -> SelectOfScalar[EjecucionRuteo]:
+    """La ejecucion EN_PROCESO de esa ejecucion territorial con esa version de las reglas: el
+    intento activo. Hay a lo mas una: lo garantiza el otro indice unico parcial."""
+    return select(EjecucionRuteo).where(
+        EjecucionRuteo.ejecucion_territorial_id == ejecucion_territorial_id,
+        EjecucionRuteo.version_reglas == version,
+        EjecucionRuteo.estado == EstadoRuteo.EN_PROCESO,
+    )

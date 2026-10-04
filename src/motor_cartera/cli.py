@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Annotated
 
 import typer
 
-app = typer.Typer(help="Motor de cartera: ingesta, validacion y persistencia.")
+app = typer.Typer(help="Motor de cartera: ingesta, validacion, persistencia y su worker.")
 
 
 @app.command()
@@ -42,15 +43,19 @@ def generar(
 def cargar(ruta: str) -> None:
     """Lee un archivo, lo juzga contra el contrato y lo publica como una corrida.
 
-    Es el mismo proceso que usa la API (ingesta.corridas), en primer plano. Termina con
-    codigo 1 si la corrida no publico, para que un script o un programador de tareas lo note.
+    Pasa por la cola durable, como la API, pero en primer plano: la corrida, su archivo y su
+    trabajo se registran juntos, y el trabajo ya es de este proceso. No encadena la decision ni
+    las demas etapas. Si se interrumpe, el trabajo queda en la cola y un worker lo termina cuando
+    vence su lease. Termina con codigo 1 si la corrida no publico, para que un script o un
+    programador de tareas lo note.
     """
     from motor_cartera.db.modelos import EstadoCorrida
-    from motor_cartera.ingesta.corridas import ArchivoDuplicado, ingerir_archivo
+    from motor_cartera.ingesta.corridas import ArchivoDuplicado
+    from motor_cartera.orquestacion.worker import ingerir_en_primer_plano
 
     try:
-        corrida = ingerir_archivo(ruta)
-    except ArchivoDuplicado as exc:
+        corrida = ingerir_en_primer_plano(ruta)
+    except (ArchivoDuplicado, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
@@ -62,6 +67,40 @@ def cargar(ruta: str) -> None:
     typer.echo(f"  {corrida.detalle}")
     if corrida.estado != EstadoCorrida.EXITOSA:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def worker(
+    una_vez: Annotated[
+        bool,
+        typer.Option(
+            "--una-vez", help="Procesa a lo mas un trabajo y sale: para probar o diagnosticar."
+        ),
+    ] = False,
+) -> None:
+    """Toma trabajos de la cola durable y los ejecuta, uno a la vez, hasta recibir SIGTERM o
+    SIGINT.
+
+    Corre aparte de la API: la API deja cada recurso EN_PROCESO con su trabajo en PostgreSQL, y
+    este proceso lo toma, ejecuta su motor y encadena la etapa que sigue. Se pueden correr varios
+    a la vez: nunca toman el mismo trabajo. Con --una-vez procesa a lo mas uno y sale, con
+    codigo 0 aunque la cola este vacia.
+    """
+    from motor_cartera.orquestacion.worker import ejecutar_worker
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    )
+    procesado = ejecutar_worker(una_vez=una_vez)
+    if not una_vez:
+        return
+    if procesado is None:
+        typer.echo("No hay trabajos que tomar.")
+        return
+    estado = procesado.estado or "lo cierra otro worker"
+    typer.echo(
+        f"Trabajo {procesado.trabajo_id} ({procesado.tipo}, intento {procesado.intentos}): {estado}"
+    )
 
 
 if __name__ == "__main__":

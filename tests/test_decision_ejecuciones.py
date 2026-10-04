@@ -22,7 +22,7 @@ import pytest
 from psycopg.errors import LockNotAvailable
 from sqlalchemy import event
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import func, select
 
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -484,20 +484,59 @@ def test_si_el_lector_repite_una_cuenta_la_base_lo_impide_y_no_es_una_carrera(
 
 
 @en_la_base
-def test_de_dos_ejecuciones_simultaneas_solo_una_publica(tmp_path, cartera_valida):
+def test_la_base_no_admite_dos_ejecuciones_en_proceso_de_la_misma_corrida_y_version(
+    tmp_path, cartera_valida
+):
     # I9. Dos peticiones pueden pasar la revision amable en el mismo instante, antes de que
-    # cualquiera termine. Se registran aqui a mano, sin revision, como si eso hubiera pasado: lo
-    # que impide la doble publicacion es el indice unico parcial.
+    # cualquiera termine. Se registran aqui a mano, sin revision, como si eso hubiera pasado: desde
+    # la 0006 la segunda ya no entra. A lo mas un intento activo por corrida y version; otra
+    # version si, y una FALLIDA no cuenta.
     corrida = _publicar(tmp_path, cartera_valida)
-    a = _registrar_ejecucion(corrida.id)
-    b = _registrar_ejecucion(corrida.id)
+    activa = _registrar_ejecucion(corrida.id)
 
-    ejecutar_decision(a)
+    with pytest.raises(IntegrityError, match="ux_ejecucion_decision_en_proceso"):
+        _registrar_ejecucion(corrida.id)
+
+    otra_version = _registrar_ejecucion(corrida.id, version="decision/v2")
+    ejecutar_decision(otra_version)  # decision/v2 no se decide aqui: queda FALLIDA
+    assert [(e.id, e.version_reglas, e.estado) for e in _ejecuciones(corrida.id)] == [
+        (activa, "decision/v1", EstadoDecision.EN_PROCESO),
+        (otra_version, "decision/v2", EstadoDecision.FALLIDA),
+    ]
+    _registrar_ejecucion(corrida.id, version="decision/v2")  # la FALLIDA ya no la bloquea
+
+
+@en_la_base
+def test_si_otra_ejecucion_publica_mientras_esta_decide_solo_una_publica(
+    tmp_path, cartera_valida, monkeypatch
+):
+    # La garantia de no publicar dos veces sigue siendo el indice de las EXITOSA. Ya no puede haber
+    # dos EN_PROCESO de la misma version que lleguen a cerrar a la vez: aqui la otra aparece
+    # EXITOSA justo antes de que esta cierre, como la dejaria alguien que se salta la revision.
+    corrida = _publicar(tmp_path, cartera_valida)
+    ejecucion_id = _registrar_ejecucion(corrida.id)
+    cerrar = ejecuciones._cerrar
+    rival = []
+
+    def otra_publica_primero(s, ejecucion, evaluadas):
+        with sesion() as otra:
+            ganadora = EjecucionDecision(
+                corrida_id=corrida.id,
+                version_reglas=VERSION_REGLAS_DECISION,
+                estado=EstadoDecision.EXITOSA,
+            )
+            otra.add(ganadora)
+            otra.commit()
+            rival.append(ganadora.id)
+        cerrar(s, ejecucion, evaluadas)
+
+    monkeypatch.setattr(ejecuciones, "_cerrar", otra_publica_primero)
+
     with pytest.raises(DecisionYaGenerada) as exc:
-        ejecutar_decision(b)
+        ejecutar_decision(ejecucion_id)
 
-    assert exc.value.previa.id == a
-    perdedora = _ejecucion(b)
+    assert exc.value.previa.id == rival[0]
+    perdedora = _ejecucion(ejecucion_id)
     assert perdedora.estado == EstadoDecision.FALLIDA
     # Hizo el trabajo, evaluo todas sus cuentas, pero no publico ninguna.
     assert (perdedora.cuentas_evaluadas, perdedora.cuentas_decididas) == (3, 0)
@@ -505,33 +544,9 @@ def test_de_dos_ejecuciones_simultaneas_solo_una_publica(tmp_path, cartera_valid
         "Otra ejecucion publico las decisiones de esta corrida con decision/v1 mientras esta se "
         "procesaba; no se publican dos veces."
     )
-    assert _cuantas_decisiones(b) == 0
-    assert _cuantas_decisiones(a) == 3
+    assert _cuantas_decisiones(ejecucion_id) == 0
     exitosas = [e.id for e in _ejecuciones(corrida.id) if e.estado == EstadoDecision.EXITOSA]
-    assert exitosas == [a]
-
-
-@en_la_base
-def test_otra_ejecucion_en_proceso_no_impide_abrir_y_gana_la_que_cierra_primero(
-    tmp_path, cartera_valida
-):
-    # Dos peticiones, cada una con su sesion: la segunda abre aunque la primera siga EN_PROCESO.
-    corrida = _publicar(tmp_path, cartera_valida)
-    with sesion() as s:
-        primera = abrir_ejecucion(s, s.get_one(Corrida, corrida.id))
-    with sesion() as s:
-        segunda = abrir_ejecucion(s, s.get_one(Corrida, corrida.id))
-    assert primera.estado == segunda.estado == EstadoDecision.EN_PROCESO
-
-    # Gana la que cierra primero, aunque haya abierto despues.
-    ejecutar_decision(segunda.id)
-    with pytest.raises(DecisionYaGenerada) as exc:
-        ejecutar_decision(primera.id)
-
-    assert exc.value.previa.id == segunda.id
-    assert _ejecucion(primera.id).estado == EstadoDecision.FALLIDA
-    assert _cuantas_decisiones(primera.id) == 0
-    assert _cuantas_decisiones(segunda.id) == 3
+    assert exitosas == rival
 
 
 # --- una ejecucion la decide un solo worker, y un estado terminal no cambia --------------------

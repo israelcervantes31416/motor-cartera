@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from psycopg.errors import LockNotAvailable
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import func, select
 
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -15,7 +17,6 @@ from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
-    ABANDONO,
     ArchivoDuplicado,
     abrir_corrida,
     corrida_vigente,
@@ -235,20 +236,45 @@ def test_un_archivo_que_se_esta_procesando_no_se_abre_otra_vez(tmp_path):
     assert exc.value.previa.run_id == primera.run_id
 
 
-def test_una_corrida_abandonada_no_bloquea_el_reintento(tmp_path):
-    # La API se reinicio a media corrida: esa corrida ya no la termina nadie.
+def test_una_corrida_en_proceso_sigue_bloqueando_el_archivo_aunque_sea_vieja(tmp_path):
+    # El tiempo no demuestra que se abandono. Hasta la 0005, una EN_PROCESO de mas de 15 minutos
+    # dejaba de contar; desde la 0006 la cierra el worker que tiene su trabajo, o el que lo toma
+    # cuando vence su lease, y mientras tanto sigue siendo la corrida activa de ese archivo.
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
-        abandonada = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-        abandonada.iniciada_en = ahora() - ABANDONO - timedelta(minutes=1)
-        s.add(abandonada)
+        vieja = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+        vieja.iniciada_en = ahora() - timedelta(days=1)
+        s.add(vieja)
         s.commit()
-        s.refresh(abandonada)
+        s.refresh(vieja)
+
+    with sesion() as s, pytest.raises(ArchivoDuplicado, match="se esta procesando") as exc:
+        abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    assert exc.value.previa.run_id == vieja.run_id
+
+
+def test_la_base_no_admite_dos_corridas_activas_del_mismo_archivo(tmp_path):
+    # Dos subidas simultaneas del mismo archivo pueden pasar la revision previa en el mismo
+    # instante, antes de que exista cualquiera de las dos. La segunda se inserta aqui sin revision,
+    # como si eso hubiera pasado: lo que la detiene es el indice de las EN_PROCESO.
+    contenido = _archivo(tmp_path).read_bytes()
+    with sesion() as s:
+        abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    with sesion() as s, pytest.raises(IntegrityError, match="ux_corrida_firma_en_proceso"):
+        s.add(
+            Corrida(
+                origen="cartera.csv",
+                firma=firmar(contenido),
+                tolerancia_rechazo=0.05,
+                version_contrato=VERSION_CONTRATO,
+            )
+        )
+        s.commit()
 
     with sesion() as s:
-        reintento = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-
-    assert reintento.run_id != abandonada.run_id
+        assert s.exec(select(func.count()).select_from(Corrida)).one() == 1
 
 
 def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
@@ -262,12 +288,14 @@ def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
 
 
 def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
-    # Dos subidas simultaneas del mismo archivo pueden pasar la revision previa en el mismo
-    # instante, antes de que exista cualquiera de las dos. La segunda se inserta aqui sin
-    # revision, como si eso hubiera pasado. Lo que impide la doble publicacion es el indice.
+    # Ninguna puerta de entrada abre una corrida de un archivo ya publicado: la revision previa lo
+    # ve. La segunda se inserta aqui a mano, cuando la primera ya publico, como si se la hubiera
+    # saltado. Lo que impide la doble publicacion sigue siendo el indice de las EXITOSA.
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
         una = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+    procesar_corrida(una.id, contenido)
+    with sesion() as s:
         otra = Corrida(
             origen="cartera.csv",
             firma=firmar(contenido),
@@ -276,10 +304,8 @@ def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
         )
         s.add(otra)
         s.commit()
-        s.refresh(una)
         s.refresh(otra)
 
-    procesar_corrida(una.id, contenido)
     procesar_corrida(otra.id, contenido)
 
     with sesion() as s:
@@ -302,6 +328,89 @@ def test_un_error_inesperado_deja_la_corrida_fallida_y_sin_datos(tmp_path, monke
     assert corrida.estado == EstadoCorrida.FALLIDA
     assert corrida.detalle.startswith("Error interno (RuntimeError)")
     assert _cuantas(Cuenta, corrida) == 0
+
+
+# --- procesar es idempotente: la cola entrega al menos una vez ------------------------------
+
+
+def _tres_terminadas(tmp_path: Path) -> list[Corrida]:
+    """Una corrida EXITOSA, una RECHAZADA y una FALLIDA, cada una con su archivo."""
+    malformado = tmp_path / "malformado.csv"
+    malformado.write_text("cliente,saldo\nCU00000001,10.00\n", encoding="utf-8")
+    return [
+        ingerir_archivo(_archivo(tmp_path, "exitosa.csv")),
+        ingerir_archivo(_archivo(tmp_path, "rechazada.csv", tasa=0.5, semilla=2)),
+        ingerir_archivo(malformado),
+    ]
+
+
+def _como_quedo(corrida: Corrida) -> tuple:
+    with sesion() as s:
+        guardada = s.get_one(Corrida, corrida.id).model_dump()
+    return guardada, _cuantas(Cuenta, corrida), _cuantas(Rechazo, corrida)
+
+
+def test_procesar_otra_vez_una_corrida_que_ya_termino_no_hace_nada(tmp_path, caplog):
+    # Una segunda entrega del mismo trabajo, con el mismo archivo: la corrida ya termino, y no se
+    # vuelve a leer, a juzgar ni a publicar.
+    terminadas = _tres_terminadas(tmp_path)
+    assert [c.estado for c in terminadas] == ["EXITOSA", "RECHAZADA", "FALLIDA"]
+    antes = [_como_quedo(corrida) for corrida in terminadas]
+
+    for corrida, ruta in zip(
+        terminadas,
+        (tmp_path / "exitosa.csv", tmp_path / "rechazada.csv", tmp_path / "malformado.csv"),
+        strict=True,
+    ):
+        procesar_corrida(corrida.id, ruta.read_bytes())
+
+    assert [_como_quedo(corrida) for corrida in terminadas] == antes
+    avisos = [r.getMessage() for r in caplog.records if "no se vuelve a procesar" in r.getMessage()]
+    assert [aviso.split(" ya termino ")[1] for aviso in avisos] == [
+        "EXITOSA; no se vuelve a procesar",
+        "RECHAZADA; no se vuelve a procesar",
+        "FALLIDA; no se vuelve a procesar",
+    ]
+
+
+def test_un_fallo_que_llega_tarde_no_cambia_una_corrida_terminada(tmp_path, caplog):
+    terminadas = _tres_terminadas(tmp_path)
+    antes = [_como_quedo(corrida) for corrida in terminadas]
+
+    for corrida in terminadas:
+        with sesion() as s:
+            corridas._fallar(s, corrida.id, corrida.run_id, "Un fallo tardio.")
+
+    assert [_como_quedo(corrida) for corrida in terminadas] == antes
+    assert sum("este fallo no la cambia" in r.getMessage() for r in caplog.records) == 3
+
+
+def test_la_corrida_se_procesa_con_su_fila_bloqueada(tmp_path, monkeypatch):
+    # Mientras se juzga, ninguna otra sesion puede tomar la corrida: la tiene quien la procesa.
+    ruta = _archivo(tmp_path)
+    with sesion() as s:
+        corrida = abrir_corrida(s, origen=ruta.name, contenido=ruta.read_bytes())
+    separar = corridas.separar_rechazos
+    durante = []
+
+    def separa_mientras_otra_intenta(datos):
+        with sesion() as otra:
+            consulta = select(Corrida).where(Corrida.id == corrida.id).with_for_update(nowait=True)
+            try:
+                otra.exec(consulta).one()
+                durante.append("libre")
+            except OperationalError as exc:
+                assert isinstance(exc.orig, LockNotAvailable)
+                durante.append("tomada")
+        return separar(datos)
+
+    monkeypatch.setattr(corridas, "separar_rechazos", separa_mientras_otra_intenta)
+
+    procesar_corrida(corrida.id, ruta.read_bytes())
+
+    assert durante == ["tomada"]
+    with sesion() as s:
+        assert s.get_one(Corrida, corrida.id).estado == EstadoCorrida.EXITOSA
 
 
 # --- una cartera, un corte ------------------------------------------------------------------

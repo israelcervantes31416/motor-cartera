@@ -25,7 +25,7 @@ import pytest
 from psycopg.errors import LockNotAvailable
 from sqlalchemy import delete, event, text, update
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import func, select
 
 from motor_cartera.db.modelos import (
@@ -881,51 +881,63 @@ def test_el_mismo_id_lo_procesa_un_solo_worker_y_el_otro_lo_encuentra_terminado(
 
 
 @en_la_base
-def test_dos_ejecuciones_simultaneas_de_la_misma_fuente_publican_una_sola_vez(
-    tmp_path, monkeypatch
-):
+def test_la_base_no_admite_dos_ejecuciones_en_proceso_de_la_misma_fuente_y_version(tmp_path):
     # Dos peticiones pueden pasar la revision amable en el mismo instante: se registran aqui a
-    # mano, sin revision, y corren a la vez en dos hilos. Una barrera las junta con su transaccion
-    # abierta y sus municipios ya evaluados. Lo que impide la doble publicacion es el indice unico
-    # parcial: deja cerrar EXITOSA a la primera, y la segunda revierte.
+    # mano, sin revision. Desde la 0006 la segunda ya no entra: a lo mas un intento activo por
+    # fuente y version. Otra version si, y una que ya termino no cuenta.
+    fuente = _decidida(tmp_path, PEQUENA)
+    activa = _registrar(fuente.id)
+
+    with pytest.raises(IntegrityError, match="ux_ejecucion_territorial_en_proceso"):
+        _registrar(fuente.id)
+
+    otra_version = _registrar(fuente.id, version="territorial/v2")
+    ejecutar_territorial(otra_version)  # territorial/v2 no se calcula aqui: queda FALLIDA
+    assert [(e.id, e.version_reglas, e.estado) for e in _territoriales(fuente.id)] == [
+        (activa, "territorial/v1", EstadoTerritorial.EN_PROCESO),
+        (otra_version, "territorial/v2", EstadoTerritorial.FALLIDA),
+    ]
+    _registrar(fuente.id, version="territorial/v2")  # la FALLIDA ya no la bloquea
+
+
+@en_la_base
+def test_si_otra_ejecucion_publica_mientras_esta_organiza_solo_una_publica(tmp_path, monkeypatch):
+    # La garantia de no publicar dos veces sigue siendo el indice de las EXITOSA. Ya no puede haber
+    # dos EN_PROCESO de la misma version que lleguen a cerrar a la vez: aqui la otra aparece
+    # EXITOSA justo antes de que esta cierre, con su transaccion abierta y sus municipios ya
+    # evaluados, como la dejaria alguien que se salta la revision.
     fuente = _decidida(tmp_path, CARTERA)
-    a, b = _registrar(fuente.id), _registrar(fuente.id)
-    barrera = threading.Barrier(2, timeout=10)
-    priorizar = ejecuciones.priorizar_territorios
+    ejecucion_id = _registrar(fuente.id)
+    cerrar = ejecuciones._cerrar
+    rival = []
 
-    def las_dos_a_la_vez(entradas):
-        resultados = priorizar(entradas)
-        barrera.wait()
-        return resultados
+    def otra_publica_primero(s, ejecucion, *argumentos):
+        with sesion() as otra:
+            ganadora = EjecucionTerritorial(
+                ejecucion_decision_id=fuente.id,
+                version_reglas=VERSION_REGLAS_TERRITORIAL,
+                estado=EstadoTerritorial.EXITOSA,
+            )
+            otra.add(ganadora)
+            otra.commit()
+            rival.append(ganadora.id)
+        cerrar(s, ejecucion, *argumentos)
 
-    monkeypatch.setattr(ejecuciones, "priorizar_territorios", las_dos_a_la_vez)
+    monkeypatch.setattr(ejecuciones, "_cerrar", otra_publica_primero)
 
-    workers = {
-        ejecucion_id: _en_otro_hilo(ejecutar_territorial, ejecucion_id) for ejecucion_id in (a, b)
-    }
-    for hilo, _ in workers.values():
-        hilo.join(timeout=30)
+    with pytest.raises(TerritorialYaGenerado) as exc:
+        ejecutar_territorial(ejecucion_id)
 
-    assert not any(hilo.is_alive() for hilo, _ in workers.values())
-    terminadas = {ejecucion_id: _ejecucion(ejecucion_id) for ejecucion_id in (a, b)}
-    exitosas = [i for i, e in terminadas.items() if e.estado == EstadoTerritorial.EXITOSA]
-    fallidas = [i for i, e in terminadas.items() if e.estado == EstadoTerritorial.FALLIDA]
-    assert len(exitosas) == len(fallidas) == 1
-    (ganadora,), (perdedora,) = exitosas, fallidas
-    # La ganadora publico sus ocho municipios. La perdedora hizo el trabajo, pero no publico nada,
-    # y a quien la ejecuto le dice cual gano.
-    assert workers[ganadora][1] == {"resultado": None}
-    error = workers[perdedora][1].get("error")
-    assert isinstance(error, TerritorialYaGenerado)
-    assert error.previa.id == ganadora
-    assert (_cuantos_resultados(ganadora), _cuantos_resultados(perdedora)) == (8, 0)
-    assert _cuantos_resultados() == 8  # no 16
-    perdio = terminadas[perdedora]
+    # La perdedora hizo el trabajo, pero no publico nada, y a quien la ejecuto le dice cual gano.
+    assert exc.value.previa.id == rival[0]
+    perdio = _ejecucion(ejecucion_id)
+    assert perdio.estado == EstadoTerritorial.FALLIDA
     assert (perdio.territorios_evaluados, perdio.territorios_publicados) == (8, 0)
     assert perdio.detalle == (
         "Otra ejecucion publico los territorios de esta ejecucion de decision con territorial/v1 "
         "mientras esta se procesaba; no se publican dos veces."
     )
+    assert _cuantos_resultados() == 0
 
 
 @en_la_base

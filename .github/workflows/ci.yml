@@ -77,8 +77,9 @@ jobs:
       - name: Pruebas
         run: pytest --cov=motor_cartera --cov-report=term-missing
 
-  # La definicion de terminado, en una maquina limpia: un solo comando levanta todo, se
-  # genera una cartera sintetica y el flujo completo funciona por la API.
+  # La definicion de terminado, en una maquina limpia: un solo comando levanta todo
+  # (PostgreSQL, migraciones, API y worker), se genera una cartera sintetica y su flujo
+  # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta.
   compose:
     runs-on: ubuntu-latest
 
@@ -88,11 +89,20 @@ jobs:
       - name: docker compose up
         run: docker compose up -d --build
 
+      # Las migraciones ya terminaron; la API y el worker siguen corriendo, cada uno en lo suyo.
+      - name: Servicios
+        run: docker compose ps --all
+
       - name: Generar una cartera sintetica
         run: docker compose exec -T api motor-cartera generar --destino datos/humo.xlsx
 
       - name: Prueba de humo por la API
         run: python3 scripts/prueba_de_humo.py datos/humo.xlsx
+
+      # Lo que hizo el worker: cada trabajo que tomo y como lo cerro.
+      - name: Bitacora del worker
+        if: always()
+        run: docker compose logs worker
 
       - name: Bitacora de los contenedores
         if: failure()

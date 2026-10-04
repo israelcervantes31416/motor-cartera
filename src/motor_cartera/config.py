@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from typing import Self
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +28,31 @@ class Config(BaseSettings):
     """
     tamano_maximo_mb: int = Field(default=50, gt=0)
     """Tope del archivo que acepta POST /corridas, en MiB."""
+
+    # El worker. Son parametros operativos: deciden cuando, cada cuanto y cuantas veces se ejecuta
+    # un trabajo, nunca que calcula un motor. Ninguno cambia una decision, un municipio ni una ruta.
+    worker_poll_segundos: float = Field(default=0.5, gt=0)
+    """Cuanto espera el worker antes de volver a buscar trabajo cuando la cola esta vacia."""
+    worker_lease_segundos: float = Field(default=60, gt=0)
+    """Por cuanto tiempo un trabajo es de su worker sin que este lata. Si deja de latir, otro worker
+    lo puede tomar cuando vence."""
+    worker_heartbeat_segundos: float = Field(default=20, gt=0)
+    """Cada cuanto late el worker para renovar el lease del trabajo que ejecuta. Menor que el lease:
+    si no, el lease venceria entre un latido y otro."""
+    worker_max_intentos: int = Field(default=5, ge=1)
+    """Cuantas veces se puede tomar un trabajo antes de darlo por FALLIDO. Cada trabajo copia el
+    valor al nacer, y conserva la politica con que nacio."""
+    worker_backoff_segundos: float = Field(default=1, gt=0)
+    """La espera tras el primer error de un trabajo; se duplica en cada intento: 1, 2, 4, 8..."""
+
+    @model_validator(mode="after")
+    def _el_latido_cabe_en_el_lease(self) -> Self:
+        if self.worker_heartbeat_segundos >= self.worker_lease_segundos:
+            raise ValueError(
+                "MC_WORKER_HEARTBEAT_SEGUNDOS debe ser menor que MC_WORKER_LEASE_SEGUNDOS: "
+                f"{self.worker_heartbeat_segundos} no es menor que {self.worker_lease_segundos}."
+            )
+        return self
 
 
 config = Config()

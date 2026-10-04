@@ -1,10 +1,11 @@
-"""El Motor de Ruteo por HTTP: trazar las rutas de una ejecucion territorial y consultar lo que se
-publico.
+"""El Motor de Ruteo por HTTP: pedir que se tracen las rutas de una ejecucion territorial y
+consultar lo que se publico.
 
-La API no rutea nada. Las coordenadas sinteticas, las distancias, el recorrido, la transaccion que
-publica todas las rutas o ninguna y la garantia de rutear una ejecucion territorial con exito una
-sola vez por version viven en `ruteo.reglas` y `ruteo.ejecuciones`. Aqui solo se elige la ejecucion,
-el codigo HTTP y la forma de la respuesta.
+La API no rutea nada, ni espera a que se rutee. El POST deja la ejecucion EN_PROCESO y su trabajo en
+la cola durable, en una sola transaccion, y un worker la ejecuta. Las coordenadas sinteticas, las
+distancias, el recorrido, la transaccion que publica todas las rutas o ninguna y la garantia de
+rutear una ejecucion territorial con exito una sola vez por version viven en `ruteo.reglas` y
+`ruteo.ejecuciones`. Aqui solo se elige la ejecucion, el codigo HTTP y la forma de la respuesta.
 
 Las coordenadas y las distancias que se sirven son sinteticas: metros de un plano operativo local,
 propio de cada municipio, con el deposito en (0, 0). No son latitud ni longitud, domicilios, calles,
@@ -16,13 +17,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Path, Query, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 from sqlmodel import Session, func, select
 
 from motor_cartera.api.dependencias import Sesion
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     EJEMPLO_EJECUCION_RUTEO,
+    EJEMPLO_EJECUCION_RUTEO_EN_PROCESO,
     EJEMPLO_EJECUCION_RUTEO_FALLIDA,
     EjecucionRuteoRespuesta,
     Paginacion,
@@ -44,12 +46,13 @@ from motor_cartera.db.modelos import (
     ResultadoTerritorial,
     RutaTerritorial,
 )
+from motor_cartera.orquestacion.flujo import FlujoDetenido, FlujoEnProceso, encolar_ruteo
 from motor_cartera.ruteo.ejecuciones import (
     VERSION_DECISION_COMPATIBLE,
     VERSION_TERRITORIAL_COMPATIBLE,
+    RuteoEnProceso,
     RuteoYaGenerado,
     TerritorialNoRuteable,
-    rutear_territorial,
 )
 from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 
@@ -83,6 +86,23 @@ RUTEO_NO_PUBLICADO = (
     "RUTEO_NO_PUBLICADO",
     "La ejecucion de ruteo no termino EXITOSA: no publico rutas ni paradas.",
 )
+EJEMPLOS_DE_EJECUCION = {
+    "content": {
+        "application/json": {
+            "examples": {
+                "EN_PROCESO": {
+                    "summary": "El worker todavia no la termina",
+                    "value": EJEMPLO_EJECUCION_RUTEO_EN_PROCESO,
+                },
+                "EXITOSA": {"summary": "Trazo todas las rutas", "value": EJEMPLO_EJECUCION_RUTEO},
+                "FALLIDA": {
+                    "summary": "El motor fallo y no publico ninguna ruta",
+                    "value": EJEMPLO_EJECUCION_RUTEO_FALLIDA,
+                },
+            }
+        }
+    }
+}
 SINTETICAS = (
     "Las coordenadas y las distancias son sinteticas: metros de un plano operativo local, propio "
     "de cada municipio, con el deposito en (0, 0). No son latitud ni longitud, domicilios, calles, "
@@ -94,27 +114,15 @@ SINTETICAS = (
     "/territoriales/{territorial_run_id}/ruteos",
     status_code=201,
     response_model=EjecucionRuteoRespuesta,
-    summary=f"Traza con {VERSION_REGLAS_RUTEO} la ruta sintetica de cada municipio con trabajo "
-    "de campo de una ejecucion territorial",
+    summary=f"Pide trazar con {VERSION_REGLAS_RUTEO} la ruta sintetica de cada municipio con "
+    "trabajo de campo de una ejecucion territorial",
     responses={
         201: {
-            "description": "La ejecucion de ruteo quedo creada y ya termino. Su `estado` dice "
-            "como: EXITOSA, con una ruta por municipio con cuentas de campo, o FALLIDA, sin "
-            "ninguna y con el motivo en `detalle`. En los dos casos `Location` apunta a ella.",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "EXITOSA": {
-                            "summary": "Trazo todas las rutas",
-                            "value": EJEMPLO_EJECUCION_RUTEO,
-                        },
-                        "FALLIDA": {
-                            "summary": "El motor fallo y no publico ninguna ruta",
-                            "value": EJEMPLO_EJECUCION_RUTEO_FALLIDA,
-                        },
-                    }
-                }
-            },
+            "description": "La ejecucion de ruteo quedo creada EN_PROCESO, con su trabajo en la "
+            "cola durable: un worker la ejecuta. `Location` apunta a ella; consultala hasta que "
+            "termine EXITOSA, con una ruta por municipio con cuentas de campo, o FALLIDA, sin "
+            "ninguna.",
+            "content": {"application/json": {"example": EJEMPLO_EJECUCION_RUTEO_EN_PROCESO}},
         },
         **errores(
             *SIN_CLAVE,
@@ -132,17 +140,36 @@ SINTETICAS = (
                 f"La ejecucion territorial ya se ruteo con exito con {VERSION_REGLAS_RUTEO}; "
                 "GET /territoriales/{territorial_run_id}/ruteos dice cual ejecucion.",
             ),
+            (
+                409,
+                "RUTEO_EN_PROCESO",
+                f"La ejecucion territorial ya se esta ruteando con {VERSION_REGLAS_RUTEO}: tiene "
+                "una ejecucion de ruteo EN_PROCESO.",
+            ),
+            (
+                409,
+                "FLUJO_EN_PROCESO",
+                "La ejecucion territorial es de un flujo automatico que todavia la va a rutear.",
+            ),
+            (
+                409,
+                "FLUJO_DETENIDO",
+                "La ejecucion territorial es de un flujo que se detuvo en el ruteo: se reintenta "
+                "reanudando el flujo.",
+            ),
             (422, "ENTRADA_INVALIDA", "El territorial_run_id no es un UUID."),
         ),
     },
 )
 def crear_ejecucion_ruteo(
-    territorial_run_id: UUID, response: Response, s: Sesion
+    territorial_run_id: UUID, request: Request, response: Response, s: Sesion
 ) -> EjecucionRuteoRespuesta:
-    """Traza, con las reglas de ruteo de este servicio y en la misma peticion, la ruta de cada
-    municipio con cuentas de campo de una ejecucion territorial `EXITOSA` de `territorial/v1` sobre
-    decisiones de `decision/v1`, y responde con la ejecucion ya terminada. No recibe cuerpo ni elige
-    version: la respuesta dice con cual se ruteo (`version_reglas`).
+    """Pide trazar, con las reglas de ruteo de este servicio, la ruta de cada municipio con cuentas
+    de campo de una ejecucion territorial `EXITOSA` de `territorial/v1` sobre decisiones de
+    `decision/v1`. La peticion no rutea: deja la ejecucion `EN_PROCESO` y su trabajo en la cola
+    durable, en una sola transaccion, y responde de inmediato. Un worker la ejecuta; consulta
+    `Location` hasta que deje de estar `EN_PROCESO`. No recibe cuerpo ni elige version: la
+    respuesta dice con cual se rutea (`version_reglas`).
 
     Dentro de cada municipio decide en que orden visitar las cuentas con `CAMPO` como canal
     recomendado: sale de un deposito, visita cada una una vez y regresa. No vuelve a decidir que
@@ -153,26 +180,42 @@ def crear_ejecucion_ruteo(
     km por lado, propio de su municipio, y las distancias son Manhattan, en metros sinteticos. No
     son latitud ni longitud, domicilios, calles, trafico ni tiempos de conduccion.
 
-    **201 quiere decir que la ejecucion se creo, no que el motor tuvo exito.** Su `estado` dice como
-    termino: `EXITOSA`, con una ruta por municipio con cuentas de campo, o `FALLIDA`, sin ninguna y
-    con el motivo en `detalle`. Una `FALLIDA` se reintenta con otro POST, que crea otra ejecucion.
+    **201 quiere decir que la ejecucion se creo, no que el motor termino**, y menos que tuvo exito.
+    Al terminar, su `estado` dice como: `EXITOSA`, con una ruta por municipio con cuentas de campo,
+    o `FALLIDA`, sin ninguna y con el motivo en `detalle`. Una `FALLIDA` se reintenta con otro POST,
+    que crea otra ejecucion.
 
     **409 `RUTEO_YA_GENERADO` si esa ejecucion territorial ya se ruteo con exito** con esta
-    version. La respuesta no dice cual ejecucion la ruteo; lo dice
-    `GET /territoriales/{territorial_run_id}/ruteos`. Tambien es 409 si otra peticion la ruteo
-    mientras esta trazaba: esta ejecucion queda `FALLIDA` en el historial.
+    version. **409 `RUTEO_EN_PROCESO` si ya se esta ruteando**: a lo mas hay una ejecucion activa
+    por fuente y version. Ninguno dice cual ejecucion fue; lo dice
+    `GET /territoriales/{territorial_run_id}/ruteos`.
 
     **409 `TERRITORIAL_NO_RUTEABLE` si la ejecucion territorial o sus decisiones no se pueden
     rutear**, y no se registra ninguna ejecucion de ruteo.
+
+    **La ejecucion territorial de un flujo automatico la rutea el flujo**: mientras va a hacerlo,
+    409 `FLUJO_EN_PROCESO`, y si se detuvo en el ruteo, 409 `FLUJO_DETENIDO`: se reintenta con
+    `POST /flujos/{flujo_id}/reanudar`.
     """
     ejecucion_territorial_id, decision_run_id, run_id = _buscar_territorial(s, territorial_run_id)
-    # La sesion de la peticion solo sirvio para encontrar la ejecucion territorial. Se termina su
-    # transaccion antes de rutear, que puede tardar y abre las suyas, para que la conexion vuelva
-    # al pool. No queda ningun objeto del ORM que pueda caducar: solo el id interno y los
-    # identificadores publicos de la cadena.
-    s.rollback()
     try:
-        ejecucion = rutear_territorial(ejecucion_territorial_id)
+        ejecucion = encolar_ruteo(s, ejecucion_territorial_id, config=request.app.state.config)
+    except FlujoEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_EN_PROCESO",
+            f"La ejecucion territorial es del flujo {exc.flujo_id}, que sigue EN_PROCESO en "
+            f"{exc.etapa} y la va a rutear por su cuenta. Consulta /flujos/{exc.flujo_id}.",
+            run_id=run_id,
+        ) from exc
+    except FlujoDetenido as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_DETENIDO",
+            f"La ejecucion territorial es del flujo {exc.flujo_id}, que se detuvo en el ruteo. "
+            f"Para reintentarlo: POST /flujos/{exc.flujo_id}/reanudar.",
+            run_id=run_id,
+        ) from exc
     except TerritorialNoRuteable as exc:
         # El motivo es el texto que el servicio armo al revisar la cadena; no se vuelve a leer la
         # ejecucion territorial que trae la excepcion, que ya no tiene sesion.
@@ -185,6 +228,14 @@ def crear_ejecucion_ruteo(
             "RUTEO_YA_GENERADO",
             "Los municipios de esta ejecucion territorial ya se rutearon con exito con "
             f"{VERSION_REGLAS_RUTEO}. Consulta /territoriales/{territorial_run_id}/ruteos.",
+            run_id=run_id,
+        ) from exc
+    except RuteoEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "RUTEO_EN_PROCESO",
+            "Los municipios de esta ejecucion territorial ya se estan ruteando con "
+            f"{exc.activa.version_reglas}. Consulta /territoriales/{territorial_run_id}/ruteos.",
             run_id=run_id,
         ) from exc
 
@@ -246,14 +297,17 @@ def listar_ejecuciones_ruteo(
     "/ruteos/{ruteo_run_id}",
     response_model=EjecucionRuteoRespuesta,
     summary="Una ejecucion del Motor de Ruteo: version de las reglas, estado y conteos",
-    responses=errores(
-        *SIN_CLAVE,
-        RUTEO_NO_EXISTE,
-        (422, "ENTRADA_INVALIDA", "El ruteo_run_id no es un UUID."),
-    ),
+    responses={
+        200: {"description": "La ejecucion, en cualquier estado.", **EJEMPLOS_DE_EJECUCION},
+        **errores(
+            *SIN_CLAVE,
+            RUTEO_NO_EXISTE,
+            (422, "ENTRADA_INVALIDA", "El ruteo_run_id no es un UUID."),
+        ),
+    },
 )
 def obtener_ejecucion_ruteo(ruteo_run_id: UUID, s: Sesion) -> EjecucionRuteoRespuesta:
-    """Mientras el estado sea `EN_PROCESO`, la ejecucion sigue trazando. En una `FALLIDA`,
+    """Mientras el estado sea `EN_PROCESO`, el worker todavia no la termina. En una `FALLIDA`,
     `rutas_publicadas` y `paradas_publicadas` son cero aunque `rutas_evaluadas` y
     `paradas_evaluadas` digan hasta donde llego el motor. Trae los identificadores publicos de toda
     la cadena: la ejecucion territorial, la de decision y la corrida.
@@ -443,9 +497,8 @@ def listar_paradas(
 
 def _buscar_territorial(s: Session, territorial_run_id: UUID) -> tuple[int, UUID, UUID]:
     """El id interno de la ejecucion territorial con ese territorial_run_id, el decision_run_id de
-    sus decisiones y el run_id de su corrida, o 404. Valores y no la ejecucion: el POST termina la
-    transaccion de la busqueda antes de rutear, y asi no queda ningun objeto del ORM que pueda
-    caducar. El id interno solo sirve para llamar al servicio; no sale en ninguna respuesta."""
+    sus decisiones y el run_id de su corrida, o 404. Valores y no la ejecucion: el id interno solo
+    sirve para pedir la ejecucion de ruteo; no sale en ninguna respuesta."""
     fila = s.exec(
         select(EjecucionTerritorial.id, EjecucionDecision.decision_run_id, Corrida.run_id)
         .select_from(EjecucionTerritorial)

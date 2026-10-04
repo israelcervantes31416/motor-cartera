@@ -70,6 +70,25 @@ def bd(_esquema) -> Iterator[None]:
     yield
 
 
+@pytest.fixture
+def trabajar():
+    """Procesa la cola como lo haria un worker, hasta que no quede ningun trabajo que tomar ya, y
+    devuelve lo que proceso. Un trabajo que vuelve a la cola con espera ya no se toma aqui."""
+    from motor_cartera.config import Config
+    from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
+
+    def trabajar(config: Config | None = None, *, limite: int = 50) -> list:
+        config = config or Config()
+        worker_id = identificador_worker()
+        procesados = []
+        while (procesado := procesar_un_trabajo(worker_id, config)) is not None:
+            procesados.append(procesado)
+            assert len(procesados) <= limite, "la cola no se vacia"
+        return procesados
+
+    return trabajar
+
+
 CLAVE = "clave-de-prueba"
 
 

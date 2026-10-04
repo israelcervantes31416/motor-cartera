@@ -1,9 +1,12 @@
-"""La API del Decision Engine: decidir una corrida por HTTP y consultar lo que se decidio.
+"""La API del Decision Engine: pedir que se decida una corrida por HTTP y consultar lo que se
+decidio.
 
-Las corridas se publican por POST /corridas, como lo haria un cliente, y las decisiones se piden y
-se leen por la API. Las reglas y la transaccion ya se prueban en el servicio; aqui, que la capa HTTP
-traduzca bien: codigos, Location, errores, orden, paginacion y vocabulario historico. Las pruebas de
-la ultima seccion no tocan la base.
+El POST no decide: deja la ejecucion EN_PROCESO con su trabajo en la cola durable y responde 201.
+Las pruebas hacen lo que haria el worker y despues leen el resultado por la API. Las corridas se
+publican en modo directo, sin flujo, como una corrida anterior a v0.5.0 o del CLI: asi su decision
+se pide a mano. Las de un flujo se prueban aparte. Las reglas y la transaccion ya se prueban en el
+servicio; aqui, que la capa HTTP traduzca bien: codigos, Location, errores, orden, paginacion y
+vocabulario historico. Las pruebas de la ultima seccion no tocan la base.
 """
 
 from __future__ import annotations
@@ -21,25 +24,28 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import func, select
 
-from motor_cartera.api import decisiones
 from motor_cartera.api.esquemas import (
     EJEMPLO_DECISION_CUENTA,
     EJEMPLO_EJECUCION,
+    EJEMPLO_EJECUCION_EN_PROCESO,
     EJEMPLO_EJECUCION_FALLIDA,
     DecisionCuentaRespuesta,
     EjecucionDecisionRespuesta,
 )
+from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     Corrida,
     Cuenta,
     DecisionCuenta,
     EjecucionDecision,
     EstadoDecision,
+    EstadoTrabajo,
+    TipoTrabajo,
+    TrabajoOrquestacion,
     ahora,
 )
 from motor_cartera.db.sesion import crear_motor, sesion
 from motor_cartera.decision import ejecuciones
-from motor_cartera.decision.ejecuciones import abrir_ejecucion, ejecutar_decision
 from motor_cartera.decision.reglas import (
     VERSION_REGLAS_DECISION,
     EntradaDecision,
@@ -47,7 +53,8 @@ from motor_cartera.decision.reglas import (
     decidir_cuenta,
 )
 from motor_cartera.generador.sintetico import generar_archivo
-from motor_cartera.ingesta.corridas import abrir_corrida
+from motor_cartera.ingesta.corridas import abrir_corrida, procesar_corrida
+from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
 
 en_la_base = pytest.mark.usefixtures("bd")
 
@@ -112,18 +119,24 @@ def _sintetica(tmp_path: Path, n: int, *, tasa: float = 0.0) -> bytes:
     return ruta.read_bytes()
 
 
-def _subir(cliente, contenido: bytes) -> dict:
-    """Sube un archivo por POST /corridas y devuelve la corrida ya procesada."""
-    respuesta = cliente.post(
-        "/corridas", files={"archivo": ("cartera.csv", contenido, "application/octet-stream")}
-    )
-    assert respuesta.status_code == 201, respuesta.text
-    return cliente.get(respuesta.headers["Location"]).json()
+def _trabajar() -> None:
+    """Lo que haria el worker: procesa la cola hasta que no quede ningun trabajo que tomar."""
+    worker_id = identificador_worker()
+    while procesar_un_trabajo(worker_id, Config()) is not None:
+        pass
+
+
+def _ingerida(cliente, contenido: bytes) -> dict:
+    """La corrida publicada en modo directo, sin flujo, y como la sirve la API."""
+    with sesion() as s:
+        corrida = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+    procesar_corrida(corrida.id, contenido)
+    return cliente.get(f"/corridas/{corrida.run_id}").json()
 
 
 def _publicar(cliente, contenido: bytes) -> str:
-    """Publica una cartera por la API y devuelve su run_id."""
-    corrida = _subir(cliente, contenido)
+    """Publica una cartera sin flujo y devuelve su run_id."""
+    corrida = _ingerida(cliente, contenido)
     assert corrida["estado"] == "EXITOSA", corrida["detalle"]
     return corrida["run_id"]
 
@@ -132,9 +145,18 @@ def _decidir(cliente, run_id: str):
     return cliente.post(f"/corridas/{run_id}/decisiones")
 
 
+def _decidir_y_esperar(cliente, run_id: str) -> tuple:
+    """Pide la decision, deja trabajar al worker y devuelve la respuesta del POST y la ejecucion
+    como quedo."""
+    respuesta = _decidir(cliente, run_id)
+    assert respuesta.status_code == 201, respuesta.text
+    _trabajar()
+    return respuesta, cliente.get(respuesta.headers["Location"]).json()
+
+
 def _decidida(cliente, run_id: str) -> str:
     """Decide la corrida por la API y devuelve el decision_run_id de su ejecucion EXITOSA."""
-    ejecucion = _decidir(cliente, run_id).json()
+    _, ejecucion = _decidir_y_esperar(cliente, run_id)
     assert ejecucion["estado"] == "EXITOSA", ejecucion
     return ejecucion["decision_run_id"]
 
@@ -168,14 +190,21 @@ def _ejecuciones() -> int:
         return s.exec(select(func.count()).select_from(EjecucionDecision)).one()
 
 
-def _decisiones_en_la_tabla(decision_run_id: str) -> int:
+def _trabajos() -> list[TrabajoOrquestacion]:
     with sesion() as s:
-        return s.exec(
+        return list(s.exec(select(TrabajoOrquestacion).order_by(TrabajoOrquestacion.id)).all())
+
+
+def _decisiones_en_la_tabla(decision_run_id: str | None = None) -> int:
+    with sesion() as s:
+        consulta = (
             select(func.count())
             .select_from(DecisionCuenta)
             .join(EjecucionDecision, DecisionCuenta.ejecucion_decision_id == EjecucionDecision.id)
-            .where(EjecucionDecision.decision_run_id == UUID(decision_run_id))
-        ).one()
+        )
+        if decision_run_id is not None:
+            consulta = consulta.where(EjecucionDecision.decision_run_id == UUID(decision_run_id))
+        return s.exec(consulta).one()
 
 
 def _como_se_sirve(cliente_unico: str, resultado: ResultadoDecision) -> dict:
@@ -216,20 +245,42 @@ def _sentencias() -> Iterator[list[str]]:
 
 
 @en_la_base
-def test_post_decide_la_corrida_y_responde_201_con_location(cliente, cartera_valida):
-    # A1.
-    corrida = _subir(cliente, _csv(_con_saldo_alto(cartera_valida)))
+def test_post_deja_la_ejecucion_en_proceso_y_el_worker_la_decide(cliente, cartera_valida):
+    # A1. 201 con la ejecucion recien creada, y su direccion; el worker la decide despues.
+    corrida = _ingerida(cliente, _csv(_con_saldo_alto(cartera_valida)))
     assert corrida["estado"] == "EXITOSA"
 
     respuesta = _decidir(cliente, corrida["run_id"])
 
     assert respuesta.status_code == 201
-    ejecucion = respuesta.json()
-    assert set(ejecucion) == CAMPOS_DE_EJECUCION
-    assert respuesta.headers["Location"] == f"/decisiones/{ejecucion['decision_run_id']}"
-    assert (ejecucion["run_id"], ejecucion["version_reglas"], ejecucion["estado"]) == (
+    creada = respuesta.json()
+    assert set(creada) == CAMPOS_DE_EJECUCION
+    assert respuesta.headers["Location"] == f"/decisiones/{creada['decision_run_id']}"
+    assert (creada["run_id"], creada["version_reglas"], creada["estado"]) == (
         corrida["run_id"],
         "decision/v1",
+        "EN_PROCESO",
+    )
+    assert (creada["cuentas_evaluadas"], creada["cuentas_decididas"]) == (0, 0)
+    assert (creada["terminada_en"], creada["duracion_segundos"], creada["detalle"]) == (
+        None,
+        None,
+        None,
+    )
+    # Location lleva al mismo recurso, que sigue EN_PROCESO hasta que trabaje el worker.
+    assert cliente.get(respuesta.headers["Location"]).json() == creada
+    (trabajo,) = _trabajos()
+    assert (trabajo.tipo, trabajo.estado, trabajo.flujo_id) == (
+        TipoTrabajo.DECISION,
+        EstadoTrabajo.PENDIENTE,
+        None,
+    )
+
+    _trabajar()
+
+    ejecucion = cliente.get(respuesta.headers["Location"]).json()
+    assert (ejecucion["decision_run_id"], ejecucion["estado"]) == (
+        creada["decision_run_id"],
         "EXITOSA",
     )
     publicadas = corrida["filas_validas"]
@@ -237,64 +288,42 @@ def test_post_decide_la_corrida_y_responde_201_con_location(cliente, cartera_val
     assert ejecucion["detalle"] == "Se decidieron 4 cuentas con decision/v1."
     assert ejecucion["duracion_segundos"] >= 0
     assert ejecucion["iniciada_en"].endswith("Z") and ejecucion["terminada_en"].endswith("Z")
-    # Location lleva al mismo recurso.
-    assert cliente.get(respuesta.headers["Location"]).json() == ejecucion
+    assert ejecucion["iniciada_en"] == creada["iniciada_en"]
 
 
 @en_la_base
-def test_post_con_el_motor_fallando_tambien_es_201_y_la_ejecucion_queda_fallida(
+def test_el_post_no_decide_nada_antes_de_responder(cliente, cartera_valida, monkeypatch):
+    # El motor no corre en la peticion: ni se evalua una cuenta, ni se lee la tabla de decisiones.
+    run_id = _publicar(cliente, _csv(cartera_valida))
+    evaluadas = []
+    monkeypatch.setattr(ejecuciones, "decidir_cuenta", evaluadas.append)
+
+    with _sentencias() as sentencias:
+        respuesta = _decidir(cliente, run_id)
+
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
+    assert evaluadas == []
+    assert not any("decision_cuenta" in sentencia for sentencia in sentencias)
+    assert _decisiones_en_la_tabla() == 0
+
+
+@en_la_base
+def test_un_motor_que_falla_deja_la_ejecucion_fallida_despues_del_201(
     cliente, cartera_valida, monkeypatch
 ):
     # A2. D1: la ejecucion se creo y su resultado es su estado; no es un error de la peticion.
     run_id = _publicar(cliente, _csv(cartera_valida))
     monkeypatch.setattr(ejecuciones, "decidir_cuenta", _revienta)
 
-    respuesta = _decidir(cliente, run_id)
+    respuesta, fallida = _decidir_y_esperar(cliente, run_id)
 
-    assert respuesta.status_code == 201
-    fallida = respuesta.json()
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
     assert respuesta.headers["Location"] == f"/decisiones/{fallida['decision_run_id']}"
     assert (fallida["estado"], fallida["cuentas_decididas"]) == ("FALLIDA", 0)
     assert fallida["detalle"] == "Error interno (RuntimeError); ver la bitacora."
-    assert "falla simulada" not in respuesta.text
-    assert cliente.get(respuesta.headers["Location"]).json() == fallida
-
-
-@en_la_base
-def test_el_post_termina_la_transaccion_de_la_busqueda_antes_de_decidir(
-    cliente, cartera_valida, monkeypatch
-):
-    # El POST es sincrono y el motor abre sus propias transacciones. La de la sesion de la peticion
-    # solo sirve para encontrar la corrida: tiene que haber terminado al entrar al motor, y no
-    # volver a abrirse despues.
-    run_id = _publicar(cliente, _csv(cartera_valida))
-    buscar, decidir = decisiones.buscar_corrida, decisiones.decidir_corrida
-    visto = {"transacciones": 0}
-
-    def contar_transaccion(*_):
-        visto["transacciones"] += 1
-
-    def busca(s, run_id_pedido):
-        event.listen(s, "after_begin", contar_transaccion)
-        corrida = buscar(s, run_id_pedido)
-        visto["sesion"], visto["al_buscar"] = s, s.in_transaction()
-        return corrida
-
-    def decide(corrida_id):
-        visto["al_decidir"], visto["corrida_id"] = visto["sesion"].in_transaction(), corrida_id
-        return decidir(corrida_id)
-
-    monkeypatch.setattr(decisiones, "buscar_corrida", busca)
-    monkeypatch.setattr(decisiones, "decidir_corrida", decide)
-
-    respuesta = _decidir(cliente, run_id)
-
-    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EXITOSA")
-    # La busqueda leyo dentro de una transaccion, y esa ya no estaba al entrar al motor.
-    assert (visto["al_buscar"], visto["al_decidir"]) == (True, False)
-    assert visto["corrida_id"] == _id_de_corrida(run_id)
-    # Y la sesion de la peticion no abrio otra: nada volvio a leer la corrida despues del rollback.
-    assert visto["transacciones"] == 1
+    assert "falla simulada" not in str(fallida)
+    # Su trabajo cumplio: ejecuto el motor, y el motor termino.
+    assert [t.estado for t in _trabajos()] == [EstadoTrabajo.COMPLETADO]
 
 
 @en_la_base
@@ -316,51 +345,80 @@ def test_post_otra_vez_409_decision_ya_generada_sin_location(cliente, cartera_va
     assert "Location" not in respuesta.headers
     # D2: el error no dice cual ejecucion fue, ni en un campo ni en el mensaje.
     assert primera not in respuesta.text
-    # La revision amable no deja ni el intento.
-    assert _ejecuciones() == 1
+    # La revision amable no deja ni el intento, ni su trabajo.
+    assert _ejecuciones() == len(_trabajos()) == 1
 
 
 @en_la_base
-def test_post_que_pierde_la_carrera_tambien_es_409_decision_ya_generada(
-    cliente, cartera_valida, monkeypatch
-):
-    # La carrera que no ve la revision amable: mientras esta peticion decide, otra ejecucion de la
-    # misma corrida publica primero. El indice de exito rechaza el cierre de esta, que queda FALLIDA
-    # en el historial, y la peticion responde lo mismo que si la revision la hubiera visto.
+def test_post_mientras_otra_sigue_en_proceso_409_decision_en_proceso(cliente, cartera_valida):
+    # A lo mas una ejecucion activa por corrida y version: un doble clic no crea dos.
     run_id = _publicar(cliente, _csv(cartera_valida))
-    rival = _registrar(
-        _id_de_corrida(run_id), estado=EstadoDecision.EN_PROCESO, terminada_en=None, detalle=None
-    )
-    cerrar = ejecuciones._cerrar
-
-    def el_rival_publica_primero(s, ejecucion, evaluadas):
-        monkeypatch.setattr(ejecuciones, "_cerrar", cerrar)
-        ejecutar_decision(rival.id)
-        cerrar(s, ejecucion, evaluadas)
-
-    monkeypatch.setattr(ejecuciones, "_cerrar", el_rival_publica_primero)
+    primera = _decidir(cliente, run_id).json()
 
     respuesta = _decidir(cliente, run_id)
 
     assert respuesta.status_code == 409
-    assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
-        "DECISION_YA_GENERADA",
-        run_id,
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("DECISION_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        f"La corrida ya se esta decidiendo con decision/v1. Consulta /corridas/{run_id}/decisiones."
     )
     assert "Location" not in respuesta.headers
-    assert str(rival.decision_run_id) not in respuesta.text
+    assert primera["decision_run_id"] not in respuesta.text
+    assert _ejecuciones() == len(_trabajos()) == 1
+    # Cuando la activa termina, ya no estorba: la siguiente es DECISION_YA_GENERADA.
+    _trabajar()
+    assert _decidir(cliente, run_id).json()["codigo"] == "DECISION_YA_GENERADA"
+
+
+@en_la_base
+def test_una_decision_que_pierde_la_carrera_en_el_worker_queda_fallida_en_el_historial(
+    cliente, cartera_valida, monkeypatch
+):
+    # La carrera que no ve la revision amable: mientras el worker decide, otra ejecucion de la misma
+    # corrida aparece EXITOSA, a mano, justo antes del cierre. El indice de exito rechaza el cierre
+    # de esta, que queda FALLIDA en el historial; el siguiente POST ya ve la que gano.
+    run_id = _publicar(cliente, _csv(cartera_valida))
+    cerrar = ejecuciones._cerrar
+    rivales = []
+
+    def el_rival_publica_primero(s, ejecucion, evaluadas):
+        rivales.append(
+            _registrar(
+                _id_de_corrida(run_id),
+                estado=EstadoDecision.EXITOSA,
+                cuentas_evaluadas=3,
+                cuentas_decididas=3,
+            )
+        )
+        cerrar(s, ejecucion, evaluadas)
+
+    monkeypatch.setattr(ejecuciones, "_cerrar", el_rival_publica_primero)
+
+    respuesta, perdedora = _decidir_y_esperar(cliente, run_id)
+
+    (rival,) = rivales
+    assert respuesta.status_code == 201
+    assert (perdedora["estado"], perdedora["cuentas_decididas"]) == ("FALLIDA", 0)
+    assert perdedora["detalle"] == (
+        "Otra ejecucion publico las decisiones de esta corrida con decision/v1 mientras esta se "
+        "procesaba; no se publican dos veces."
+    )
+    otra = _decidir(cliente, run_id)
+    assert (otra.status_code, otra.json()["codigo"]) == (409, "DECISION_YA_GENERADA")
+    assert str(rival.decision_run_id) not in otra.text
     historial = cliente.get(f"/corridas/{run_id}/decisiones").json()["elementos"]
     estados = {e["decision_run_id"]: (e["estado"], e["cuentas_decididas"]) for e in historial}
     assert estados.pop(str(rival.decision_run_id)) == ("EXITOSA", 3)
-    assert list(estados.values()) == [("FALLIDA", 0)]  # la de esta peticion
+    assert list(estados.values()) == [("FALLIDA", 0)]
 
 
 def _corrida_rechazada(cliente, tmp_path: Path) -> str:
-    return _subir(cliente, _sintetica(tmp_path, n=100, tasa=0.5))["run_id"]
+    return _ingerida(cliente, _sintetica(tmp_path, n=100, tasa=0.5))["run_id"]
 
 
 def _corrida_fallida(cliente, tmp_path: Path) -> str:
-    return _subir(cliente, b"cliente,saldo\nCU00000001,10\n")["run_id"]
+    return _ingerida(cliente, b"cliente,saldo\nCU00000001,10\n")["run_id"]
 
 
 def _corrida_en_proceso(cliente, tmp_path: Path) -> str:
@@ -392,7 +450,7 @@ def test_post_sobre_una_corrida_que_no_publico_409_sin_ejecucion(cliente, tmp_pa
         f"La corrida esta {estado} y no publico una cartera; solo una corrida EXITOSA puede "
         "decidirse."
     )
-    assert _ejecuciones() == 0
+    assert _ejecuciones() == 0 and _trabajos() == []
 
 
 @en_la_base
@@ -415,8 +473,8 @@ def test_post_sobre_una_corrida_que_no_existe_404(cliente):
 def test_d2_el_409_no_dice_cual_ejecucion_y_el_historial_si(cliente, cartera_valida):
     # D2 de punta a punta: decidir, chocar con lo ya publicado y encontrarlo en el historial.
     run_id = _publicar(cliente, _csv(cartera_valida))
-    primera = _decidir(cliente, run_id)
-    assert (primera.status_code, primera.json()["estado"]) == (201, "EXITOSA")
+    _, primera = _decidir_y_esperar(cliente, run_id)
+    assert primera["estado"] == "EXITOSA"
 
     otra = _decidir(cliente, run_id)
     assert (otra.status_code, otra.json()["codigo"]) == (409, "DECISION_YA_GENERADA")
@@ -425,8 +483,74 @@ def test_d2_el_409_no_dice_cual_ejecucion_y_el_historial_si(cliente, cartera_val
     historial = cliente.get(f"/corridas/{run_id}/decisiones").json()["elementos"]
     (publicada,) = [ejecucion for ejecucion in historial if ejecucion["estado"] == "EXITOSA"]
     assert publicada["version_reglas"] == "decision/v1"
-    assert publicada["decision_run_id"] == primera.json()["decision_run_id"]
-    assert cliente.get(f"/decisiones/{publicada['decision_run_id']}").json() == primera.json()
+    assert publicada["decision_run_id"] == primera["decision_run_id"]
+    assert cliente.get(f"/decisiones/{publicada['decision_run_id']}").json() == primera
+
+
+# --- las corridas de un flujo automatico ---------------------------------------------------------
+
+
+def _subir(cliente, contenido: bytes) -> str:
+    """Sube la cartera por POST /corridas: nace con su flujo. Devuelve el run_id."""
+    respuesta = cliente.post(
+        "/corridas", files={"archivo": ("cartera.csv", contenido, "application/octet-stream")}
+    )
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["run_id"]
+
+
+@en_la_base
+def test_una_corrida_cuyo_flujo_la_va_a_decidir_no_se_decide_a_mano(cliente, cartera_valida):
+    run_id = _subir(cliente, _csv(cartera_valida))
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+
+    respuesta = _decidir(cliente, run_id)
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        f"La corrida es del flujo {flujo['flujo_id']}, que sigue EN_PROCESO en INGESTA y la va a "
+        f"decidir por su cuenta. Consulta /corridas/{run_id}/flujo."
+    )
+    assert "Location" not in respuesta.headers
+    assert _ejecuciones() == 0
+    # Y el flujo la decide.
+    _trabajar()
+    assert cliente.get(f"/corridas/{run_id}/decisiones").json()["total"] == 1
+
+
+@en_la_base
+def test_una_corrida_cuyo_flujo_se_detuvo_en_la_decision_se_reanuda_y_no_se_decide_a_mano(
+    cliente, cartera_valida, monkeypatch
+):
+    run_id = _subir(cliente, _csv(cartera_valida))
+    monkeypatch.setattr(ejecuciones, "decidir_cuenta", _revienta)
+    _trabajar()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert (flujo["estado"], flujo["etapa"]) == ("DETENIDO", "DECISION")
+
+    respuesta = _decidir(cliente, run_id)
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_DETENIDO", run_id)
+    assert error["mensaje"] == (
+        f"La corrida es del flujo {flujo['flujo_id']}, que se detuvo en la decision. Para "
+        f"reintentarla: POST /flujos/{flujo['flujo_id']}/reanudar."
+    )
+    assert _ejecuciones() == 1
+
+
+@en_la_base
+def test_una_corrida_que_su_flujo_ya_decidio_da_su_409_de_siempre(cliente, cartera_valida):
+    run_id = _subir(cliente, _csv(cartera_valida))
+    _trabajar()
+
+    respuesta = _decidir(cliente, run_id)
+
+    assert (respuesta.status_code, respuesta.json()["codigo"]) == (409, "DECISION_YA_GENERADA")
+    assert "Location" not in respuesta.headers
 
 
 # --- GET /corridas/{run_id}/decisiones ----------------------------------------------------------
@@ -462,9 +586,9 @@ def test_el_historial_trae_todas_las_ejecuciones_en_cualquier_estado_y_version(
     # A7. Una FALLIDA y una EXITOSA de decision/v1, por la API, y una FALLIDA de otra version.
     run_id = _publicar(cliente, _csv(cartera_valida))
     monkeypatch.setattr(ejecuciones, "decidir_cuenta", _revienta)
-    fallida = _decidir(cliente, run_id).json()
+    _, fallida = _decidir_y_esperar(cliente, run_id)
     monkeypatch.setattr(ejecuciones, "decidir_cuenta", decidir_cuenta)
-    exitosa = _decidir(cliente, run_id).json()
+    _, exitosa = _decidir_y_esperar(cliente, run_id)
     otra_version = _registrar(_id_de_corrida(run_id), version_reglas="decision/v2")
 
     respuesta = cliente.get(f"/corridas/{run_id}/decisiones")
@@ -477,6 +601,7 @@ def test_el_historial_trae_todas_las_ejecuciones_en_cualquier_estado_y_version(
         assert set(ejecucion) == CAMPOS_DE_EJECUCION
         assert ejecucion["run_id"] == run_id
     por_id = {ejecucion["decision_run_id"]: ejecucion for ejecucion in historial["elementos"]}
+    assert (fallida["estado"], exitosa["estado"]) == ("FALLIDA", "EXITOSA")
     assert por_id[fallida["decision_run_id"]] == fallida
     assert por_id[exitosa["decision_run_id"]] == exitosa
     historica = por_id[str(otra_version.decision_run_id)]
@@ -564,13 +689,11 @@ def test_una_ejecucion_se_consulta_por_su_decision_run_id(cliente, cartera_valid
 
 @en_la_base
 def test_una_ejecucion_en_proceso_se_consulta_sin_fin_ni_duracion(cliente, cartera_valida):
-    # Abierta por el servicio y todavia sin decidir: como la ve otra peticion mientras el POST
-    # decide, o como queda si el proceso muere a la mitad. Existe y se consulta: 200, con el fin y
-    # la duracion en null, no en cero.
+    # Pedida y todavia sin decidir: como la ve el cliente mientras el worker no la toma, o si el
+    # worker murio a la mitad. Existe y se consulta: 200, con el fin y la duracion en null, no en
+    # cero.
     run_id = _publicar(cliente, _csv(cartera_valida))
-    with sesion() as s:
-        corrida = s.exec(select(Corrida).where(Corrida.run_id == UUID(run_id))).one()
-        decision_run_id = str(abrir_ejecucion(s, corrida).decision_run_id)
+    decision_run_id = _decidir(cliente, run_id).json()["decision_run_id"]
 
     respuesta = cliente.get(f"/decisiones/{decision_run_id}")
 
@@ -604,7 +727,7 @@ def test_una_ejecucion_que_no_existe_404_sin_run_id(cliente, ruta):
 def test_las_cuentas_de_una_ejecucion_exitosa(cliente, tmp_path):
     # A11.
     run_id = _publicar(cliente, _sintetica(tmp_path, n=60))
-    ejecucion = _decidir(cliente, run_id).json()
+    _, ejecucion = _decidir_y_esperar(cliente, run_id)
 
     respuesta = cliente.get(f"/decisiones/{ejecucion['decision_run_id']}/cuentas")
 
@@ -709,15 +832,13 @@ def test_las_cuentas_se_ordenan_por_cliente_y_se_paginan_sin_huecos_ni_repetidos
 
 
 def _ejecucion_en_proceso(cliente, run_id: str, monkeypatch) -> str:
-    # Abierta por el servicio y todavia sin decidir: como la veria otra peticion mientras decide.
-    with sesion() as s:
-        corrida = s.exec(select(Corrida).where(Corrida.run_id == UUID(run_id))).one()
-        return str(abrir_ejecucion(s, corrida).decision_run_id)
+    # Pedida y todavia sin decidir: el worker no la ha tomado.
+    return _decidir(cliente, run_id).json()["decision_run_id"]
 
 
 def _ejecucion_fallida(cliente, run_id: str, monkeypatch) -> str:
     monkeypatch.setattr(ejecuciones, "decidir_cuenta", _revienta)
-    return _decidir(cliente, run_id).json()["decision_run_id"]
+    return _decidir_y_esperar(cliente, run_id)[1]["decision_run_id"]
 
 
 @en_la_base
@@ -881,16 +1002,26 @@ def test_openapi_documenta_las_cuatro_operaciones_de_decisiones(app):
                 esquema = respuesta["content"]["application/json"]["schema"]
                 assert esquema["$ref"].endswith("/ErrorRespuesta")
 
-    # 201 dice que la ejecucion se creo, no que el motor tuviera exito: documenta las dos salidas.
+    # 201 dice que la ejecucion se creo EN_PROCESO, no que el motor terminara: su ejemplo es lo que
+    # de verdad responde el POST, y el GET documenta los tres estados.
     post = operaciones[("POST", "/corridas/{run_id}/decisiones")]
     creada = post["responses"]["201"]
-    assert "FALLIDA" in creada["description"] and "FALLIDA" in post["description"]
+    assert "EN_PROCESO" in creada["description"] and "worker" in post["description"]
     contenido = creada["content"]["application/json"]
     assert contenido["schema"]["$ref"].endswith("/EjecucionDecisionRespuesta")
-    assert set(contenido["examples"]) == {"EXITOSA", "FALLIDA"}
+    assert contenido["example"]["estado"] == "EN_PROCESO"
     assert "`CORRIDA_NO_ENCONTRADA`" in post["responses"]["404"]["description"]
-    assert "`CORRIDA_NO_PUBLICADA`" in post["responses"]["409"]["description"]
-    assert "`DECISION_YA_GENERADA`" in post["responses"]["409"]["description"]
+    for codigo in (
+        "CORRIDA_NO_PUBLICADA",
+        "DECISION_YA_GENERADA",
+        "DECISION_EN_PROCESO",
+        "FLUJO_EN_PROCESO",
+        "FLUJO_DETENIDO",
+    ):
+        assert f"`{codigo}`" in post["responses"]["409"]["description"]
+    una = operaciones[("GET", "/decisiones/{decision_run_id}")]
+    ejemplos = una["responses"]["200"]["content"]["application/json"]["examples"]
+    assert set(ejemplos) == {"EN_PROCESO", "EXITOSA", "FALLIDA"}
     cuentas = operaciones[("GET", "/decisiones/{decision_run_id}/cuentas")]
     assert "`DECISION_NO_ENCONTRADA`" in cuentas["responses"]["404"]["description"]
     assert "`DECISION_NO_PUBLICADA`" in cuentas["responses"]["409"]["description"]
@@ -944,9 +1075,16 @@ def test_los_esquemas_de_decisiones_no_atan_el_vocabulario_a_decision_v1(app):
 def test_los_ejemplos_de_la_documentacion_son_respuestas_posibles():
     # Traen cada campo de la respuesta; el OpenAPI omite los que valen null.
     campos = set(EjecucionDecisionRespuesta.model_json_schema(mode="serialization")["properties"])
-    assert set(EJEMPLO_EJECUCION) == set(EJEMPLO_EJECUCION_FALLIDA) == campos
+    ejemplos = (EJEMPLO_EJECUCION, EJEMPLO_EJECUCION_FALLIDA, EJEMPLO_EJECUCION_EN_PROCESO)
+    assert all(set(ejemplo) == campos for ejemplo in ejemplos)
     fallida = EJEMPLO_EJECUCION_FALLIDA
     assert (fallida["estado"], fallida["cuentas_decididas"]) == ("FALLIDA", 0)
+    en_proceso = EJEMPLO_EJECUCION_EN_PROCESO
+    assert (en_proceso["estado"], en_proceso["terminada_en"], en_proceso["cuentas_evaluadas"]) == (
+        "EN_PROCESO",
+        None,
+        0,
+    )
     # Y la cuenta del ejemplo es lo que decision/v1 decide de verdad para esa entrada.
     resultado = decidir_cuenta(EntradaDecision(dias_atraso=65, saldo_total=Decimal("62000.00")))
     ejemplo = DecisionCuentaRespuesta(**EJEMPLO_DECISION_CUENTA).model_dump()

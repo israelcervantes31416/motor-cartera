@@ -1,9 +1,11 @@
-"""El Decision Engine por HTTP: decidir una corrida publicada y consultar lo que se decidio.
+"""El Decision Engine por HTTP: pedir que se decida una corrida publicada y consultar lo que se
+decidio.
 
-La API no decide nada. Las reglas, la transaccion que publica todas las decisiones o ninguna y la
-garantia de decidir una corrida con exito una sola vez por version viven en el servicio de
-`decision.ejecuciones`. Aqui solo se elige la corrida o la ejecucion, el codigo HTTP y la forma de
-la respuesta.
+La API no decide nada, ni espera a que se decida. El POST deja la ejecucion EN_PROCESO y su trabajo
+en la cola durable, en una sola transaccion, y un worker la decide. Las reglas, la transaccion que
+publica todas las decisiones o ninguna y la garantia de decidir una corrida con exito una sola vez
+por version viven en el servicio de `decision.ejecuciones`. Aqui solo se elige la corrida o la
+ejecucion, el codigo HTTP y la forma de la respuesta.
 """
 
 from __future__ import annotations
@@ -11,13 +13,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
 from sqlmodel import Session, func, select
 
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     EJEMPLO_EJECUCION,
+    EJEMPLO_EJECUCION_EN_PROCESO,
     EJEMPLO_EJECUCION_FALLIDA,
     DecisionCuentaRespuesta,
     EjecucionDecisionRespuesta,
@@ -34,10 +37,11 @@ from motor_cartera.db.modelos import (
 )
 from motor_cartera.decision.ejecuciones import (
     CorridaNoDecidible,
+    DecisionEnProceso,
     DecisionYaGenerada,
-    decidir_corrida,
 )
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
+from motor_cartera.orquestacion.flujo import FlujoDetenido, FlujoEnProceso, encolar_decision
 
 router = APIRouter(tags=["decisiones"])
 
@@ -51,32 +55,36 @@ DECISION_NO_EXISTE = (
     "DECISION_NO_ENCONTRADA",
     "No existe una ejecucion con ese decision_run_id.",
 )
+EJEMPLOS_DE_EJECUCION = {
+    "content": {
+        "application/json": {
+            "examples": {
+                "EN_PROCESO": {
+                    "summary": "El worker todavia no la termina",
+                    "value": EJEMPLO_EJECUCION_EN_PROCESO,
+                },
+                "EXITOSA": {"summary": "Decidio todas las cuentas", "value": EJEMPLO_EJECUCION},
+                "FALLIDA": {
+                    "summary": "El motor fallo y no publico ninguna decision",
+                    "value": EJEMPLO_EJECUCION_FALLIDA,
+                },
+            }
+        }
+    }
+}
 
 
 @router.post(
     "/corridas/{run_id}/decisiones",
     status_code=201,
     response_model=EjecucionDecisionRespuesta,
-    summary=f"Decide cada cuenta de una corrida publicada con {VERSION_REGLAS_DECISION}",
+    summary=f"Pide decidir cada cuenta de una corrida publicada con {VERSION_REGLAS_DECISION}",
     responses={
         201: {
-            "description": "La ejecucion quedo creada y ya termino. Su `estado` dice como: "
-            "EXITOSA, con una decision por cuenta, o FALLIDA, sin ninguna y con el motivo en "
-            "`detalle`. En los dos casos `Location` apunta a ella.",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "EXITOSA": {
-                            "summary": "Decidio todas las cuentas",
-                            "value": EJEMPLO_EJECUCION,
-                        },
-                        "FALLIDA": {
-                            "summary": "El motor fallo y no publico ninguna decision",
-                            "value": EJEMPLO_EJECUCION_FALLIDA,
-                        },
-                    }
-                }
-            },
+            "description": "La ejecucion quedo creada EN_PROCESO, con su trabajo en la cola "
+            "durable: un worker la decide. `Location` apunta a ella; consultala hasta que termine "
+            "EXITOSA, con una decision por cuenta, o FALLIDA, sin ninguna.",
+            "content": {"application/json": {"example": EJEMPLO_EJECUCION_EN_PROCESO}},
         },
         **errores(
             *SIN_CLAVE,
@@ -92,35 +100,73 @@ DECISION_NO_EXISTE = (
                 f"La corrida ya tiene una ejecucion EXITOSA con {VERSION_REGLAS_DECISION}; "
                 "GET /corridas/{run_id}/decisiones dice cual.",
             ),
+            (
+                409,
+                "DECISION_EN_PROCESO",
+                f"La corrida ya se esta decidiendo con {VERSION_REGLAS_DECISION}: tiene una "
+                "ejecucion EN_PROCESO.",
+            ),
+            (
+                409,
+                "FLUJO_EN_PROCESO",
+                "La corrida es de un flujo automatico que todavia la va a decidir.",
+            ),
+            (
+                409,
+                "FLUJO_DETENIDO",
+                "La corrida es de un flujo que se detuvo en la decision: se reintenta reanudando "
+                "el flujo.",
+            ),
             (422, "ENTRADA_INVALIDA", "El run_id no es un UUID."),
         ),
     },
 )
-def crear_ejecucion(run_id: UUID, response: Response, s: Sesion) -> EjecucionDecisionRespuesta:
-    """Decide cada cuenta de una corrida `EXITOSA` con las reglas de este servicio, en la misma
-    peticion, y responde con la ejecucion ya terminada. No recibe cuerpo ni elige version: la
-    respuesta dice con cual se decidio (`version_reglas`).
+def crear_ejecucion(
+    run_id: UUID, request: Request, response: Response, s: Sesion
+) -> EjecucionDecisionRespuesta:
+    """Pide decidir cada cuenta de una corrida `EXITOSA` con las reglas de este servicio. La
+    peticion no decide: deja la ejecucion `EN_PROCESO` y su trabajo en la cola durable, en una sola
+    transaccion, y responde de inmediato. Un worker la decide; consulta `Location` hasta que deje de
+    estar `EN_PROCESO`. No recibe cuerpo ni elige version: la respuesta dice con cual se decide
+    (`version_reglas`).
 
-    **201 quiere decir que la ejecucion se creo, no que el motor tuvo exito.** Su `estado` dice
-    como termino: `EXITOSA`, con una decision por cada cuenta, o `FALLIDA`, sin ninguna y con el
-    motivo en `detalle`. Una `FALLIDA` se reintenta con otro POST, que crea otra ejecucion.
+    **201 quiere decir que la ejecucion se creo, no que el motor termino**, y menos que tuvo exito.
+    Al terminar, su `estado` dice como: `EXITOSA`, con una decision por cada cuenta, o `FALLIDA`,
+    sin ninguna y con el motivo en `detalle`. Una `FALLIDA` se reintenta con otro POST, que crea
+    otra ejecucion.
 
     **409 `DECISION_YA_GENERADA` si la corrida ya tiene sus decisiones publicadas** con esta
-    version: decidirla otra vez las duplicaria. La respuesta no dice cual ejecucion las publico;
-    lo dice `GET /corridas/{run_id}/decisiones`. Tambien es 409 si otra peticion las publico
-    mientras esta decidia: esta ejecucion queda `FALLIDA` en el historial.
+    version: decidirla otra vez las duplicaria. **409 `DECISION_EN_PROCESO` si ya se esta
+    decidiendo**: a lo mas hay una ejecucion activa por corrida y version. Ninguno dice cual
+    ejecucion fue; lo dice `GET /corridas/{run_id}/decisiones`.
 
     **409 `CORRIDA_NO_PUBLICADA` si la corrida no termino `EXITOSA`**: no hay cartera que
     decidir, y no se registra ninguna ejecucion.
+
+    **Una corrida subida por `POST /corridas` ya tiene su flujo automatico**, que la decide sin que
+    nadie lo pida: mientras el flujo va a hacerlo, 409 `FLUJO_EN_PROCESO`, y si el flujo se detuvo
+    en la decision, 409 `FLUJO_DETENIDO`: se reintenta con `POST /flujos/{flujo_id}/reanudar`.
     """
     corrida = buscar_corrida(s, run_id)
     corrida_id, corrida_run_id = corrida.id, corrida.run_id
-    # La sesion de la peticion solo sirvio para encontrar la corrida. Se termina su transaccion
-    # antes de decidir, que puede tardar y abre las suyas, para que la conexion vuelva al pool. Con
-    # el rollback la corrida en memoria caduca: de aqui en adelante solo se usan los dos valores.
-    s.rollback()
     try:
-        ejecucion = decidir_corrida(corrida_id)
+        ejecucion = encolar_decision(s, corrida_id, config=request.app.state.config)
+    except FlujoEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_EN_PROCESO",
+            f"La corrida es del flujo {exc.flujo_id}, que sigue EN_PROCESO en {exc.etapa} y la va "
+            f"a decidir por su cuenta. Consulta /corridas/{corrida_run_id}/flujo.",
+            run_id=corrida_run_id,
+        ) from exc
+    except FlujoDetenido as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_DETENIDO",
+            f"La corrida es del flujo {exc.flujo_id}, que se detuvo en la decision. Para "
+            f"reintentarla: POST /flujos/{exc.flujo_id}/reanudar.",
+            run_id=corrida_run_id,
+        ) from exc
     except CorridaNoDecidible as exc:
         raise ErrorDeApi(
             409,
@@ -137,6 +183,14 @@ def crear_ejecucion(run_id: UUID, response: Response, s: Sesion) -> EjecucionDec
             "DECISION_YA_GENERADA",
             f"La corrida ya tiene una ejecucion EXITOSA con {exc.previa.version_reglas}. "
             f"Consulta /corridas/{corrida_run_id}/decisiones.",
+            run_id=corrida_run_id,
+        ) from exc
+    except DecisionEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "DECISION_EN_PROCESO",
+            f"La corrida ya se esta decidiendo con {exc.activa.version_reglas}. Consulta "
+            f"/corridas/{corrida_run_id}/decisiones.",
             run_id=corrida_run_id,
         ) from exc
 
@@ -188,15 +242,19 @@ def listar_ejecuciones(
     "/decisiones/{decision_run_id}",
     response_model=EjecucionDecisionRespuesta,
     summary="Una ejecucion del Decision Engine: version de las reglas, estado y conteos",
-    responses=errores(
-        *SIN_CLAVE,
-        DECISION_NO_EXISTE,
-        (422, "ENTRADA_INVALIDA", "El decision_run_id no es un UUID."),
-    ),
+    responses={
+        200: {"description": "La ejecucion, en cualquier estado.", **EJEMPLOS_DE_EJECUCION},
+        **errores(
+            *SIN_CLAVE,
+            DECISION_NO_EXISTE,
+            (422, "ENTRADA_INVALIDA", "El decision_run_id no es un UUID."),
+        ),
+    },
 )
 def obtener_ejecucion(decision_run_id: UUID, s: Sesion) -> EjecucionDecisionRespuesta:
-    """Mientras el estado sea `EN_PROCESO`, la ejecucion sigue decidiendo. En una `FALLIDA`,
-    `cuentas_decididas` es cero aunque `cuentas_evaluadas` diga hasta donde llego el motor.
+    """Mientras el estado sea `EN_PROCESO`, el worker todavia no la termina: vuelve a consultar.
+    En una `FALLIDA`, `cuentas_decididas` es cero aunque `cuentas_evaluadas` diga hasta donde llego
+    el motor.
     """
     ejecucion, run_id = _buscar_ejecucion(s, decision_run_id)
     return _respuesta_ejecucion(ejecucion, run_id)

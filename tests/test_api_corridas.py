@@ -1,4 +1,9 @@
-"""POST /corridas, GET /corridas/{run_id} y GET /corridas/{run_id}/rechazos."""
+"""POST /corridas, GET /corridas/{run_id} y GET /corridas/{run_id}/rechazos.
+
+El POST no ingiere: guarda el archivo con la corrida EN_PROCESO, su flujo y el trabajo de la
+ingesta, y responde 201. Las pruebas hacen lo que haria el worker con la ingesta, y nada mas: lo
+que el flujo encadena despues se prueba en test_api_orquestacion.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +14,26 @@ import pytest
 from sqlmodel import func, select
 
 from motor_cartera.api.esquemas import EJEMPLO_CORRIDA, EJEMPLO_CORRIDA_EN_PROCESO, CorridaRespuesta
+from motor_cartera.config import Config
 from motor_cartera.contratos import VERSION_CONTRATO
-from motor_cartera.db.modelos import Corrida
+from motor_cartera.db.modelos import (
+    ArchivoCorrida,
+    Corrida,
+    Cuenta,
+    EstadoFlujo,
+    EstadoTrabajo,
+    EtapaFlujo,
+    FlujoOrquestacion,
+    Rechazo,
+    TipoTrabajo,
+    TrabajoOrquestacion,
+)
 from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo
+from motor_cartera.ingesta import corridas as ingesta
 from motor_cartera.ingesta.corridas import abrir_corrida
 from motor_cartera.ingesta.lectores import REQUERIDAS
+from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
 
 pytestmark = pytest.mark.usefixtures("bd")
 
@@ -26,6 +45,20 @@ def _subir(cliente, contenido: bytes, nombre: str = "cartera.csv", **kwargs):
     return cliente.post("/corridas", files=archivo, **kwargs)
 
 
+def _ingerir() -> None:
+    """Lo que haria el worker con el primer trabajo de la cola, que es la ingesta, y nada mas."""
+    procesado = procesar_un_trabajo(identificador_worker(), Config())
+    assert procesado is not None and procesado.tipo == TipoTrabajo.INGESTA, procesado
+
+
+def _subir_e_ingerir(cliente, contenido: bytes, **kwargs) -> dict:
+    """Sube el archivo, deja que el worker lo ingiera y devuelve la corrida como quedo."""
+    respuesta = _subir(cliente, contenido, **kwargs)
+    assert respuesta.status_code == 201, respuesta.text
+    _ingerir()
+    return cliente.get(respuesta.headers["Location"]).json()
+
+
 def _cartera(tmp_path, n=100, tasa=0.03, semilla=1, nombre="cartera.csv") -> bytes:
     ruta = generar_archivo(
         tmp_path / nombre, n=n, tasa_invalidas=tasa, semilla=semilla, fecha_corte=CORTE
@@ -33,9 +66,9 @@ def _cartera(tmp_path, n=100, tasa=0.03, semilla=1, nombre="cartera.csv") -> byt
     return ruta.read_bytes()
 
 
-def _corridas_registradas() -> int:
+def _filas(modelo) -> int:
     with sesion() as s:
-        return s.exec(select(func.count()).select_from(Corrida)).one()
+        return s.exec(select(func.count()).select_from(modelo)).one()
 
 
 # --- POST /corridas: el camino feliz --------------------------------------------------------
@@ -55,8 +88,45 @@ def test_post_crea_la_corrida_201_con_location_y_estado_inicial(cliente, tmp_pat
     assert corrida["firma_contenido"] is None  # todavia no se juzga
 
 
+def test_el_post_guarda_el_archivo_y_deja_la_ingesta_en_la_cola_sin_leerlo(
+    cliente, tmp_path, monkeypatch
+):
+    # La peticion no lee el archivo ni lo juzga: lo guarda con la corrida, su flujo y el trabajo
+    # de la ingesta, en una sola transaccion. Lo demas lo hace el worker.
+    contenido = _cartera(tmp_path)
+    leidos = []
+    monkeypatch.setattr(ingesta, "leer_contenido", lambda *argumentos: leidos.append(argumentos))
+
+    respuesta = _subir(cliente, contenido)
+
+    assert respuesta.status_code == 201
+    assert leidos == []
+    assert _filas(Cuenta) == _filas(Rechazo) == 0
+    with sesion() as s:
+        corrida = s.exec(select(Corrida)).one()
+        archivo = s.get_one(ArchivoCorrida, corrida.id)
+        flujo = s.exec(select(FlujoOrquestacion)).one()
+        trabajo = s.exec(select(TrabajoOrquestacion)).one()
+    assert str(corrida.run_id) == respuesta.json()["run_id"]
+    assert (archivo.contenido, archivo.tamano_bytes) == (contenido, len(contenido))
+    assert (flujo.corrida_id, flujo.estado, flujo.etapa) == (
+        corrida.id,
+        EstadoFlujo.EN_PROCESO,
+        EtapaFlujo.INGESTA,
+    )
+    assert (flujo.ejecucion_decision_id, flujo.terminado_en) == (None, None)
+    assert (trabajo.tipo, trabajo.estado, trabajo.intentos) == (
+        TipoTrabajo.INGESTA,
+        EstadoTrabajo.PENDIENTE,
+        0,
+    )
+    assert (trabajo.flujo_id, trabajo.corrida_id, trabajo.worker_id) == (flujo.id, corrida.id, None)
+    assert trabajo.max_intentos == cliente.app.state.config.worker_max_intentos
+
+
 def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
     ubicacion = _subir(cliente, _cartera(tmp_path)).headers["Location"]
+    _ingerir()
 
     respuesta = cliente.get(ubicacion)
 
@@ -77,16 +147,20 @@ def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
     assert not corrida["detalle"].endswith("..")
     # En UTC, se configure como se configure el servidor de PostgreSQL.
     assert corrida["iniciada_en"].endswith("Z") and corrida["terminada_en"].endswith("Z")
+    # Publicada la corrida, su archivo ya no hace falta.
+    assert _filas(ArchivoCorrida) == 0
 
 
 def test_un_archivo_malformado_si_crea_la_corrida_y_esta_termina_fallida(cliente):
     # La peticion es valida: lo que no sirve es el contenido, y eso lo juzga la corrida.
     respuesta = _subir(cliente, b"cliente,saldo\nCU00000001,10\n")
-
     assert respuesta.status_code == 201
+    _ingerir()
+
     corrida = cliente.get(respuesta.headers["Location"]).json()
     assert corrida["estado"] == "FALLIDA"
     assert "Faltan columnas requeridas" in corrida["detalle"]
+    assert _filas(ArchivoCorrida) == 0
 
 
 def test_el_nombre_del_archivo_se_queda_sin_ruta(cliente, tmp_path):
@@ -102,19 +176,51 @@ def test_sin_api_key_401_y_no_registra_nada(cliente, tmp_path):
     respuesta = _subir(cliente, _cartera(tmp_path), headers={"X-API-Key": ""})
 
     assert respuesta.status_code == 401
-    assert _corridas_registradas() == 0
+    for modelo in (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion):
+        assert _filas(modelo) == 0
 
 
 def test_el_mismo_archivo_otra_vez_409_con_la_corrida_que_ya_lo_publico(cliente, tmp_path):
+    contenido = _cartera(tmp_path)
+    primera = _subir_e_ingerir(cliente, contenido)
+    assert primera["estado"] == "EXITOSA"
+
+    respuesta = _subir(cliente, contenido)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json()["codigo"] == "ARCHIVO_YA_PUBLICADO"
+    assert respuesta.json()["run_id"] == primera["run_id"]
+    assert "Location" not in respuesta.headers
+    assert _filas(Corrida) == _filas(FlujoOrquestacion) == 1
+
+
+def test_el_mismo_archivo_mientras_su_ingesta_sigue_en_la_cola_409(cliente, tmp_path):
+    # Un doble clic: el worker todavia no toma la primera corrida.
     contenido = _cartera(tmp_path)
     primera = _subir(cliente, contenido).json()["run_id"]
 
     respuesta = _subir(cliente, contenido)
 
     assert respuesta.status_code == 409
-    assert respuesta.json()["codigo"] == "ARCHIVO_YA_PUBLICADO"
+    assert respuesta.json()["codigo"] == "ARCHIVO_EN_PROCESO"
     assert respuesta.json()["run_id"] == primera
-    assert _corridas_registradas() == 1
+    assert "Location" not in respuesta.headers
+    # Ni otra corrida, ni otro archivo, ni otro flujo, ni otro trabajo.
+    for modelo in (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion):
+        assert _filas(modelo) == 1
+
+
+def test_un_archivo_que_no_se_publico_se_vuelve_a_subir_con_otra_corrida_y_otro_flujo(cliente):
+    # Es lo que dice el flujo que se detuvo en la ingesta: para reintentar, se vuelve a subir.
+    contenido = b"cliente,saldo\nCU00000001,10\n"
+    fallida = _subir_e_ingerir(cliente, contenido)
+    assert fallida["estado"] == "FALLIDA"
+
+    respuesta = _subir(cliente, contenido)
+
+    assert respuesta.status_code == 201
+    assert respuesta.json()["run_id"] != fallida["run_id"]
+    assert _filas(Corrida) == _filas(FlujoOrquestacion) == 2
 
 
 def test_el_mismo_archivo_mientras_otra_corrida_lo_procesa_409(cliente, tmp_path):
@@ -184,7 +290,7 @@ def test_un_run_id_que_no_es_uuid_422(cliente):
 
 
 def test_cada_rechazo_trae_su_fila_lo_que_traia_y_el_motivo(cliente, tmp_path):
-    run_id = _subir(cliente, _cartera(tmp_path)).json()["run_id"]
+    run_id = _subir_e_ingerir(cliente, _cartera(tmp_path))["run_id"]
 
     respuesta = cliente.get(f"/corridas/{run_id}/rechazos")
 
@@ -199,7 +305,7 @@ def test_cada_rechazo_trae_su_fila_lo_que_traia_y_el_motivo(cliente, tmp_path):
 
 
 def test_los_rechazos_se_paginan_sin_huecos_ni_repetidos(cliente, tmp_path):
-    run_id = _subir(cliente, _cartera(tmp_path, n=200, tasa=0.1)).json()["run_id"]
+    run_id = _subir_e_ingerir(cliente, _cartera(tmp_path, n=200, tasa=0.1))["run_id"]
 
     paginas = [
         cliente.get(f"/corridas/{run_id}/rechazos", params={"pagina": p, "por_pagina": 8}).json()
@@ -213,7 +319,7 @@ def test_los_rechazos_se_paginan_sin_huecos_ni_repetidos(cliente, tmp_path):
 
 
 def test_una_corrida_rechazada_muestra_por_que_no_publico(cliente, tmp_path):
-    run_id = _subir(cliente, _cartera(tmp_path, n=100, tasa=0.2)).json()["run_id"]
+    run_id = _subir_e_ingerir(cliente, _cartera(tmp_path, n=100, tasa=0.2))["run_id"]
 
     pagina = cliente.get(f"/corridas/{run_id}/rechazos").json()
 
@@ -222,10 +328,10 @@ def test_una_corrida_rechazada_muestra_por_que_no_publico(cliente, tmp_path):
 
 
 def test_los_rechazos_de_una_corrida_en_proceso_409(cliente, tmp_path):
-    with sesion() as s:
-        corrida = abrir_corrida(s, origen="cartera.csv", contenido=_cartera(tmp_path))
+    # Su ingesta sigue en la cola: el worker todavia no la toma.
+    run_id = _subir(cliente, _cartera(tmp_path)).json()["run_id"]
 
-    respuesta = cliente.get(f"/corridas/{corrida.run_id}/rechazos")
+    respuesta = cliente.get(f"/corridas/{run_id}/rechazos")
 
     assert respuesta.status_code == 409
     assert respuesta.json()["codigo"] == "CORRIDA_EN_PROCESO"
@@ -259,6 +365,9 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
     # El ejemplo del 201 es lo que de verdad responde el POST, no una corrida terminada.
     ejemplo = post["responses"]["201"]["content"]["application/json"]["example"]
     assert ejemplo["estado"] == "EN_PROCESO"
+    # Y dice que la corrida nace con su flujo, y que la procesa un worker.
+    assert "worker" in post["responses"]["201"]["description"]
+    assert "/corridas/{run_id}/flujo" in post["description"]
     # Y los ejemplos traen cada campo de la respuesta. Se revisan en su origen porque el
     # OpenAPI omite los que valen null.
     campos = set(CorridaRespuesta.model_json_schema(mode="serialization")["properties"])

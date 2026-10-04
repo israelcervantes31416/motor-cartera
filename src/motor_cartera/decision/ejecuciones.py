@@ -2,7 +2,8 @@
 
 El orden importa:
   1. abre una EjecucionDecision EN_PROCESO y la confirma antes de decidir nada: si algo falla,
-     queda rastro de que se intento
+     queda rastro de que se intento. La API la confirma junto con el trabajo de la cola que la va
+     a ejecutar, en la misma transaccion
   2. toma la ejecucion con su fila bloqueada, para que la decida un solo worker a la vez, y lee las
      cuentas de la corrida por lotes, en el orden de su llave unica
   3. decide cada cuenta con las reglas puras de `reglas.py` e inserta las decisiones del lote
@@ -35,7 +36,7 @@ from motor_cartera.db.modelos import (
     EstadoDecision,
     ahora,
 )
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision.reglas import (
     VERSION_REGLAS_DECISION,
     EntradaDecision,
@@ -46,6 +47,12 @@ from motor_cartera.decision.reglas import (
 log = logging.getLogger(__name__)
 
 INDICE_DECISION_EXITOSA = "ux_ejecucion_decision_exitosa"
+INDICE_DECISION_EN_PROCESO = "ux_ejecucion_decision_en_proceso"
+
+INTENTOS_DE_APERTURA = 3
+"""Cuantas veces se revisa y se inserta una ejecucion que pierde la carrera contra otra apertura de
+la misma corrida y version. La segunda revision ya ve a la que gano; solo se vuelve a insertar si
+esa termino FALLIDA entre el rechazo y la revision."""
 
 TAMANO_LOTE = 1000
 """Cuantas cuentas se leen e insertan a la vez. Es un ajuste tecnico y no una regla de negocio: no
@@ -75,33 +82,63 @@ class DecisionYaGenerada(Exception):
         self.previa = previa
 
 
+class DecisionEnProceso(Exception):
+    """La corrida ya se esta decidiendo con esta version de las reglas: hay un intento activo, y
+    otro haria el mismo trabajo a la vez."""
+
+    def __init__(self, activa: EjecucionDecision) -> None:
+        super().__init__(
+            f"Esta corrida ya se esta decidiendo con {activa.version_reglas}: la ejecucion "
+            f"{activa.decision_run_id}."
+        )
+        self.activa = activa
+
+
 class _NoSePublica(Exception):
     """Una razon conocida para no publicar ninguna decision. Su mensaje es para una persona y va tal
     cual al detalle de la ejecucion: no lleva datos de las cuentas."""
 
 
-def abrir_ejecucion(s: Session, corrida: Corrida) -> EjecucionDecision:
+def abrir_ejecucion(s: Session, corrida: Corrida, *, confirmar: bool = True) -> EjecucionDecision:
     """Registra la ejecucion EN_PROCESO antes de decidir nada: si algo falla, queda rastro.
 
     Desde aqui queda fija la version de las reglas con que se va a decidir. Solo se decide una
     corrida EXITOSA; con cualquier otra levanta CorridaNoDecidible y no registra nada.
 
     Si la corrida ya se decidio con exito con esta version, levanta DecisionYaGenerada: decidirla
-    otra vez duplicaria sus decisiones. Esta revision es la via amable, porque sabe decir cual
-    ejecucion fue; la garantia es el indice unico parcial, que atrapa las carreras al cerrar. Por
-    eso otra ejecucion EN_PROCESO de la misma corrida no impide abrir esta: las dos pueden trabajar,
-    pero solo una puede cerrar EXITOSA.
+    otra vez duplicaria sus decisiones. Si ya se esta decidiendo, levanta DecisionEnProceso: a lo
+    mas hay un intento activo por corrida y version, y uno FALLIDO no cuenta. Estas revisiones son
+    la via amable, porque saben decir cual ejecucion fue; las garantias son los indices unicos
+    parciales. El de las EN_PROCESO atrapa las carreras al abrir: la apertura que pierde choca con
+    el dentro de un SAVEPOINT, vuelve a revisar y levanta lo que corresponda. El de las EXITOSA
+    atrapa, al cerrar, a quien se haya saltado todo lo anterior.
+
+    Con confirmar=False no confirma: deja la ejecucion en la transaccion de quien llama, que la
+    confirma junto con el trabajo que la va a ejecutar. El SAVEPOINT deja esa transaccion usable
+    aunque la apertura falle.
     """
     if corrida.estado != EstadoCorrida.EXITOSA:
         raise CorridaNoDecidible(corrida)
-    previa = s.exec(_exitosa(corrida.id, VERSION_REGLAS_DECISION)).one_or_none()
-    if previa is not None:
-        raise DecisionYaGenerada(previa)
+    for _ in range(INTENTOS_DE_APERTURA):
+        previa = s.exec(_exitosa(corrida.id, VERSION_REGLAS_DECISION)).one_or_none()
+        if previa is not None:
+            raise DecisionYaGenerada(previa)
+        activa = s.exec(_en_proceso(corrida.id, VERSION_REGLAS_DECISION)).one_or_none()
+        if activa is not None:
+            raise DecisionEnProceso(activa)
 
-    ejecucion = EjecucionDecision(corrida_id=corrida.id, version_reglas=VERSION_REGLAS_DECISION)
-    s.add(ejecucion)
-    s.commit()
-    s.refresh(ejecucion)
+        ejecucion = EjecucionDecision(corrida_id=corrida.id, version_reglas=VERSION_REGLAS_DECISION)
+        error = insertar_en_savepoint(s, ejecucion)
+        if error is None:
+            break
+        if restriccion(error) != INDICE_DECISION_EN_PROCESO:
+            raise error
+    else:
+        raise error
+
+    if confirmar:
+        s.commit()
+        s.refresh(ejecucion)
     log.info("ejecucion %s abierta para la corrida %s", ejecucion.decision_run_id, corrida.run_id)
     return ejecucion
 
@@ -161,7 +198,7 @@ def ejecutar_decision(ejecucion_id: int, *, tamano_lote: int = TAMANO_LOTE) -> N
             _fallar(s, ejecucion_id, etiqueta, evaluadas, str(exc))
         except IntegrityError as exc:
             s.rollback()
-            if _restriccion(exc) != INDICE_DECISION_EXITOSA:
+            if restriccion(exc) != INDICE_DECISION_EXITOSA:
                 log.exception("ejecucion %s: violacion de integridad inesperada", etiqueta)
                 _fallar(
                     s,
@@ -191,11 +228,12 @@ def ejecutar_decision(ejecucion_id: int, *, tamano_lote: int = TAMANO_LOTE) -> N
 
 
 def decidir_corrida(corrida_id: int, *, tamano_lote: int = TAMANO_LOTE) -> EjecucionDecision:
-    """Una ejecucion completa en primer plano, y como termino. La API sincrona usa esta funcion para
-    crear y ejecutar la decision antes de responder.
+    """Una ejecucion completa en primer plano, y como termino, en modo directo: sin cola, sin
+    trabajo y sin lease. Si el proceso muere a la mitad, la ejecucion queda EN_PROCESO y nadie la
+    cierra; un trabajo de la cola durable, en cambio, se recupera cuando vence su lease.
 
-    Propaga CorridaNoDecidible y DecisionYaGenerada. Un fallo del motor no se propaga: la ejecucion
-    ya existe, y se devuelve FALLIDA.
+    Propaga CorridaNoDecidible, DecisionYaGenerada y DecisionEnProceso. Un fallo del motor no se
+    propaga: la ejecucion ya existe, y se devuelve FALLIDA.
     """
     _validar_tamano_lote(tamano_lote)
     with sesion() as s:
@@ -356,11 +394,16 @@ def _exitosa(corrida_id: int, version: str) -> SelectOfScalar[EjecucionDecision]
     )
 
 
+def _en_proceso(corrida_id: int, version: str) -> SelectOfScalar[EjecucionDecision]:
+    """La ejecucion EN_PROCESO de la corrida con esa version de las reglas: el intento activo. Hay a
+    lo mas una: lo garantiza el otro indice unico parcial."""
+    return select(EjecucionDecision).where(
+        EjecucionDecision.corrida_id == corrida_id,
+        EjecucionDecision.version_reglas == version,
+        EjecucionDecision.estado == EstadoDecision.EN_PROCESO,
+    )
+
+
 def _validar_tamano_lote(tamano_lote: int) -> None:
     if tamano_lote <= 0:
         raise ValueError(f"El tamano del lote debe ser mayor que cero: {tamano_lote}.")
-
-
-def _restriccion(exc: IntegrityError) -> str | None:
-    diagnostico = getattr(exc.orig, "diag", None)
-    return getattr(diagnostico, "constraint_name", None)

@@ -1,4 +1,5 @@
 from motor_cartera.db.modelos import (
+    ArchivoCorrida,
     Corrida,
     Cuenta,
     DecisionCuenta,
@@ -7,12 +8,18 @@ from motor_cartera.db.modelos import (
     EjecucionTerritorial,
     EstadoCorrida,
     EstadoDecision,
+    EstadoFlujo,
     EstadoRuteo,
     EstadoTerritorial,
+    EstadoTrabajo,
+    EtapaFlujo,
+    FlujoOrquestacion,
     ParadaRuta,
     Rechazo,
     ResultadoTerritorial,
     RutaTerritorial,
+    TipoTrabajo,
+    TrabajoOrquestacion,
 )
 from motor_cartera.db.sesion import crear_motor, sesion
 
@@ -31,6 +38,13 @@ __all__ = [
     "EjecucionRuteo",
     "RutaTerritorial",
     "ParadaRuta",
+    "ArchivoCorrida",
+    "EstadoFlujo",
+    "EtapaFlujo",
+    "FlujoOrquestacion",
+    "TipoTrabajo",
+    "EstadoTrabajo",
+    "TrabajoOrquestacion",
     "crear_motor",
     "sesion",
 ]

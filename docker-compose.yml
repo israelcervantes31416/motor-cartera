@@ -1,5 +1,6 @@
-# `docker compose up` levanta PostgreSQL, aplica las migraciones y arranca la API, en ese
-# orden y sin pasos manuales. La API queda en http://localhost:8000 (documentacion en /docs).
+# `docker compose up` levanta PostgreSQL, aplica las migraciones y arranca la API y el worker,
+# en ese orden y sin pasos manuales. La API queda en http://localhost:8000 (documentacion en
+# /docs). La API registra el trabajo en la cola durable, en PostgreSQL; el worker lo ejecuta.
 
 x-app: &app
   build: .
@@ -60,6 +61,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  # La misma imagen, el mismo codigo y la misma base que la API, en otro contenedor y sin puertos:
+  # la API atiende HTTP y el worker ejecuta los trabajos de la cola. Ninguno guarda trabajo en
+  # memoria. Si la API se reinicia, lo que registro sigue en PostgreSQL; si el worker se cae, se
+  # reinicia y retoma la cola, y un trabajo que dejo a medias vuelve a tomarse cuando vence su
+  # lease. Sin container_name, para poder correr varios (`docker compose up --scale worker=3`):
+  # nunca toman el mismo trabajo.
+  worker:
+    <<: *app
+    depends_on:
+      migraciones:
+        condition: service_completed_successfully
+    command: ["motor-cartera", "worker"]
+    restart: unless-stopped
+    # Con SIGTERM termina el trabajo en curso y sale. Si tarda mas que esto, Docker lo mata y el
+    # trabajo vuelve a la cola cuando vence su lease.
+    stop_grace_period: 30s
 
 volumes:
   pgdata:
