@@ -2,7 +2,7 @@
 
 Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético
 de cartera de crédito al consumo, construido sobre **datos sintéticos**, con una API REST para
-operarlo.
+operarlo y un worker que ejecuta cada etapa desde una cola durable.
 
 ## De qué se trata
 
@@ -33,6 +33,12 @@ construida por vecino más cercano y mejorada con 2-opt. **Las rutas son sintét
 recibe un punto determinista en un plano local del municipio, porque la cartera no trae
 ubicaciones y aquí no se inventan. No son calles, domicilios ni tiempos de conducción.
 
+Las cuatro etapas se encadenan solas. Un solo `POST /corridas` deja la cartera y el trabajo de su
+ingesta en una **cola durable sobre PostgreSQL** y responde de inmediato. Un **worker**,
+independiente de la API, toma cada trabajo, ejecuta su motor y deja en la cola la etapa siguiente,
+de la ingesta al ruteo. Si un worker muere a la mitad, su trabajo no se pierde: cuando vence su
+lease, otro lo retoma.
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -53,7 +59,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay cuatro versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay cinco versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -63,6 +69,9 @@ punta:
   municipio y el orden en que conviene atenderlos.
 - **v0.4.0 ✅ Motor de Ruteo**: dentro de cada municipio con trabajo de campo, la secuencia en que
   conviene visitar sus cuentas, sobre coordenadas sintéticas y deterministas.
+- **v0.5.0 ✅ Orquestación Durable**: la API registra el trabajo y un worker independiente lo
+  ejecuta desde una cola sobre PostgreSQL, con lease, latido y reintentos acotados. Una subida
+  recorre sola la ingesta, la decisión, la organización territorial y el ruteo.
 
 Lo que ya hace:
 
@@ -85,11 +94,19 @@ Lo que ya hace:
   sintético por municipio, con distancia Manhattan, vecino más cercano y hasta 10 mejoras 2-opt
 - [x] Ejecuciones de ruteo persistidas y auditables: todas las rutas y paradas o ninguna, una sola
   vez por versión de las reglas, con su historial, sus rutas y sus paradas por la API
-- [x] `docker compose up` levanta todo; CI con PostgreSQL y prueba del compose en limpio
+- [x] Cola durable sobre PostgreSQL: cada trabajo nace en la misma transacción que su recurso, se
+  reparte con `FOR UPDATE SKIP LOCKED` y, si su worker muere, otro lo retoma cuando vence el lease;
+  reintentos con espera e intentos acotados
+- [x] Worker independiente de la API (`motor-cartera worker`), con apagado ordenado; se pueden
+  correr varios a la vez
+- [x] Flujo automático: un `POST /corridas` llega hasta el ruteo; el flujo y sus trabajos se
+  consultan por la API, y una etapa que falló se reanuda
+- [x] API asíncrona: cada `POST` que pide trabajo responde `201` con el recurso `EN_PROCESO`
+- [x] `docker compose up` levanta todo, con el worker en su propio contenedor; CI con PostgreSQL y
+  la prueba de humo del flujo automático en un compose limpio
 
 Lo que sigue:
 
-- [ ] **v0.5.0 — Orquestación durable**: colas, reintentos y trabajo que sobrevive a un reinicio
 - [ ] **v0.6.0 — Cloud + observabilidad**: despliegue en nube, métricas, trazas y alertas
 
 Lo que está frágil o pendiente, sin maquillar, está en
@@ -101,10 +118,10 @@ Lo que está frágil o pendiente, sin maquillar, está en
 docker compose up --build
 ```
 
-Eso levanta PostgreSQL, aplica las migraciones y arranca la API en
-<http://localhost:8000>, sin pasos manuales. La documentación interactiva está en
-<http://localhost:8000/docs>. La clave de desarrollo es `clave-local-de-desarrollo`; se
-cambia con la variable `MC_API_KEY`.
+Eso levanta PostgreSQL, aplica las migraciones y arranca la API en <http://localhost:8000> y el
+worker, cada uno en su contenedor, sin pasos manuales. La documentación interactiva está en
+<http://localhost:8000/docs>. La clave de desarrollo es `clave-local-de-desarrollo`; se cambia
+con la variable `MC_API_KEY`. Para correr varios workers: `docker compose up --scale worker=3`.
 
 ## El flujo completo
 
@@ -118,16 +135,72 @@ docker compose exec api motor-cartera generar --destino datos/cartera.xlsx
 Por omisión son 10,000 cuentas con 2 % de filas inválidas a propósito (`--n`,
 `--tasa-invalidas`, `--semilla`, `--fecha-corte`). El formato sale de la extensión.
 
-**2. Lanzar una corrida por la API.**
+**2. Subirla por la API.**
 
 ```bash
 curl -i -H "X-API-Key: clave-local-de-desarrollo" -F "archivo=@datos/cartera.xlsx" http://localhost:8000/corridas
 ```
 
-Responde `201` de inmediato, con la corrida `EN_PROCESO` y su dirección en `Location`; el
-archivo se procesa en segundo plano.
+Responde `201` de inmediato, con la corrida `EN_PROCESO` y su dirección en `Location`. La API no
+lee el archivo: lo guarda en PostgreSQL con la corrida, su flujo automático y el trabajo de la
+ingesta, en una sola transacción, y el worker hace lo demás.
 
-**3. Consultar su estado** hasta que sea `EXITOSA`, `RECHAZADA` o `FALLIDA`:
+**3. Seguir su flujo** hasta que deje de estar `EN_PROCESO`:
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/flujo
+```
+
+```json
+{
+  "flujo_id": "…",
+  "run_id": "…",
+  "estado": "COMPLETADO",
+  "etapa": "COMPLETADA",
+  "decision_run_id": "…",
+  "territorial_run_id": "…",
+  "ruteo_run_id": "…",
+  "duracion_segundos": 4.68,
+  "detalle": "La ingesta, la decision, la organizacion territorial y el ruteo terminaron EXITOSA."
+}
+```
+
+Mientras avanza, `etapa` dice en cuál va (`INGESTA`, `DECISION`, `TERRITORIAL` o `RUTEO`) y
+`detalle`, qué espera; el identificador de cada ejecución aparece en cuanto el flujo llega a su
+etapa. `COMPLETADO` quiere decir que el ruteo terminó `EXITOSA`. `DETENIDO` quiere decir que una
+etapa no pudo continuar: `etapa` dice cuál, y `detalle`, por qué y cómo reintentar (ver
+[Si el flujo se detiene](#si-el-flujo-se-detiene)).
+
+**4. Ver los trabajos que lo ejecutaron**, uno por etapa, en el orden en que entraron a la cola:
+
+```bash
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/flujos/<flujo_id>/trabajos
+```
+
+```json
+{
+  "flujo_id": "…", "run_id": "…", "total": 4, "pagina": 1, "por_pagina": 50,
+  "elementos": [
+    {
+      "trabajo_id": "…",
+      "tipo": "INGESTA",
+      "estado": "COMPLETADO",
+      "objetivo_run_id": "…",
+      "intentos": 1,
+      "max_intentos": 5,
+      "lease_hasta": null,
+      "ultimo_error": null,
+      "…": "…"
+    }
+  ]
+}
+```
+
+El estado de un trabajo es el de su entrega, no el de su motor: `COMPLETADO` quiere decir que su
+recurso terminó, `EXITOSA` o no. `objetivo_run_id` es el identificador público de ese recurso, y
+`GET /trabajos/{trabajo_id}` consulta un trabajo solo.
+
+**5. Consultar la corrida**: estado, conteos y tiempos.
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>
@@ -147,7 +220,7 @@ curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<r
 }
 ```
 
-**4. Ver los rechazos, cada uno con su fila y su motivo:**
+**6. Ver los rechazos, cada uno con su fila y su motivo:**
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/corridas/<run_id>/rechazos?por_pagina=2"
@@ -166,7 +239,7 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/corridas/<
 }
 ```
 
-**5. Consultar el resumen segmentado** de la cartera vigente:
+**7. Consultar el resumen segmentado** de la cartera vigente:
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/cartera/resumen?por=canal&por=tramo_atraso"
@@ -175,14 +248,12 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/cartera/re
 Devuelve cuentas, saldo y saldo promedio por segmento, junto con el `run_id` del que sale
 cada número.
 
-**6. Decidir la corrida** con el Decision Engine:
+**8. Consultar la decisión** que pidió el flujo, con el `decision_run_id` del paso 3: versión de
+las reglas, estado, tiempos y conteos.
 
 ```bash
-curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/decisiones
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>
 ```
-
-Es síncrono: cuando responde, ya decidió todas las cuentas. Devuelve `201` con la ejecución
-terminada y su dirección en `Location`:
 
 ```json
 {
@@ -196,21 +267,14 @@ terminada y su dirección en `Location`:
 }
 ```
 
-**7. Consultar la ejecución** por su `decision_run_id`: versión de las reglas, estado, tiempos
-y conteos.
-
-```bash
-curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>
-```
-
-**8. Listar el historial de la corrida:** todas sus ejecuciones, en cualquier estado y versión
+**9. Listar el historial de la corrida:** todas sus ejecuciones, en cualquier estado y versión
 de las reglas, de la más reciente a la más antigua.
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/decisiones
 ```
 
-**9. Ver la decisión de cada cuenta**, con sus motivos:
+**10. Ver la decisión de cada cuenta**, con sus motivos:
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/decisiones/<decision_run_id>/cuentas?por_pagina=2"
@@ -237,14 +301,12 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/decisiones
 }
 ```
 
-**10. Organizar las decisiones por municipio** con el Motor Territorial:
+**11. Consultar la ejecución territorial** que pidió el flujo, con el `territorial_run_id` del
+paso 3, el `decision_run_id` de las decisiones que organizó y el `run_id` de su corrida:
 
 ```bash
-curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>/territoriales
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>
 ```
-
-También es síncrono: cuando responde, ya organizó todos los municipios. Devuelve `201` con la
-ejecución terminada y su dirección en `Location`:
 
 ```json
 {
@@ -257,13 +319,6 @@ ejecución terminada y su dirección en `Location`:
   "territorios_publicados": 541,
   "detalle": "Se organizaron 9,800 decisiones en 541 municipios con territorial/v1."
 }
-```
-
-**11. Consultar la ejecución territorial** por su `territorial_run_id`, con el
-`decision_run_id` de las decisiones que organizó y el `run_id` de su corrida:
-
-```bash
-curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>
 ```
 
 **12. Listar el historial territorial de esas decisiones:** todas sus ejecuciones, en cualquier
@@ -301,14 +356,12 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/territoria
 }
 ```
 
-**14. Rutear esos municipios** con el Motor de Ruteo:
+**14. Consultar la ejecución de ruteo** que pidió el flujo, con el `ruteo_run_id` del paso 3 y
+los identificadores públicos de toda su cadena:
 
 ```bash
-curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>/ruteos
+curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/ruteos/<ruteo_run_id>
 ```
-
-También es síncrono: cuando responde, ya trazó la ruta de cada municipio con cuentas de campo.
-Devuelve `201` con la ejecución terminada y su dirección en `Location`:
 
 ```json
 {
@@ -326,21 +379,14 @@ Devuelve `201` con la ejecución terminada y su dirección en `Location`:
 }
 ```
 
-**15. Consultar la ejecución de ruteo** por su `ruteo_run_id`, con los identificadores públicos de
-toda su cadena:
-
-```bash
-curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/ruteos/<ruteo_run_id>
-```
-
-**16. Listar el historial de ruteo de esa ejecución territorial**, en cualquier estado y versión,
+**15. Listar el historial de ruteo de esa ejecución territorial**, en cualquier estado y versión,
 de la más reciente a la más antigua:
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>/ruteos
 ```
 
-**17. Ver la ruta de cada municipio**, en el orden de prioridad territorial:
+**16. Ver la ruta de cada municipio**, en el orden de prioridad territorial:
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/ruteos/<ruteo_run_id>/rutas?por_pagina=1"
@@ -366,7 +412,7 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/ruteos/<ru
 }
 ```
 
-**18. Ver las paradas de un municipio**, en el orden de visita:
+**17. Ver las paradas de un municipio**, en el orden de visita:
 
 ```bash
 curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/ruteos/<ruteo_run_id>/rutas/21074/paradas?por_pagina=2"
@@ -387,10 +433,50 @@ curl -H "X-API-Key: clave-local-de-desarrollo" "http://localhost:8000/ruteos/<ru
 Los metros son sintéticos: `x_m` y `y_m` son un punto del plano local de 21074, no una longitud y
 una latitud.
 
-Todo el flujo, con la verificación de cada código HTTP, está en un solo script que corre igual
-en tu máquina que en el CI; al final pide decidir la misma corrida, organizar las mismas
-decisiones y rutear la misma ejecución territorial otra vez, y exige los tres `409`. Necesita un
-archivo que no se haya subido antes, porque el mismo archivo no se publica dos veces:
+### Si el flujo se detiene
+
+Una etapa que no termina `EXITOSA` detiene el flujo en esa etapa, y su `detalle` lo dice:
+
+```json
+{"estado": "DETENIDO", "etapa": "DECISION", "detalle": "La decision termino FALLIDA. Para reintentarla, reanuda el flujo.", "…": "…"}
+```
+
+Si se detuvo en la decisión, la organización territorial o el ruteo, se reintenta con otra
+ejecución:
+
+```bash
+curl -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/flujos/<flujo_id>/reanudar
+```
+
+Responde `200` con el flujo otra vez `EN_PROCESO`, apuntando a la ejecución nueva, y el worker
+sigue desde ahí hasta el ruteo. La que falló queda en el historial de su etapa. Una corrida
+`RECHAZADA` o `FALLIDA` no se reanuda: una corrida terminada es evidencia, y se vuelve a subir el
+archivo, que es otra corrida con otro flujo.
+
+### Etapas a mano
+
+Una corrida publicada con el CLI, o antes de v0.5.0, no tiene flujo:
+`GET /corridas/{run_id}/flujo` responde `404 FLUJO_NO_ENCONTRADO`. Sus etapas se piden una por una:
+
+```bash
+curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/corridas/<run_id>/decisiones
+curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/decisiones/<decision_run_id>/territoriales
+curl -i -X POST -H "X-API-Key: clave-local-de-desarrollo" http://localhost:8000/territoriales/<territorial_run_id>/ruteos
+```
+
+Cada una responde `201` con la ejecución `EN_PROCESO` y su `Location`; la ejecuta el worker, y se
+consulta hasta que termine antes de pedir la siguiente. Sobre una fuente que es de un flujo
+responden `409`: `FLUJO_EN_PROCESO` si el flujo la va a correr, o `FLUJO_DETENIDO` si se detuvo
+ahí y se reanuda.
+
+### La prueba de humo
+
+Todo el flujo, con la verificación de cada código HTTP, está en un solo script que corre igual en
+tu máquina que en el CI. Sube una cartera y no pide nada más: sigue su flujo hasta `COMPLETADO`,
+revisa sus cuatro trabajos y lo que publicó cada etapa, y al final pide a mano la decisión, la
+organización territorial y el ruteo ya publicados y exige los tres `409`. Necesita la API y el
+worker corriendo, y un archivo que no se haya subido antes, porque el mismo archivo no se publica
+dos veces:
 
 ```bash
 docker compose exec api motor-cartera generar --destino datos/humo.xlsx --semilla 7
@@ -438,7 +524,7 @@ Las reglas de `decision/v1`, en el orden en que se aplican:
   final y el canal. Salen de un catálogo cerrado de doce códigos.
 
 Así, una cuenta con 65 días de atraso y 62,000.00 de saldo queda en `MORA_MEDIA`, sube de
-`ALTA` a `MUY_ALTA` por su saldo y se recomienda por `CAMPO`: es la del ejemplo del paso 9.
+`ALTA` a `MUY_ALTA` por su saldo y se recomienda por `CAMPO`: es la del ejemplo del paso 10.
 
 **Las reglas y el umbral son sintéticos**, propios de este proyecto público: no vienen de
 ninguna operación real, no son reglas propietarias y no son una recomendación de cobranza.
@@ -557,7 +643,7 @@ Cada ruta guarda la distancia del vecino más cercano (`distancia_inicial_m`), l
 Con la cartera que el generador produce por omisión, los 403 municipios con trabajo de campo dan
 403 rutas con 2,968 paradas. El 2-opt acorta 119 de ellas, 10 llegan al tope de diez mejoras, y
 140 tienen una sola parada. La primera, 21074, tiene 425 paradas y mide 226,184 m sintéticos,
-14,956 menos que la del vecino más cercano: es la del ejemplo del paso 17.
+14,956 menos que la del vecino más cercano: es la del ejemplo del paso 16.
 
 > **Las rutas de v0.4.0 no son rutas geográficas reales.** No representan calles, domicilios,
 > tráfico, tiempos de conducción ni latitud y longitud. Son una simulación reproducible para
@@ -578,23 +664,120 @@ declara como tal.
 No hay gestores, vehículos, capacidades, horarios ni ventanas de tiempo: una ruta es la secuencia
 de visita sobre todas las cuentas de campo de un municipio, no la jornada de una persona.
 
+## La orquestación durable
+
+**La API no ejecuta ningún motor.** Cada `POST` que pide trabajo registra el recurso `EN_PROCESO`
+y su trabajo en PostgreSQL, en la misma transacción, y responde `201`. Un worker, en otro proceso,
+toma el trabajo, ejecuta el motor y lo cierra:
+
+```
+API
+ │
+ ├── PostgreSQL, en una sola transacción
+ │      ├── el recurso EN_PROCESO: la corrida y su archivo, o la ejecución de una etapa
+ │      ├── TrabajoOrquestacion: su trabajo, en la cola
+ │      └── FlujoOrquestacion: en qué etapa va la corrida
+ │
+ └── responde 201
+
+worker (uno o varios procesos)
+ │
+ ├── toma un trabajo con FOR UPDATE SKIP LOCKED
+ ├── lease: el trabajo es suyo hasta lease_hasta
+ ├── latido: renueva el lease mientras trabaja
+ └── ejecuta el motor y, al cerrar el trabajo, encola la etapa siguiente en la misma transacción
+```
+
+**El flujo automático.** Un solo `POST /corridas` produce la corrida, su decisión, su
+organización territorial y su ruteo, sin que el cliente pida cada etapa:
+
+```
+INGESTA ──▶ DECISION ──▶ TERRITORIAL ──▶ RUTEO ──▶ COMPLETADA
+```
+
+Cuando el trabajo de una etapa se cierra con su recurso `EXITOSA`, la misma transacción abre la
+siguiente; una etapa que no termina `EXITOSA` detiene el flujo. Todo se observa en
+`GET /corridas/{run_id}/flujo` y `GET /flujos/{flujo_id}/trabajos`.
+
+**Entrega al menos una vez.** La entrega de un trabajo es *at-least-once*, no *exactly-once*: si un
+worker muere después de que su motor confirmó y antes de cerrar el trabajo, otro worker lo vuelve a
+tomar y llama otra vez al motor. Lo que no se repite es la publicación. Los motores ya estaban
+protegidos de dos ejecuciones: toman su recurso con `FOR UPDATE`, no vuelven a ejecutar uno que
+llegó a un estado terminal, publican todo o nada en una sola transacción, su fallo no degrada un
+estado terminal, y los índices únicos admiten a lo más una ejecución `EXITOSA` y una `EN_PROCESO`
+por fuente y versión.
+
+**Lease y latido.**
+
+```
+PENDIENTE ──(un worker lo toma)──▶ EJECUTANDO ──(su recurso terminó)──▶ COMPLETADO
+    ▲                                │   ▲
+    │                                │   └── latido: renueva el lease
+    └───(error del worker, espera)───┤
+                                     └──(sin intentos)──▶ FALLIDO
+```
+
+Si el worker muere, deja de latir, su lease vence y otro worker toma el trabajo, con un intento
+más. Si murió a media transacción del motor, PostgreSQL revierte lo que no se confirmó y el motor
+se ejecuta entero otra vez; si murió después del `COMMIT`, el siguiente encuentra el recurso
+terminado, no hace nada y cierra el trabajo. Un worker que perdió su lease ya no cierra el trabajo.
+Con `SIGTERM` o `SIGINT`, el worker termina el trabajo en curso y sale.
+
+**Trabajo no es motor.** El estado de un trabajo es el de la entrega; el de su recurso, el del
+motor.
+
+```
+Trabajo COMPLETADO + EjecucionDecision FALLIDA + Flujo DETENIDO
+```
+
+no es una contradicción: el worker ejecutó bien un motor que terminó de forma controlada en
+`FALLIDA`. Un error del worker (se cayó la conexión, murió el proceso) se reintenta solo, con
+espera; una `FALLIDA` del motor, no, porque fallaría igual.
+
+**Reanudar.** Un flujo detenido en la decisión, la organización territorial o el ruteo, con su
+ejecución `FALLIDA`, se reintenta con `POST /flujos/{flujo_id}/reanudar`: otra ejecución de esa
+etapa, y el flujo sigue hasta el ruteo. La ingesta no se reanuda, porque una corrida terminada es
+evidencia inmutable: se vuelve a subir el archivo.
+
+**El archivo.** Se guarda en PostgreSQL antes de responder, para que la ingesta sobreviva a que la
+API muera, y se borra en cuanto la ingesta termina. Es una decisión del alcance actual: en la nube
+(v0.6.0) iría a un *object storage*.
+
+**Parámetros del worker.** Son parámetros operativos, no reglas de decisión: cambian cuándo y
+cuántas veces se intenta un trabajo, nunca qué calcula un motor.
+
+| Variable | Por omisión | Qué controla |
+|---|---|---|
+| `MC_WORKER_POLL_SEGUNDOS` | `0.5` | Cuánto espera el worker antes de volver a buscar trabajo, con la cola vacía |
+| `MC_WORKER_LEASE_SEGUNDOS` | `60` | Cuánto tiempo es suyo un trabajo sin latir; al vencer, otro worker lo puede tomar |
+| `MC_WORKER_HEARTBEAT_SEGUNDOS` | `20` | Cada cuánto late para renovar el lease; tiene que ser menor que el lease |
+| `MC_WORKER_MAX_INTENTOS` | `5` | Cuántas veces se puede tomar un trabajo antes de darlo por `FALLIDO`; cada trabajo copia el valor al nacer |
+| `MC_WORKER_BACKOFF_SEGUNDOS` | `1` | La espera tras el primer error de un trabajo; se duplica en cada intento: 1, 2, 4, 8… |
+
+El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secciones 42 a 53.
+
 ## La API
 
 | Método y ruta | Qué hace | Respuestas |
 |---|---|---|
-| `POST /corridas` | Recibe el archivo, registra la corrida y la procesa en segundo plano | 201, 401, 409, 413, 415, 422 |
+| `POST /corridas` | Guarda el archivo y registra la corrida `EN_PROCESO`, con su flujo automático y el trabajo de su ingesta | 201, 401, 409, 413, 415, 422 |
 | `GET /corridas/{run_id}` | Estado: conteos, tiempos y resultado | 200, 401, 404, 422 |
 | `GET /corridas/{run_id}/rechazos` | Registros rechazados con su fila y motivo, paginados | 200, 401, 404, 409, 422 |
+| `GET /corridas/{run_id}/flujo` | El flujo automático de la corrida: estado, etapa y el identificador de cada ejecución | 200, 401, 404, 422 |
+| `GET /flujos/{flujo_id}` | Lo mismo, por el identificador del flujo | 200, 401, 404, 422 |
+| `GET /flujos/{flujo_id}/trabajos` | Los trabajos del flujo, en el orden en que entraron a la cola, con sus intentos y su lease, paginados | 200, 401, 404, 422 |
+| `GET /trabajos/{trabajo_id}` | Un trabajo de la cola: tipo, estado, intentos, lease y último error | 200, 401, 404, 422 |
+| `POST /flujos/{flujo_id}/reanudar` | Reintenta, con otra ejecución, la etapa downstream en que se detuvo el flujo | 200, 401, 404, 409, 422 |
 | `GET /cartera/resumen` | Cuentas y saldo por segmento de la cartera vigente, paginado | 200, 401, 404, 409, 422 |
-| `POST /corridas/{run_id}/decisiones` | Decide cada cuenta de una corrida `EXITOSA` con `decision/v1`, en la misma petición | 201, 401, 404, 409, 422 |
+| `POST /corridas/{run_id}/decisiones` | Pide decidir con `decision/v1` cada cuenta de una corrida `EXITOSA`; registra la ejecución `EN_PROCESO` y la decide el worker | 201, 401, 404, 409, 422 |
 | `GET /corridas/{run_id}/decisiones` | Historial: todas las ejecuciones de la corrida, la más reciente primero, paginado | 200, 401, 404, 422 |
 | `GET /decisiones/{decision_run_id}` | Una ejecución: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
 | `GET /decisiones/{decision_run_id}/cuentas` | La decisión de cada cuenta con sus motivos, paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
-| `POST /decisiones/{decision_run_id}/territoriales` | Organiza por municipio, con `territorial/v1` y en la misma petición, las decisiones de una ejecución `EXITOSA` de `decision/v1` | 201, 401, 404, 409, 422 |
+| `POST /decisiones/{decision_run_id}/territoriales` | Pide organizar por municipio, con `territorial/v1`, las decisiones de una ejecución `EXITOSA` de `decision/v1`; las organiza el worker | 201, 401, 404, 409, 422 |
 | `GET /decisiones/{decision_run_id}/territoriales` | Historial: todas las ejecuciones territoriales de esas decisiones, la más reciente primero, paginado | 200, 401, 404, 422 |
 | `GET /territoriales/{territorial_run_id}` | Una ejecución territorial: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
 | `GET /territoriales/{territorial_run_id}/municipios` | Cada municipio con su carga, su lugar y su motivo, en orden de prioridad y paginado; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
-| `POST /territoriales/{territorial_run_id}/ruteos` | Traza con `ruteo/v1`, en la misma petición, la ruta sintética de cada municipio con trabajo de campo de una ejecución territorial `EXITOSA` | 201, 401, 404, 409, 422 |
+| `POST /territoriales/{territorial_run_id}/ruteos` | Pide trazar con `ruteo/v1` la ruta sintética de cada municipio con trabajo de campo de una ejecución territorial `EXITOSA`; la traza el worker | 201, 401, 404, 409, 422 |
 | `GET /territoriales/{territorial_run_id}/ruteos` | Historial: todas las ejecuciones de ruteo de esa ejecución territorial, la más reciente primero, paginado | 200, 401, 404, 422 |
 | `GET /ruteos/{ruteo_run_id}` | Una ejecución de ruteo: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas` | La ruta de cada municipio con sus distancias, en orden de prioridad territorial y paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
@@ -615,50 +798,35 @@ Todas las respuestas de error tienen la misma forma, también las que genera el 
 El cliente compara `codigo`, que es estable; `mensaje` es para personas. En `/docs`, cada
 ruta lista sus códigos de error con un ejemplo de cada uno.
 
-Dos reglas del Decision Engine que un cliente tiene que conocer:
+Las reglas que un cliente tiene que conocer:
 
-- **`201` quiere decir que la ejecución se creó, no que el motor tuvo éxito.** El POST de
-  decisiones responde `201` con `Location` cuando la ejecución ya existe y terminó, tanto si
-  quedó `EXITOSA` como `FALLIDA`. Una `FALLIDA` no publica ninguna decisión, trae el motivo en
-  `detalle` y se reintenta con otro POST. El código HTTP describe la petición; el `estado`,
-  cómo terminó el motor.
-- **Una corrida se decide con éxito una sola vez por versión de las reglas.** Si ya tiene una
-  ejecución `EXITOSA` con `decision/v1`, el POST responde `409 DECISION_YA_GENERADA`, sin
-  `Location` y sin nombrar la ejecución. La que publicó se encuentra en
-  `GET /corridas/{run_id}/decisiones`, y su detalle en `GET /decisiones/{decision_run_id}`.
-
-El Motor Territorial sigue las mismas dos reglas:
-
-- **D1: `201` con `EXITOSA` o con `FALLIDA`.** `POST /decisiones/{decision_run_id}/territoriales`
-  responde `201` con `Location: /territoriales/{territorial_run_id}` siempre que crea la
-  ejecución. Una `FALLIDA` no publica ningún municipio, trae el motivo en `detalle` y se
-  reintenta con otro POST.
-- **D2: `409 TERRITORIAL_YA_GENERADO`, sin `Location`.** Unas decisiones se organizan con éxito
-  una sola vez por versión de las reglas. Si ya lo están con `territorial/v1`, el POST responde
-  `409` sin `Location` y sin nombrar la ejecución; la que publicó se descubre en el historial,
-  `GET /decisiones/{decision_run_id}/territoriales`. Una ejecución de decisión que no terminó
-  `EXITOSA` o que no es de `decision/v1` da `409 DECISION_NO_TERRITORIALIZABLE`, y no se
-  registra nada.
-
-El Motor de Ruteo sigue las mismas dos reglas:
-
-- **D1: `201` con `EXITOSA` o con `FALLIDA`.** `POST /territoriales/{territorial_run_id}/ruteos`
-  responde `201` con `Location: /ruteos/{ruteo_run_id}` siempre que crea la ejecución. Una
-  `FALLIDA` no publica ninguna ruta ni parada, trae el motivo en `detalle` y se reintenta con otro
-  POST.
-- **D2: `409 RUTEO_YA_GENERADO`, sin `Location`.** Una ejecución territorial se rutea con éxito
-  una sola vez por versión de las reglas. Si ya lo está con `ruteo/v1`, el POST responde `409`
-  sin `Location` y sin nombrar la ejecución; la que publicó se descubre en el historial,
-  `GET /territoriales/{territorial_run_id}/ruteos`. Una ejecución territorial que no terminó
-  `EXITOSA`, que no es de `territorial/v1` o cuyas decisiones no son una ejecución `EXITOSA` de
-  `decision/v1` da `409 TERRITORIAL_NO_RUTEABLE`, y no se registra nada.
-
-Las rutas y las paradas de una ejecución que no terminó `EXITOSA` dan `409 RUTEO_NO_PUBLICADO`; un
-municipio sin ruta en esa ejecución, `404 RUTA_NO_ENCONTRADA`.
+- **`201` quiere decir que el recurso se creó, no que el motor terminó.** Cada `POST` que pide
+  trabajo responde `201` con el recurso `EN_PROCESO` y su `Location`, y el worker lo termina
+  después. El cliente consulta `Location`, o el flujo, hasta que el `estado` deje de ser
+  `EN_PROCESO`: `EXITOSA`, o `FALLIDA` con el motivo en `detalle` y nada publicado. El código HTTP
+  describe la petición; el `estado`, cómo terminó el motor (D1).
+- **Una etapa se publica con éxito una sola vez por versión de las reglas.** Si ya lo está, el
+  `POST` responde `409 DECISION_YA_GENERADA`, `TERRITORIAL_YA_GENERADO` o `RUTEO_YA_GENERADO`, sin
+  `Location` y sin nombrar la ejecución, que se descubre en el historial de su fuente (D2).
+- **A lo más una en proceso.** Si la misma fuente ya se está procesando con la misma versión, el
+  `POST` responde `409 ARCHIVO_EN_PROCESO`, `DECISION_EN_PROCESO`, `TERRITORIAL_EN_PROCESO` o
+  `RUTEO_EN_PROCESO`, y no registra otra.
+- **Una fuente que no se puede procesar no registra nada:** `409 CORRIDA_NO_PUBLICADA`,
+  `DECISION_NO_TERRITORIALIZABLE` o `TERRITORIAL_NO_RUTEABLE`.
+- **Las etapas de un flujo las corre el flujo.** Sobre la fuente de un flujo que va a correr esa
+  etapa, `409 FLUJO_EN_PROCESO`; si el flujo se detuvo ahí, `409 FLUJO_DETENIDO`, y se reintenta
+  con `POST /flujos/{flujo_id}/reanudar`.
+- **Reanudar** responde `200` con el flujo otra vez `EN_PROCESO`. Un flujo que sigue en proceso da
+  `409 FLUJO_EN_PROCESO`; uno completo, `409 FLUJO_YA_COMPLETADO`; uno detenido en la ingesta, o
+  cuya etapa no terminó `FALLIDA`, `409 FLUJO_NO_REANUDABLE`.
+- **Lo publicado solo existe para una ejecución `EXITOSA`.** Las decisiones, los municipios, las
+  rutas y las paradas de otra dan `409 DECISION_NO_PUBLICADA`, `TERRITORIAL_NO_PUBLICADO` o
+  `RUTEO_NO_PUBLICADO`; un municipio sin ruta en esa ejecución, `404 RUTA_NO_ENCONTRADA`.
 
 Por qué cada código es el que es (201 y no 202, 422 y no 400, cuándo 409, por qué un
-archivo con registros inválidos no es un error HTTP, por qué una ejecución `FALLIDA` también
-es `201`), y el resto de las decisiones, están en [docs/decisiones.md](docs/decisiones.md).
+archivo con registros inválidos no es un error HTTP, por qué una ejecución que termina `FALLIDA`
+también nació con un `201`), y el resto de las decisiones, están en
+[docs/decisiones.md](docs/decisiones.md).
 
 ## Sin Docker
 
@@ -671,12 +839,17 @@ uv sync --extra dev                                  # .venv con las versiones d
 source .venv/bin/activate                            # en Windows: .venv\Scripts\activate
 alembic upgrade head
 motor-cartera generar --destino datos/cartera.xlsx
-motor-cartera cargar datos/cartera.xlsx              # la misma corrida, sin pasar por la API
+motor-cartera cargar datos/cartera.xlsx              # la ingesta en primer plano, sin pasar por la API
 uvicorn --factory motor_cartera.api.app:crear_app --reload
+motor-cartera worker                                 # en otra terminal: ejecuta la cola
 ```
 
-`cargar` usa exactamente el mismo proceso que la API y termina con código 1 si la corrida
-no publica, para que un script lo note.
+Sin un worker corriendo, la API registra el trabajo pero nadie lo ejecuta: el flujo se queda en la
+cola. `motor-cartera worker --una-vez` procesa a lo más un trabajo y sale, para probar o
+diagnosticar. `cargar` registra la corrida y su trabajo en la misma cola, lo toma él mismo y hace
+la ingesta en primer plano, con el mismo código que el worker; si se interrumpe, un worker la
+termina cuando vence el lease. No crea flujo, así que las demás etapas se piden a mano, y termina
+con código 1 si la corrida no publica, para que un script lo note.
 
 Las versiones exactas de todas las dependencias están en `uv.lock`, y el CI y la imagen
 instalan esas mismas. Si cambias una dependencia en `pyproject.toml`, corre `uv lock` y sube
@@ -706,13 +879,19 @@ coordenadas sintéticas exactas, una ruta completa paso a paso, cada desempate y
 mejoras, con valores calculados aparte por una implementación de fuerza bruta, y exige que la ruta
 no dependa del orden de llegada ni de la semilla de hash del proceso.
 
+La cola y el worker también se prueban contra PostgreSQL real, sin dormir de más: los leases se
+vencen en la base en lugar de esperarlos, y la muerte de un worker se simula sin matar procesos,
+antes del motor, a media transacción y después de su `COMMIT`. Hay pruebas de `SKIP LOCKED`, de dos
+workers a la vez, del lease vencido y del dueño anterior que ya no cierra, del latido, de la
+espera entre intentos y de los intentos agotados, y del flujo completo, detenido y reanudado.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
-servicio, que también cubren el Decision Engine, el Motor Territorial y el Motor de Ruteo: la
-agregación en la base, la transacción todo o nada, la concurrencia entre ejecuciones, la
+servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
+la agregación en la base, la transacción todo o nada, la concurrencia entre ejecuciones, la
 idempotencia y la API del historial, incluidos resultados de otras versiones de las reglas; y el
-`docker compose up` completo en un runner limpio, con la prueba de humo de la ingesta, del
-Decision Engine, del Motor Territorial y del Motor de Ruteo vía HTTP.
+`docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
+prueba de humo del flujo automático vía HTTP.
 
 ## Arquitectura
 
@@ -734,12 +913,18 @@ src/motor_cartera/
 ├── ruteo/
 │   ├── reglas.py      ruteo/v1: coordenadas sintéticas, distancia, vecino más cercano y 2-opt
 │   └── ejecuciones.py Lee las cuentas CAMPO, aplica el núcleo y publica rutas y paradas: todo o nada
-├── db/                Modelo: la corrida, sus cuentas y rechazos, y las ejecuciones con lo que
+├── orquestacion/
+│   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
+│   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
+│   ├── flujo.py       El flujo automático: encola, encadena las etapas, detiene y reanuda
+│   └── objetivos.py   El recurso de cada tipo de trabajo y sus estados terminales
+├── db/                Modelo: la corrida, sus cuentas y rechazos, las ejecuciones con lo que
 │                      publican (decisiones por cuenta, resultados por municipio, rutas y paradas)
+│                      y la orquestación (el archivo de cada corrida, su flujo y los trabajos)
 ├── generador/         Cartera sintética, único origen de datos del proyecto
-├── api/               FastAPI: corridas, cartera, decisiones, territorial y ruteo; esquemas,
-│                      errores y autenticación
-└── cli.py             Comandos: generar y cargar
+├── api/               FastAPI: corridas, orquestación, cartera, decisiones, territorial y ruteo;
+│                      esquemas, errores y autenticación
+└── cli.py             Comandos: generar, cargar y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo del flujo completo y control de archivos trackeados
 docs/decisiones.md     Por qué está hecho así, y qué haría distinto
@@ -774,30 +959,40 @@ ParadaRuta`. Cada ruta apunta al `ResultadoTerritorial` de su municipio y cada p
 aplica el núcleo municipio por municipio y publica todas las rutas y paradas o ninguna; y
 `api/ruteo.py` solo traduce a HTTP.
 
+La orquestación cuelga de esos mismos recursos sin cambiarlos. Un **FlujoOrquestacion** por cada
+corrida subida por la API apunta a la ejecución de cada etapa a la que llegó; un
+**TrabajoOrquestacion** por recurso dice qué motor ejecutar, quién lo tiene, hasta cuándo y cuántas
+veces se intentó; y el **ArchivoCorrida** guarda el archivo mientras la ingesta lo necesita.
+`orquestacion/` no sabe qué calcula cada motor: llama a su servicio y lee el estado de su recurso.
+Por eso v0.5.0 no cambió `cartera/v1`, `decision/v1`, `territorial/v1` ni `ruteo/v1`.
+
 ## Limitaciones conocidas
 
-- **La ingesta corre dentro del proceso de la API** (`BackgroundTasks`). Si la API se
-  reinicia a media corrida, esa corrida queda `EN_PROCESO` para siempre. Después de 15
-  minutos deja de bloquear que se reintente el mismo archivo, pero nadie la cierra. Un
-  worker con cola y reintentos es trabajo de la orquestación durable, v0.5.0.
-- **El POST de decisiones es síncrono.** `POST /corridas/{run_id}/decisiones` decide la
-  corrida entera antes de responder, así que la conexión HTTP queda abierta hasta que termina.
-  La conexión a la base con que encuentra la corrida sí se libera antes de decidir, pero con una
-  cartera mucho más grande que las de prueba, el cliente o un proxy podrían cortar la espera.
-- **Una ejecución de decisión no sobrevive a su proceso.** Si la API muere con una ejecución
-  `EN_PROCESO`, la transacción revierte sus decisiones a medias, pero la ejecución queda
-  `EN_PROCESO` y nadie la cierra: todavía no hay reconciliación durable. No bloquea otro
-  intento sobre la misma corrida, porque solo bloquea una `EXITOSA`, pero el historial la sigue
-  mostrando en proceso. Cerrarla, reintentarla y sacar la decisión de la petición HTTP es
-  trabajo de la orquestación durable, v0.5.0.
-- **El POST territorial también es síncrono.** `POST /decisiones/{decision_run_id}/territoriales`
-  organiza todos los municipios antes de responder. Cuesta menos que decidir, porque la base
-  agrega y al núcleo llega una fila por municipio, pero la conexión HTTP queda abierta hasta que
-  termina.
-- **Una ejecución territorial tampoco sobrevive a su proceso.** Si el proceso muere después de
-  registrarla (T0), la transacción que publica revierte, pero la ejecución queda `EN_PROCESO` y
-  nadie la cierra. No bloquea otro intento, porque el índice solo cuenta las `EXITOSA`. Su
-  reconciliación es trabajo de la orquestación durable, v0.5.0.
+**De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
+se recupere, no la operación en producción. Esto le toca a **v0.6.0 — Cloud + observabilidad**:
+
+- **PostgreSQL es la cola.** No hay un broker dedicado: los workers preguntan por trabajo cada
+  `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
+- **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
+  (`docker compose up --scale worker=3`); no hay autoscaling.
+- **Sin prioridades en la cola.** Los trabajos se toman en el orden en que se crearon.
+- **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
+  tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
+- **Sin métricas, alertas ni trazas distribuidas productivas.** Hay bitácora de la API y del
+  worker, y los flujos y trabajos se consultan por la API.
+- **El archivo vive en PostgreSQL** mientras la ingesta lo necesita, hasta `MC_TAMANO_MAXIMO_MB`:
+  no hay *object storage*.
+
+Y dos que son del diseño, no pendientes:
+
+- **Entrega al menos una vez.** Un motor se puede ejecutar más de una vez sobre el mismo recurso si
+  un worker muere en el momento justo; lo que no se repite es la publicación.
+- **La migración `0006` cierra lo que encontró en proceso.** Cada corrida o ejecución que estaba
+  `EN_PROCESO` al migrar queda `FALLIDA`, con un motivo que lo dice, y su `downgrade` no la reabre.
+  Las corridas que publicaron antes de v0.5.0 no tienen flujo: sus etapas se piden a mano.
+
+**Del resto del sistema.**
+
 - **`territorial/v1` solo consume `decision/v1`.** Las decisiones de otra versión dan
   `409 DECISION_NO_TERRITORIALIZABLE`; organizarlas pedirá otra versión de las reglas
   territoriales.
@@ -807,14 +1002,9 @@ aplica el núcleo municipio por municipio y publica todas las rutas y paradas o 
 - **Una ruta por municipio, sin gestores.** Cada municipio con trabajo de campo tiene una sola
   ruta sobre todas sus cuentas `CAMPO`. No hay gestores, vehículos, capacidades, turnos ni ventanas
   de tiempo, ni rutas que crucen municipios: no es un VRP multi-vehículo.
-- **El POST de ruteo también es síncrono.** `POST /territoriales/{territorial_run_id}/ruteos`
-  traza todas las rutas antes de responder. Con la cartera por omisión el cálculo toma menos de un
-  segundo, pero cada pasada del 2-opt es `O(n²)` en las paradas de un municipio, y un municipio con
-  miles de cuentas de campo no está medido.
-- **Una ejecución de ruteo tampoco sobrevive a su proceso.** Si el proceso muere después de
-  registrarla (T0), la transacción que publica revierte, pero la ejecución queda `EN_PROCESO` y
-  nadie la cierra hasta la orquestación durable, v0.5.0. No bloquea otro intento, porque el índice
-  solo cuenta las `EXITOSA`.
+- **El 2-opt no está medido con municipios grandes.** Con la cartera por omisión, trazar todas
+  las rutas toma alrededor de un segundo, pero cada pasada del 2-opt es `O(n²)` en las paradas de
+  un municipio, y un municipio con miles de cuentas de campo no está medido.
 - **Una cartera se publica una vez por archivo, no por contenido.** La misma cartera en
   xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
   que es la misma, lo deja a la vista, pero todavía no lo impide.

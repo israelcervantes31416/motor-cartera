@@ -91,12 +91,14 @@ sinteticos. No son latitud ni longitud, domicilios, calles, trafico ni tiempos:
 17. `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas`: las paradas de un municipio, en
     el orden de visita.
 
-**Etapas a mano.** `POST /corridas/{run_id}/decisiones`, `POST /decisiones/{decision_run_id}/
-territoriales` y `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso
-que no es de un flujo que la vaya a correr, como una corrida publicada antes de v0.5.0 o con el CLI.
-Tambien responden `201` con la ejecucion `EN_PROCESO`, y la ejecuta el worker. Sobre una fuente de
-un flujo responden `409`: `FLUJO_EN_PROCESO` si el flujo la va a correr, o `FLUJO_DETENIDO` si se
-detuvo ahi y se reanuda. Una vez publicada, una etapa no se repite: `409 *_YA_GENERADA`.
+**Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
+`POST /decisiones/{decision_run_id}/territoriales` y
+`POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
+flujo que la vaya a correr, como una corrida publicada antes de v0.5.0 o con el CLI. Tambien
+responden `201` con la ejecucion `EN_PROCESO`, y la ejecuta el worker. Sobre una fuente de un flujo
+responden `409`: `FLUJO_EN_PROCESO` si el flujo la va a correr, o `FLUJO_DETENIDO` si se detuvo
+ahi y se reanuda. Una vez publicada, una etapa no se repite: `409 DECISION_YA_GENERADA`,
+`TERRITORIAL_YA_GENERADO` o `RUTEO_YA_GENERADO`.
 
 **Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
 `X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.

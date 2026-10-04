@@ -1,12 +1,13 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial y Motor de Ruteo
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo y Orquestación Durable
 
-Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0) y el
-Motor de Ruteo (v0.4.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
-decisión. El uso está en el [README](../README.md); aquí va el porqué.
+Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
+de Ruteo (v0.4.0) y la Orquestación Durable (v0.5.0) están hechos como están, y qué haría distinto
+o cuándo cambiaría cada decisión. El uso está en el [README](../README.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
-Territorial, y las 31 a 41, del Motor de Ruteo. Donde las de la fase 1 hablan de la orquestación
-de la fase 3, hoy es la orquestación durable de v0.5.0.
+Territorial; las 31 a 41, del Motor de Ruteo, y las 42 a 53, de la Orquestación Durable. Donde las
+de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de v0.5.0. Las
+secciones que v0.5.0 cambió lo dicen al final, en un párrafo *Desde v0.5.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -49,6 +50,18 @@ de la fase 3, hoy es la orquestación durable de v0.5.0.
 39. [Concurrencia e idempotencia del ruteo](#39-concurrencia-e-idempotencia-del-ruteo)
 40. [API e historial de ruteo](#40-api-e-historial-de-ruteo)
 41. [Qué no resuelve v0.4.0](#41-qué-no-resuelve-v040)
+42. [Por qué PostgreSQL es la cola de v0.5](#42-por-qué-postgresql-es-la-cola-de-v05)
+43. [Persistir el archivo antes de responder](#43-persistir-el-archivo-antes-de-responder)
+44. [At-least-once y no exactly-once](#44-at-least-once-y-no-exactly-once)
+45. [Claim con FOR UPDATE SKIP LOCKED](#45-claim-con-for-update-skip-locked)
+46. [Lease y heartbeat](#46-lease-y-heartbeat)
+47. [Qué pasa si un worker muere](#47-qué-pasa-si-un-worker-muere)
+48. [Trabajo COMPLETADO no significa motor EXITOSA](#48-trabajo-completado-no-significa-motor-exitosa)
+49. [Pipeline automático](#49-pipeline-automático)
+50. [Reanudar una etapa fallida](#50-reanudar-una-etapa-fallida)
+51. [API asíncrona y semántica 201](#51-api-asíncrona-y-semántica-201)
+52. [Por qué todavía no Redis/Celery](#52-por-qué-todavía-no-rediscelery)
+53. [Qué queda para Cloud + observabilidad](#53-qué-queda-para-cloud--observabilidad)
 
 ---
 
@@ -286,9 +299,12 @@ subiendo el mismo archivo tres veces en menos de un segundo: una corrida public�
 fallaron, y las 9,800 cuentas quedaron una sola vez. Esa misma prueba mostró que el cliente
 recibía `201` las tres veces, y por eso un archivo en proceso también responde 409.
 
-**Corridas abandonadas.** Si la API se reinicia a media corrida, esa corrida queda
-`EN_PROCESO` y nadie la termina. Para que no bloquee ese archivo para siempre, una corrida
-`EN_PROCESO` de más de 15 minutos deja de contar.
+**Corridas abandonadas.** Hasta v0.4.0, si la API se reiniciaba a media corrida, esa corrida
+quedaba `EN_PROCESO` y nadie la terminaba; para que no bloqueara ese archivo para siempre, una
+corrida `EN_PROCESO` de más de 15 minutos dejaba de contar. *Desde v0.5.0* no hay abandonadas: el
+archivo y el trabajo de la ingesta están en PostgreSQL, y si el worker muere, otro la termina (ver
+43 y 47). Ese plazo desapareció, y un índice único parcial, `ux_corrida_firma_en_proceso`, admite a
+lo más una corrida `EN_PROCESO` por archivo.
 
 **La firma del archivo y la del contenido.** `firma` identifica el archivo: los bytes que
 llegaron. `firma_contenido` identifica la cartera: es el SHA-256 de la forma canónica de sus
@@ -341,6 +357,10 @@ aparecieron.
 
 **Qué haría distinto.** Un worker separado con una cola, o el orquestador de la fase 3, que
 tome las corridas `EN_PROCESO` con reintentos, tiempos límite y barrido de huérfanas.
+
+**Desde v0.5.0.** Es lo que se hizo: `POST /corridas` guarda el archivo y deja la ingesta en una
+cola durable sobre PostgreSQL, en la misma transacción que la corrida, y un worker aparte la
+ejecuta, con lease, latido y reintentos (ver 42 a 47). `BackgroundTasks` ya no se usa.
 
 ## 12. Detalles de modelado
 
@@ -637,6 +657,9 @@ timeout corto, el POST pasaría a ser asíncrono, como el de las corridas: `201`
 el código ya quiere decir que la ejecución se creó, y una `EN_PROCESO` ya se consulta como
 cualquier otra, con `terminada_en` y `duracion_segundos` en `null`.
 
+**Desde v0.5.0.** Así quedó, por durabilidad más que por tamaño: el POST responde `201` con la
+ejecución `EN_PROCESO` y su `Location`, y la decide un worker (ver 51).
+
 ## 21. Historial y vocabulario versionado
 
 **`409` sin `Location` (D2).** Si la corrida ya tiene una ejecución `EXITOSA` con `decision/v1`,
@@ -706,6 +729,11 @@ nuevos.
 - observabilidad productiva: hay bitácora, pero no métricas, trazas ni alertas.
 
 v0.2.0 decide y explica cada decisión. No la ejecuta.
+
+**Desde v0.5.0.** Las ejecuciones huérfanas, la decisión fuera de la petición, los reintentos y
+decidir cada cartera en cuanto se publica son la orquestación durable (ver 42 a 53). Limitar
+cuántas ejecuciones corren a la vez se hace con el número de workers; programarlas sigue
+pendiente.
 
 ## 23. El territorio es un municipio
 
@@ -960,6 +988,9 @@ que guardó otra versión de las reglas, y una prueba lo exige.
 **Qué haría distinto.** Si organizar dejara de ser barato, el POST pasaría a ser asíncrono como
 se describe en la sección 20, sin cambiar lo que el `201` quiere decir.
 
+**Desde v0.5.0.** Es asíncrono, como el de las decisiones: `201` con la ejecución `EN_PROCESO`, y
+la organiza un worker (ver 51).
+
 ## 30. Por qué v0.3 no es ruteo
 
 **Decisión.** v0.3.0 responde dónde se concentra la carga operativa de campo y qué municipios
@@ -978,7 +1009,7 @@ es una prioridad entre municipios, no una parada en un recorrido.
 **Lo que queda para la orquestación durable (v0.5.0).** Lo mismo que en el Decision Engine (ver
 22): reconciliar una ejecución territorial que quedó `EN_PROCESO` porque su proceso murió después
 de T0, sacar el trabajo de la petición HTTP a un worker con cola, y organizar cada ejecución de
-decisión en cuanto se publica.
+decisión en cuanto se publica. v0.5.0 lo resolvió (ver 42 a 53).
 
 v0.3.0 organiza el trabajo de campo y explica cada lugar. No lo recorre.
 
@@ -1215,7 +1246,8 @@ territorial sin chocar con `ruteo/v1`.
 
 **Síncrono.** El POST busca la ejecución territorial, copia lo que necesita, termina la transacción
 de la sesión HTTP y llama al servicio: no retiene una conexión mientras rutea. Con la cartera por
-omisión, trazar 403 rutas con 2,968 paradas toma menos de un segundo de cálculo.
+omisión, trazar 403 rutas con 2,968 paradas toma menos de un segundo de cálculo. *Desde v0.5.0*
+es asíncrono: `201` con la ejecución `EN_PROCESO`, y la traza un worker (ver 51).
 
 **Sin N+1.** El `total` es un `COUNT` de la tabla, no el contador de la ejecución, y cada página son
 consultas fijas: tres para las rutas y cuatro para las paradas, sea del tamaño que sea.
@@ -1234,8 +1266,328 @@ longitud, calles ni tiempos.
 - gestores, vehículos, capacidades, turnos ni ventanas de tiempo: no es un VRP multi-vehículo;
 - rutas que crucen municipios;
 - orquestación durable: el POST es síncrono, y una ejecución que queda `EN_PROCESO` porque su
-  proceso murió después de T0 no la cierra nadie hasta v0.5.0;
+  proceso murió después de T0 no la cierra nadie hasta v0.5.0, que lo resolvió (ver 42 a 53);
 - despliegue en nube y observabilidad productiva: v0.6.0.
 
 v0.4.0 secuencia las visitas de campo dentro de cada municipio, de forma reproducible y explicable,
 sobre un plano que se declara sintético. No manda a nadie a una dirección.
+
+## 42. Por qué PostgreSQL es la cola de v0.5
+
+**Decisión.** La cola durable es una tabla de PostgreSQL, `trabajo_orquestacion`, en la misma base
+que los recursos. Un trabajo dice qué motor ejecutar (`INGESTA`, `DECISION`, `TERRITORIAL` o
+`RUTEO`) sobre qué recurso, y un recurso tiene a lo más un trabajo: lo garantizan los únicos
+`uq_trabajo_corrida`, `uq_trabajo_decision`, `uq_trabajo_territorial` y `uq_trabajo_ruteo`. Un
+reintento usa la misma fila, con un intento más; otra ejecución, como la de reanudar (ver 50), es
+otro recurso con su propio trabajo.
+
+**Por qué.** Lo que más importa es que el recurso y su trabajo nazcan juntos. Con la cola en la
+misma base, `POST /corridas` crea la corrida, su archivo, su flujo y el trabajo de su ingesta en una
+sola transacción: o existen los cuatro, o ninguno. Con un broker aparte habría dos escrituras en dos
+sistemas, y un proceso que muere entre una y otra deja un recurso sin trabajo o un trabajo sin
+recurso; evitarlo pide un *outbox* que, al final, es esta misma tabla. Además, PostgreSQL ya está en
+el compose, en el CI y en las pruebas; `FOR UPDATE SKIP LOCKED` reparte el trabajo entre varios
+workers sin que se estorben (ver 45), y su reloj sirve de reloj común para los leases (ver 46). Y el
+volumen es chico: un trabajo por etapa de cada corrida, no millones de mensajes por segundo.
+
+**Lo que cuesta.** El worker pregunta por trabajo cada `MC_WORKER_POLL_SEGUNDOS` (medio segundo por
+omisión), así que un trabajo puede esperar eso antes de que alguien lo tome, y cada pregunta es una
+consulta a la misma base que atiende a la API. No hay prioridades: se toma el de menor id.
+
+**Qué haría distinto.** Con mucho más volumen, `LISTEN/NOTIFY` le avisaría al worker en lugar de
+hacerlo preguntar. Con muchos tipos de trabajo, consumidores en otros servicios o prioridades, un
+broker dedicado (ver 52).
+
+## 43. Persistir el archivo antes de responder
+
+**Decisión.** `POST /corridas` guarda el archivo, tal como llegó, en `archivo_corrida` (`BYTEA`), en
+la misma transacción que la corrida, su flujo y su trabajo, y solo después responde `201`. El worker
+lo lee de ahí. Dos `CHECK` cuidan que no se guarde a medias: el tamaño es positivo
+(`ck_archivo_tamano_positivo`) y es exactamente el de los bytes guardados
+(`ck_archivo_tamano_exacto`).
+
+**Por qué.** Hasta v0.4.0 el archivo vivía en la memoria de la API mientras `BackgroundTasks` lo
+procesaba (ver 11): si la API se reiniciaba después de responder, el archivo se perdía y la corrida
+quedaba `EN_PROCESO` para siempre. Ahora, cuando el cliente recibe el `201`, todo lo que la ingesta
+necesita ya está confirmado en PostgreSQL, y le da igual qué proceso muera después.
+
+**Se borra al terminar la ingesta.** En la misma transacción que cierra su trabajo, tanto si la
+corrida terminó como si su trabajo agotó los intentos. El archivo no es la evidencia: la evidencia
+es la corrida, con la firma del archivo y la de su contenido, sus cuentas y sus rechazos. Guardarlo
+para siempre llenaría la base de copias de lo que ya se juzgó.
+
+**El CLI también pasa por la cola.** `motor-cartera cargar` registra la corrida, su archivo y su
+trabajo igual que la API, pero sin flujo, con el trabajo ya tomado por el propio comando y su lease,
+y lo ejecuta en primer plano. Si se interrumpe, el trabajo queda en la cola y un worker lo termina
+cuando vence el lease.
+
+**Qué haría distinto.** Es una decisión del alcance actual: el tope lo pone `MC_TAMANO_MAXIMO_MB`, y
+PostgreSQL no es un almacén de objetos. En la nube (v0.6.0), el archivo iría a un *object storage* y
+la base guardaría solo su referencia.
+
+## 44. At-least-once y no exactly-once
+
+**Decisión.** La entrega de un trabajo es **al menos una vez**: un worker puede ejecutar el motor
+de un recurso que otro worker ya ejecutó. No se afirma, ni se intenta, entregar exactamente una vez.
+
+**Por qué no se puede prometer más.** El motor confirma su trabajo en sus propias transacciones (ver
+18, 28 y 38), y el trabajo de la cola se cierra en otra. Si el worker muere entre las dos, el motor
+ya publicó y el trabajo sigue `EJECUTANDO`. Cuando vence el lease, otro worker lo toma y llama otra
+vez al motor. Para entregarlo exactamente una vez, el cierre del trabajo y la publicación del motor
+tendrían que ser la misma transacción, y la cola tendría que conocer las transacciones de cada
+motor.
+
+**Por qué es seguro.** Lo que no se repite es la publicación, no la entrega. Cada motor ya se
+protegía de dos ejecuciones (ver 19, 27 y 39), y v0.5.0 se apoya en eso:
+
+- **bloqueos:** el motor toma su recurso con `SELECT ... FOR UPDATE`, así que dos ejecuciones del
+  mismo recurso se serializan;
+- **estados terminales:** un recurso `EXITOSA`, `FALLIDA` o `RECHAZADA` no se vuelve a ejecutar; el
+  motor lo ve terminado y no hace nada;
+- **transacciones:** cada motor publica todo o nada, en una sola transacción;
+- **índices únicos:** a lo más una `EXITOSA` y a lo más una `EN_PROCESO` por fuente y versión;
+- **idempotencia:** un fallo que llega tarde es un `UPDATE` condicionado a `EN_PROCESO`, que no
+  degrada un estado terminal.
+
+Una prueba mata al worker justo después del `COMMIT` de una decisión: otro worker toma el mismo
+trabajo, el motor no hace nada, el trabajo queda `COMPLETADO`, el flujo avanza y no se duplica
+ninguna decisión.
+
+**Sin hueco entre etapas.** Cerrar el trabajo de una etapa y abrir la siguiente (su ejecución
+`EN_PROCESO` y su trabajo) es una sola transacción. O el trabajo quedó `COMPLETADO` y la etapa
+siguiente existe, o ninguna de las dos cosas.
+
+## 45. Claim con FOR UPDATE SKIP LOCKED
+
+**Decisión.** Un worker toma un trabajo con una sola consulta:
+`SELECT ... WHERE <se puede tomar> ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`. Se puede tomar un
+trabajo `PENDIENTE` cuyo `disponible_desde` ya pasó, o uno `EJECUTANDO` cuyo lease venció. En la
+misma transacción lo pasa a `EJECUTANDO` con su `worker_id`, un intento más, `tomado_en` y
+`latido_en` en `now()` y `lease_hasta` en `now()` más el lease, y confirma **antes de ejecutar
+nada**: si el worker muere después, la base ya sabe que lo tenía y hasta cuándo.
+
+**Por qué.** `SKIP LOCKED` salta las filas que otra transacción tiene bloqueadas en lugar de
+esperarlas. Dos workers que preguntan en el mismo instante nunca toman la misma fila, y ninguno
+espera al otro. Un índice parcial, `ix_trabajo_reclamable`, cubre solo los trabajos que todavía se
+pueden tomar, `PENDIENTE` o `EJECUTANDO`; los terminados, que son casi todos, no le cuestan nada a
+la consulta.
+
+**Un trabajo, un dueño.** Un `CHECK`, `ck_trabajo_lease`, exige que solo un trabajo `EJECUTANDO`
+tenga `worker_id` y lease, y que solo uno terminado tenga `terminado_en`. Otro,
+`ck_trabajo_objetivo`, que apunte exactamente al recurso de su tipo.
+
+Las pruebas lo hacen contra PostgreSQL real: una fila bloqueada por otra sesión se salta sin
+esperar, y dos workers soltados a la vez por una barrera toman cada uno un trabajo distinto, o uno
+solo si hay uno solo. Otra pone a dos workers de verdad sobre dos flujos y exige que ningún trabajo
+se ejecute dos veces.
+
+## 46. Lease y heartbeat
+
+**Decisión.** Un trabajo tomado es de su worker mientras dure su lease, `MC_WORKER_LEASE_SEGUNDOS`
+(60 s por omisión). Mientras ejecuta el motor, un hilo del worker late cada
+`MC_WORKER_HEARTBEAT_SEGUNDOS` (20 s): renueva `latido_en` y `lease_hasta`, con un `UPDATE`
+condicionado a que el trabajo siga siendo suyo y siga `EJECUTANDO`.
+
+```
+PENDIENTE ──(se toma)──▶ EJECUTANDO ──(latido)──▶ EJECUTANDO ──(su recurso terminó)──▶ COMPLETADO
+    ▲                        │
+    └──(error, con espera)───┤
+                             └──(sin intentos)──▶ FALLIDO
+```
+
+**El reloj es el de PostgreSQL.** El lease, el latido y la disponibilidad se escriben y se comparan
+con `now()` de la base, nunca con el reloj de un worker: dos máquinas con relojes desfasados ven el
+mismo vencimiento.
+
+**El latido tiene que caber en el lease.** La configuración no arranca si
+`MC_WORKER_HEARTBEAT_SEGUNDOS` no es menor que `MC_WORKER_LEASE_SEGUNDOS`: con un latido más lento
+que el lease, otro worker le quitaría el trabajo a uno que sigue vivo.
+
+**Quien pierde el lease no cierra.** Si el latido no encuentra el trabajo como suyo, porque su lease
+venció y otro lo tomó, deja de latir. Y el cierre de un trabajo empieza por tomar su fila solo si
+sigue siendo de ese worker: un dueño anterior que despierta tarde no lo cierra ni toca su recurso.
+
+**Intentos y espera.** Si el worker falla antes de que el recurso termine, el trabajo vuelve a
+`PENDIENTE` y no se puede tomar sino después de una espera de
+`MC_WORKER_BACKOFF_SEGUNDOS × 2^(intentos − 1)`: 1, 2, 4, 8… segundos por omisión, sin azar, para
+que las pruebas lo fijen. Tomarlo cuenta un intento; al llegar a `MC_WORKER_MAX_INTENTOS` (5) sin
+que el recurso termine, el trabajo queda `FALLIDO`, su recurso `FALLIDA` con el motivo, y su flujo
+`DETENIDO`. No hay ciclo sin fin.
+
+**Qué haría distinto.** Un lease más corto recupera antes un trabajo huérfano, a cambio de más
+escrituras de latido y de que una pausa larga del proceso le cueste el trabajo a un worker vivo.
+Con motores que tardan segundos, un minuto es holgado.
+
+## 47. Qué pasa si un worker muere
+
+**Decisión.** Un worker que muere no se lleva nada: lo que tenía está en PostgreSQL con su lease, y
+cuando el lease vence otro worker lo toma, con un intento más y `ultimo_error` diciendo que el lease
+venció. Según dónde muera:
+
+- **Después de tomar el trabajo y antes de ejecutar el motor.** El trabajo queda `EJECUTANDO` y
+  nadie se lo quita mientras su lease siga vigente; cuando vence, otro worker lo toma y lo termina.
+- **A media transacción del motor.** PostgreSQL revierte lo que no se confirmó, el recurso sigue
+  `EN_PROCESO`, y el siguiente worker ejecuta el motor desde el principio. Se publica una vez.
+- **Después del `COMMIT` del motor y antes de cerrar el trabajo.** El recurso ya terminó; el
+  siguiente worker toma el trabajo, el motor lo encuentra terminado y no hace nada, y el trabajo se
+  cierra `COMPLETADO` con el flujo avanzado. Nada se duplica (ver 44).
+- **En el último intento.** Si vence el lease del último intento, quien lo toma ya no ejecuta el
+  motor: solo lo cierra, con el recurso `FALLIDA` y el flujo `DETENIDO`.
+
+**Un apagado ordenado no deja nada a medias.** Con `SIGTERM` o `SIGINT`, el worker termina el
+trabajo en curso y sale; una segunda señal lo detiene de inmediato. En Compose, Docker le da 30
+segundos (`stop_grace_period`) antes de matarlo, y si lo mata, el trabajo vuelve a la cola cuando
+vence su lease.
+
+Las pruebas simulan cada muerte sin matar procesos: un worker que toma un trabajo y nunca lo cierra,
+un motor que confirma y un worker que no llega a cerrar, y una excepción que ningún
+`except Exception` atrapa, como la muerte del proceso a media transacción. Los leases se vencen en
+la base en lugar de esperarlos.
+
+## 48. Trabajo COMPLETADO no significa motor EXITOSA
+
+**Decisión.** El estado de un trabajo es el de su **entrega**; el de su recurso, el resultado de su
+**motor**. Un trabajo queda `COMPLETADO` cuando su recurso llegó a un estado terminal, cualquiera:
+`EXITOSA`, `FALLIDA` o `RECHAZADA`. Queda `FALLIDO` solo cuando agotó sus intentos sin que su recurso
+terminara.
+
+```
+Trabajo COMPLETADO + EjecucionDecision FALLIDA + Flujo DETENIDO
+```
+
+no es una contradicción: el worker ejecutó bien un motor que terminó de forma controlada en
+`FALLIDA`, con su motivo en `detalle`, y el flujo se detuvo porque no hay decisiones que organizar.
+
+**Por qué separarlos.** Son dos fallas distintas y se reintentan distinto. Un error del worker (la
+conexión se cae, el proceso muere) es transitorio, y la cola lo reintenta sola, con espera (ver
+46). Una `FALLIDA` del motor es su resultado: los motores son deterministas, y volver a ejecutarlo
+sobre lo mismo fallaría igual. No se reintenta sola; se reintenta a propósito, reanudando el flujo
+(ver 50) o volviendo a subir el archivo.
+
+## 49. Pipeline automático
+
+**Decisión.** Un solo `POST /corridas` lleva la cartera de la ingesta al ruteo sin que el cliente
+pida cada etapa. La corrida nace con su `FlujoOrquestacion`, en la etapa `INGESTA`, y su trabajo.
+Cuando el trabajo de una etapa se cierra con su recurso `EXITOSA`, la misma transacción abre la
+etapa siguiente, su ejecución `EN_PROCESO` y su trabajo, y apunta el flujo a ella:
+
+```
+INGESTA ──▶ DECISION ──▶ TERRITORIAL ──▶ RUTEO ──▶ COMPLETADA
+```
+
+El cliente lo sigue en `GET /corridas/{run_id}/flujo`, que trae el `decision_run_id`, el
+`territorial_run_id` y el `ruteo_run_id` en cuanto existen, y en `GET /flujos/{flujo_id}/trabajos`.
+
+**Cuando algo no sale.**
+
+- Una etapa que termina `RECHAZADA` o `FALLIDA` detiene el flujo en esa etapa, `DETENIDO`, con lo
+  que pasó y cómo reintentar en `detalle`.
+- Si la etapa siguiente no se puede abrir, porque alguien ya la publicó o la está ejecutando por
+  otro camino, el flujo se detiene en la que terminó, con el motivo.
+- Un trabajo que agota sus intentos también detiene su flujo (ver 46).
+
+**El flujo no se mueve dos veces.** Se lee con su fila bloqueada mientras avanza, y solo lo mueve el
+trabajo de su etapa vigente. Tres `CHECK` lo mantienen coherente: cada etapa apunta a las
+ejecuciones de las anteriores y a la suya, y a ninguna después (`ck_flujo_cadena`); está
+`COMPLETADO` si y solo si llegó a `COMPLETADA` (`ck_flujo_completado`); y tiene fin si y solo si ya
+no está `EN_PROCESO` (`ck_flujo_terminado`).
+
+**Las etapas a mano no compiten con el flujo.** `POST /corridas/{run_id}/decisiones`,
+`POST /decisiones/{decision_run_id}/territoriales` y `POST /territoriales/{territorial_run_id}/ruteos`
+siguen existiendo, para recursos sin flujo: corridas de antes de v0.5.0 o del CLI. Sobre la fuente
+de un flujo que va a correr esa etapa responden `409 FLUJO_EN_PROCESO`, y sobre la de uno que se
+detuvo ahí, `409 FLUJO_DETENIDO`: se reanuda, no se pide a mano. Una vez publicada, ninguna etapa se
+repite: los `409` de siempre, `DECISION_YA_GENERADA`, `TERRITORIAL_YA_GENERADO` y
+`RUTEO_YA_GENERADO`.
+
+## 50. Reanudar una etapa fallida
+
+**Decisión.** `POST /flujos/{flujo_id}/reanudar` reintenta la etapa en que se detuvo un flujo, si es
+`DECISION`, `TERRITORIAL` o `RUTEO` y su ejecución terminó `FALLIDA`. Crea otra ejecución de esa
+etapa y su trabajo, y el flujo vuelve a estar `EN_PROCESO`, apuntando a la nueva. La que falló no se
+reabre ni se borra: queda en el historial de su etapa, y su trabajo en el del flujo. Responde sin
+esperar a que el worker ejecute nada.
+
+**La ingesta no se reanuda.** Una corrida terminada es evidencia inmutable: dice qué archivo llegó,
+cómo se juzgó y por qué no publicó. Reabrirla la cambiaría. Se vuelve a subir el archivo, y eso crea
+otra corrida con otro flujo; la firma no lo impide, porque solo bloquea una corrida `EXITOSA` o una
+`EN_PROCESO` (ver 9). Reanudar un flujo detenido en la ingesta responde
+`409 FLUJO_NO_REANUDABLE`, con esa explicación.
+
+**Tampoco sin una `FALLIDA`.** Si el flujo se detuvo porque la etapa siguiente no se pudo abrir, su
+etapa terminó `EXITOSA` y no hay nada que reintentar: `409 FLUJO_NO_REANUDABLE`. Un flujo
+`EN_PROCESO` da `409 FLUJO_EN_PROCESO`, y uno `COMPLETADO`, `409 FLUJO_YA_COMPLETADO`.
+
+**Por qué explícito.** Un motor que falló de forma controlada fallaría igual si se ejecutara solo
+otra vez (ver 48). Reanudar es la decisión de alguien que ya vio el motivo.
+
+## 51. API asíncrona y semántica 201
+
+**Decisión.** Ningún `POST` ejecuta un motor. `POST /corridas`,
+`POST /corridas/{run_id}/decisiones`, `POST /decisiones/{decision_run_id}/territoriales` y
+`POST /territoriales/{territorial_run_id}/ruteos` registran el recurso `EN_PROCESO` y su trabajo en
+una transacción y responden `201` con el recurso y su `Location`. El cliente consulta `Location`
+hasta que el `estado` deje de ser `EN_PROCESO`. Reemplaza el POST síncrono de v0.2.0 a v0.4.0 (ver
+20, 29 y 40), y `BackgroundTasks` desaparece (ver 11).
+
+**Sigue siendo `201`, y no `202`.** Es la regla de siempre (ver 5): el código describe la petición,
+y la petición creó un recurso que ya tiene `run_id`, dirección y estado. Que el trabajo siga en
+curso es el `estado` de ese recurso. Antes, `201` llegaba con la ejecución terminada; ahora llega
+`EN_PROCESO`, y para el cliente que ya leía el `estado` no cambia nada (ver 20, *qué haría
+distinto*).
+
+**A lo más una activa.** Los índices únicos parciales `ux_corrida_firma_en_proceso`,
+`ux_ejecucion_decision_en_proceso`, `ux_ejecucion_territorial_en_proceso` y
+`ux_ejecucion_ruteo_en_proceso` permiten a lo más una `EN_PROCESO` por fuente y versión. Un doble
+clic no crea dos: el segundo POST responde `409 ARCHIVO_EN_PROCESO`, `DECISION_EN_PROCESO`,
+`TERRITORIAL_EN_PROCESO` o `RUTEO_EN_PROCESO`. La revisión amable lo dice antes de registrar nada, y
+el índice lo garantiza si dos peticiones la pasan a la vez: la que choca vuelve a revisar, dentro de
+un `SAVEPOINT`, y responde lo mismo.
+
+**Las carreras pasan en el worker.** Si otra ejecución publica primero, la del worker choca con el
+índice de éxito al cerrar y queda `FALLIDA` en el historial, como antes; el siguiente POST ya ve la
+que ganó, y responde su `409 DECISION_YA_GENERADA`, `TERRITORIAL_YA_GENERADO` o
+`RUTEO_YA_GENERADO`.
+
+**La migración cierra lo heredado.** `0006` cierra como `FALLIDA`, con un motivo que lo dice, cada
+recurso que estaba `EN_PROCESO` al migrar: no tiene trabajo que lo termine, y los índices nuevos
+exigen a lo más uno por fuente. El `downgrade` no los reabre.
+
+## 52. Por qué todavía no Redis/Celery
+
+**Decisión.** Ni Redis, ni RabbitMQ, ni Kafka, ni Celery, RQ o Dramatiq, ni una cola administrada
+como SQS o Pub/Sub. El worker, el latido, las señales y la espera usan la biblioteca estándar y el
+SQLAlchemy que ya estaba; v0.5.0 no agrega ninguna dependencia.
+
+**Por qué.** Un broker resolvería la entrega, pero no lo difícil: el trabajo tendría que nacer en
+la misma transacción que su recurso (ver 42), y eso pide un *outbox* en PostgreSQL de todos modos.
+La garantía tampoco mejoraría: con Celery y `acks_late`, la entrega también es al menos una vez, y
+la idempotencia seguiría en los motores (ver 44). A cambio habría otro servicio en el compose y en
+el CI, otra forma de fallar y otro estado que reconciliar. Con un trabajo por etapa de cada corrida,
+`SKIP LOCKED` sobra.
+
+**Cuándo cambiaría.** Con mucho volumen, con trabajos que otros servicios consuman, con
+prioridades, programación o reparto a muchos consumidores, o en la nube, donde una cola
+administrada cuesta poco operar (ver 53).
+
+## 53. Qué queda para Cloud + observabilidad
+
+**Lo que v0.5.0 no hace.** Para que no se lea como más de lo que es:
+
+- PostgreSQL es la cola: no hay un broker dedicado;
+- un worker procesa un trabajo a la vez, y escalar es correr más procesos worker;
+- no hay prioridades en la cola: se toma el de menor id;
+- no hay una cola de mensajes muertos externa: un trabajo `FALLIDO` se queda en su tabla, con su
+  recurso `FALLIDA` y su flujo `DETENIDO`;
+- no hay métricas ni alertas productivas: hay bitácora, y los trabajos y flujos se consultan por la
+  API;
+- no hay *object storage*: el archivo vive en PostgreSQL mientras la ingesta lo necesita (ver 43);
+- no hay autoscaling ni trazas distribuidas entre la API y el worker.
+
+**Lo que sigue, v0.6.0 — Cloud + observabilidad.** El despliegue en la nube, el archivo en un
+*object storage*, las métricas de la cola (cuántos trabajos esperan, cuánto tardan, cuántos se
+reintentan), alertas sobre trabajos `FALLIDO` y flujos `DETENIDO`, trazas que sigan una corrida de
+la API al worker, y el autoscaling de los workers.
+
+v0.5.0 cambia cuándo, dónde y quién ejecuta los motores, no qué calculan: `cartera/v1`,
+`decision/v1`, `territorial/v1` y `ruteo/v1` publican exactamente lo mismo que en v0.4.0.
