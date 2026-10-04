@@ -3,7 +3,8 @@ nada a medias.
 
 El orden importa:
   1. abre una EjecucionTerritorial EN_PROCESO y la confirma antes de calcular nada: si algo falla,
-     queda rastro de que se intento
+     queda rastro de que se intento. La API la confirma junto con el trabajo de la cola que la va
+     a ejecutar, en la misma transaccion
   2. toma la ejecucion con su fila bloqueada, para que la procese un solo worker a la vez, y vuelve
      a revisar la ejecucion de decision de la que sale y que sus decisiones esten completas
   3. agrega las decisiones por municipio en PostgreSQL, con un solo GROUP BY, y convierte cada fila
@@ -39,7 +40,7 @@ from motor_cartera.db.modelos import (
     ResultadoTerritorial,
     ahora,
 )
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
 from motor_cartera.territorial.reglas import (
     VERSION_REGLAS_TERRITORIAL,
     EntradaTerritorio,
@@ -60,6 +61,12 @@ compara con DecisionCuenta.canal_recomendado, la decision, y nunca con Cuenta.ca
 de la cartera."""
 
 INDICE_TERRITORIAL_EXITOSA = "ux_ejecucion_territorial_exitosa"
+INDICE_TERRITORIAL_EN_PROCESO = "ux_ejecucion_territorial_en_proceso"
+
+INTENTOS_DE_APERTURA = 3
+"""Cuantas veces se revisa y se inserta una ejecucion que pierde la carrera contra otra apertura de
+la misma fuente y version. La segunda revision ya ve a la que gano; solo se vuelve a insertar si
+esa termino FALLIDA entre el rechazo y la revision."""
 
 
 class DecisionNoTerritorializable(Exception):
@@ -86,12 +93,26 @@ class TerritorialYaGenerado(Exception):
         self.previa = previa
 
 
+class TerritorialEnProceso(Exception):
+    """Las decisiones de esa ejecucion ya se estan organizando con esta version de las reglas
+    territoriales: hay un intento activo, y otro haria el mismo trabajo a la vez."""
+
+    def __init__(self, activa: EjecucionTerritorial) -> None:
+        super().__init__(
+            f"Esta ejecucion de decision ya se esta organizando con {activa.version_reglas}: la "
+            f"ejecucion territorial {activa.territorial_run_id}."
+        )
+        self.activa = activa
+
+
 class _NoSePublica(Exception):
     """Una razon conocida para no publicar ningun municipio. Su mensaje es para una persona y va tal
     cual al detalle de la ejecucion: no lleva datos de las cuentas."""
 
 
-def abrir_ejecucion(s: Session, ejecucion_decision: EjecucionDecision) -> EjecucionTerritorial:
+def abrir_ejecucion(
+    s: Session, ejecucion_decision: EjecucionDecision, *, confirmar: bool = True
+) -> EjecucionTerritorial:
     """Registra la ejecucion EN_PROCESO antes de calcular nada: si algo falla, queda rastro.
 
     Desde aqui queda fija la version de las reglas territoriales con que se va a calcular. Solo se
@@ -99,24 +120,43 @@ def abrir_ejecucion(s: Session, ejecucion_decision: EjecucionDecision) -> Ejecuc
     DecisionNoTerritorializable y no registra nada.
 
     Si esas decisiones ya se organizaron con exito con esta version, levanta TerritorialYaGenerado:
-    hacerlo otra vez duplicaria sus resultados. Esta revision es la via amable, porque sabe decir
-    cual ejecucion fue; la garantia es el indice unico parcial, que atrapa las carreras al cerrar.
-    Por eso otra ejecucion EN_PROCESO de la misma fuente no impide abrir esta: las dos pueden
-    trabajar, pero solo una puede cerrar EXITOSA.
+    hacerlo otra vez duplicaria sus resultados. Si ya se estan organizando, levanta
+    TerritorialEnProceso: a lo mas hay un intento activo por fuente y version, y uno FALLIDO no
+    cuenta. Estas revisiones son la via amable, porque saben decir cual ejecucion fue; las garantias
+    son los indices unicos parciales. El de las EN_PROCESO atrapa las carreras al abrir: la apertura
+    que pierde choca con el dentro de un SAVEPOINT, vuelve a revisar y levanta lo que corresponda.
+    El de las EXITOSA atrapa, al cerrar, a quien se haya saltado todo lo anterior.
+
+    Con confirmar=False no confirma: deja la ejecucion en la transaccion de quien llama, que la
+    confirma junto con el trabajo que la va a ejecutar. El SAVEPOINT deja esa transaccion usable
+    aunque la apertura falle.
     """
     razon = _por_que_no_se_organiza(ejecucion_decision)
     if razon is not None:
         raise DecisionNoTerritorializable(ejecucion_decision, razon)
-    previa = s.exec(_exitosa(ejecucion_decision.id, VERSION_REGLAS_TERRITORIAL)).one_or_none()
-    if previa is not None:
-        raise TerritorialYaGenerado(previa)
+    fuente_id = ejecucion_decision.id
+    for _ in range(INTENTOS_DE_APERTURA):
+        previa = s.exec(_exitosa(fuente_id, VERSION_REGLAS_TERRITORIAL)).one_or_none()
+        if previa is not None:
+            raise TerritorialYaGenerado(previa)
+        activa = s.exec(_en_proceso(fuente_id, VERSION_REGLAS_TERRITORIAL)).one_or_none()
+        if activa is not None:
+            raise TerritorialEnProceso(activa)
 
-    ejecucion = EjecucionTerritorial(
-        ejecucion_decision_id=ejecucion_decision.id, version_reglas=VERSION_REGLAS_TERRITORIAL
-    )
-    s.add(ejecucion)
-    s.commit()
-    s.refresh(ejecucion)
+        ejecucion = EjecucionTerritorial(
+            ejecucion_decision_id=fuente_id, version_reglas=VERSION_REGLAS_TERRITORIAL
+        )
+        error = insertar_en_savepoint(s, ejecucion)
+        if error is None:
+            break
+        if restriccion(error) != INDICE_TERRITORIAL_EN_PROCESO:
+            raise error
+    else:
+        raise error
+
+    if confirmar:
+        s.commit()
+        s.refresh(ejecucion)
     log.info(
         "ejecucion territorial %s abierta para la ejecucion de decision %s",
         ejecucion.territorial_run_id,
@@ -177,7 +217,7 @@ def ejecutar_territorial(ejecucion_territorial_id: int) -> None:
             _fallar(s, ejecucion_territorial_id, etiqueta, evaluados, str(exc))
         except IntegrityError as exc:
             s.rollback()
-            if _restriccion(exc) != INDICE_TERRITORIAL_EXITOSA:
+            if restriccion(exc) != INDICE_TERRITORIAL_EXITOSA:
                 log.exception(
                     "ejecucion territorial %s: violacion de integridad inesperada", etiqueta
                 )
@@ -214,11 +254,13 @@ def ejecutar_territorial(ejecucion_territorial_id: int) -> None:
 
 
 def territorializar_decision(ejecucion_decision_id: int) -> EjecucionTerritorial:
-    """Una ejecucion territorial completa en primer plano, y como termino.
+    """Una ejecucion territorial completa en primer plano, y como termino, en modo directo: sin
+    cola, sin trabajo y sin lease. Si el proceso muere a la mitad, la ejecucion queda EN_PROCESO y
+    nadie la cierra; un trabajo de la cola durable, en cambio, se recupera cuando vence su lease.
 
-    Propaga DecisionNoTerritorializable y TerritorialYaGenerado. Un fallo del motor no se propaga:
-    la ejecucion ya existe, y se devuelve FALLIDA. Cada paso usa su propia sesion, como
-    decidir_corrida: ninguna queda abierta durante todo el proceso.
+    Propaga DecisionNoTerritorializable, TerritorialYaGenerado y TerritorialEnProceso. Un fallo del
+    motor no se propaga: la ejecucion ya existe, y se devuelve FALLIDA. Cada paso usa su propia
+    sesion, como decidir_corrida: ninguna queda abierta durante todo el proceso.
     """
     with sesion() as s:
         ejecucion = abrir_ejecucion(s, s.get_one(EjecucionDecision, ejecucion_decision_id))
@@ -496,6 +538,11 @@ def _exitosa(ejecucion_decision_id: int, version: str) -> SelectOfScalar[Ejecuci
     )
 
 
-def _restriccion(exc: IntegrityError) -> str | None:
-    diagnostico = getattr(exc.orig, "diag", None)
-    return getattr(diagnostico, "constraint_name", None)
+def _en_proceso(ejecucion_decision_id: int, version: str) -> SelectOfScalar[EjecucionTerritorial]:
+    """La ejecucion EN_PROCESO de esas decisiones con esa version de las reglas: el intento activo.
+    Hay a lo mas una: lo garantiza el otro indice unico parcial."""
+    return select(EjecucionTerritorial).where(
+        EjecucionTerritorial.ejecucion_decision_id == ejecucion_decision_id,
+        EjecucionTerritorial.version_reglas == version,
+        EjecucionTerritorial.estado == EstadoTerritorial.EN_PROCESO,
+    )

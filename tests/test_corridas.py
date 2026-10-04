@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from sqlalchemy.exc import IntegrityError
+from psycopg.errors import LockNotAvailable
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import func, select
 
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -327,6 +328,89 @@ def test_un_error_inesperado_deja_la_corrida_fallida_y_sin_datos(tmp_path, monke
     assert corrida.estado == EstadoCorrida.FALLIDA
     assert corrida.detalle.startswith("Error interno (RuntimeError)")
     assert _cuantas(Cuenta, corrida) == 0
+
+
+# --- procesar es idempotente: la cola entrega al menos una vez ------------------------------
+
+
+def _tres_terminadas(tmp_path: Path) -> list[Corrida]:
+    """Una corrida EXITOSA, una RECHAZADA y una FALLIDA, cada una con su archivo."""
+    malformado = tmp_path / "malformado.csv"
+    malformado.write_text("cliente,saldo\nCU00000001,10.00\n", encoding="utf-8")
+    return [
+        ingerir_archivo(_archivo(tmp_path, "exitosa.csv")),
+        ingerir_archivo(_archivo(tmp_path, "rechazada.csv", tasa=0.5, semilla=2)),
+        ingerir_archivo(malformado),
+    ]
+
+
+def _como_quedo(corrida: Corrida) -> tuple:
+    with sesion() as s:
+        guardada = s.get_one(Corrida, corrida.id).model_dump()
+    return guardada, _cuantas(Cuenta, corrida), _cuantas(Rechazo, corrida)
+
+
+def test_procesar_otra_vez_una_corrida_que_ya_termino_no_hace_nada(tmp_path, caplog):
+    # Una segunda entrega del mismo trabajo, con el mismo archivo: la corrida ya termino, y no se
+    # vuelve a leer, a juzgar ni a publicar.
+    terminadas = _tres_terminadas(tmp_path)
+    assert [c.estado for c in terminadas] == ["EXITOSA", "RECHAZADA", "FALLIDA"]
+    antes = [_como_quedo(corrida) for corrida in terminadas]
+
+    for corrida, ruta in zip(
+        terminadas,
+        (tmp_path / "exitosa.csv", tmp_path / "rechazada.csv", tmp_path / "malformado.csv"),
+        strict=True,
+    ):
+        procesar_corrida(corrida.id, ruta.read_bytes())
+
+    assert [_como_quedo(corrida) for corrida in terminadas] == antes
+    avisos = [r.getMessage() for r in caplog.records if "no se vuelve a procesar" in r.getMessage()]
+    assert [aviso.split(" ya termino ")[1] for aviso in avisos] == [
+        "EXITOSA; no se vuelve a procesar",
+        "RECHAZADA; no se vuelve a procesar",
+        "FALLIDA; no se vuelve a procesar",
+    ]
+
+
+def test_un_fallo_que_llega_tarde_no_cambia_una_corrida_terminada(tmp_path, caplog):
+    terminadas = _tres_terminadas(tmp_path)
+    antes = [_como_quedo(corrida) for corrida in terminadas]
+
+    for corrida in terminadas:
+        with sesion() as s:
+            corridas._fallar(s, corrida.id, corrida.run_id, "Un fallo tardio.")
+
+    assert [_como_quedo(corrida) for corrida in terminadas] == antes
+    assert sum("este fallo no la cambia" in r.getMessage() for r in caplog.records) == 3
+
+
+def test_la_corrida_se_procesa_con_su_fila_bloqueada(tmp_path, monkeypatch):
+    # Mientras se juzga, ninguna otra sesion puede tomar la corrida: la tiene quien la procesa.
+    ruta = _archivo(tmp_path)
+    with sesion() as s:
+        corrida = abrir_corrida(s, origen=ruta.name, contenido=ruta.read_bytes())
+    separar = corridas.separar_rechazos
+    durante = []
+
+    def separa_mientras_otra_intenta(datos):
+        with sesion() as otra:
+            consulta = select(Corrida).where(Corrida.id == corrida.id).with_for_update(nowait=True)
+            try:
+                otra.exec(consulta).one()
+                durante.append("libre")
+            except OperationalError as exc:
+                assert isinstance(exc.orig, LockNotAvailable)
+                durante.append("tomada")
+        return separar(datos)
+
+    monkeypatch.setattr(corridas, "separar_rechazos", separa_mientras_otra_intenta)
+
+    procesar_corrida(corrida.id, ruta.read_bytes())
+
+    assert durante == ["tomada"]
+    with sesion() as s:
+        assert s.get_one(Corrida, corrida.id).estado == EstadoCorrida.EXITOSA
 
 
 # --- una cartera, un corte ------------------------------------------------------------------
