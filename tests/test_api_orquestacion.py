@@ -15,9 +15,11 @@ from uuid import uuid4
 
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
 from sqlmodel import select
 
 from motor_cartera import __version__
+from motor_cartera.api import crear_app
 from motor_cartera.api.esquemas import (
     EJEMPLO_FLUJO,
     EJEMPLO_FLUJO_DETENIDO,
@@ -268,6 +270,29 @@ def test_el_flujo_avanza_una_etapa_por_trabajo_y_cada_una_nace_en_la_cola(client
         "COMPLETADA",
         COMPLETADO,
     )
+
+
+@en_la_base
+def test_lo_que_la_api_registro_sobrevive_a_que_la_api_se_apague(app, clave_api):
+    # La API no guarda trabajo en memoria: lo que registra queda en PostgreSQL. Se apaga antes de
+    # que el worker tome nada, el worker lo ejecuta igual, y otra API, recien arrancada, lo ve
+    # terminado.
+    encabezados = {"X-API-Key": clave_api}
+    with TestClient(app, headers=encabezados) as primera:
+        run_id = _subir(primera, _csv(PEQUENA)).json()["run_id"]
+
+    _trabajar()
+
+    with TestClient(crear_app(Config(api_key=clave_api)), headers=encabezados) as otra:
+        flujo = _flujo(otra, run_id)
+        trabajos = _trabajos(otra, flujo["flujo_id"])
+    assert (flujo["estado"], flujo["etapa"]) == ("COMPLETADO", "COMPLETADA")
+    assert [(t["tipo"], t["estado"]) for t in trabajos] == [
+        ("INGESTA", "COMPLETADO"),
+        ("DECISION", "COMPLETADO"),
+        ("TERRITORIAL", "COMPLETADO"),
+        ("RUTEO", "COMPLETADO"),
+    ]
 
 
 # --- un flujo que se detiene -------------------------------------------------------------------

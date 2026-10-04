@@ -201,6 +201,72 @@ def test_el_worker_lleva_una_cartera_de_la_ingesta_al_ruteo(tmp_path, trabajar):
     assert _cuantas(ArchivoCorrida) == 0
 
 
+@en_la_base
+def test_dos_workers_se_reparten_la_cola_sin_ejecutar_dos_veces_ningun_trabajo(
+    tmp_path, monkeypatch
+):
+    # Dos workers de verdad, cada uno con su ciclo, su hilo y su conexion, sobre dos flujos. Las dos
+    # ingestas se esperan una a la otra: cada worker tiene que estar ejecutando la suya al mismo
+    # tiempo, y no la misma. Lo que sigue se lo reparten como caiga, y cada trabajo se ejecuta una
+    # sola vez, a la primera.
+    flujos = [_crear(tmp_path, n=n)[1] for n in (120, 150)]
+    juntas = threading.Barrier(2, timeout=30)
+    candado = threading.Lock()
+    ejecutados: list[tuple[str, TipoTrabajo, int]] = []
+
+    def anotado(tipo: TipoTrabajo, manejar):
+        def manejador(objetivo_id: int) -> None:
+            with candado:
+                ejecutados.append((threading.current_thread().name, tipo, objetivo_id))
+            if tipo == TipoTrabajo.INGESTA:
+                juntas.wait()
+            manejar(objetivo_id)
+
+        return manejador
+
+    for tipo, manejar in list(worker.MANEJADORES.items()):
+        monkeypatch.setitem(worker.MANEJADORES, tipo, anotado(tipo, manejar))
+    detener = threading.Event()
+    config = Config(worker_poll_segundos=0.05)
+    hilos = [
+        threading.Thread(
+            target=ejecutar_worker,
+            args=(config,),
+            kwargs={"detener": detener},
+            name=nombre,
+            daemon=True,
+        )
+        for nombre in ("worker-a", "worker-b")
+    ]
+    for hilo in hilos:
+        hilo.start()
+    try:
+        completos = _hasta(
+            lambda: all(_flujo(f).estado == EstadoFlujo.COMPLETADO for f in flujos), limite=120
+        )
+    finally:
+        detener.set()
+        for hilo in hilos:
+            hilo.join(timeout=30)
+
+    assert completos
+    assert not any(hilo.is_alive() for hilo in hilos)
+    # Ocho trabajos, cada uno ejecutado una vez; las dos ingestas, cada una en su worker.
+    assert len(ejecutados) == len({(tipo, objetivo) for _, tipo, objetivo in ejecutados}) == 8
+    ingestas = {nombre for nombre, tipo, _ in ejecutados if tipo == TipoTrabajo.INGESTA}
+    assert ingestas == {"worker-a", "worker-b"}
+    trabajos = _trabajos()
+    assert len(trabajos) == 8
+    assert {(t.estado, t.intentos) for t in trabajos} == {(EstadoTrabajo.COMPLETADO, 1)}
+    # Y lo publicado, una vez por flujo.
+    assert [_cuantas(m) for m in (EjecucionDecision, EjecucionTerritorial, EjecucionRuteo)] == [
+        2,
+        2,
+        2,
+    ]
+    assert _cuantas(DecisionCuenta) == _cuantas(Cuenta)
+
+
 # --- reintentar y agotar -------------------------------------------------------------------------
 
 
