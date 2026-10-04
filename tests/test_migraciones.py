@@ -15,6 +15,7 @@ import io
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -25,8 +26,10 @@ from alembic.config import Config as ConfigAlembic
 from alembic.script import ScriptDirectory
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Engine,
     Integer,
+    LargeBinary,
     Numeric,
     UniqueConstraint,
     create_engine,
@@ -39,11 +42,14 @@ from sqlalchemy.pool import NullPool
 
 from motor_cartera.config import config
 from motor_cartera.db.modelos import (
+    ArchivoCorrida,
     EjecucionRuteo,
     EjecucionTerritorial,
+    FlujoOrquestacion,
     ParadaRuta,
     ResultadoTerritorial,
     RutaTerritorial,
+    TrabajoOrquestacion,
 )
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -647,7 +653,7 @@ INDICES_TERRITORIALES = {
 
 def test_los_modelos_territoriales_declaran_el_esquema_de_la_0004():
     # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base
-    # subida hasta la 0004.
+    # subida hasta la cabeza: el esquema de la 0004, mas el indice de las EN_PROCESO de la 0006.
     ejecucion, resultado = EjecucionTerritorial.__table__, ResultadoTerritorial.__table__
     assert (ejecucion.name, resultado.name) == ("ejecucion_territorial", "resultado_territorial")
 
@@ -744,6 +750,11 @@ def test_los_modelos_territoriales_declaran_el_esquema_de_la_0004():
             True,
             "estado = 'EXITOSA'",
         ),
+        "ux_ejecucion_territorial_en_proceso": (
+            ["ejecucion_decision_id", "version_reglas"],
+            True,
+            "estado = 'EN_PROCESO'",
+        ),
         "ux_resultado_territorial_posicion_campo": (
             ["ejecucion_territorial_id", "posicion_campo"],
             True,
@@ -757,7 +768,11 @@ def test_los_modelos_territoriales_declaran_el_esquema_de_la_0004():
     nombres = {
         preparador.format_constraint(c) for t in (ejecucion, resultado) for c in t.constraints
     } | {preparador.format_index(i) for t in (ejecucion, resultado) for i in t.indexes}
-    assert nombres == RESTRICCIONES_TERRITORIALES | INDICES_TERRITORIALES
+    assert nombres == (
+        RESTRICCIONES_TERRITORIALES
+        | INDICES_TERRITORIALES
+        | {"ux_ejecucion_territorial_en_proceso"}
+    )
     assert all(len(nombre) <= 63 for nombre in nombres)
 
 
@@ -1266,7 +1281,7 @@ INDICES_DE_RUTEO = {"ix_ejecucion_ruteo_ejecucion_territorial_id", "ux_ejecucion
 
 def test_los_modelos_de_ruteo_declaran_el_esquema_de_la_0005():
     # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base
-    # subida hasta la 0005.
+    # subida hasta la cabeza: el esquema de la 0005, mas el indice de las EN_PROCESO de la 0006.
     ejecucion, ruta, parada = tablas = (
         EjecucionRuteo.__table__,
         RutaTerritorial.__table__,
@@ -1405,6 +1420,11 @@ def test_los_modelos_de_ruteo_declaran_el_esquema_de_la_0005():
             True,
             "estado = 'EXITOSA'",
         ),
+        "ux_ejecucion_ruteo_en_proceso": (
+            ["ejecucion_territorial_id", "version_reglas"],
+            True,
+            "estado = 'EN_PROCESO'",
+        ),
     }
 
     # Los nombres con que quedan en PostgreSQL son los que las pruebas de abajo esperan en la base,
@@ -1413,16 +1433,8 @@ def test_los_modelos_de_ruteo_declaran_el_esquema_de_la_0005():
     nombres = {preparador.format_constraint(c) for t in tablas for c in t.constraints} | {
         preparador.format_index(i) for t in tablas for i in t.indexes
     }
-    assert nombres == RESTRICCIONES_DE_RUTEO | INDICES_DE_RUTEO
+    assert nombres == RESTRICCIONES_DE_RUTEO | INDICES_DE_RUTEO | {"ux_ejecucion_ruteo_en_proceso"}
     assert all(len(nombre) <= 63 for nombre in nombres)
-
-
-def test_la_cabeza_es_la_0005():
-    # Sin base: la 0005 sube sobre la 0004, y no hay nada despues de ella.
-    scripts = ScriptDirectory.from_config(_alembic())
-
-    assert scripts.get_heads() == ["0005"]
-    assert scripts.get_revision("0005").down_revision == "0004"
 
 
 @dataclass(frozen=True)
@@ -1887,9 +1899,963 @@ def test_la_0005_baja_sin_perder_lo_anterior_y_vuelve_a_subir(base_en_0005):
     assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0005"]
 
 
+# --- la 0006: la orquestacion durable -------------------------------------------------------------
+
+INSERTAR_CORRIDA_0006 = text(
+    "INSERT INTO corrida (run_id, iniciada_en, origen, firma, estado, tolerancia_rechazo, "
+    "version_contrato, filas_leidas, filas_validas, filas_rechazadas) VALUES (:run_id, now(), "
+    ":origen, :firma, :estado, 0.05, 'cartera/v1', 0, 0, 0) RETURNING id"
+)
+INSERTAR_ARCHIVO = text(
+    "INSERT INTO archivo_corrida (corrida_id, contenido, tamano_bytes, creado_en) "
+    "VALUES (:corrida_id, :contenido, :tamano_bytes, now()) RETURNING corrida_id"
+)
+INSERTAR_FLUJO = text(
+    "INSERT INTO flujo_orquestacion (flujo_id, corrida_id, ejecucion_decision_id, "
+    "ejecucion_territorial_id, ejecucion_ruteo_id, estado, etapa, creado_en, actualizado_en, "
+    "terminado_en) VALUES (:flujo_id, :corrida_id, :decision, :territorial, :ruteo, :estado, "
+    ":etapa, now(), now(), :terminado_en) RETURNING id"
+)
+INSERTAR_TRABAJO = text(
+    "INSERT INTO trabajo_orquestacion (trabajo_id, flujo_id, tipo, estado, corrida_id, "
+    "ejecucion_decision_id, ejecucion_territorial_id, ejecucion_ruteo_id, intentos, max_intentos, "
+    "creado_en, disponible_desde, worker_id, lease_hasta, terminado_en) VALUES (:trabajo_id, "
+    ":flujo_id, :tipo, :estado, :corrida_id, :decision, :territorial, :ruteo, :intentos, "
+    ":max_intentos, now(), now(), :worker_id, :lease_hasta, :terminado_en) RETURNING id"
+)
+
+TABLAS_DE_ORQUESTACION = {"archivo_corrida", "flujo_orquestacion", "trabajo_orquestacion"}
+# Las tablas que existen antes de la 0006, que se comparan completas, columna por columna; y de
+# ellas, las que tienen recursos EN_PROCESO, que la 0006 cierra.
+PREVIAS_A_LA_0006 = (*PREVIAS_A_LA_0005, "ejecucion_ruteo", "ruta_territorial", "parada_ruta")
+RECURSOS = ("corrida", "ejecucion_decision", "ejecucion_territorial", "ejecucion_ruteo")
+
+RESTRICCIONES_0006 = RESTRICCIONES.replace(
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'archivo_corrida', 'flujo_orquestacion', 'trabajo_orquestacion'",
+)
+INDICES_0006 = INDICES.replace(
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'archivo_corrida', 'flujo_orquestacion', 'trabajo_orquestacion'",
+)
+INDICES_DE_RECURSOS = INDICES.replace(
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'corrida', 'ejecucion_decision', 'ejecucion_territorial', 'ejecucion_ruteo'",
+)
+
+# Cortas y con nombre propio, salvo las de los estados y las de los identificadores publicos, que
+# salen de la convencion. Son parte del contrato del esquema: salen en los IntegrityError.
+RESTRICCIONES_DE_ORQUESTACION = {
+    "pk_archivo_corrida",
+    "fk_archivo_corrida_corrida_id_corrida",
+    "ck_archivo_tamano_positivo",
+    "ck_archivo_tamano_exacto",
+    "pk_flujo_orquestacion",
+    "uq_flujo_orquestacion_flujo_id",
+    "fk_flujo_corrida",
+    "fk_flujo_decision",
+    "fk_flujo_territorial",
+    "fk_flujo_ruteo",
+    "uq_flujo_corrida",
+    "uq_flujo_decision",
+    "uq_flujo_territorial",
+    "uq_flujo_ruteo",
+    "ck_flujo_cadena",
+    "ck_flujo_completado",
+    "ck_flujo_terminado",
+    "ck_flujo_orquestacion_estado_flujo",
+    "ck_flujo_orquestacion_etapa_flujo",
+    "pk_trabajo_orquestacion",
+    "uq_trabajo_orquestacion_trabajo_id",
+    "fk_trabajo_flujo",
+    "fk_trabajo_corrida",
+    "fk_trabajo_decision",
+    "fk_trabajo_territorial",
+    "fk_trabajo_ruteo",
+    "uq_trabajo_corrida",
+    "uq_trabajo_decision",
+    "uq_trabajo_territorial",
+    "uq_trabajo_ruteo",
+    "ck_trabajo_objetivo",
+    "ck_trabajo_lease",
+    "ck_trabajo_intentos",
+    "ck_trabajo_orquestacion_tipo_trabajo",
+    "ck_trabajo_orquestacion_estado_trabajo",
+}
+INDICES_DE_ORQUESTACION = {"ix_trabajo_orquestacion_flujo_id", "ix_trabajo_reclamable"}
+"""Los indices que no salen de una llave ni de una restriccion unica."""
+
+# Un intento activo por fuente y version, y una publicacion: cada indice con su tabla, sus
+# columnas y el estado de su predicado. Los de las EXITOSA son de antes y se quedan.
+UNICOS_POR_ESTADO = {
+    "ux_corrida_firma_en_proceso": ("corrida", ["firma"], "EN_PROCESO"),
+    "ux_corrida_firma_publicada": ("corrida", ["firma"], "EXITOSA"),
+    "ux_ejecucion_decision_en_proceso": (
+        "ejecucion_decision",
+        ["corrida_id", "version_reglas"],
+        "EN_PROCESO",
+    ),
+    "ux_ejecucion_decision_exitosa": (
+        "ejecucion_decision",
+        ["corrida_id", "version_reglas"],
+        "EXITOSA",
+    ),
+    "ux_ejecucion_territorial_en_proceso": (
+        "ejecucion_territorial",
+        ["ejecucion_decision_id", "version_reglas"],
+        "EN_PROCESO",
+    ),
+    "ux_ejecucion_territorial_exitosa": (
+        "ejecucion_territorial",
+        ["ejecucion_decision_id", "version_reglas"],
+        "EXITOSA",
+    ),
+    "ux_ejecucion_ruteo_en_proceso": (
+        "ejecucion_ruteo",
+        ["ejecucion_territorial_id", "version_reglas"],
+        "EN_PROCESO",
+    ),
+    "ux_ejecucion_ruteo_exitosa": (
+        "ejecucion_ruteo",
+        ["ejecucion_territorial_id", "version_reglas"],
+        "EXITOSA",
+    ),
+}
+
+
+def _cierres() -> dict[str, str]:
+    """El motivo con que la 0006 cierra cada tabla, tal como lo escribe la migracion."""
+    return ScriptDirectory.from_config(_alembic()).get_revision("0006").module.CIERRES
+
+
+def _por_columna(motor: Engine, tablas: tuple[str, ...]) -> dict[str, list[dict]]:
+    """Cada tabla completa, fila por fila y por nombre de columna, en el orden de su id."""
+    with motor.connect() as conexion:
+        return {
+            tabla: [
+                dict(fila)
+                for fila in conexion.execute(text(f"SELECT * FROM {tabla} ORDER BY id")).mappings()
+            ]
+            for tabla in tablas
+        }
+
+
+def _corridas(motor: Engine, *estados: str) -> list[int]:
+    """Corridas nuevas, una por estado, cada una con su propia firma."""
+    return _insertar(
+        motor,
+        INSERTAR_CORRIDA_0006,
+        *(
+            {"run_id": uuid4(), "origen": "nueva.csv", "firma": uuid4().hex * 2, "estado": estado}
+            for estado in estados
+        ),
+    )
+
+
+def _flujo(corrida_id: int, etapa: str = "INGESTA", estado: str = "EN_PROCESO", **cambios) -> dict:
+    """Un flujo de la corrida en su etapa; `cambios` fija los punteros (decision, territorial,
+    ruteo) y reemplaza cualquier otro valor. Termina cuando ya no esta EN_PROCESO."""
+    return {
+        "flujo_id": uuid4(),
+        "corrida_id": corrida_id,
+        "decision": None,
+        "territorial": None,
+        "ruteo": None,
+        "estado": estado,
+        "etapa": etapa,
+        "terminado_en": None if estado == "EN_PROCESO" else datetime.now(UTC),
+        **cambios,
+    }
+
+
+OBJETIVOS = {
+    "INGESTA": "corrida_id",
+    "DECISION": "decision",
+    "TERRITORIAL": "territorial",
+    "RUTEO": "ruteo",
+}
+
+
+def _trabajo(tipo: str, objetivo: int | None, estado: str = "PENDIENTE", **cambios) -> dict:
+    """Un trabajo de ese tipo sobre su objetivo, coherente con su estado; `cambios` reemplaza
+    cualquier valor. Un tipo que no existe no tiene objetivo."""
+    valores = {
+        "trabajo_id": uuid4(),
+        "flujo_id": None,
+        "tipo": tipo,
+        "estado": estado,
+        "corrida_id": None,
+        "decision": None,
+        "territorial": None,
+        "ruteo": None,
+        "intentos": 0,
+        "max_intentos": 5,
+        "worker_id": None,
+        "lease_hasta": None,
+        "terminado_en": None,
+    }
+    if tipo in OBJETIVOS:
+        valores[OBJETIVOS[tipo]] = objetivo
+    if estado == "EJECUTANDO":
+        lease = datetime.now(UTC) + timedelta(minutes=1)
+        valores.update(intentos=1, worker_id="worker-de-prueba:1:abc", lease_hasta=lease)
+    elif estado in ("COMPLETADO", "FALLIDO"):
+        valores.update(intentos=1, terminado_en=datetime.now(UTC))
+    return {**valores, **cambios}
+
+
+@dataclass(frozen=True)
+class BaseEn0006:
+    """Una base con todo lo de la 0005, con recursos EN_PROCESO como los dejaba la v0.4.0,
+    subida hasta la 0006."""
+
+    motor: Engine
+    corrida_id: int
+    """La corrida de la 0002, EXITOSA y con cuentas."""
+    decision_id: int
+    """Su ejecucion EXITOSA de decision/v1."""
+    territorial_id: int
+    """La ejecucion territorial EXITOSA de esas decisiones."""
+    ruteo_id: int
+    """Una ejecucion de ruteo EXITOSA de esa territorial."""
+    abiertas: dict[str, list[int]]
+    """Por tabla, los recursos que estaban EN_PROCESO al subir: dos por fuente, duplicados, como
+    podian quedar antes de la 0006."""
+    previas: dict[str, list[dict]]
+    """Las tablas anteriores a la 0006, completas, justo antes de subir."""
+
+
+@pytest.fixture
+def base_en_0006(base_en_0005) -> BaseEn0006:
+    """Todo lo de la 0005, con dos intentos EN_PROCESO de cada recurso sobre la misma fuente y otros
+    ya terminados, y la base ya en la 0006."""
+    motor = base_en_0005.motor
+    historica, corrida = _consultar(motor, "SELECT id FROM corrida ORDER BY id")
+    decision_v1, decision_v2 = _consultar(motor, "SELECT id FROM ejecucion_decision ORDER BY id")
+    territorial, otra = base_en_0005.territorial_id, base_en_0005.otra_territorial_id
+    abiertas = {
+        "corrida": _insertar(
+            motor,
+            INSERTAR_CORRIDA_0006,
+            *(
+                {"run_id": uuid4(), "origen": nombre, "firma": "e" * 64, "estado": "EN_PROCESO"}
+                for nombre in ("abierta.csv", "otra_vez_abierta.csv")
+            ),
+        ),
+        "ejecucion_decision": _insertar(
+            motor, INSERTAR_EJECUCION, _ejecucion(historica), _ejecucion(historica)
+        ),
+        "ejecucion_territorial": _insertar(
+            motor, INSERTAR_TERRITORIAL, _territorial(decision_v2), _territorial(decision_v2)
+        ),
+        "ejecucion_ruteo": _insertar(
+            motor, INSERTAR_RUTEO, _ruteo(territorial), _ruteo(territorial)
+        ),
+    }
+    # Y recursos que ya habian terminado, que la 0006 no toca.
+    _insertar(
+        motor,
+        INSERTAR_CORRIDA_0006,
+        {"run_id": uuid4(), "origen": "rechazada.csv", "firma": "f" * 64, "estado": "RECHAZADA"},
+        {"run_id": uuid4(), "origen": "fallida.csv", "firma": "0" * 64, "estado": "FALLIDA"},
+    )
+    _insertar(motor, INSERTAR_EJECUCION, _ejecucion(historica, "FALLIDA"))
+    _insertar(motor, INSERTAR_TERRITORIAL, _territorial(decision_v2, "FALLIDA"))
+    ruteo, _ = _insertar(
+        motor, INSERTAR_RUTEO, _ruteo(territorial, "EXITOSA"), _ruteo(otra, "FALLIDA")
+    )
+    previas = _por_columna(motor, PREVIAS_A_LA_0006)
+
+    command.upgrade(_alembic(), "0006")
+    return BaseEn0006(motor, corrida, decision_v1, territorial, ruteo, abiertas, previas)
+
+
+def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
+    # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base
+    # subida hasta la 0006.
+    archivo, flujo, trabajo = tablas = (
+        ArchivoCorrida.__table__,
+        FlujoOrquestacion.__table__,
+        TrabajoOrquestacion.__table__,
+    )
+    assert [tabla.name for tabla in tablas] == [
+        "archivo_corrida",
+        "flujo_orquestacion",
+        "trabajo_orquestacion",
+    ]
+
+    columnas = {columna.name: columna for columna in archivo.columns}
+    assert list(columnas) == ["corrida_id", "contenido", "tamano_bytes", "creado_en"]
+    assert not any(columna.nullable for columna in archivo.columns)
+    # La llave es la corrida misma: un archivo por corrida, y sin secuencia propia.
+    assert [columna.name for columna in archivo.primary_key] == ["corrida_id"]
+    assert archivo.c.corrida_id.autoincrement == "auto" and archivo.autoincrement_column is None
+    assert isinstance(columnas["contenido"].type, LargeBinary)
+    assert isinstance(columnas["tamano_bytes"].type, BigInteger)
+
+    columnas = {columna.name: columna for columna in flujo.columns}
+    assert list(columnas) == [
+        "id",
+        "flujo_id",
+        "corrida_id",
+        "ejecucion_decision_id",
+        "ejecucion_territorial_id",
+        "ejecucion_ruteo_id",
+        "estado",
+        "etapa",
+        "creado_en",
+        "actualizado_en",
+        "terminado_en",
+        "detalle",
+    ]
+    assert [nombre for nombre, columna in columnas.items() if columna.nullable] == [
+        "ejecucion_decision_id",
+        "ejecucion_territorial_id",
+        "ejecucion_ruteo_id",
+        "terminado_en",
+        "detalle",
+    ]
+    estados = {
+        nombre: (columnas[nombre].type.native_enum, columnas[nombre].type.length)
+        for nombre in ("estado", "etapa")
+    }
+    assert estados == {"estado": (False, 12), "etapa": (False, 12)}
+    assert columnas["estado"].type.enums == ["EN_PROCESO", "COMPLETADO", "DETENIDO"]
+    assert columnas["etapa"].type.enums == [
+        "INGESTA",
+        "DECISION",
+        "TERRITORIAL",
+        "RUTEO",
+        "COMPLETADA",
+    ]
+
+    columnas = {columna.name: columna for columna in trabajo.columns}
+    assert list(columnas) == [
+        "id",
+        "trabajo_id",
+        "flujo_id",
+        "tipo",
+        "estado",
+        "corrida_id",
+        "ejecucion_decision_id",
+        "ejecucion_territorial_id",
+        "ejecucion_ruteo_id",
+        "intentos",
+        "max_intentos",
+        "creado_en",
+        "disponible_desde",
+        "tomado_en",
+        "latido_en",
+        "lease_hasta",
+        "terminado_en",
+        "worker_id",
+        "ultimo_error",
+    ]
+    assert [nombre for nombre, columna in columnas.items() if columna.nullable] == [
+        "flujo_id",
+        "corrida_id",
+        "ejecucion_decision_id",
+        "ejecucion_territorial_id",
+        "ejecucion_ruteo_id",
+        "tomado_en",
+        "latido_en",
+        "lease_hasta",
+        "terminado_en",
+        "worker_id",
+        "ultimo_error",
+    ]
+    assert columnas["tipo"].type.enums == ["INGESTA", "DECISION", "TERRITORIAL", "RUTEO"]
+    assert columnas["estado"].type.enums == ["PENDIENTE", "EJECUTANDO", "COMPLETADO", "FALLIDO"]
+    assert {columnas[n].type.native_enum for n in ("tipo", "estado")} == {False}
+    assert (columnas["worker_id"].type.length, columnas["ultimo_error"].type.length) == (200, 500)
+    # Todos los instantes, con zona horaria.
+    instantes = [
+        columna
+        for tabla in tablas
+        for columna in tabla.columns
+        if columna.name.endswith("_en") or columna.name in ("disponible_desde", "lease_hasta")
+    ]
+    assert len(instantes) == 10 and all(columna.type.timezone for columna in instantes)
+
+    # Ningun valor por omision en la base, ni cascadas.
+    assert all(columna.server_default is None for tabla in tablas for columna in tabla.columns)
+    llaves = {
+        (tabla.name, llave.parent.name): (llave.target_fullname, llave.ondelete)
+        for tabla in tablas
+        for llave in tabla.foreign_keys
+    }
+    assert llaves == {
+        ("archivo_corrida", "corrida_id"): ("corrida.id", None),
+        ("flujo_orquestacion", "corrida_id"): ("corrida.id", None),
+        ("flujo_orquestacion", "ejecucion_decision_id"): ("ejecucion_decision.id", None),
+        ("flujo_orquestacion", "ejecucion_territorial_id"): ("ejecucion_territorial.id", None),
+        ("flujo_orquestacion", "ejecucion_ruteo_id"): ("ejecucion_ruteo.id", None),
+        ("trabajo_orquestacion", "flujo_id"): ("flujo_orquestacion.id", None),
+        ("trabajo_orquestacion", "corrida_id"): ("corrida.id", None),
+        ("trabajo_orquestacion", "ejecucion_decision_id"): ("ejecucion_decision.id", None),
+        ("trabajo_orquestacion", "ejecucion_territorial_id"): ("ejecucion_territorial.id", None),
+        ("trabajo_orquestacion", "ejecucion_ruteo_id"): ("ejecucion_ruteo.id", None),
+    }
+
+    # Una corrida, a lo mas un flujo y un trabajo; una ejecucion, a lo mas un flujo y un trabajo. Y
+    # los identificadores publicos no se repiten.
+    unicas = {
+        restriccion.name: [columna.name for columna in restriccion.columns]
+        for tabla in (flujo, trabajo)
+        for restriccion in tabla.constraints
+        if isinstance(restriccion, UniqueConstraint)
+    }
+    assert unicas == {
+        "uq_flujo_orquestacion_flujo_id": ["flujo_id"],
+        "uq_trabajo_orquestacion_trabajo_id": ["trabajo_id"],
+        "uq_flujo_corrida": ["corrida_id"],
+        "uq_flujo_decision": ["ejecucion_decision_id"],
+        "uq_flujo_territorial": ["ejecucion_territorial_id"],
+        "uq_flujo_ruteo": ["ejecucion_ruteo_id"],
+        "uq_trabajo_corrida": ["corrida_id"],
+        "uq_trabajo_decision": ["ejecucion_decision_id"],
+        "uq_trabajo_territorial": ["ejecucion_territorial_id"],
+        "uq_trabajo_ruteo": ["ejecucion_ruteo_id"],
+    }
+    # Los CHECK estructurales, por nombre, y los de los cuatro catalogos.
+    revisiones = {
+        restriccion.name
+        for tabla in tablas
+        for restriccion in tabla.constraints
+        if isinstance(restriccion, CheckConstraint)
+    }
+    assert revisiones == {
+        "ck_archivo_tamano_positivo",
+        "ck_archivo_tamano_exacto",
+        "ck_flujo_cadena",
+        "ck_flujo_completado",
+        "ck_flujo_terminado",
+        "ck_flujo_orquestacion_estado_flujo",
+        "ck_flujo_orquestacion_etapa_flujo",
+        "ck_trabajo_objetivo",
+        "ck_trabajo_lease",
+        "ck_trabajo_intentos",
+        "ck_trabajo_orquestacion_tipo_trabajo",
+        "ck_trabajo_orquestacion_estado_trabajo",
+    }
+    indices = {
+        indice.name: (
+            [c.name for c in indice.columns],
+            indice.unique,
+            str(indice.dialect_options["postgresql"]["where"]),
+        )
+        for tabla in tablas
+        for indice in tabla.indexes
+    }
+    assert indices == {
+        "ix_trabajo_orquestacion_flujo_id": (["flujo_id"], False, "None"),
+        "ix_trabajo_reclamable": (
+            ["estado", "disponible_desde", "lease_hasta", "id"],
+            False,
+            "estado IN ('PENDIENTE', 'EJECUTANDO')",
+        ),
+    }
+
+    # Los nombres con que quedan en PostgreSQL son los que las pruebas de abajo esperan en la base,
+    # tal cual: ninguno pasa de 63 caracteres, asi que nada se recorta.
+    preparador = postgresql.dialect().identifier_preparer
+    nombres = {preparador.format_constraint(c) for t in tablas for c in t.constraints} | {
+        preparador.format_index(i) for t in tablas for i in t.indexes
+    }
+    assert nombres == RESTRICCIONES_DE_ORQUESTACION | INDICES_DE_ORQUESTACION
+    assert all(len(nombre) <= 63 for nombre in nombres)
+
+
+def test_la_cabeza_es_la_0006():
+    # Sin base: la 0006 sube sobre la 0005, y no hay nada despues de ella.
+    scripts = ScriptDirectory.from_config(_alembic())
+
+    assert scripts.get_heads() == ["0006"]
+    assert scripts.get_revision("0006").down_revision == "0005"
+
+
+def test_la_0006_cierra_fallida_lo_que_estaba_en_proceso_y_no_toca_nada_mas(base_en_0006):
+    motor = base_en_0006.motor
+    cierres = _cierres()
+
+    # A. Cada fila de antes sigue ahi. Las que estaban EN_PROCESO quedan FALLIDA, con su fin y el
+    # motivo, y nada mas les cambia; las demas, EXITOSA, RECHAZADA o FALLIDA, quedan identicas. No
+    # se borra ningun resultado.
+    despues = _por_columna(motor, PREVIAS_A_LA_0006)
+    cerradas = {tabla: [] for tabla in RECURSOS}
+    for tabla, filas in base_en_0006.previas.items():
+        assert len(despues[tabla]) == len(filas), tabla
+        for antes, fila in zip(filas, despues[tabla], strict=True):
+            if tabla in RECURSOS and antes["estado"] == "EN_PROCESO":
+                fila, antes = dict(fila), dict(antes)
+                assert (fila.pop("estado"), fila.pop("detalle")) == ("FALLIDA", cierres[tabla])
+                assert fila.pop("terminada_en") is not None and antes.pop("terminada_en") is None
+                del antes["estado"], antes["detalle"]
+                cerradas[tabla].append(fila["id"])
+            assert fila == antes, tabla
+    assert cerradas == base_en_0006.abiertas
+    # Ya no queda ningun EN_PROCESO, y los motivos dicen que se puede reintentar.
+    for tabla in RECURSOS:
+        consulta = f"SELECT count(*) FROM {tabla} WHERE estado = 'EN_PROCESO'"
+        assert _consultar(motor, consulta) == [0]
+        assert cierres[tabla].startswith("Cerrada al migrar a la orquestacion durable de v0.5.0")
+        assert "reintentar" in cierres[tabla] or "volver a subir" in cierres[tabla]
+
+
+def test_la_0006_agrega_las_tablas_de_orquestacion_vacias_y_con_sus_tipos(base_en_0006):
+    motor = base_en_0006.motor
+
+    # B. Las tablas nuevas existen, vacias, con sus restricciones y sus indices, por nombre.
+    assert TABLAS_DE_ORQUESTACION <= set(_consultar(motor, TABLAS))
+    for tabla in sorted(TABLAS_DE_ORQUESTACION):
+        assert _consultar(motor, f"SELECT count(*) FROM {tabla}") == [0]
+    assert set(_consultar(motor, RESTRICCIONES_0006)) == RESTRICCIONES_DE_ORQUESTACION
+    with motor.connect() as conexion:
+        indices = {fila[1]: fila for fila in conexion.execute(text(INDICES_0006)).all()}
+        columnas = {
+            (tabla, columna): (tipo, largo, nulo)
+            for tabla, columna, tipo, largo, nulo in conexion.execute(
+                text(
+                    "SELECT table_name, column_name, data_type, character_maximum_length, "
+                    "is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name IN "
+                    "('archivo_corrida', 'flujo_orquestacion', 'trabajo_orquestacion')"
+                )
+            )
+        }
+    assert INDICES_DE_ORQUESTACION <= set(indices)
+    _, _, unico, en_orden, predicado = indices["ix_trabajo_reclamable"]
+    assert (unico, en_orden) == (False, ["estado", "disponible_desde", "lease_hasta", "id"])
+    assert "'PENDIENTE'" in predicado and "'EJECUTANDO'" in predicado
+
+    # El archivo es BYTEA y su tamano BIGINT: un archivo de mas de 2 GiB no le cabria a INTEGER.
+    assert columnas[("archivo_corrida", "contenido")] == ("bytea", None, "NO")
+    assert columnas[("archivo_corrida", "tamano_bytes")] == ("bigint", None, "NO")
+    # Los estados son VARCHAR con CHECK y no tipos de PostgreSQL: no hay tipo que migrar ni borrar.
+    for tabla, columna in (
+        ("flujo_orquestacion", "estado"),
+        ("flujo_orquestacion", "etapa"),
+        ("trabajo_orquestacion", "tipo"),
+        ("trabajo_orquestacion", "estado"),
+    ):
+        assert columnas[(tabla, columna)] == ("character varying", 12, "NO")
+    for tipo in ("estado_flujo", "etapa_flujo", "tipo_trabajo", "estado_trabajo"):
+        assert _consultar(motor, f"SELECT count(*) FROM pg_type WHERE typname = '{tipo}'") == [0]
+    # PostgreSQL revisa los CHECK en orden alfabetico: estos valores solo violan el del catalogo.
+    _rechaza(
+        motor,
+        "ck_trabajo_orquestacion_tipo_trabajo",
+        INSERTAR_TRABAJO,
+        _trabajo("ENTREGA", None),
+    )
+    _rechaza(
+        motor,
+        "ck_flujo_orquestacion_estado_flujo",
+        INSERTAR_FLUJO,
+        _flujo(base_en_0006.corrida_id, estado="PAUSADO"),
+    )
+    # Los instantes de la cola, con zona horaria; los intentos, enteros.
+    for columna in ("creado_en", "disponible_desde", "tomado_en", "latido_en", "lease_hasta"):
+        assert columnas[("trabajo_orquestacion", columna)][0] == "timestamp with time zone"
+    assert columnas[("trabajo_orquestacion", "intentos")] == ("integer", None, "NO")
+
+
+def test_la_0006_admite_un_solo_intento_activo_y_conserva_las_publicaciones_unicas(base_en_0006):
+    b = base_en_0006
+    motor = b.motor
+    with motor.connect() as conexion:
+        indices = {fila[1]: fila for fila in conexion.execute(text(INDICES_DE_RECURSOS)).all()}
+
+    # C. Cada recurso tiene su indice de las EN_PROCESO, y conserva el de las EXITOSA.
+    for nombre, (tabla, columnas, estado) in UNICOS_POR_ESTADO.items():
+        en_tabla, _, unico, en_orden, predicado = indices[nombre]
+        assert (en_tabla, unico, en_orden) == (tabla, True, columnas), nombre
+        assert f"'{estado}'" in predicado, nombre
+
+    # Una corrida activa por archivo; la FALLIDA no cuenta, y la EXITOSA sigue siendo una.
+    firma = uuid4().hex * 2
+
+    def corrida(estado: str, archivo: str = firma) -> dict:
+        return {"run_id": uuid4(), "origen": "c.csv", "firma": archivo, "estado": estado}
+
+    _insertar(motor, INSERTAR_CORRIDA_0006, corrida("EN_PROCESO"), corrida("FALLIDA"))
+    _rechaza(motor, "ux_corrida_firma_en_proceso", INSERTAR_CORRIDA_0006, corrida("EN_PROCESO"))
+    _rechaza(
+        motor, "ux_corrida_firma_publicada", INSERTAR_CORRIDA_0006, corrida("EXITOSA", "b" * 64)
+    )
+
+    # Una ejecucion activa por fuente y version: conviven con las FALLIDA que haya, y otra version
+    # si abre la suya. Y la publicacion sigue siendo una por fuente y version: cada fuente ya tiene
+    # su EXITOSA.
+    for sentencia, valores, fuente, en_proceso, exitosa in (
+        (
+            INSERTAR_EJECUCION,
+            _ejecucion,
+            b.corrida_id,
+            "ux_ejecucion_decision_en_proceso",
+            "ux_ejecucion_decision_exitosa",
+        ),
+        (
+            INSERTAR_TERRITORIAL,
+            _territorial,
+            b.decision_id,
+            "ux_ejecucion_territorial_en_proceso",
+            "ux_ejecucion_territorial_exitosa",
+        ),
+        (
+            INSERTAR_RUTEO,
+            _ruteo,
+            b.territorial_id,
+            "ux_ejecucion_ruteo_en_proceso",
+            "ux_ejecucion_ruteo_exitosa",
+        ),
+    ):
+        _insertar(
+            motor,
+            sentencia,
+            valores(fuente),
+            valores(fuente, "FALLIDA"),
+            valores(fuente, "FALLIDA"),
+        )
+        _rechaza(motor, en_proceso, sentencia, valores(fuente))
+        version = valores(fuente)["version_reglas"].replace("/v1", "/v9")
+        _insertar(motor, sentencia, valores(fuente, version=version))
+        _rechaza(motor, exitosa, sentencia, valores(fuente, "EXITOSA"))
+
+
+def test_el_flujo_apunta_a_las_ejecuciones_de_su_etapa_y_a_ninguna_mas(base_en_0006):
+    b = base_en_0006
+    motor = b.motor
+    decision, territorial, ruteo = b.decision_id, b.territorial_id, b.ruteo_id
+    corrida, otra, tercera = _corridas(motor, "EXITOSA", "EXITOSA", "EXITOSA")
+
+    # D. La cadena: cada etapa apunta a la ejecucion de las anteriores y a la suya, y a ninguna
+    # despues. Un flujo sin etapa que la respalde no entra.
+    (flujo,) = _insertar(motor, INSERTAR_FLUJO, _flujo(corrida))
+    invalidos = [
+        _flujo(otra, decision=decision),
+        _flujo(otra, "DECISION"),
+        _flujo(otra, "DECISION", decision=decision, territorial=territorial),
+        _flujo(otra, "TERRITORIAL", decision=decision),
+        _flujo(otra, "TERRITORIAL", territorial=territorial),
+        _flujo(otra, "RUTEO", decision=decision, territorial=territorial),
+        _flujo(otra, "RUTEO", decision=decision, ruteo=ruteo),
+        _flujo(otra, "COMPLETADA", "COMPLETADO", territorial=territorial, ruteo=ruteo),
+    ]
+    for valores in invalidos:
+        _rechaza(motor, "ck_flujo_cadena", INSERTAR_FLUJO, valores)
+
+    # El flujo avanza etapa por etapa hasta COMPLETADO, siempre por un camino valido.
+    pasos = [
+        ("etapa = 'DECISION', ejecucion_decision_id = :decision", {"decision": decision}),
+        ("etapa = 'TERRITORIAL', ejecucion_territorial_id = :t", {"t": territorial}),
+        ("etapa = 'RUTEO', ejecucion_ruteo_id = :ruteo", {"ruteo": ruteo}),
+        ("etapa = 'COMPLETADA', estado = 'COMPLETADO', terminado_en = now()", {}),
+    ]
+    with motor.begin() as conexion:
+        for cambio, parametros in pasos:
+            conexion.execute(
+                text(f"UPDATE flujo_orquestacion SET {cambio} WHERE id = :id"),
+                {"id": flujo, **parametros},
+            )
+
+    # COMPLETADO es haber llegado a COMPLETADA, y al reves; y solo un flujo que ya no avanza tiene
+    # fin. Un DETENIDO conserva la etapa en que se detuvo.
+    todas = {"decision": decision, "territorial": territorial, "ruteo": ruteo}
+    _rechaza(
+        motor,
+        "ck_flujo_completado",
+        INSERTAR_FLUJO,
+        _flujo(otra, "COMPLETADA", "DETENIDO", **todas),
+    )
+    _rechaza(motor, "ck_flujo_completado", INSERTAR_FLUJO, _flujo(otra, estado="COMPLETADO"))
+    _rechaza(
+        motor,
+        "ck_flujo_terminado",
+        INSERTAR_FLUJO,
+        _flujo(otra, estado="DETENIDO", terminado_en=None),
+    )
+    _rechaza(
+        motor,
+        "ck_flujo_terminado",
+        INSERTAR_FLUJO,
+        _flujo(otra, terminado_en=datetime.now(UTC)),
+    )
+    _insertar(motor, INSERTAR_FLUJO, _flujo(otra, estado="DETENIDO"))
+
+    # Una corrida tiene a lo mas un flujo, y una ejecucion es de a lo mas un flujo. Los punteros
+    # vacios de las etapas a las que no se ha llegado no chocan entre si.
+    _rechaza(motor, "uq_flujo_corrida", INSERTAR_FLUJO, _flujo(corrida))
+    _rechaza(
+        motor, "uq_flujo_decision", INSERTAR_FLUJO, _flujo(tercera, "DECISION", decision=decision)
+    )
+    _insertar(motor, INSERTAR_FLUJO, _flujo(tercera))
+    with motor.connect() as conexion:
+        flujos = conexion.execute(
+            text(
+                "SELECT estado, etapa, ejecucion_decision_id, ejecucion_territorial_id, "
+                "ejecucion_ruteo_id, terminado_en IS NOT NULL FROM flujo_orquestacion ORDER BY id"
+            )
+        ).all()
+    assert [tuple(fila) for fila in flujos] == [
+        ("COMPLETADO", "COMPLETADA", decision, territorial, ruteo, True),
+        ("DETENIDO", "INGESTA", None, None, None, True),
+        ("EN_PROCESO", "INGESTA", None, None, None, False),
+    ]
+
+
+def test_un_trabajo_tiene_un_solo_objetivo_el_de_su_tipo_y_uno_por_recurso(base_en_0006):
+    b = base_en_0006
+    motor = b.motor
+    (corrida,) = _corridas(motor, "EN_PROCESO")
+
+    # E. Uno de cada tipo, cada uno con su objetivo.
+    _insertar(
+        motor,
+        INSERTAR_TRABAJO,
+        _trabajo("INGESTA", corrida),
+        _trabajo("DECISION", b.decision_id),
+        _trabajo("TERRITORIAL", b.territorial_id),
+        _trabajo("RUTEO", b.ruteo_id),
+    )
+    # Sin objetivo, con dos, o con el de otro tipo, no entra.
+    (otra,) = _corridas(motor, "EN_PROCESO")
+    for valores in (
+        _trabajo("INGESTA", None),
+        _trabajo("INGESTA", otra, decision=b.decision_id),
+        _trabajo("DECISION", None, corrida_id=otra),
+        _trabajo("RUTEO", None, territorial=b.territorial_id),
+        _trabajo("TERRITORIAL", b.territorial_id, ruteo=b.ruteo_id),
+    ):
+        _rechaza(motor, "ck_trabajo_objetivo", INSERTAR_TRABAJO, valores)
+
+    # Un recurso, un trabajo: una nueva entrega reusa la fila, no crea otra.
+    for restriccion, valores in (
+        ("uq_trabajo_corrida", _trabajo("INGESTA", corrida)),
+        ("uq_trabajo_decision", _trabajo("DECISION", b.decision_id)),
+        ("uq_trabajo_territorial", _trabajo("TERRITORIAL", b.territorial_id)),
+        ("uq_trabajo_ruteo", _trabajo("RUTEO", b.ruteo_id)),
+    ):
+        _rechaza(motor, restriccion, INSERTAR_TRABAJO, valores)
+    assert _consultar(motor, "SELECT count(*) FROM trabajo_orquestacion") == [4]
+
+
+def test_el_estado_de_un_trabajo_fija_su_dueno_su_lease_y_su_fin(base_en_0006):
+    motor = base_en_0006.motor
+    corridas = iter(_corridas(motor, *["EN_PROCESO"] * 8))
+
+    # F. PENDIENTE sin dueno ni lease ni fin; EJECUTANDO con dueno y lease, sin fin; COMPLETADO y
+    # FALLIDO con fin, sin dueno ni lease. Tomado y latido se conservan para auditoria.
+    validos = [
+        _trabajo("INGESTA", next(corridas)),
+        _trabajo("INGESTA", next(corridas), "EJECUTANDO"),
+        _trabajo("INGESTA", next(corridas), "COMPLETADO"),
+        _trabajo("INGESTA", next(corridas), "FALLIDO", intentos=5),
+    ]
+    _insertar(motor, INSERTAR_TRABAJO, *validos)
+    otra = next(corridas)
+    ahora = datetime.now(UTC)
+    for valores in (
+        _trabajo("INGESTA", otra, worker_id="worker-de-prueba:1:abc"),
+        _trabajo("INGESTA", otra, lease_hasta=ahora),
+        _trabajo("INGESTA", otra, terminado_en=ahora),
+        _trabajo("INGESTA", otra, "EJECUTANDO", worker_id=None),
+        _trabajo("INGESTA", otra, "EJECUTANDO", lease_hasta=None),
+        _trabajo("INGESTA", otra, "EJECUTANDO", terminado_en=ahora),
+        _trabajo("INGESTA", otra, "COMPLETADO", terminado_en=None),
+        _trabajo("INGESTA", otra, "COMPLETADO", worker_id="worker-de-prueba:1:abc"),
+        _trabajo("INGESTA", otra, "FALLIDO", lease_hasta=ahora),
+    ):
+        _rechaza(motor, "ck_trabajo_lease", INSERTAR_TRABAJO, valores)
+
+    # Los intentos no son negativos, ni pasan del maximo, que es al menos uno.
+    for valores in (
+        _trabajo("INGESTA", otra, intentos=-1),
+        _trabajo("INGESTA", otra, max_intentos=0),
+        _trabajo("INGESTA", otra, intentos=6, max_intentos=5),
+    ):
+        _rechaza(motor, "ck_trabajo_intentos", INSERTAR_TRABAJO, valores)
+    _insertar(motor, INSERTAR_TRABAJO, _trabajo("INGESTA", otra, intentos=1, max_intentos=1))
+
+    with motor.connect() as conexion:
+        estados = conexion.execute(
+            text(
+                "SELECT estado, worker_id IS NOT NULL, lease_hasta IS NOT NULL, "
+                "terminado_en IS NOT NULL FROM trabajo_orquestacion ORDER BY id"
+            )
+        ).all()
+    assert [tuple(fila) for fila in estados] == [
+        ("PENDIENTE", False, False, False),
+        ("EJECUTANDO", True, True, False),
+        ("COMPLETADO", False, False, True),
+        ("FALLIDO", False, False, True),
+        ("PENDIENTE", False, False, False),
+    ]
+
+
+def test_el_archivo_de_una_corrida_se_guarda_byte_por_byte(base_en_0006):
+    motor = base_en_0006.motor
+    corrida, otra = _corridas(motor, "EN_PROCESO", "EN_PROCESO")
+    # Bytes de un xlsx, de un zip o de cualquier codificacion: ceros, bytes altos y UTF-8.
+    contenido = b"PK\x03\x04\x00\xff\xfe" + b"cartera de credito" + bytes(range(256))
+
+    _insertar(
+        motor,
+        INSERTAR_ARCHIVO,
+        {"corrida_id": corrida, "contenido": contenido, "tamano_bytes": len(contenido)},
+    )
+
+    with motor.connect() as conexion:
+        guardado, tamano = conexion.execute(
+            text("SELECT contenido, tamano_bytes FROM archivo_corrida WHERE corrida_id = :id"),
+            {"id": corrida},
+        ).one()
+    assert (bytes(guardado), tamano) == (contenido, len(contenido))
+    # G. Un archivo por corrida; con al menos un byte, y con el tamano de lo que de verdad guarda.
+    _rechaza(
+        motor,
+        "pk_archivo_corrida",
+        INSERTAR_ARCHIVO,
+        {"corrida_id": corrida, "contenido": b"x", "tamano_bytes": 1},
+    )
+    _rechaza(
+        motor,
+        "ck_archivo_tamano_positivo",
+        INSERTAR_ARCHIVO,
+        {"corrida_id": otra, "contenido": b"", "tamano_bytes": 0},
+    )
+    _rechaza(
+        motor,
+        "ck_archivo_tamano_exacto",
+        INSERTAR_ARCHIVO,
+        {"corrida_id": otra, "contenido": b"abc", "tamano_bytes": 5},
+    )
+    _rechaza(
+        motor,
+        "fk_archivo_corrida_corrida_id_corrida",
+        INSERTAR_ARCHIVO,
+        {"corrida_id": 999_999, "contenido": b"abc", "tamano_bytes": 3},
+    )
+
+
+def test_nada_de_la_orquestacion_apunta_a_lo_que_no_existe_ni_se_borra_en_cascada(base_en_0006):
+    b = base_en_0006
+    motor = b.motor
+    no_existe = 999_999
+
+    # H. Ninguna llave borra en cascada: todas son NO ACTION.
+    with motor.connect() as conexion:
+        llaves = dict(
+            conexion.execute(
+                text(
+                    "SELECT c.conname, c.confdeltype FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid = c.conrelid WHERE c.contype = 'f' AND t.relname IN "
+                    "('archivo_corrida', 'flujo_orquestacion', 'trabajo_orquestacion')"
+                )
+            ).all()
+        )
+    assert set(llaves) == {nombre for nombre in RESTRICCIONES_DE_ORQUESTACION if "fk_" in nombre}
+    assert set(llaves.values()) == {"a"}
+
+    # Nada apunta a lo que no existe.
+    _rechaza(motor, "fk_flujo_corrida", INSERTAR_FLUJO, _flujo(no_existe))
+    _rechaza(motor, "fk_trabajo_corrida", INSERTAR_TRABAJO, _trabajo("INGESTA", no_existe))
+    _rechaza(motor, "fk_trabajo_ruteo", INSERTAR_TRABAJO, _trabajo("RUTEO", no_existe))
+    (corrida,) = _corridas(motor, "EN_PROCESO")
+    _rechaza(
+        motor,
+        "fk_trabajo_flujo",
+        INSERTAR_TRABAJO,
+        _trabajo("INGESTA", corrida, flujo_id=no_existe),
+    )
+
+    # Y borrar algo de lo que cuelga la orquestacion falla, en lugar de llevarse su rastro. Cada
+    # fila que se intenta borrar cuelga de una sola llave, para que el borrado choque con esa: la
+    # base no exige que el trabajo de un flujo sea de su misma corrida, eso lo cuida el servicio.
+    con_archivo, con_flujo, con_trabajo, otra = _corridas(
+        motor, "EN_PROCESO", "EXITOSA", "EN_PROCESO", "EXITOSA"
+    )
+    _insertar(
+        motor,
+        INSERTAR_ARCHIVO,
+        {"corrida_id": con_archivo, "contenido": b"abc", "tamano_bytes": 3},
+    )
+    (flujo,) = _insertar(
+        motor,
+        INSERTAR_FLUJO,
+        _flujo(
+            con_flujo,
+            "RUTEO",
+            decision=b.decision_id,
+            territorial=b.territorial_id,
+            ruteo=b.ruteo_id,
+        ),
+    )
+    _insertar(motor, INSERTAR_TRABAJO, _trabajo("INGESTA", con_trabajo, flujo_id=flujo))
+    (sola,) = _insertar(motor, INSERTAR_EJECUCION, _ejecucion(otra, "FALLIDA"))
+    _insertar(motor, INSERTAR_FLUJO, _flujo(otra, "DECISION", "DETENIDO", decision=sola))
+    for restriccion, tabla, fila in (
+        ("fk_archivo_corrida_corrida_id_corrida", "corrida", con_archivo),
+        ("fk_flujo_corrida", "corrida", con_flujo),
+        ("fk_trabajo_corrida", "corrida", con_trabajo),
+        ("fk_trabajo_flujo", "flujo_orquestacion", flujo),
+        ("fk_flujo_decision", "ejecucion_decision", sola),
+        ("fk_flujo_ruteo", "ejecucion_ruteo", b.ruteo_id),
+    ):
+        _rechaza(motor, restriccion, text(f"DELETE FROM {tabla} WHERE id = :id"), {"id": fila})
+
+
+def test_la_0006_baja_sin_reabrir_lo_que_cerro_y_vuelve_a_subir(base_en_0006):
+    b = base_en_0006
+    motor = b.motor
+    # Con orquestacion ya registrada: un archivo, un flujo y su trabajo.
+    (corrida,) = _corridas(motor, "EN_PROCESO")
+    _insertar(
+        motor, INSERTAR_ARCHIVO, {"corrida_id": corrida, "contenido": b"abc", "tamano_bytes": 3}
+    )
+    (flujo,) = _insertar(motor, INSERTAR_FLUJO, _flujo(corrida))
+    _insertar(motor, INSERTAR_TRABAJO, _trabajo("INGESTA", corrida, flujo_id=flujo))
+    recursos = _por_columna(motor, RECURSOS)
+
+    command.downgrade(_alembic(), "0005")
+
+    # I. Bajar quita la orquestacion, con sus datos, y los indices de las EN_PROCESO; los de las
+    # EXITOSA se quedan.
+    tablas = set(_consultar(motor, TABLAS))
+    assert not TABLAS_DE_ORQUESTACION & tablas
+    assert set(PREVIAS_A_LA_0006) <= tablas
+    with motor.connect() as conexion:
+        indices = {fila[1] for fila in conexion.execute(text(INDICES_DE_RECURSOS)).all()}
+    en_proceso = {nombre for nombre in UNICOS_POR_ESTADO if nombre.endswith("_en_proceso")}
+    assert not en_proceso & indices
+    assert set(UNICOS_POR_ESTADO) - en_proceso <= indices
+    for tipo in ("estado_flujo", "etapa_flujo", "tipo_trabajo", "estado_trabajo"):
+        assert _consultar(motor, f"SELECT count(*) FROM pg_type WHERE typname = '{tipo}'") == [0]
+    # Lo que la 0006 cerro FALLIDA se queda FALLIDA: el cierre no se revierte, porque el dueno de
+    # aquellos EN_PROCESO nunca existio. Lo que se registro despues, tampoco se toca.
+    assert _por_columna(motor, RECURSOS) == recursos
+    assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0005"]
+
+    # Y la 0006 vuelve a subir limpia sobre la misma base, sin lo que se fue al bajar. La corrida
+    # que seguia EN_PROCESO, ya sin su trabajo, se cierra como las de la v0.4.0.
+    command.upgrade(_alembic(), "0006")
+
+    assert TABLAS_DE_ORQUESTACION <= set(_consultar(motor, TABLAS))
+    assert set(_consultar(motor, RESTRICCIONES_0006)) == RESTRICCIONES_DE_ORQUESTACION
+    for tabla in sorted(TABLAS_DE_ORQUESTACION):
+        assert _consultar(motor, f"SELECT count(*) FROM {tabla}") == [0]
+    despues = _por_columna(motor, RECURSOS)
+    (huerfana,) = [fila for fila in despues["corrida"] if fila["id"] == corrida]
+    assert (huerfana["estado"], huerfana["detalle"]) == ("FALLIDA", _cierres()["corrida"])
+    for filas in (despues, recursos):
+        filas["corrida"] = [fila for fila in filas["corrida"] if fila["id"] != corrida]
+    assert despues == recursos
+    assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0006"]
+
+
 def test_desde_cero_hasta_la_cabeza_alembic_check_no_ve_diferencias(base_en_0001):
     # Lo mismo que el paso de migraciones del CI, dentro de las pruebas: el esquema que dejan las
-    # migraciones, la 0005 incluida, es el que declaran los modelos.
+    # migraciones, la 0006 incluida, es el que declaran los modelos.
     command.upgrade(_alembic(), "head")
     salida = io.StringIO()
     cfg = ConfigAlembic(str(RAIZ / "alembic.ini"), stdout=salida)
@@ -1898,4 +2864,4 @@ def test_desde_cero_hasta_la_cabeza_alembic_check_no_ve_diferencias(base_en_0001
     command.check(cfg)  # con cualquier diferencia levantaria AutogenerateDiffsDetected
 
     assert salida.getvalue().strip() == "No new upgrade operations detected."
-    assert _consultar(base_en_0001, "SELECT version_num FROM alembic_version") == ["0005"]
+    assert _consultar(base_en_0001, "SELECT version_num FROM alembic_version") == ["0006"]

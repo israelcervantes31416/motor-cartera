@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import func, select
 
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -15,7 +16,6 @@ from motor_cartera.db.sesion import sesion
 from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
-    ABANDONO,
     ArchivoDuplicado,
     abrir_corrida,
     corrida_vigente,
@@ -235,20 +235,45 @@ def test_un_archivo_que_se_esta_procesando_no_se_abre_otra_vez(tmp_path):
     assert exc.value.previa.run_id == primera.run_id
 
 
-def test_una_corrida_abandonada_no_bloquea_el_reintento(tmp_path):
-    # La API se reinicio a media corrida: esa corrida ya no la termina nadie.
+def test_una_corrida_en_proceso_sigue_bloqueando_el_archivo_aunque_sea_vieja(tmp_path):
+    # El tiempo no demuestra que se abandono. Hasta la 0005, una EN_PROCESO de mas de 15 minutos
+    # dejaba de contar; desde la 0006 la cierra el worker que tiene su trabajo, o el que lo toma
+    # cuando vence su lease, y mientras tanto sigue siendo la corrida activa de ese archivo.
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
-        abandonada = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-        abandonada.iniciada_en = ahora() - ABANDONO - timedelta(minutes=1)
-        s.add(abandonada)
+        vieja = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+        vieja.iniciada_en = ahora() - timedelta(days=1)
+        s.add(vieja)
         s.commit()
-        s.refresh(abandonada)
+        s.refresh(vieja)
+
+    with sesion() as s, pytest.raises(ArchivoDuplicado, match="se esta procesando") as exc:
+        abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    assert exc.value.previa.run_id == vieja.run_id
+
+
+def test_la_base_no_admite_dos_corridas_activas_del_mismo_archivo(tmp_path):
+    # Dos subidas simultaneas del mismo archivo pueden pasar la revision previa en el mismo
+    # instante, antes de que exista cualquiera de las dos. La segunda se inserta aqui sin revision,
+    # como si eso hubiera pasado: lo que la detiene es el indice de las EN_PROCESO.
+    contenido = _archivo(tmp_path).read_bytes()
+    with sesion() as s:
+        abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+
+    with sesion() as s, pytest.raises(IntegrityError, match="ux_corrida_firma_en_proceso"):
+        s.add(
+            Corrida(
+                origen="cartera.csv",
+                firma=firmar(contenido),
+                tolerancia_rechazo=0.05,
+                version_contrato=VERSION_CONTRATO,
+            )
+        )
+        s.commit()
 
     with sesion() as s:
-        reintento = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
-
-    assert reintento.run_id != abandonada.run_id
+        assert s.exec(select(func.count()).select_from(Corrida)).one() == 1
 
 
 def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
@@ -262,12 +287,14 @@ def test_un_archivo_que_no_publico_se_puede_reintentar(tmp_path):
 
 
 def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
-    # Dos subidas simultaneas del mismo archivo pueden pasar la revision previa en el mismo
-    # instante, antes de que exista cualquiera de las dos. La segunda se inserta aqui sin
-    # revision, como si eso hubiera pasado. Lo que impide la doble publicacion es el indice.
+    # Ninguna puerta de entrada abre una corrida de un archivo ya publicado: la revision previa lo
+    # ve. La segunda se inserta aqui a mano, cuando la primera ya publico, como si se la hubiera
+    # saltado. Lo que impide la doble publicacion sigue siendo el indice de las EXITOSA.
     contenido = _archivo(tmp_path).read_bytes()
     with sesion() as s:
         una = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+    procesar_corrida(una.id, contenido)
+    with sesion() as s:
         otra = Corrida(
             origen="cartera.csv",
             firma=firmar(contenido),
@@ -276,10 +303,8 @@ def test_la_base_impide_publicar_dos_veces_aunque_el_codigo_no_lo_vea(tmp_path):
         )
         s.add(otra)
         s.commit()
-        s.refresh(una)
         s.refresh(otra)
 
-    procesar_corrida(una.id, contenido)
     procesar_corrida(otra.id, contenido)
 
     with sesion() as s:

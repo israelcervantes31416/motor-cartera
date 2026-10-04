@@ -39,7 +39,7 @@ from motor_cartera.db.modelos import (
 )
 from motor_cartera.db.sesion import crear_motor, sesion
 from motor_cartera.decision import ejecuciones
-from motor_cartera.decision.ejecuciones import abrir_ejecucion, ejecutar_decision
+from motor_cartera.decision.ejecuciones import abrir_ejecucion
 from motor_cartera.decision.reglas import (
     VERSION_REGLAS_DECISION,
     EntradaDecision,
@@ -325,23 +325,30 @@ def test_post_que_pierde_la_carrera_tambien_es_409_decision_ya_generada(
     cliente, cartera_valida, monkeypatch
 ):
     # La carrera que no ve la revision amable: mientras esta peticion decide, otra ejecucion de la
-    # misma corrida publica primero. El indice de exito rechaza el cierre de esta, que queda FALLIDA
-    # en el historial, y la peticion responde lo mismo que si la revision la hubiera visto.
+    # misma corrida publica primero. Como la base ya no admite dos EN_PROCESO de la misma version,
+    # la otra aparece EXITOSA, a mano, justo antes del cierre. El indice de exito rechaza el cierre
+    # de esta, que queda FALLIDA en el historial, y la peticion responde lo mismo que si la revision
+    # la hubiera visto.
     run_id = _publicar(cliente, _csv(cartera_valida))
-    rival = _registrar(
-        _id_de_corrida(run_id), estado=EstadoDecision.EN_PROCESO, terminada_en=None, detalle=None
-    )
     cerrar = ejecuciones._cerrar
+    rivales = []
 
     def el_rival_publica_primero(s, ejecucion, evaluadas):
-        monkeypatch.setattr(ejecuciones, "_cerrar", cerrar)
-        ejecutar_decision(rival.id)
+        rivales.append(
+            _registrar(
+                _id_de_corrida(run_id),
+                estado=EstadoDecision.EXITOSA,
+                cuentas_evaluadas=3,
+                cuentas_decididas=3,
+            )
+        )
         cerrar(s, ejecucion, evaluadas)
 
     monkeypatch.setattr(ejecuciones, "_cerrar", el_rival_publica_primero)
 
     respuesta = _decidir(cliente, run_id)
 
+    (rival,) = rivales
     assert respuesta.status_code == 409
     assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
         "DECISION_YA_GENERADA",

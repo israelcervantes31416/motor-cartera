@@ -18,12 +18,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import and_, case, insert, or_
+from sqlalchemy import case, insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -44,10 +44,6 @@ from motor_cartera.ingesta.lectores import ErrorDeLectura, Lectura, leer_conteni
 log = logging.getLogger(__name__)
 
 INDICE_FIRMA_PUBLICADA = "ux_corrida_firma_publicada"
-
-ABANDONO = timedelta(minutes=15)
-"""Una corrida EN_PROCESO por mas de esto se da por abandonada: la API se reinicio a media
-corrida y nadie la va a terminar. Deja de impedir que se reintente el mismo archivo."""
 
 
 class ArchivoDuplicado(Exception):
@@ -77,17 +73,22 @@ def abrir_corrida(
     del contrato.
 
     Si ese mismo archivo ya se publico, o se esta procesando en otra corrida, levanta
-    ArchivoDuplicado: ingerirlo otra vez duplicaria la cartera o repetiria el trabajo.
-    Esta revision es la via amable, porque sabe decir cual corrida fue; la garantia es el
-    indice unico sobre la firma, que atrapa las carreras al publicar.
+    ArchivoDuplicado: ingerirlo otra vez duplicaria la cartera o repetiria el trabajo. Una
+    corrida EN_PROCESO cuenta hasta que termina, lleve el tiempo que lleve: el tiempo no
+    demuestra que se abandono. La cierra el worker que tiene su trabajo, o el que lo toma
+    cuando vence su lease.
+
+    Esta revision es la via amable, porque sabe decir cual corrida fue; la garantia son los
+    indices unicos sobre la firma: el de las EN_PROCESO atrapa las carreras al abrir, y el de
+    las EXITOSA, al publicar.
     """
     firma = firmar(contenido)
-    en_curso = and_(
-        Corrida.estado == EstadoCorrida.EN_PROCESO, Corrida.iniciada_en > ahora() - ABANDONO
-    )
     previa = s.exec(
         select(Corrida)
-        .where(Corrida.firma == firma, or_(Corrida.estado == EstadoCorrida.EXITOSA, en_curso))
+        .where(
+            Corrida.firma == firma,
+            Corrida.estado.in_([EstadoCorrida.EXITOSA, EstadoCorrida.EN_PROCESO]),
+        )
         .order_by(case((Corrida.estado == EstadoCorrida.EXITOSA, 0), else_=1))
     ).first()
     if previa is not None:

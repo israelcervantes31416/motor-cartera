@@ -454,27 +454,30 @@ def test_post_otra_vez_409_ruteo_ya_generado_sin_location(cliente):
 @en_la_base
 def test_post_que_pierde_la_carrera_tambien_es_409_ruteo_ya_generado(cliente, monkeypatch):
     # La carrera que no ve la revision amable: mientras esta peticion rutea, otra ejecucion de la
-    # misma ejecucion territorial publica primero. El indice de exito rechaza el cierre de esta, que
-    # queda FALLIDA en el historial, y la peticion responde lo mismo que si la revision la hubiera
-    # visto.
+    # misma ejecucion territorial publica primero. Como la base ya no admite dos EN_PROCESO de la
+    # misma version, la otra aparece EXITOSA, a mano, justo antes del cierre. El indice de exito
+    # rechaza el cierre de esta, que queda FALLIDA en el historial, y la peticion responde lo mismo
+    # que si la revision la hubiera visto.
     run_id, _, territorial_run_id = _organizada(cliente, PEQUENA)
-    rival = _registrar(
-        _id_de_territorial(territorial_run_id),
-        estado=EstadoRuteo.EN_PROCESO,
-        terminada_en=None,
-        detalle=None,
-    )
     cerrar = ruteo_ejecuciones._cerrar
+    rivales = []
 
     def el_rival_publica_primero(s, ejecucion, *argumentos):
-        monkeypatch.setattr(ruteo_ejecuciones, "_cerrar", cerrar)
-        ruteo_ejecuciones.ejecutar_ruteo(rival.id)
+        rivales.append(
+            _registrar(
+                _id_de_territorial(territorial_run_id),
+                estado=EstadoRuteo.EXITOSA,
+                rutas_evaluadas=2,
+                rutas_publicadas=2,
+            )
+        )
         cerrar(s, ejecucion, *argumentos)
 
     monkeypatch.setattr(ruteo_ejecuciones, "_cerrar", el_rival_publica_primero)
 
     respuesta = _rutear(cliente, territorial_run_id)
 
+    (rival,) = rivales
     assert respuesta.status_code == 409
     assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
         "RUTEO_YA_GENERADO",

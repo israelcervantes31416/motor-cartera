@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.sql.elements import conv
 from sqlmodel import Field, SQLModel
 
 # Nombres deterministas para indices y restricciones. Sin esto PostgreSQL los inventa, y
@@ -56,6 +57,15 @@ class Corrida(SQLModel, table=True):
             "firma",
             unique=True,
             postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        # Y a lo mas una corrida activa por archivo: dos subidas simultaneas del mismo archivo no
+        # pueden quedar EN_PROCESO las dos. Desde la 0006 una EN_PROCESO no deja de contar por su
+        # edad: la cierra el worker que tiene su trabajo, o el que lo toma cuando vence su lease.
+        sa.Index(
+            "ux_corrida_firma_en_proceso",
+            "firma",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
         ),
     )
 
@@ -179,6 +189,16 @@ class EjecucionDecision(SQLModel, table=True):
             unique=True,
             postgresql_where=sa.text("estado = 'EXITOSA'"),
         ),
+        # Y a lo mas un intento activo por corrida y version. Protege otra cosa que el de arriba:
+        # aquel, que no se publique dos veces; este, que no se trabaje dos veces a la vez. Las
+        # FALLIDA siguen siendo historia, tantas como haya.
+        sa.Index(
+            "ux_ejecucion_decision_en_proceso",
+            "corrida_id",
+            "version_reglas",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -280,6 +300,14 @@ class EjecucionTerritorial(SQLModel, table=True):
             "version_reglas",
             unique=True,
             postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        # Y a lo mas un intento activo por fuente y version, como en la ejecucion de decision.
+        sa.Index(
+            "ux_ejecucion_territorial_en_proceso",
+            "ejecucion_decision_id",
+            "version_reglas",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
         ),
     )
 
@@ -429,6 +457,14 @@ class EjecucionRuteo(SQLModel, table=True):
             unique=True,
             postgresql_where=sa.text("estado = 'EXITOSA'"),
         ),
+        # Y a lo mas un intento activo por fuente y version, como en las otras ejecuciones.
+        sa.Index(
+            "ux_ejecucion_ruteo_en_proceso",
+            "ejecucion_territorial_id",
+            "version_reglas",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -549,3 +585,278 @@ class ParadaRuta(SQLModel, table=True):
     y_m: int = Field(sa_type=sa.BigInteger)
     distancia_desde_anterior_m: int = Field(sa_type=sa.BigInteger)
     """Desde la parada anterior; la primera, desde el deposito."""
+
+
+# --- la orquestacion durable ----------------------------------------------------------------------
+#
+# Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
+# recurso EN_PROCESO y un TrabajoOrquestacion PENDIENTE en la misma transaccion, y un worker lo
+# toma, lo ejecuta y lo cierra. La cola es esta tabla, en la misma PostgreSQL que los recursos.
+# Las restricciones llevan nombres cortos y propios: los de la convencion pasarian de 63 caracteres
+# en varias llaves, y son parte del contrato del esquema.
+
+CADENA_DEL_FLUJO = (
+    "(etapa = 'INGESTA' AND ejecucion_decision_id IS NULL "
+    "AND ejecucion_territorial_id IS NULL AND ejecucion_ruteo_id IS NULL) "
+    "OR (etapa = 'DECISION' AND ejecucion_decision_id IS NOT NULL "
+    "AND ejecucion_territorial_id IS NULL AND ejecucion_ruteo_id IS NULL) "
+    "OR (etapa = 'TERRITORIAL' AND ejecucion_decision_id IS NOT NULL "
+    "AND ejecucion_territorial_id IS NOT NULL AND ejecucion_ruteo_id IS NULL) "
+    "OR (etapa IN ('RUTEO', 'COMPLETADA') AND ejecucion_decision_id IS NOT NULL "
+    "AND ejecucion_territorial_id IS NOT NULL AND ejecucion_ruteo_id IS NOT NULL)"
+)
+"""Cada etapa apunta a las ejecuciones de las etapas anteriores y a la suya, y a ninguna despues."""
+
+OBJETIVO_DEL_TRABAJO = (
+    "(tipo = 'INGESTA') = (corrida_id IS NOT NULL) "
+    "AND (tipo = 'DECISION') = (ejecucion_decision_id IS NOT NULL) "
+    "AND (tipo = 'TERRITORIAL') = (ejecucion_territorial_id IS NOT NULL) "
+    "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL)"
+)
+"""Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
+que su objetivo exista y a que los otros tres esten vacios."""
+
+PROPIEDAD_DEL_TRABAJO = (
+    "(estado = 'PENDIENTE' AND worker_id IS NULL AND lease_hasta IS NULL "
+    "AND terminado_en IS NULL) "
+    "OR (estado = 'EJECUTANDO' AND worker_id IS NOT NULL AND lease_hasta IS NOT NULL "
+    "AND terminado_en IS NULL) "
+    "OR (estado IN ('COMPLETADO', 'FALLIDO') AND worker_id IS NULL AND lease_hasta IS NULL "
+    "AND terminado_en IS NOT NULL)"
+)
+"""Solo un trabajo EJECUTANDO tiene dueno y lease, y solo uno terminado tiene fin."""
+
+
+class ArchivoCorrida(SQLModel, table=True):
+    """El archivo de una corrida, tal como llego, mientras la ingesta todavia lo puede necesitar.
+
+    La API ya no le pasa los bytes a una tarea en memoria: los guarda aqui, en la misma transaccion
+    que abre la corrida, para que sobrevivan a la muerte del proceso que los recibio y cualquier
+    worker pueda hacer la ingesta. Se borra cuando la corrida ya es terminal y el trabajo de ingesta
+    se cierra. No copia el origen ni la firma: viven en la corrida. Nunca sale por la API.
+    """
+
+    __tablename__ = "archivo_corrida"
+    __table_args__ = (
+        sa.CheckConstraint("tamano_bytes > 0", name=conv("ck_archivo_tamano_positivo")),
+        # El tamano es el del contenido guardado, no uno declarado aparte.
+        sa.CheckConstraint(
+            "octet_length(contenido) = tamano_bytes", name=conv("ck_archivo_tamano_exacto")
+        ),
+    )
+
+    corrida_id: int = Field(primary_key=True, foreign_key="corrida.id")
+    """Una corrida, un archivo. Sin cascada: no se borra una corrida que todavia tiene su
+    archivo."""
+    contenido: bytes = Field(sa_type=sa.LargeBinary)
+    """BYTEA. Hasta el tope de la API (MC_TAMANO_MAXIMO_MB); PostgreSQL lo guarda en TOAST."""
+    tamano_bytes: int = Field(sa_type=sa.BigInteger)
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class EstadoFlujo(StrEnum):
+    """En que va un flujo automatico: la cadena de ingesta, decision, territorial y ruteo de una
+    corrida."""
+
+    EN_PROCESO = "EN_PROCESO"  # todavia puede avanzar: su etapa tiene un trabajo por cerrar
+    COMPLETADO = "COMPLETADO"  # llego hasta un ruteo EXITOSA
+    DETENIDO = "DETENIDO"  # una etapa termino sin poder continuar; el flujo conserva cual
+
+
+class EtapaFlujo(StrEnum):
+    """Hasta donde llego un flujo. Cada etapa ya tiene su ejecucion; COMPLETADA, todas."""
+
+    INGESTA = "INGESTA"
+    DECISION = "DECISION"
+    TERRITORIAL = "TERRITORIAL"
+    RUTEO = "RUTEO"
+    COMPLETADA = "COMPLETADA"
+
+
+class FlujoOrquestacion(SQLModel, table=True):
+    """La cadena automatica de una corrida: ingesta, decision, territorial y ruteo, una etapa
+    despues de otra, sin que el cliente pida cada una.
+
+    No es una ejecucion: no calcula nada. Apunta a la corrida y a la ejecucion vigente de cada etapa
+    a la que ya llego, y dice en que etapa va y como va. Si una etapa falla, el flujo se DETIENE en
+    ella; reanudarlo crea otra ejecucion de esa etapa y mueve el puntero, y la fallida queda en el
+    historial.
+    """
+
+    __tablename__ = "flujo_orquestacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_flujo_corrida"),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_id"], ["ejecucion_decision.id"], name="fk_flujo_decision"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_id"],
+            ["ejecucion_territorial.id"],
+            name="fk_flujo_territorial",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_id"], ["ejecucion_ruteo.id"], name="fk_flujo_ruteo"
+        ),
+        # Una corrida tiene a lo mas un flujo, y una ejecucion es de a lo mas un flujo. Los NULL de
+        # las etapas a las que no se ha llegado no chocan entre si.
+        sa.UniqueConstraint("corrida_id", name="uq_flujo_corrida"),
+        sa.UniqueConstraint("ejecucion_decision_id", name="uq_flujo_decision"),
+        sa.UniqueConstraint("ejecucion_territorial_id", name="uq_flujo_territorial"),
+        sa.UniqueConstraint("ejecucion_ruteo_id", name="uq_flujo_ruteo"),
+        sa.CheckConstraint(CADENA_DEL_FLUJO, name=conv("ck_flujo_cadena")),
+        # COMPLETADO es haber llegado a COMPLETADA, y al reves. Un DETENIDO conserva su etapa.
+        sa.CheckConstraint(
+            "(estado = 'COMPLETADO') = (etapa = 'COMPLETADA')", name=conv("ck_flujo_completado")
+        ),
+        # Solo un flujo que ya no avanza tiene fin; reanudarlo se lo quita.
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (terminado_en IS NULL)", name=conv("ck_flujo_terminado")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    flujo_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. El `id` es interno, como en las demas tablas."""
+    corrida_id: int
+    """La corrida de la ingesta. Su llave foranea, sin cascada, y su unicidad estan en
+    __table_args__."""
+    ejecucion_decision_id: int | None = None
+    """La ejecucion de decision vigente del flujo, desde que llega a DECISION."""
+    ejecucion_territorial_id: int | None = None
+    ejecucion_ruteo_id: int | None = None
+    estado: EstadoFlujo = Field(
+        default=EstadoFlujo.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoFlujo, name="estado_flujo", native_enum=False, create_constraint=True, length=12
+        ),
+    )
+    etapa: EtapaFlujo = Field(
+        default=EtapaFlujo.INGESTA,
+        sa_type=sa.Enum(
+            EtapaFlujo, name="etapa_flujo", native_enum=False, create_constraint=True, length=12
+        ),
+    )
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    actualizado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminado_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+    """Que paso, para una persona: en que etapa va, o por que se detuvo."""
+
+
+class TipoTrabajo(StrEnum):
+    """Que motor ejecuta un trabajo, y por tanto cual de sus cuatro objetivos tiene."""
+
+    INGESTA = "INGESTA"
+    DECISION = "DECISION"
+    TERRITORIAL = "TERRITORIAL"
+    RUTEO = "RUTEO"
+
+
+class EstadoTrabajo(StrEnum):
+    """En que va un trabajo de la cola. Es el estado de la entrega, no el del motor: un trabajo
+    COMPLETADO puede tener su ejecucion FALLIDA."""
+
+    PENDIENTE = "PENDIENTE"  # espera a que un worker lo tome, a partir de disponible_desde
+    EJECUTANDO = "EJECUTANDO"  # lo tiene un worker, mientras su lease siga vigente
+    COMPLETADO = "COMPLETADO"  # su objetivo llego a un estado terminal, el que sea
+    FALLIDO = "FALLIDO"  # agoto sus intentos sin que su objetivo llegara a un estado terminal
+
+
+class TrabajoOrquestacion(SQLModel, table=True):
+    """Un trabajo de la cola durable: ejecutar un motor sobre un recurso que ya existe EN_PROCESO.
+
+    La entrega es al menos una vez: un worker lo toma con FOR UPDATE SKIP LOCKED, lo marca
+    EJECUTANDO con un lease que renueva su latido, y si muere, otro lo vuelve a tomar cuando el
+    lease vence. Lo que hace segura la repeticion no es la cola sino los motores: sus bloqueos, sus
+    estados terminales y sus transacciones todo o nada.
+
+    Cada recurso tiene un solo trabajo: las restricciones unicas de sus cuatro objetivos lo
+    garantizan, y una nueva entrega reusa la misma fila.
+    """
+
+    __tablename__ = "trabajo_orquestacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["flujo_id"], ["flujo_orquestacion.id"], name="fk_trabajo_flujo"),
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_trabajo_corrida"),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_id"], ["ejecucion_decision.id"], name="fk_trabajo_decision"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_id"],
+            ["ejecucion_territorial.id"],
+            name="fk_trabajo_territorial",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_id"], ["ejecucion_ruteo.id"], name="fk_trabajo_ruteo"
+        ),
+        sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
+        sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
+        sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
+        sa.UniqueConstraint("ejecucion_ruteo_id", name="uq_trabajo_ruteo"),
+        sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
+        sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
+        sa.CheckConstraint(
+            "intentos >= 0 AND max_intentos >= 1 AND intentos <= max_intentos",
+            name=conv("ck_trabajo_intentos"),
+        ),
+        # La consulta del worker: los PENDIENTE ya disponibles y los EJECUTANDO con el lease
+        # vencido, en orden de id. Solo indexa los que todavia se pueden reclamar: los terminados
+        # son casi todos, y nunca se buscan ahi.
+        sa.Index(
+            "ix_trabajo_reclamable",
+            "estado",
+            "disponible_desde",
+            "lease_hasta",
+            "id",
+            postgresql_where=sa.text("estado IN ('PENDIENTE', 'EJECUTANDO')"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    trabajo_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. El `id` es interno y es el orden de la cola."""
+    flujo_id: int | None = Field(default=None, index=True)
+    """El flujo al que pertenece (su `id` interno, no su flujo_id publico), o NULL si se pidio a
+    mano sobre un recurso que no es de ningun flujo. Su indice sirve para listar los trabajos de un
+    flujo."""
+    tipo: TipoTrabajo = Field(
+        sa_type=sa.Enum(
+            TipoTrabajo, name="tipo_trabajo", native_enum=False, create_constraint=True, length=12
+        )
+    )
+    estado: EstadoTrabajo = Field(
+        default=EstadoTrabajo.PENDIENTE,
+        sa_type=sa.Enum(
+            EstadoTrabajo,
+            name="estado_trabajo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    corrida_id: int | None = None
+    """El objetivo de una INGESTA. Existe exactamente uno de los cuatro: el de su tipo."""
+    ejecucion_decision_id: int | None = None
+    ejecucion_territorial_id: int | None = None
+    ejecucion_ruteo_id: int | None = None
+    intentos: int = 0
+    """Cuantas veces un worker lo tomo para ejecutarlo."""
+    max_intentos: int
+    """Cuantas veces se puede tomar, copiado de la configuracion al crearlo: el trabajo conserva la
+    politica con la que nacio."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    disponible_desde: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    """Desde cuando se puede tomar: al crearlo, de inmediato; tras un error, cuando pasa la
+    espera."""
+    tomado_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    """La ultima vez que un worker lo tomo. Se conserva al terminar, para auditoria."""
+    latido_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    """El ultimo latido de su worker. Tambien se conserva al terminar."""
+    lease_hasta: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    """Hasta cuando es de su worker. Vencido, otro worker lo puede tomar."""
+    terminado_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    worker_id: str | None = Field(default=None, max_length=200)
+    """El proceso worker que lo tiene, solo mientras esta EJECUTANDO: host, pid y un UUID del
+    proceso. No es la identidad de una persona, y no sale por la API."""
+    ultimo_error: str | None = Field(default=None, max_length=500)
+    """El ultimo error del worker, corto y sin traza: el tipo de error, y que se vea la bitacora."""

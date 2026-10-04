@@ -42,7 +42,7 @@ from motor_cartera.db.modelos import (
 from motor_cartera.db.sesion import crear_motor, sesion
 from motor_cartera.decision import ejecuciones as ejecuciones_de_decision
 from motor_cartera.territorial import ejecuciones
-from motor_cartera.territorial.ejecuciones import abrir_ejecucion, ejecutar_territorial
+from motor_cartera.territorial.ejecuciones import abrir_ejecucion
 from motor_cartera.territorial.reglas import (
     VERSION_REGLAS_TERRITORIAL,
     EntradaTerritorio,
@@ -465,26 +465,30 @@ def test_post_otra_vez_409_territorial_ya_generado_sin_location(cliente):
 @en_la_base
 def test_post_que_pierde_la_carrera_tambien_es_409_territorial_ya_generado(cliente, monkeypatch):
     # La carrera que no ve la revision amable: mientras esta peticion organiza, otra ejecucion de
-    # las mismas decisiones publica primero. El indice de exito rechaza el cierre de esta, que queda
-    # FALLIDA en el historial, y la peticion responde lo mismo que si la revision la hubiera visto.
+    # las mismas decisiones publica primero. Como la base ya no admite dos EN_PROCESO de la misma
+    # version, la otra aparece EXITOSA, a mano, justo antes del cierre. El indice de exito rechaza
+    # el cierre de esta, que queda FALLIDA en el historial, y la peticion responde lo mismo que si
+    # la revision la hubiera visto.
     run_id, decision_run_id = _decidida(cliente, PEQUENA)
-    rival = _registrar(
-        _id_de_decision(decision_run_id),
-        estado=EstadoTerritorial.EN_PROCESO,
-        terminada_en=None,
-        detalle=None,
-    )
     cerrar = ejecuciones._cerrar
+    rivales = []
 
     def el_rival_publica_primero(s, ejecucion, *argumentos):
-        monkeypatch.setattr(ejecuciones, "_cerrar", cerrar)
-        ejecutar_territorial(rival.id)
+        rivales.append(
+            _registrar(
+                _id_de_decision(decision_run_id),
+                estado=EstadoTerritorial.EXITOSA,
+                territorios_evaluados=2,
+                territorios_publicados=2,
+            )
+        )
         cerrar(s, ejecucion, *argumentos)
 
     monkeypatch.setattr(ejecuciones, "_cerrar", el_rival_publica_primero)
 
     respuesta = _organizar(cliente, decision_run_id)
 
+    (rival,) = rivales
     assert respuesta.status_code == 409
     assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
         "TERRITORIAL_YA_GENERADO",
