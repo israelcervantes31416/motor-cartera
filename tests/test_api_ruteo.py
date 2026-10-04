@@ -1,10 +1,12 @@
-"""La API del Motor de Ruteo: rutear una ejecucion territorial por HTTP y consultar lo que se
-publico.
+"""La API del Motor de Ruteo: pedir que se rutee una ejecucion territorial por HTTP y consultar lo
+que se publico.
 
-Las carteras se publican por POST /corridas, se deciden por POST /corridas/{run_id}/decisiones y
-se organizan por POST /decisiones/{decision_run_id}/territoriales, como lo haria un cliente, y las
-rutas se piden y se leen por la API. Las coordenadas, el recorrido y la transaccion ya se prueban en
-el nucleo y en el servicio; aqui, que la capa HTTP traduzca bien: codigos, Location, errores, orden,
+El POST no rutea: deja la ejecucion EN_PROCESO con su trabajo en la cola durable y responde 201.
+Las pruebas hacen lo que haria el worker y despues leen el resultado por la API. Las carteras se
+publican en modo directo, sin flujo, se deciden por POST /corridas/{run_id}/decisiones y se
+organizan por POST /decisiones/{decision_run_id}/territoriales: asi el ruteo se pide a mano. Los de
+un flujo se prueban aparte. Las coordenadas, el recorrido y la transaccion ya se prueban en el
+nucleo y en el servicio; aqui, que la capa HTTP traduzca bien: codigos, Location, errores, orden,
 paginacion y consultas fijas por pagina. Las pruebas de la ultima seccion no tocan la base.
 """
 
@@ -20,9 +22,9 @@ import pytest
 from sqlalchemy import event, update
 from sqlmodel import func, select
 
-from motor_cartera.api import ruteo as ruteo_api
 from motor_cartera.api.esquemas import (
     EJEMPLO_EJECUCION_RUTEO,
+    EJEMPLO_EJECUCION_RUTEO_EN_PROCESO,
     EJEMPLO_EJECUCION_RUTEO_FALLIDA,
     EJEMPLO_PARADA,
     EJEMPLO_RUTA,
@@ -30,6 +32,7 @@ from motor_cartera.api.esquemas import (
     ParadaRutaRespuesta,
     RutaTerritorialRespuesta,
 )
+from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     Corrida,
     Cuenta,
@@ -40,12 +43,17 @@ from motor_cartera.db.modelos import (
     EstadoDecision,
     EstadoRuteo,
     EstadoTerritorial,
+    EstadoTrabajo,
     ParadaRuta,
     ResultadoTerritorial,
     RutaTerritorial,
+    TipoTrabajo,
+    TrabajoOrquestacion,
     ahora,
 )
 from motor_cartera.db.sesion import crear_motor, sesion
+from motor_cartera.ingesta.corridas import abrir_corrida, procesar_corrida
+from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
 from motor_cartera.ruteo import ejecuciones as ruteo_ejecuciones
 from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO, rutear_territorio
 from motor_cartera.territorial import ejecuciones as territorial_ejecuciones
@@ -234,20 +242,35 @@ def _csv(cuentas: Cuentas) -> bytes:
     return cartera.to_csv(index=False).encode("utf-8")
 
 
+def _trabajar() -> None:
+    """Lo que haria el worker: procesa la cola hasta que no quede ningun trabajo que tomar."""
+    worker_id = identificador_worker()
+    while procesar_un_trabajo(worker_id, Config()) is not None:
+        pass
+
+
 def _publicar(cliente, cuentas: Cuentas) -> str:
-    """Publica la cartera por POST /corridas y devuelve el run_id de la corrida EXITOSA."""
-    respuesta = cliente.post(
-        "/corridas", files={"archivo": ("cartera.csv", _csv(cuentas), "application/octet-stream")}
-    )
+    """Publica la cartera en modo directo, sin flujo, y devuelve el run_id de la corrida EXITOSA."""
+    contenido = _csv(cuentas)
+    with sesion() as s:
+        corrida = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+    procesar_corrida(corrida.id, contenido)
+    publicada = cliente.get(f"/corridas/{corrida.run_id}").json()
+    assert publicada["estado"] == "EXITOSA", publicada["detalle"]
+    return publicada["run_id"]
+
+
+def _pedir(cliente, ruta: str) -> dict:
+    """Pide una etapa por la API, deja trabajar al worker y devuelve la ejecucion como quedo."""
+    respuesta = cliente.post(ruta)
     assert respuesta.status_code == 201, respuesta.text
-    corrida = cliente.get(respuesta.headers["Location"]).json()
-    assert corrida["estado"] == "EXITOSA", corrida["detalle"]
-    return corrida["run_id"]
+    _trabajar()
+    return cliente.get(respuesta.headers["Location"]).json()
 
 
 def _decidida(cliente, cuentas: Cuentas) -> tuple[str, str]:
     run_id = _publicar(cliente, cuentas)
-    ejecucion = cliente.post(f"/corridas/{run_id}/decisiones").json()
+    ejecucion = _pedir(cliente, f"/corridas/{run_id}/decisiones")
     assert ejecucion["estado"] == "EXITOSA", ejecucion
     return run_id, ejecucion["decision_run_id"]
 
@@ -256,7 +279,7 @@ def _organizada(cliente, cuentas: Cuentas) -> tuple[str, str, str]:
     """La cartera publicada, decidida y organizada por la API: el run_id de su corrida, el
     decision_run_id y el territorial_run_id de sus ejecuciones EXITOSA."""
     run_id, decision_run_id = _decidida(cliente, cuentas)
-    territorial = cliente.post(f"/decisiones/{decision_run_id}/territoriales").json()
+    territorial = _pedir(cliente, f"/decisiones/{decision_run_id}/territoriales")
     assert territorial["estado"] == "EXITOSA", territorial
     return run_id, decision_run_id, territorial["territorial_run_id"]
 
@@ -265,9 +288,18 @@ def _rutear(cliente, territorial_run_id: str):
     return cliente.post(f"/territoriales/{territorial_run_id}/ruteos")
 
 
+def _rutear_y_esperar(cliente, territorial_run_id: str) -> tuple:
+    """Pide el ruteo, deja trabajar al worker y devuelve la respuesta del POST y la ejecucion como
+    quedo."""
+    respuesta = _rutear(cliente, territorial_run_id)
+    assert respuesta.status_code == 201, respuesta.text
+    _trabajar()
+    return respuesta, cliente.get(respuesta.headers["Location"]).json()
+
+
 def _ruteada(cliente, territorial_run_id: str) -> dict:
     """Rutea por la API y devuelve la ejecucion de ruteo EXITOSA."""
-    ejecucion = _rutear(cliente, territorial_run_id).json()
+    _, ejecucion = _rutear_y_esperar(cliente, territorial_run_id)
     assert ejecucion["estado"] == "EXITOSA", ejecucion
     return ejecucion
 
@@ -310,17 +342,28 @@ def _registrar(territorial_id: int, **campos) -> EjecucionRuteo:
         return ejecucion
 
 
-def _abierta(territorial_run_id: str) -> str:
-    """Una ejecucion de ruteo abierta por el servicio y todavia sin trazar: como la ve otra
-    peticion mientras el POST rutea, o como queda si el proceso muere a la mitad."""
-    with sesion() as s:
-        fuente = s.get_one(EjecucionTerritorial, _id_de_territorial(territorial_run_id))
-        return str(ruteo_ejecuciones.abrir_ejecucion(s, fuente).ruteo_run_id)
+def _abierta(cliente, territorial_run_id: str) -> str:
+    """Una ejecucion de ruteo pedida por la API y todavia sin trazar: como la ve el cliente mientras
+    el worker no la toma, o si el worker murio a la mitad."""
+    respuesta = _rutear(cliente, territorial_run_id)
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["ruteo_run_id"]
 
 
 def _ejecuciones_de_ruteo() -> int:
     with sesion() as s:
         return s.exec(select(func.count()).select_from(EjecucionRuteo)).one()
+
+
+def _trabajos_de_ruteo() -> list[TrabajoOrquestacion]:
+    with sesion() as s:
+        return list(
+            s.exec(
+                select(TrabajoOrquestacion)
+                .where(TrabajoOrquestacion.tipo == TipoTrabajo.RUTEO)
+                .order_by(TrabajoOrquestacion.id)
+            ).all()
+        )
 
 
 def _revienta(*_):
@@ -347,86 +390,73 @@ def _sentencias() -> Iterator[list[str]]:
 
 
 @en_la_base
-def test_post_rutea_y_responde_201_con_location(cliente):
+def test_post_deja_la_ejecucion_en_proceso_y_el_worker_la_rutea(cliente):
+    # 201 con la ejecucion recien creada, y su direccion; el worker la rutea despues.
     run_id, decision_run_id, territorial_run_id = _organizada(cliente, CARTERA)
 
     respuesta = _rutear(cliente, territorial_run_id)
 
     assert respuesta.status_code == 201
-    ejecucion = respuesta.json()
-    assert set(ejecucion) == CAMPOS_DE_EJECUCION
-    assert respuesta.headers["Location"] == f"/ruteos/{ejecucion['ruteo_run_id']}"
-    assert (ejecucion["territorial_run_id"], ejecucion["decision_run_id"], ejecucion["run_id"]) == (
+    creada = respuesta.json()
+    assert set(creada) == CAMPOS_DE_EJECUCION
+    assert respuesta.headers["Location"] == f"/ruteos/{creada['ruteo_run_id']}"
+    assert (creada["territorial_run_id"], creada["decision_run_id"], creada["run_id"]) == (
         territorial_run_id,
         decision_run_id,
         run_id,
     )
-    assert (ejecucion["version_reglas"], ejecucion["estado"]) == ("ruteo/v1", "EXITOSA")
+    assert (creada["version_reglas"], creada["estado"]) == ("ruteo/v1", "EN_PROCESO")
+    assert (creada["rutas_publicadas"], creada["paradas_publicadas"]) == (0, 0)
+    assert (creada["terminada_en"], creada["duracion_segundos"]) == (None, None)
+    assert cliente.get(respuesta.headers["Location"]).json() == creada
+    (trabajo,) = _trabajos_de_ruteo()
+    assert (trabajo.estado, trabajo.flujo_id) == (EstadoTrabajo.PENDIENTE, None)
+
+    _trabajar()
+
+    ejecucion = cliente.get(respuesta.headers["Location"]).json()
+    assert (ejecucion["ruteo_run_id"], ejecucion["estado"]) == (creada["ruteo_run_id"], "EXITOSA")
     assert ejecucion["rutas_evaluadas"] == ejecucion["rutas_publicadas"] == 3
     assert ejecucion["paradas_evaluadas"] == ejecucion["paradas_publicadas"] == 8
     assert ejecucion["detalle"] == "Se rutearon 8 cuentas de campo en 3 municipios con ruteo/v1."
     assert ejecucion["duracion_segundos"] >= 0
     assert ejecucion["iniciada_en"].endswith("Z") and ejecucion["terminada_en"].endswith("Z")
-    # Location lleva al mismo recurso.
-    assert cliente.get(respuesta.headers["Location"]).json() == ejecucion
 
 
 @en_la_base
-def test_post_con_el_motor_fallando_tambien_es_201_y_la_ejecucion_queda_fallida(
-    cliente, monkeypatch
-):
+def test_un_motor_que_falla_deja_la_ejecucion_fallida_despues_del_201(cliente, monkeypatch):
     # D1: la ejecucion se creo y su resultado es su estado; no es un error de la peticion.
     _, _, territorial_run_id = _organizada(cliente, PEQUENA)
     monkeypatch.setattr(ruteo_ejecuciones, "rutear_territorio", _revienta)
 
-    respuesta = _rutear(cliente, territorial_run_id)
+    respuesta, fallida = _rutear_y_esperar(cliente, territorial_run_id)
 
-    assert respuesta.status_code == 201
-    fallida = respuesta.json()
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
     assert respuesta.headers["Location"] == f"/ruteos/{fallida['ruteo_run_id']}"
     assert (fallida["estado"], fallida["version_reglas"]) == ("FALLIDA", "ruteo/v1")
     assert (fallida["rutas_evaluadas"], fallida["rutas_publicadas"]) == (0, 0)
     assert (fallida["paradas_evaluadas"], fallida["paradas_publicadas"]) == (0, 0)
     assert fallida["detalle"] == "Error interno (RuntimeError); ver la bitacora."
-    assert "falla simulada" not in respuesta.text
-    assert cliente.get(respuesta.headers["Location"]).json() == fallida
+    assert "falla simulada" not in str(fallida)
+    assert [t.estado for t in _trabajos_de_ruteo()] == [EstadoTrabajo.COMPLETADO]
 
 
 @en_la_base
-def test_el_post_termina_la_transaccion_de_la_busqueda_antes_de_rutear(cliente, monkeypatch):
-    # El POST es sincrono y el servicio abre sus propias sesiones. La transaccion de la sesion de
-    # la peticion solo sirve para encontrar la ejecucion territorial: tiene que haber terminado al
-    # entrar al servicio, y no volver a abrirse despues.
+def test_el_post_no_rutea_nada_antes_de_responder(cliente, monkeypatch):
+    # El motor no corre en la peticion: ni se traza una ruta, ni se guarda una parada.
     _, _, territorial_run_id = _organizada(cliente, PEQUENA)
-    buscar, rutear = ruteo_api._buscar_territorial, ruteo_api.rutear_territorial
-    visto = {"transacciones": 0}
+    trazadas = []
+    monkeypatch.setattr(
+        ruteo_ejecuciones, "rutear_territorio", lambda *argumentos: trazadas.append(argumentos)
+    )
 
-    def contar_transaccion(*_):
-        visto["transacciones"] += 1
+    with _sentencias() as sentencias:
+        respuesta = _rutear(cliente, territorial_run_id)
 
-    def busca(s, territorial_run_id_pedido):
-        event.listen(s, "after_begin", contar_transaccion)
-        encontrada = buscar(s, territorial_run_id_pedido)
-        visto["sesion"], visto["al_buscar"] = s, s.in_transaction()
-        return encontrada
-
-    def rutea(ejecucion_territorial_id):
-        visto["al_rutear"] = visto["sesion"].in_transaction()
-        visto["fuente_id"] = ejecucion_territorial_id
-        return rutear(ejecucion_territorial_id)
-
-    monkeypatch.setattr(ruteo_api, "_buscar_territorial", busca)
-    monkeypatch.setattr(ruteo_api, "rutear_territorial", rutea)
-
-    respuesta = _rutear(cliente, territorial_run_id)
-
-    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EXITOSA")
-    # La busqueda leyo dentro de una transaccion, y esa ya no estaba al entrar al servicio.
-    assert (visto["al_buscar"], visto["al_rutear"]) == (True, False)
-    assert visto["fuente_id"] == _id_de_territorial(territorial_run_id)
-    # Y la sesion de la peticion no abrio otra: ni el servicio la uso, ni nada volvio a leer con
-    # ella despues del rollback.
-    assert visto["transacciones"] == 1
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
+    assert trazadas == []
+    assert not any("ruta_territorial" in sentencia for sentencia in sentencias)
+    assert not any("parada_ruta" in sentencia for sentencia in sentencias)
 
 
 @en_la_base
@@ -452,12 +482,33 @@ def test_post_otra_vez_409_ruteo_ya_generado_sin_location(cliente):
 
 
 @en_la_base
-def test_post_que_pierde_la_carrera_tambien_es_409_ruteo_ya_generado(cliente, monkeypatch):
-    # La carrera que no ve la revision amable: mientras esta peticion rutea, otra ejecucion de la
-    # misma ejecucion territorial publica primero. Como la base ya no admite dos EN_PROCESO de la
-    # misma version, la otra aparece EXITOSA, a mano, justo antes del cierre. El indice de exito
-    # rechaza el cierre de esta, que queda FALLIDA en el historial, y la peticion responde lo mismo
-    # que si la revision la hubiera visto.
+def test_post_mientras_otra_sigue_en_proceso_409_ruteo_en_proceso(cliente):
+    # A lo mas una ejecucion activa por fuente y version: un doble clic no crea dos.
+    run_id, _, territorial_run_id = _organizada(cliente, PEQUENA)
+    primera = _rutear(cliente, territorial_run_id).json()
+
+    respuesta = _rutear(cliente, territorial_run_id)
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("RUTEO_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        "Los municipios de esta ejecucion territorial ya se estan ruteando con ruteo/v1. Consulta "
+        f"/territoriales/{territorial_run_id}/ruteos."
+    )
+    assert "Location" not in respuesta.headers
+    assert primera["ruteo_run_id"] not in respuesta.text
+    assert _ejecuciones_de_ruteo() == len(_trabajos_de_ruteo()) == 1
+
+
+@en_la_base
+def test_un_ruteo_que_pierde_la_carrera_en_el_worker_queda_fallido_en_el_historial(
+    cliente, monkeypatch
+):
+    # La carrera que no ve la revision amable: mientras el worker rutea, otra ejecucion de la misma
+    # ejecucion territorial aparece EXITOSA, a mano, justo antes del cierre. El indice de exito
+    # rechaza el cierre de esta, que queda FALLIDA en el historial; el siguiente POST ya ve la que
+    # gano.
     run_id, _, territorial_run_id = _organizada(cliente, PEQUENA)
     cerrar = ruteo_ejecuciones._cerrar
     rivales = []
@@ -475,16 +526,23 @@ def test_post_que_pierde_la_carrera_tambien_es_409_ruteo_ya_generado(cliente, mo
 
     monkeypatch.setattr(ruteo_ejecuciones, "_cerrar", el_rival_publica_primero)
 
-    respuesta = _rutear(cliente, territorial_run_id)
+    respuesta, perdedora = _rutear_y_esperar(cliente, territorial_run_id)
 
     (rival,) = rivales
-    assert respuesta.status_code == 409
-    assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
+    assert respuesta.status_code == 201
+    assert (perdedora["estado"], perdedora["rutas_publicadas"]) == ("FALLIDA", 0)
+    assert perdedora["detalle"] == (
+        "Otra ejecucion publico las rutas de esta ejecucion territorial con ruteo/v1 mientras "
+        "esta se procesaba; no se publican dos veces."
+    )
+    otra = _rutear(cliente, territorial_run_id)
+    assert (otra.status_code, otra.json()["codigo"], otra.json()["run_id"]) == (
+        409,
         "RUTEO_YA_GENERADO",
         run_id,
     )
-    assert "Location" not in respuesta.headers
-    assert str(rival.ruteo_run_id) not in respuesta.text
+    assert "Location" not in otra.headers
+    assert str(rival.ruteo_run_id) not in otra.text
     historial = cliente.get(f"/territoriales/{territorial_run_id}/ruteos").json()["elementos"]
     estados = {e["ruteo_run_id"]: (e["estado"], e["rutas_publicadas"]) for e in historial}
     assert estados.pop(str(rival.ruteo_run_id)) == ("EXITOSA", 2)
@@ -510,15 +568,15 @@ def test_una_ejecucion_territorial_que_no_existe_404_sin_run_id(cliente, metodo)
 
 
 def _territorial_en_proceso(cliente, decision_run_id: str, monkeypatch) -> str:
-    # Abierta por el Motor Territorial y todavia sin organizar.
-    with sesion() as s:
-        fuente = s.get_one(EjecucionDecision, _id_de_decision(decision_run_id))
-        return str(territorial_ejecuciones.abrir_ejecucion(s, fuente).territorial_run_id)
+    # Pedida por la API y todavia sin organizar: el worker no la ha tomado.
+    respuesta = cliente.post(f"/decisiones/{decision_run_id}/territoriales")
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["territorial_run_id"]
 
 
 def _territorial_fallida(cliente, decision_run_id: str, monkeypatch) -> str:
     monkeypatch.setattr(territorial_ejecuciones, "priorizar_territorios", _revienta)
-    fallida = cliente.post(f"/decisiones/{decision_run_id}/territoriales").json()
+    fallida = _pedir(cliente, f"/decisiones/{decision_run_id}/territoriales")
     assert fallida["estado"] == "FALLIDA", fallida
     return fallida["territorial_run_id"]
 
@@ -617,19 +675,88 @@ def test_post_sobre_decisiones_de_otra_version_409_sin_ejecucion(cliente):
 def test_d2_el_409_no_dice_cual_ejecucion_y_el_historial_si(cliente):
     # D2 de punta a punta: rutear, chocar con lo ya publicado y encontrarlo en el historial.
     _, _, territorial_run_id = _organizada(cliente, PEQUENA)
-    primera = _rutear(cliente, territorial_run_id)
-    assert (primera.status_code, primera.json()["estado"]) == (201, "EXITOSA")
+    primera = _ruteada(cliente, territorial_run_id)
 
     otra = _rutear(cliente, territorial_run_id)
     assert (otra.status_code, otra.json()["codigo"]) == (409, "RUTEO_YA_GENERADO")
     assert "Location" not in otra.headers
-    assert primera.json()["ruteo_run_id"] not in otra.text
+    assert primera["ruteo_run_id"] not in otra.text
 
     historial = cliente.get(f"/territoriales/{territorial_run_id}/ruteos").json()["elementos"]
     (publicada,) = [ejecucion for ejecucion in historial if ejecucion["estado"] == "EXITOSA"]
     assert publicada["version_reglas"] == "ruteo/v1"
-    assert publicada["ruteo_run_id"] == primera.json()["ruteo_run_id"]
-    assert cliente.get(f"/ruteos/{publicada['ruteo_run_id']}").json() == primera.json()
+    assert publicada["ruteo_run_id"] == primera["ruteo_run_id"]
+    assert cliente.get(f"/ruteos/{publicada['ruteo_run_id']}").json() == primera
+
+
+# --- la ejecucion territorial de un flujo automatico ---------------------------------------------
+
+
+def _subir(cliente, cuentas: Cuentas) -> str:
+    """Sube la cartera por POST /corridas: nace con su flujo. Devuelve el run_id."""
+    respuesta = cliente.post(
+        "/corridas", files={"archivo": ("cartera.csv", _csv(cuentas), "application/octet-stream")}
+    )
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["run_id"]
+
+
+def _una_vez() -> None:
+    """Un solo trabajo, como un worker con --una-vez."""
+    procesar_un_trabajo(identificador_worker(), Config())
+
+
+@en_la_base
+def test_una_territorial_cuyo_flujo_la_va_a_rutear_no_se_rutea_a_mano(cliente):
+    run_id = _subir(cliente, PEQUENA)
+    for _ in range(3):  # la ingesta, la decision y la organizacion; el flujo ya pidio el ruteo
+        _una_vez()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert (flujo["estado"], flujo["etapa"]) == ("EN_PROCESO", "RUTEO")
+
+    respuesta = _rutear(cliente, flujo["territorial_run_id"])
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        f"La ejecucion territorial es del flujo {flujo['flujo_id']}, que sigue EN_PROCESO en "
+        f"RUTEO y la va a rutear por su cuenta. Consulta /flujos/{flujo['flujo_id']}."
+    )
+    assert _ejecuciones_de_ruteo() == 1  # la del flujo
+
+
+@en_la_base
+def test_una_territorial_cuyo_flujo_se_detuvo_al_rutearla_se_reanuda(cliente, monkeypatch):
+    run_id = _subir(cliente, PEQUENA)
+    monkeypatch.setattr(ruteo_ejecuciones, "rutear_territorio", _revienta)
+    _trabajar()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert (flujo["estado"], flujo["etapa"]) == ("DETENIDO", "RUTEO")
+
+    respuesta = _rutear(cliente, flujo["territorial_run_id"])
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_DETENIDO", run_id)
+    assert error["mensaje"] == (
+        f"La ejecucion territorial es del flujo {flujo['flujo_id']}, que se detuvo en el ruteo. "
+        f"Para reintentarlo: POST /flujos/{flujo['flujo_id']}/reanudar."
+    )
+    assert _ejecuciones_de_ruteo() == 1
+
+
+@en_la_base
+def test_una_territorial_que_su_flujo_ya_ruteo_da_su_409_de_siempre(cliente):
+    run_id = _subir(cliente, PEQUENA)
+    _trabajar()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert flujo["estado"] == "COMPLETADO"
+
+    respuesta = _rutear(cliente, flujo["territorial_run_id"])
+
+    assert (respuesta.status_code, respuesta.json()["codigo"]) == (409, "RUTEO_YA_GENERADO")
+    assert "Location" not in respuesta.headers
 
 
 # --- GET /territoriales/{territorial_run_id}/ruteos ------------------------------------------
@@ -641,7 +768,7 @@ def test_el_historial_sin_ejecuciones_de_ruteo_es_una_lista_vacia(cliente, monke
     run_id, decision_run_id = _decidida(cliente, PEQUENA)
     with monkeypatch.context() as parche:
         fallida = _territorial_fallida(cliente, decision_run_id, parche)
-    exitosa = cliente.post(f"/decisiones/{decision_run_id}/territoriales").json()
+    exitosa = _pedir(cliente, f"/decisiones/{decision_run_id}/territoriales")
     assert exitosa["estado"] == "EXITOSA", exitosa
 
     for territorial_run_id in (exitosa["territorial_run_id"], fallida):
@@ -667,8 +794,8 @@ def test_el_historial_trae_todas_las_ejecuciones_en_cualquier_estado_y_version(
     run_id, decision_run_id, territorial_run_id = _organizada(cliente, PEQUENA)
     with monkeypatch.context() as parche:
         parche.setattr(ruteo_ejecuciones, "rutear_territorio", _revienta)
-        fallida = _rutear(cliente, territorial_run_id).json()
-    exitosa = _rutear(cliente, territorial_run_id).json()  # la FALLIDA se reintenta
+        _, fallida = _rutear_y_esperar(cliente, territorial_run_id)
+    _, exitosa = _rutear_y_esperar(cliente, territorial_run_id)  # la FALLIDA se reintenta
     territorial_id = _id_de_territorial(territorial_run_id)
     otra_version = _registrar(territorial_id, version_reglas="ruteo/v2")
     en_proceso = _registrar(
@@ -803,7 +930,7 @@ def test_una_ejecucion_de_ruteo_se_consulta_por_su_ruteo_run_id(cliente):
 @en_la_base
 def test_una_ejecucion_de_ruteo_en_proceso_se_consulta_sin_fin_ni_duracion(cliente):
     run_id, _, territorial_run_id = _organizada(cliente, PEQUENA)
-    ruteo_run_id = _abierta(territorial_run_id)
+    ruteo_run_id = _abierta(cliente, territorial_run_id)
 
     respuesta = cliente.get(f"/ruteos/{ruteo_run_id}")
 
@@ -952,12 +1079,12 @@ def test_las_rutas_se_paginan_sin_huecos_ni_repetidos_en_el_orden_territorial(cl
 
 
 def _ruteo_en_proceso(cliente, territorial_run_id: str, monkeypatch) -> str:
-    return _abierta(territorial_run_id)
+    return _abierta(cliente, territorial_run_id)
 
 
 def _ruteo_fallido(cliente, territorial_run_id: str, monkeypatch) -> str:
     monkeypatch.setattr(ruteo_ejecuciones, "rutear_territorio", _revienta)
-    fallida = _rutear(cliente, territorial_run_id).json()
+    _, fallida = _rutear_y_esperar(cliente, territorial_run_id)
     assert fallida["estado"] == "FALLIDA", fallida
     return fallida["ruteo_run_id"]
 
@@ -1295,14 +1422,24 @@ def test_openapi_documenta_las_cinco_operaciones_de_ruteo(app):
         ("GET", "/ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas"): "PaginaParadas",
     }
 
-    # 201 dice que la ejecucion se creo, no que el motor tuviera exito: documenta las dos salidas.
+    # 201 dice que la ejecucion se creo EN_PROCESO, no que el motor terminara: su ejemplo es lo
+    # que de verdad responde el POST, y el GET documenta los tres estados.
     post = operaciones[("POST", "/territoriales/{territorial_run_id}/ruteos")]
     creada = post["responses"]["201"]
-    assert "FALLIDA" in creada["description"] and "FALLIDA" in post["description"]
-    assert set(creada["content"]["application/json"]["examples"]) == {"EXITOSA", "FALLIDA"}
+    assert "EN_PROCESO" in creada["description"] and "worker" in post["description"]
+    assert creada["content"]["application/json"]["example"]["estado"] == "EN_PROCESO"
     assert "`TERRITORIAL_NO_ENCONTRADO`" in post["responses"]["404"]["description"]
-    assert "`TERRITORIAL_NO_RUTEABLE`" in post["responses"]["409"]["description"]
-    assert "`RUTEO_YA_GENERADO`" in post["responses"]["409"]["description"]
+    for codigo in (
+        "TERRITORIAL_NO_RUTEABLE",
+        "RUTEO_YA_GENERADO",
+        "RUTEO_EN_PROCESO",
+        "FLUJO_EN_PROCESO",
+        "FLUJO_DETENIDO",
+    ):
+        assert f"`{codigo}`" in post["responses"]["409"]["description"]
+    ejecucion = operaciones[("GET", "/ruteos/{ruteo_run_id}")]
+    ejemplos = ejecucion["responses"]["200"]["content"]["application/json"]["examples"]
+    assert set(ejemplos) == {"EN_PROCESO", "EXITOSA", "FALLIDA"}
     historial = operaciones[("GET", "/territoriales/{territorial_run_id}/ruteos")]
     assert "`TERRITORIAL_NO_ENCONTRADO`" in historial["responses"]["404"]["description"]
     for ruta in ("/ruteos/{ruteo_run_id}", "/ruteos/{ruteo_run_id}/rutas"):
@@ -1380,13 +1517,20 @@ def test_los_esquemas_de_ruteo_no_exponen_ids_internos(app):
 def test_los_ejemplos_de_ruteo_son_respuestas_posibles():
     # Traen cada campo de la respuesta; el OpenAPI omite los que valen null.
     campos = set(EjecucionRuteoRespuesta.model_json_schema(mode="serialization")["properties"])
-    assert set(EJEMPLO_EJECUCION_RUTEO) == set(EJEMPLO_EJECUCION_RUTEO_FALLIDA) == campos
+    ejemplos = (
+        EJEMPLO_EJECUCION_RUTEO,
+        EJEMPLO_EJECUCION_RUTEO_FALLIDA,
+        EJEMPLO_EJECUCION_RUTEO_EN_PROCESO,
+    )
+    assert all(set(ejemplo) == campos for ejemplo in ejemplos)
     fallida = EJEMPLO_EJECUCION_RUTEO_FALLIDA
     assert (fallida["estado"], fallida["rutas_publicadas"], fallida["paradas_publicadas"]) == (
         "FALLIDA",
         0,
         0,
     )
+    en_proceso = EJEMPLO_EJECUCION_RUTEO_EN_PROCESO
+    assert (en_proceso["estado"], en_proceso["terminada_en"]) == ("EN_PROCESO", None)
     # Y la ruta y la parada del ejemplo son lo que ruteo/v1 traza de verdad para esos clientes.
     assert RutaTerritorialRespuesta(**EJEMPLO_RUTA).model_dump() == EJEMPLO_RUTA
     assert ParadaRutaRespuesta(**EJEMPLO_PARADA).model_dump() == EJEMPLO_PARADA

@@ -3,6 +3,9 @@
 Se construye con `crear_app()` y se sirve con
 `uvicorn --factory motor_cartera.api.app:crear_app`. Asi importar el modulo no exige
 configuracion, y cada prueba construye su propia app con su propia clave.
+
+La API no ejecuta ningun motor: registra el trabajo en la cola durable y responde. Los ejecuta el
+worker, en otro proceso (`motor-cartera worker`).
 """
 
 from __future__ import annotations
@@ -10,7 +13,15 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
-from motor_cartera.api import cartera, corridas, decisiones, ruteo, salud, territorial
+from motor_cartera.api import (
+    cartera,
+    corridas,
+    decisiones,
+    orquestacion,
+    ruteo,
+    salud,
+    territorial,
+)
 from motor_cartera.api.errores import registrar_manejadores
 from motor_cartera.api.seguridad import exigir_api_key
 from motor_cartera.config import Config
@@ -21,56 +32,71 @@ Ingesta, validacion, resumen, decision por cuenta, organizacion territorial y ru
 de una cartera de credito al consumo. **Todos los datos son sinteticos**: los produce el generador
 del proyecto.
 
-**Flujo.**
+**Como trabaja.** La API no ejecuta ningun motor. Cada `POST` que pide trabajo registra el recurso
+`EN_PROCESO` y su trabajo en una cola durable, los dos en PostgreSQL y en la misma transaccion, y
+responde `201` de inmediato, con el recurso en `Location`. Un worker aparte toma el trabajo, ejecuta
+el motor y lo cierra; el cliente consulta `Location` hasta que el estado deje de ser `EN_PROCESO`.
+**201 quiere decir que el recurso se creo, no que el motor termino.**
 
-1. `POST /corridas` con el archivo (xlsx, csv o zip). Responde `201` con el `run_id` y la
-   corrida `EN_PROCESO`; se procesa en segundo plano.
-2. `GET /corridas/{run_id}` hasta que el estado sea `EXITOSA`, `RECHAZADA` o `FALLIDA`.
-3. `GET /corridas/{run_id}/rechazos`: cada registro que no cumplio el contrato, con su
-   fila y el motivo.
-4. `GET /cartera/resumen`: cuentas y saldo por segmento de la cartera vigente.
+Si un worker muere a la mitad, su trabajo no se pierde: cuando vence su lease, otro worker lo toma.
+La entrega es al menos una vez; los motores no publican nada dos veces, ni a medias.
 
-Con la cartera publicada, el Decision Engine decide cada cuenta con reglas versionadas:
+**El flujo automatico.** Un solo `POST /corridas` lleva la cartera de la ingesta al ruteo, sin que
+el cliente pida cada etapa:
 
-5. `POST /corridas/{run_id}/decisiones` decide la corrida `EXITOSA` en la misma peticion.
-   Responde `201` con la ejecucion terminada: `EXITOSA`, con una decision por cuenta, o
-   `FALLIDA`, sin ninguna.
-6. `GET /corridas/{run_id}/decisiones`: todas las ejecuciones de esa corrida, la mas
-   reciente primero.
-7. `GET /decisiones/{decision_run_id}`: una ejecucion, con su version de las reglas y sus
-   conteos.
-8. `GET /decisiones/{decision_run_id}/cuentas`: lo que decidio de cada cuenta (segmento,
-   prioridad y canal recomendado) y por que.
+1. `POST /corridas` con el archivo (xlsx, csv o zip). Responde `201` con el `run_id` y la corrida
+   `EN_PROCESO`; el archivo queda guardado y la ingesta, en la cola.
+2. `GET /corridas/{run_id}/flujo` hasta que el flujo deje de estar `EN_PROCESO`: `COMPLETADO` si
+   el ruteo termino `EXITOSA`, o `DETENIDO` en la etapa que no pudo continuar. Trae el
+   `decision_run_id`, el `territorial_run_id` y el `ruteo_run_id` en cuanto existen.
+3. `GET /flujos/{flujo_id}/trabajos`: los trabajos del flujo, con sus intentos y su lease.
+4. `POST /flujos/{flujo_id}/reanudar` reintenta la etapa en que se detuvo, si es la decision, la
+   organizacion territorial o el ruteo. Una ingesta que no publico no se reanuda: se vuelve a subir
+   el archivo, y eso es otra corrida con otro flujo.
 
-Con las decisiones publicadas, el Motor Territorial las organiza por municipio con reglas
-versionadas. Prioriza municipios; no traza rutas:
+**La cartera.**
 
-9. `POST /decisiones/{decision_run_id}/territoriales` organiza las decisiones de una ejecucion
-   `EXITOSA` en la misma peticion. Responde `201` con la ejecucion terminada: `EXITOSA`, con un
-   resultado por municipio, o `FALLIDA`, sin ninguno.
-10. `GET /decisiones/{decision_run_id}/territoriales`: todas las ejecuciones territoriales de esas
+5. `GET /corridas/{run_id}`: estado, conteos y tiempos de una corrida.
+6. `GET /corridas/{run_id}/rechazos`: cada registro que no cumplio el contrato, con su fila y el
+   motivo.
+7. `GET /cartera/resumen`: cuentas y saldo por segmento de la cartera vigente.
+
+**El Decision Engine** decide cada cuenta de una corrida `EXITOSA` con reglas versionadas:
+
+8. `GET /corridas/{run_id}/decisiones`: todas las ejecuciones de esa corrida, la mas reciente
+   primero.
+9. `GET /decisiones/{decision_run_id}`: una ejecucion, con su version de las reglas y sus conteos.
+10. `GET /decisiones/{decision_run_id}/cuentas`: lo que decidio de cada cuenta (segmento, prioridad
+    y canal recomendado) y por que.
+
+**El Motor Territorial** organiza por municipio las decisiones de una ejecucion `EXITOSA`. Prioriza
+municipios; no traza rutas:
+
+11. `GET /decisiones/{decision_run_id}/territoriales`: todas las ejecuciones territoriales de esas
     decisiones, la mas reciente primero.
-11. `GET /territoriales/{territorial_run_id}`: una ejecucion, con su version de las reglas y sus
-    conteos.
-12. `GET /territoriales/{territorial_run_id}/municipios`: cada municipio con su carga de campo, su
+12. `GET /territoriales/{territorial_run_id}`: una ejecucion, con su version y sus conteos.
+13. `GET /territoriales/{territorial_run_id}/municipios`: cada municipio con su carga de campo, su
     lugar y por que, en orden de prioridad.
 
-Con los municipios organizados, el Motor de Ruteo traza, dentro de cada municipio con trabajo de
-campo, en que secuencia visitar sus cuentas `CAMPO`, con reglas versionadas. **Las rutas son
-sinteticas**: cada cuenta recibe un punto determinista en un plano local de 10 km por lado, propio
-de su municipio, y las distancias son Manhattan, en metros sinteticos. No son latitud ni longitud,
-domicilios, calles, trafico ni tiempos:
+**El Motor de Ruteo** traza, dentro de cada municipio con trabajo de campo, en que secuencia visitar
+sus cuentas `CAMPO`. **Las rutas son sinteticas**: cada cuenta recibe un punto determinista en un
+plano local de 10 km por lado, propio de su municipio, y las distancias son Manhattan, en metros
+sinteticos. No son latitud ni longitud, domicilios, calles, trafico ni tiempos:
 
-13. `POST /territoriales/{territorial_run_id}/ruteos` rutea los municipios de una ejecucion
-    territorial `EXITOSA` en la misma peticion. Responde `201` con la ejecucion terminada:
-    `EXITOSA`, con una ruta por municipio con cuentas de campo, o `FALLIDA`, sin ninguna.
 14. `GET /territoriales/{territorial_run_id}/ruteos`: todas las ejecuciones de ruteo de esa
     ejecucion territorial, la mas reciente primero.
-15. `GET /ruteos/{ruteo_run_id}`: una ejecucion, con su version de las reglas y sus conteos.
+15. `GET /ruteos/{ruteo_run_id}`: una ejecucion, con su version y sus conteos.
 16. `GET /ruteos/{ruteo_run_id}/rutas`: la ruta de cada municipio, en el orden de prioridad
     territorial, con sus distancias.
 17. `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas`: las paradas de un municipio, en
     el orden de visita.
+
+**Etapas a mano.** `POST /corridas/{run_id}/decisiones`, `POST /decisiones/{decision_run_id}/
+territoriales` y `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso
+que no es de un flujo que la vaya a correr, como una corrida publicada antes de v0.5.0 o con el CLI.
+Tambien responden `201` con la ejecucion `EN_PROCESO`, y la ejecuta el worker. Sobre una fuente de
+un flujo responden `409`: `FLUJO_EN_PROCESO` si el flujo la va a correr, o `FLUJO_DETENIDO` si se
+detuvo ahi y se reanuda. Una vez publicada, una etapa no se repite: `409 *_YA_GENERADA`.
 
 **Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
 `X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.
@@ -84,6 +110,11 @@ ETIQUETAS = [
         "name": "corridas",
         "description": "Una corrida es una ingesta: un archivo leido, juzgado registro por "
         "registro y, si pasa, publicado. Todo lo que se escribe cuelga de una.",
+    },
+    {
+        "name": "orquestacion",
+        "description": "El flujo automatico de cada corrida, de la ingesta al ruteo, y los "
+        "trabajos de la cola durable que lo ejecutan. La API los registra; un worker los ejecuta.",
     },
     {
         "name": "cartera",
@@ -128,6 +159,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     registrar_manejadores(app)
     protegidas = [Depends(exigir_api_key)]
     app.include_router(corridas.router, dependencies=protegidas)
+    app.include_router(orquestacion.router, dependencies=protegidas)
     app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(decisiones.router, dependencies=protegidas)
     app.include_router(territorial.router, dependencies=protegidas)

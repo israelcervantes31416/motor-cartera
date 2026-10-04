@@ -1,11 +1,13 @@
-"""La API del Motor Territorial: organizar por municipio una ejecucion de decision por HTTP y
-consultar lo que se publico.
+"""La API del Motor Territorial: pedir que se organice por municipio una ejecucion de decision por
+HTTP y consultar lo que se publico.
 
-Las carteras se publican por POST /corridas y se deciden por POST /corridas/{run_id}/decisiones,
-como lo haria un cliente, y los municipios se piden y se leen por la API. La agregacion, las reglas
-y la transaccion ya se prueban en el servicio; aqui, que la capa HTTP traduzca bien: codigos,
-Location, errores, orden, paginacion y vocabulario historico. Las pruebas de la ultima seccion no
-tocan la base.
+El POST no organiza: deja la ejecucion EN_PROCESO con su trabajo en la cola durable y responde 201.
+Las pruebas hacen lo que haria el worker y despues leen el resultado por la API. Las carteras se
+publican en modo directo, sin flujo, y se deciden por POST /corridas/{run_id}/decisiones: asi la
+organizacion se pide a mano. Las de un flujo se prueban aparte. La agregacion, las reglas y la
+transaccion ya se prueban en el servicio; aqui, que la capa HTTP traduzca bien: codigos, Location,
+errores, orden, paginacion y vocabulario historico. Las pruebas de la ultima seccion no tocan la
+base.
 """
 
 from __future__ import annotations
@@ -22,27 +24,32 @@ import pytest
 from sqlalchemy import event, update
 from sqlmodel import func, select
 
-from motor_cartera.api import territorial
 from motor_cartera.api.esquemas import (
     EJEMPLO_EJECUCION_TERRITORIAL,
+    EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO,
     EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA,
     EJEMPLO_MUNICIPIO,
     EjecucionTerritorialRespuesta,
     ResultadoTerritorialRespuesta,
 )
+from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     Corrida,
     EjecucionDecision,
     EjecucionTerritorial,
     EstadoDecision,
     EstadoTerritorial,
+    EstadoTrabajo,
     ResultadoTerritorial,
+    TipoTrabajo,
+    TrabajoOrquestacion,
     ahora,
 )
 from motor_cartera.db.sesion import crear_motor, sesion
 from motor_cartera.decision import ejecuciones as ejecuciones_de_decision
+from motor_cartera.ingesta.corridas import abrir_corrida, procesar_corrida
+from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
 from motor_cartera.territorial import ejecuciones
-from motor_cartera.territorial.ejecuciones import abrir_ejecucion
 from motor_cartera.territorial.reglas import (
     VERSION_REGLAS_TERRITORIAL,
     EntradaTerritorio,
@@ -205,26 +212,37 @@ def _csv(cuentas: Cuentas) -> bytes:
     return cartera.to_csv(index=False).encode("utf-8")
 
 
+def _trabajar() -> None:
+    """Lo que haria el worker: procesa la cola hasta que no quede ningun trabajo que tomar."""
+    worker_id = identificador_worker()
+    while procesar_un_trabajo(worker_id, Config()) is not None:
+        pass
+
+
 def _publicar(cliente, cuentas: Cuentas) -> str:
-    """Publica la cartera por POST /corridas y devuelve el run_id de la corrida EXITOSA."""
-    respuesta = cliente.post(
-        "/corridas", files={"archivo": ("cartera.csv", _csv(cuentas), "application/octet-stream")}
-    )
+    """Publica la cartera en modo directo, sin flujo, y devuelve el run_id de la corrida EXITOSA."""
+    contenido = _csv(cuentas)
+    with sesion() as s:
+        corrida = abrir_corrida(s, origen="cartera.csv", contenido=contenido)
+    procesar_corrida(corrida.id, contenido)
+    publicada = cliente.get(f"/corridas/{corrida.run_id}").json()
+    assert publicada["estado"] == "EXITOSA", publicada["detalle"]
+    return publicada["run_id"]
+
+
+def _decidir(cliente, run_id: str) -> dict:
+    """Pide la decision por la API, deja trabajar al worker y devuelve la ejecucion como quedo."""
+    respuesta = cliente.post(f"/corridas/{run_id}/decisiones")
     assert respuesta.status_code == 201, respuesta.text
-    corrida = cliente.get(respuesta.headers["Location"]).json()
-    assert corrida["estado"] == "EXITOSA", corrida["detalle"]
-    return corrida["run_id"]
-
-
-def _decidir(cliente, run_id: str):
-    return cliente.post(f"/corridas/{run_id}/decisiones")
+    _trabajar()
+    return cliente.get(respuesta.headers["Location"]).json()
 
 
 def _decidida(cliente, cuentas: Cuentas) -> tuple[str, str]:
     """La cartera publicada y decidida con decision/v1 por la API: el run_id de su corrida y el
     decision_run_id de su ejecucion EXITOSA."""
     run_id = _publicar(cliente, cuentas)
-    ejecucion = _decidir(cliente, run_id).json()
+    ejecucion = _decidir(cliente, run_id)
     assert ejecucion["estado"] == "EXITOSA", ejecucion
     return run_id, ejecucion["decision_run_id"]
 
@@ -233,9 +251,18 @@ def _organizar(cliente, decision_run_id: str):
     return cliente.post(f"/decisiones/{decision_run_id}/territoriales")
 
 
+def _organizar_y_esperar(cliente, decision_run_id: str) -> tuple:
+    """Pide la organizacion, deja trabajar al worker y devuelve la respuesta del POST y la ejecucion
+    como quedo."""
+    respuesta = _organizar(cliente, decision_run_id)
+    assert respuesta.status_code == 201, respuesta.text
+    _trabajar()
+    return respuesta, cliente.get(respuesta.headers["Location"]).json()
+
+
 def _organizada(cliente, decision_run_id: str) -> dict:
     """Organiza las decisiones por la API y devuelve su ejecucion territorial EXITOSA."""
-    ejecucion = _organizar(cliente, decision_run_id).json()
+    _, ejecucion = _organizar_y_esperar(cliente, decision_run_id)
     assert ejecucion["estado"] == "EXITOSA", ejecucion
     return ejecucion
 
@@ -285,21 +312,28 @@ def _registrar(fuente_id: int, **campos) -> EjecucionTerritorial:
         return ejecucion
 
 
-def _abierta(decision_run_id: str) -> str:
-    """Una ejecucion territorial abierta por el servicio y todavia sin organizar: como la ve otra
-    peticion mientras el POST organiza, o como queda si el proceso muere a la mitad."""
-    with sesion() as s:
-        fuente = s.exec(
-            select(EjecucionDecision).where(
-                EjecucionDecision.decision_run_id == UUID(decision_run_id)
-            )
-        ).one()
-        return str(abrir_ejecucion(s, fuente).territorial_run_id)
+def _abierta(cliente, decision_run_id: str) -> str:
+    """Una ejecucion territorial pedida por la API y todavia sin organizar: como la ve el cliente
+    mientras el worker no la toma, o si el worker murio a la mitad."""
+    respuesta = _organizar(cliente, decision_run_id)
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["territorial_run_id"]
 
 
 def _ejecuciones_territoriales() -> int:
     with sesion() as s:
         return s.exec(select(func.count()).select_from(EjecucionTerritorial)).one()
+
+
+def _trabajos_territoriales() -> list[TrabajoOrquestacion]:
+    with sesion() as s:
+        return list(
+            s.exec(
+                select(TrabajoOrquestacion)
+                .where(TrabajoOrquestacion.tipo == TipoTrabajo.TERRITORIAL)
+                .order_by(TrabajoOrquestacion.id)
+            ).all()
+        )
 
 
 def _como_se_sirve(resultado: ResultadoTerritorio) -> dict:
@@ -360,83 +394,70 @@ def _sentencias() -> Iterator[list[str]]:
 
 
 @en_la_base
-def test_post_organiza_las_decisiones_y_responde_201_con_location(cliente):
-    # A1.
+def test_post_deja_la_ejecucion_en_proceso_y_el_worker_la_organiza(cliente):
+    # A1. 201 con la ejecucion recien creada, y su direccion; el worker la organiza despues.
     run_id, decision_run_id = _decidida(cliente, CARTERA)
 
     respuesta = _organizar(cliente, decision_run_id)
 
     assert respuesta.status_code == 201
-    ejecucion = respuesta.json()
-    assert set(ejecucion) == CAMPOS_DE_EJECUCION
-    assert respuesta.headers["Location"] == f"/territoriales/{ejecucion['territorial_run_id']}"
-    assert (ejecucion["decision_run_id"], ejecucion["run_id"]) == (decision_run_id, run_id)
-    assert (ejecucion["version_reglas"], ejecucion["estado"]) == ("territorial/v1", "EXITOSA")
+    creada = respuesta.json()
+    assert set(creada) == CAMPOS_DE_EJECUCION
+    assert respuesta.headers["Location"] == f"/territoriales/{creada['territorial_run_id']}"
+    assert (creada["decision_run_id"], creada["run_id"]) == (decision_run_id, run_id)
+    assert (creada["version_reglas"], creada["estado"]) == ("territorial/v1", "EN_PROCESO")
+    assert (creada["territorios_evaluados"], creada["territorios_publicados"]) == (0, 0)
+    assert (creada["terminada_en"], creada["duracion_segundos"]) == (None, None)
+    assert cliente.get(respuesta.headers["Location"]).json() == creada
+    (trabajo,) = _trabajos_territoriales()
+    assert (trabajo.estado, trabajo.flujo_id) == (EstadoTrabajo.PENDIENTE, None)
+
+    _trabajar()
+
+    ejecucion = cliente.get(respuesta.headers["Location"]).json()
+    assert (ejecucion["territorial_run_id"], ejecucion["estado"]) == (
+        creada["territorial_run_id"],
+        "EXITOSA",
+    )
     assert ejecucion["territorios_evaluados"] == ejecucion["territorios_publicados"] == 8
     assert (
         ejecucion["detalle"] == "Se organizaron 44 decisiones en 8 municipios con territorial/v1."
     )
     assert ejecucion["duracion_segundos"] >= 0
     assert ejecucion["iniciada_en"].endswith("Z") and ejecucion["terminada_en"].endswith("Z")
-    # Location lleva al mismo recurso.
-    assert cliente.get(respuesta.headers["Location"]).json() == ejecucion
 
 
 @en_la_base
-def test_post_con_el_motor_fallando_tambien_es_201_y_la_ejecucion_queda_fallida(
-    cliente, monkeypatch
-):
+def test_un_motor_que_falla_deja_la_ejecucion_fallida_despues_del_201(cliente, monkeypatch):
     # A2. D1: la ejecucion se creo y su resultado es su estado; no es un error de la peticion.
     _, decision_run_id = _decidida(cliente, PEQUENA)
     monkeypatch.setattr(ejecuciones, "priorizar_territorios", _revienta)
 
-    respuesta = _organizar(cliente, decision_run_id)
+    respuesta, fallida = _organizar_y_esperar(cliente, decision_run_id)
 
-    assert respuesta.status_code == 201
-    fallida = respuesta.json()
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
     assert respuesta.headers["Location"] == f"/territoriales/{fallida['territorial_run_id']}"
     assert (fallida["estado"], fallida["version_reglas"]) == ("FALLIDA", "territorial/v1")
     assert (fallida["territorios_evaluados"], fallida["territorios_publicados"]) == (0, 0)
     assert fallida["detalle"] == "Error interno (RuntimeError); ver la bitacora."
-    assert "falla simulada" not in respuesta.text
-    assert cliente.get(respuesta.headers["Location"]).json() == fallida
+    assert "falla simulada" not in str(fallida)
+    assert [t.estado for t in _trabajos_territoriales()] == [EstadoTrabajo.COMPLETADO]
 
 
 @en_la_base
-def test_el_post_termina_la_transaccion_de_la_busqueda_antes_de_organizar(cliente, monkeypatch):
-    # A25. El POST es sincrono y el servicio abre sus propias sesiones. La transaccion de la sesion
-    # de la peticion solo sirve para encontrar la ejecucion de decision: tiene que haber terminado
-    # al entrar al servicio, y no volver a abrirse despues.
+def test_el_post_no_organiza_nada_antes_de_responder(cliente, monkeypatch):
+    # A25. El motor no corre en la peticion: ni se priorizan municipios, ni se agrega una decision.
     _, decision_run_id = _decidida(cliente, PEQUENA)
-    buscar, organizar = territorial._buscar_decision, territorial.territorializar_decision
-    visto = {"transacciones": 0}
+    priorizadas = []
+    monkeypatch.setattr(ejecuciones, "priorizar_territorios", priorizadas.append)
 
-    def contar_transaccion(*_):
-        visto["transacciones"] += 1
+    with _sentencias() as sentencias:
+        respuesta = _organizar(cliente, decision_run_id)
 
-    def busca(s, decision_run_id_pedido):
-        event.listen(s, "after_begin", contar_transaccion)
-        encontrada = buscar(s, decision_run_id_pedido)
-        visto["sesion"], visto["al_buscar"] = s, s.in_transaction()
-        return encontrada
-
-    def organiza(ejecucion_decision_id):
-        visto["al_organizar"] = visto["sesion"].in_transaction()
-        visto["fuente_id"] = ejecucion_decision_id
-        return organizar(ejecucion_decision_id)
-
-    monkeypatch.setattr(territorial, "_buscar_decision", busca)
-    monkeypatch.setattr(territorial, "territorializar_decision", organiza)
-
-    respuesta = _organizar(cliente, decision_run_id)
-
-    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EXITOSA")
-    # La busqueda leyo dentro de una transaccion, y esa ya no estaba al entrar al servicio.
-    assert (visto["al_buscar"], visto["al_organizar"]) == (True, False)
-    assert visto["fuente_id"] == _id_de_decision(decision_run_id)
-    # Y la sesion de la peticion no abrio otra: ni el servicio la uso, ni nada volvio a leer con
-    # ella despues del rollback.
-    assert visto["transacciones"] == 1
+    assert (respuesta.status_code, respuesta.json()["estado"]) == (201, "EN_PROCESO")
+    assert priorizadas == []
+    assert not any("resultado_territorial" in sentencia for sentencia in sentencias)
+    assert not any("GROUP BY" in sentencia for sentencia in sentencias)
 
 
 @en_la_base
@@ -463,12 +484,32 @@ def test_post_otra_vez_409_territorial_ya_generado_sin_location(cliente):
 
 
 @en_la_base
-def test_post_que_pierde_la_carrera_tambien_es_409_territorial_ya_generado(cliente, monkeypatch):
-    # La carrera que no ve la revision amable: mientras esta peticion organiza, otra ejecucion de
-    # las mismas decisiones publica primero. Como la base ya no admite dos EN_PROCESO de la misma
-    # version, la otra aparece EXITOSA, a mano, justo antes del cierre. El indice de exito rechaza
-    # el cierre de esta, que queda FALLIDA en el historial, y la peticion responde lo mismo que si
-    # la revision la hubiera visto.
+def test_post_mientras_otra_sigue_en_proceso_409_territorial_en_proceso(cliente):
+    # A lo mas una ejecucion activa por fuente y version: un doble clic no crea dos.
+    run_id, decision_run_id = _decidida(cliente, PEQUENA)
+    primera = _organizar(cliente, decision_run_id).json()
+
+    respuesta = _organizar(cliente, decision_run_id)
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("TERRITORIAL_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        "Las decisiones de esta ejecucion ya se estan organizando con territorial/v1. Consulta "
+        f"/decisiones/{decision_run_id}/territoriales."
+    )
+    assert "Location" not in respuesta.headers
+    assert primera["territorial_run_id"] not in respuesta.text
+    assert _ejecuciones_territoriales() == len(_trabajos_territoriales()) == 1
+
+
+@en_la_base
+def test_una_organizacion_que_pierde_la_carrera_en_el_worker_queda_fallida_en_el_historial(
+    cliente, monkeypatch
+):
+    # La carrera que no ve la revision amable: mientras el worker organiza, otra ejecucion de las
+    # mismas decisiones aparece EXITOSA, a mano, justo antes del cierre. El indice de exito rechaza
+    # el cierre de esta, que queda FALLIDA en el historial; el siguiente POST ya ve la que gano.
     run_id, decision_run_id = _decidida(cliente, PEQUENA)
     cerrar = ejecuciones._cerrar
     rivales = []
@@ -486,16 +527,23 @@ def test_post_que_pierde_la_carrera_tambien_es_409_territorial_ya_generado(clien
 
     monkeypatch.setattr(ejecuciones, "_cerrar", el_rival_publica_primero)
 
-    respuesta = _organizar(cliente, decision_run_id)
+    respuesta, perdedora = _organizar_y_esperar(cliente, decision_run_id)
 
     (rival,) = rivales
-    assert respuesta.status_code == 409
-    assert (respuesta.json()["codigo"], respuesta.json()["run_id"]) == (
+    assert respuesta.status_code == 201
+    assert (perdedora["estado"], perdedora["territorios_publicados"]) == ("FALLIDA", 0)
+    assert perdedora["detalle"] == (
+        "Otra ejecucion publico los territorios de esta ejecucion de decision con territorial/v1 "
+        "mientras esta se procesaba; no se publican dos veces."
+    )
+    otra = _organizar(cliente, decision_run_id)
+    assert (otra.status_code, otra.json()["codigo"], otra.json()["run_id"]) == (
+        409,
         "TERRITORIAL_YA_GENERADO",
         run_id,
     )
-    assert "Location" not in respuesta.headers
-    assert str(rival.territorial_run_id) not in respuesta.text
+    assert "Location" not in otra.headers
+    assert str(rival.territorial_run_id) not in otra.text
     historial = cliente.get(f"/decisiones/{decision_run_id}/territoriales").json()["elementos"]
     estados = {
         e["territorial_run_id"]: (e["estado"], e["territorios_publicados"]) for e in historial
@@ -531,7 +579,7 @@ def _decision_en_proceso(cliente, run_id: str, monkeypatch) -> str:
 
 def _decision_fallida(cliente, run_id: str, monkeypatch) -> str:
     monkeypatch.setattr(ejecuciones_de_decision, "decidir_cuenta", _revienta)
-    fallida = _decidir(cliente, run_id).json()
+    fallida = _decidir(cliente, run_id)
     assert fallida["estado"] == "FALLIDA", fallida
     return fallida["decision_run_id"]
 
@@ -588,21 +636,86 @@ def test_post_sobre_decisiones_de_otra_version_409_sin_ejecucion(cliente):
 def test_d2_el_409_no_dice_cual_ejecucion_y_el_historial_si(cliente):
     # A26. D2 de punta a punta: organizar, chocar con lo ya publicado y encontrarlo en el historial.
     _, decision_run_id = _decidida(cliente, PEQUENA)
-    primera = _organizar(cliente, decision_run_id)
-    assert (primera.status_code, primera.json()["estado"]) == (201, "EXITOSA")
+    primera = _organizada(cliente, decision_run_id)
 
     otra = _organizar(cliente, decision_run_id)
     assert (otra.status_code, otra.json()["codigo"]) == (409, "TERRITORIAL_YA_GENERADO")
     assert "Location" not in otra.headers
-    assert primera.json()["territorial_run_id"] not in otra.text
+    assert primera["territorial_run_id"] not in otra.text
 
     historial = cliente.get(f"/decisiones/{decision_run_id}/territoriales").json()["elementos"]
     (publicada,) = [ejecucion for ejecucion in historial if ejecucion["estado"] == "EXITOSA"]
     assert publicada["version_reglas"] == "territorial/v1"
-    assert publicada["territorial_run_id"] == primera.json()["territorial_run_id"]
-    assert cliente.get(f"/territoriales/{publicada['territorial_run_id']}").json() == (
-        primera.json()
+    assert publicada["territorial_run_id"] == primera["territorial_run_id"]
+    assert cliente.get(f"/territoriales/{publicada['territorial_run_id']}").json() == primera
+
+
+# --- las decisiones de un flujo automatico -------------------------------------------------------
+
+
+def _subir(cliente, cuentas: Cuentas) -> str:
+    """Sube la cartera por POST /corridas: nace con su flujo. Devuelve el run_id."""
+    respuesta = cliente.post(
+        "/corridas", files={"archivo": ("cartera.csv", _csv(cuentas), "application/octet-stream")}
     )
+    assert respuesta.status_code == 201, respuesta.text
+    return respuesta.json()["run_id"]
+
+
+def _una_vez() -> None:
+    """Un solo trabajo, como un worker con --una-vez."""
+    procesar_un_trabajo(identificador_worker(), Config())
+
+
+@en_la_base
+def test_unas_decisiones_cuyo_flujo_las_va_a_organizar_no_se_organizan_a_mano(cliente):
+    run_id = _subir(cliente, PEQUENA)
+    _una_vez()  # la ingesta; el flujo ya pidio la decision
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert (flujo["estado"], flujo["etapa"]) == ("EN_PROCESO", "DECISION")
+
+    respuesta = _organizar(cliente, flujo["decision_run_id"])
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_EN_PROCESO", run_id)
+    assert error["mensaje"] == (
+        f"Las decisiones son del flujo {flujo['flujo_id']}, que sigue EN_PROCESO en DECISION y "
+        f"las va a organizar por su cuenta. Consulta /flujos/{flujo['flujo_id']}."
+    )
+    assert _ejecuciones_territoriales() == 0
+
+
+@en_la_base
+def test_unas_decisiones_cuyo_flujo_se_detuvo_al_organizarlas_se_reanudan(cliente, monkeypatch):
+    run_id = _subir(cliente, PEQUENA)
+    monkeypatch.setattr(ejecuciones, "priorizar_territorios", _revienta)
+    _trabajar()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+    assert (flujo["estado"], flujo["etapa"]) == ("DETENIDO", "TERRITORIAL")
+
+    respuesta = _organizar(cliente, flujo["decision_run_id"])
+
+    assert respuesta.status_code == 409
+    error = respuesta.json()
+    assert (error["codigo"], error["run_id"]) == ("FLUJO_DETENIDO", run_id)
+    assert error["mensaje"] == (
+        f"Las decisiones son del flujo {flujo['flujo_id']}, que se detuvo en la organizacion "
+        f"territorial. Para reintentarla: POST /flujos/{flujo['flujo_id']}/reanudar."
+    )
+    assert _ejecuciones_territoriales() == 1
+
+
+@en_la_base
+def test_unas_decisiones_que_su_flujo_ya_organizo_dan_su_409_de_siempre(cliente):
+    run_id = _subir(cliente, PEQUENA)
+    _trabajar()
+    flujo = cliente.get(f"/corridas/{run_id}/flujo").json()
+
+    respuesta = _organizar(cliente, flujo["decision_run_id"])
+
+    assert (respuesta.status_code, respuesta.json()["codigo"]) == (409, "TERRITORIAL_YA_GENERADO")
+    assert "Location" not in respuesta.headers
 
 
 # --- GET /decisiones/{decision_run_id}/territoriales ----------------------------------------------
@@ -617,7 +730,7 @@ def test_el_historial_de_decisiones_sin_ejecuciones_territoriales_es_una_lista_v
     run_id = _publicar(cliente, PEQUENA)
     with monkeypatch.context() as parche:
         fallida = _decision_fallida(cliente, run_id, parche)
-    exitosa = _decidir(cliente, run_id).json()
+    exitosa = _decidir(cliente, run_id)
     assert exitosa["estado"] == "EXITOSA", exitosa
 
     for decision_run_id in (exitosa["decision_run_id"], fallida):
@@ -642,8 +755,8 @@ def test_el_historial_trae_todas_las_ejecuciones_en_cualquier_estado_y_version(
     run_id, decision_run_id = _decidida(cliente, PEQUENA)
     with monkeypatch.context() as parche:
         parche.setattr(ejecuciones, "priorizar_territorios", _revienta)
-        fallida = _organizar(cliente, decision_run_id).json()
-    exitosa = _organizar(cliente, decision_run_id).json()  # la FALLIDA se reintenta
+        _, fallida = _organizar_y_esperar(cliente, decision_run_id)
+    _, exitosa = _organizar_y_esperar(cliente, decision_run_id)  # la FALLIDA se reintenta
     fuente_id = _id_de_decision(decision_run_id)
     otra_version = _registrar(fuente_id, version_reglas="territorial/v2")
     en_proceso = _registrar(
@@ -779,7 +892,7 @@ def test_una_ejecucion_territorial_se_consulta_por_su_territorial_run_id(cliente
 def test_una_ejecucion_territorial_en_proceso_se_consulta_sin_fin_ni_duracion(cliente):
     # Existe y se consulta: 200, con el fin y la duracion en null, no en cero.
     run_id, decision_run_id = _decidida(cliente, PEQUENA)
-    territorial_run_id = _abierta(decision_run_id)
+    territorial_run_id = _abierta(cliente, decision_run_id)
 
     respuesta = cliente.get(f"/territoriales/{territorial_run_id}")
 
@@ -945,12 +1058,12 @@ def test_los_municipios_se_paginan_sin_huecos_ni_repetidos_en_el_orden_de_territ
 
 
 def _territorial_en_proceso(cliente, decision_run_id: str, monkeypatch) -> str:
-    return _abierta(decision_run_id)
+    return _abierta(cliente, decision_run_id)
 
 
 def _territorial_fallida(cliente, decision_run_id: str, monkeypatch) -> str:
     monkeypatch.setattr(ejecuciones, "priorizar_territorios", _revienta)
-    fallida = _organizar(cliente, decision_run_id).json()
+    _, fallida = _organizar_y_esperar(cliente, decision_run_id)
     assert fallida["estado"] == "FALLIDA", fallida
     return fallida["territorial_run_id"]
 
@@ -1165,18 +1278,27 @@ def test_openapi_documenta_las_cuatro_operaciones_territoriales(app):
         ("GET", "/territoriales/{territorial_run_id}/municipios"): "PaginaMunicipios",
     }
 
-    # 201 dice que la ejecucion se creo, no que el motor tuviera exito: documenta las dos salidas.
+    # 201 dice que la ejecucion se creo EN_PROCESO, no que el motor terminara: su ejemplo es lo
+    # que de verdad responde el POST, y el GET documenta los tres estados.
     post = operaciones[("POST", "/decisiones/{decision_run_id}/territoriales")]
     creada = post["responses"]["201"]
-    assert "FALLIDA" in creada["description"] and "FALLIDA" in post["description"]
-    assert set(creada["content"]["application/json"]["examples"]) == {"EXITOSA", "FALLIDA"}
+    assert "EN_PROCESO" in creada["description"] and "worker" in post["description"]
+    assert creada["content"]["application/json"]["example"]["estado"] == "EN_PROCESO"
     assert "`DECISION_NO_ENCONTRADA`" in post["responses"]["404"]["description"]
-    assert "`DECISION_NO_TERRITORIALIZABLE`" in post["responses"]["409"]["description"]
-    assert "`TERRITORIAL_YA_GENERADO`" in post["responses"]["409"]["description"]
+    for codigo in (
+        "DECISION_NO_TERRITORIALIZABLE",
+        "TERRITORIAL_YA_GENERADO",
+        "TERRITORIAL_EN_PROCESO",
+        "FLUJO_EN_PROCESO",
+        "FLUJO_DETENIDO",
+    ):
+        assert f"`{codigo}`" in post["responses"]["409"]["description"]
     historial = operaciones[("GET", "/decisiones/{decision_run_id}/territoriales")]
     assert "`DECISION_NO_ENCONTRADA`" in historial["responses"]["404"]["description"]
     ejecucion = operaciones[("GET", "/territoriales/{territorial_run_id}")]
     assert "`TERRITORIAL_NO_ENCONTRADO`" in ejecucion["responses"]["404"]["description"]
+    ejemplos = ejecucion["responses"]["200"]["content"]["application/json"]["examples"]
+    assert set(ejemplos) == {"EN_PROCESO", "EXITOSA", "FALLIDA"}
     municipios = operaciones[("GET", "/territoriales/{territorial_run_id}/municipios")]
     assert "`TERRITORIAL_NO_ENCONTRADO`" in municipios["responses"]["404"]["description"]
     assert "`TERRITORIAL_NO_PUBLICADO`" in municipios["responses"]["409"]["description"]
@@ -1228,11 +1350,16 @@ def test_los_ejemplos_territoriales_son_respuestas_posibles():
     campos = set(
         EjecucionTerritorialRespuesta.model_json_schema(mode="serialization")["properties"]
     )
-    assert (
-        set(EJEMPLO_EJECUCION_TERRITORIAL) == set(EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA) == campos
+    ejemplos = (
+        EJEMPLO_EJECUCION_TERRITORIAL,
+        EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA,
+        EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO,
     )
+    assert all(set(ejemplo) == campos for ejemplo in ejemplos)
     fallida = EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA
     assert (fallida["estado"], fallida["territorios_publicados"]) == ("FALLIDA", 0)
+    en_proceso = EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO
+    assert (en_proceso["estado"], en_proceso["terminada_en"]) == ("EN_PROCESO", None)
     # Y el municipio del ejemplo es lo que territorial/v1 publica de verdad con esos agregados.
     ejemplo = ResultadoTerritorialRespuesta(**EJEMPLO_MUNICIPIO).model_dump(mode="json")
     assert ejemplo == EJEMPLO_MUNICIPIO

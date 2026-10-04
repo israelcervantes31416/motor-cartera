@@ -1,4 +1,8 @@
-"""GET /cartera/resumen."""
+"""GET /cartera/resumen.
+
+Las carteras se suben por POST /corridas y las procesa el worker, como en produccion: cada una con
+su flujo completo.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,9 @@ from uuid import uuid4
 
 import pytest
 
+from motor_cartera.config import Config
 from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
+from motor_cartera.orquestacion.worker import identificador_worker, procesar_un_trabajo
 from motor_cartera.segmentacion import TRAMOS_ATRASO, tramo_de_atraso
 
 pytestmark = pytest.mark.usefixtures("bd")
@@ -21,6 +27,10 @@ def _publicar(cliente, tmp_path, nombre="cartera.csv", n=300, tasa=0.0, semilla=
         tmp_path / nombre, n=n, tasa_invalidas=tasa, semilla=semilla, fecha_corte=corte
     )
     respuesta = cliente.post("/corridas", files={"archivo": (nombre, ruta.read_bytes())})
+    assert respuesta.status_code == 201, respuesta.text
+    worker_id = identificador_worker()
+    while procesar_un_trabajo(worker_id, Config()) is not None:
+        pass
     return respuesta.json()["run_id"]
 
 

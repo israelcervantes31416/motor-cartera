@@ -1,10 +1,12 @@
-"""El Motor Territorial por HTTP: organizar por municipio las decisiones de una ejecucion y
-consultar lo que se publico.
+"""El Motor Territorial por HTTP: pedir que se organicen por municipio las decisiones de una
+ejecucion y consultar lo que se publico.
 
-La API no organiza nada. La agregacion, las reglas, la transaccion que publica todos los municipios
-o ninguno y la garantia de organizar las mismas decisiones con exito una sola vez por version viven
-en el servicio de `territorial.ejecuciones`. Aqui solo se elige la ejecucion, el codigo HTTP y la
-forma de la respuesta.
+La API no organiza nada, ni espera a que se organice. El POST deja la ejecucion EN_PROCESO y su
+trabajo en la cola durable, en una sola transaccion, y un worker la ejecuta. La agregacion, las
+reglas, la transaccion que publica todos los municipios o ninguno y la garantia de organizar las
+mismas decisiones con exito una sola vez por version viven en el servicio de
+`territorial.ejecuciones`. Aqui solo se elige la ejecucion, el codigo HTTP y la forma de la
+respuesta.
 """
 
 from __future__ import annotations
@@ -12,13 +14,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
 from sqlmodel import Session, func, select
 
 from motor_cartera.api.dependencias import Sesion
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     EJEMPLO_EJECUCION_TERRITORIAL,
+    EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO,
     EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA,
     EjecucionTerritorialRespuesta,
     Paginacion,
@@ -33,11 +36,12 @@ from motor_cartera.db.modelos import (
     EstadoTerritorial,
     ResultadoTerritorial,
 )
+from motor_cartera.orquestacion.flujo import FlujoDetenido, FlujoEnProceso, encolar_territorial
 from motor_cartera.territorial.ejecuciones import (
     VERSION_DECISION_COMPATIBLE,
     DecisionNoTerritorializable,
+    TerritorialEnProceso,
     TerritorialYaGenerado,
-    territorializar_decision,
 )
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
 
@@ -57,33 +61,40 @@ TERRITORIAL_NO_EXISTE = (
     "TERRITORIAL_NO_ENCONTRADO",
     "No existe una ejecucion territorial con ese territorial_run_id.",
 )
+EJEMPLOS_DE_EJECUCION = {
+    "content": {
+        "application/json": {
+            "examples": {
+                "EN_PROCESO": {
+                    "summary": "El worker todavia no la termina",
+                    "value": EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO,
+                },
+                "EXITOSA": {
+                    "summary": "Organizo todos los municipios",
+                    "value": EJEMPLO_EJECUCION_TERRITORIAL,
+                },
+                "FALLIDA": {
+                    "summary": "El motor fallo y no publico ningun municipio",
+                    "value": EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA,
+                },
+            }
+        }
+    }
+}
 
 
 @router.post(
     "/decisiones/{decision_run_id}/territoriales",
     status_code=201,
     response_model=EjecucionTerritorialRespuesta,
-    summary="Organiza por municipio las decisiones de una ejecucion con "
+    summary="Pide organizar por municipio las decisiones de una ejecucion con "
     f"{VERSION_REGLAS_TERRITORIAL}",
     responses={
         201: {
-            "description": "La ejecucion territorial quedo creada y ya termino. Su `estado` dice "
-            "como: EXITOSA, con un resultado por municipio, o FALLIDA, sin ninguno y con el motivo "
-            "en `detalle`. En los dos casos `Location` apunta a ella.",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "EXITOSA": {
-                            "summary": "Organizo todos los municipios",
-                            "value": EJEMPLO_EJECUCION_TERRITORIAL,
-                        },
-                        "FALLIDA": {
-                            "summary": "El motor fallo y no publico ningun municipio",
-                            "value": EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA,
-                        },
-                    }
-                }
-            },
+            "description": "La ejecucion territorial quedo creada EN_PROCESO, con su trabajo en la "
+            "cola durable: un worker la ejecuta. `Location` apunta a ella; consultala hasta que "
+            "termine EXITOSA, con un resultado por municipio, o FALLIDA, sin ninguno.",
+            "content": {"application/json": {"example": EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO}},
         },
         **errores(
             *SIN_CLAVE,
@@ -100,40 +111,74 @@ TERRITORIAL_NO_EXISTE = (
                 f"Las decisiones ya se organizaron con exito con {VERSION_REGLAS_TERRITORIAL}; "
                 "GET /decisiones/{decision_run_id}/territoriales dice cual ejecucion.",
             ),
+            (
+                409,
+                "TERRITORIAL_EN_PROCESO",
+                f"Las decisiones ya se estan organizando con {VERSION_REGLAS_TERRITORIAL}: tienen "
+                "una ejecucion territorial EN_PROCESO.",
+            ),
+            (
+                409,
+                "FLUJO_EN_PROCESO",
+                "Las decisiones son de un flujo automatico que todavia las va a organizar.",
+            ),
+            (
+                409,
+                "FLUJO_DETENIDO",
+                "Las decisiones son de un flujo que se detuvo en la organizacion territorial: se "
+                "reintenta reanudando el flujo.",
+            ),
             (422, "ENTRADA_INVALIDA", "El decision_run_id no es un UUID."),
         ),
     },
 )
 def crear_ejecucion_territorial(
-    decision_run_id: UUID, response: Response, s: Sesion
+    decision_run_id: UUID, request: Request, response: Response, s: Sesion
 ) -> EjecucionTerritorialRespuesta:
-    """Organiza por municipio las decisiones de una ejecucion `EXITOSA` de `decision/v1`, con las
-    reglas territoriales de este servicio, en la misma peticion, y responde con la ejecucion ya
-    terminada. No recibe cuerpo ni elige version: la respuesta dice con cual se organizo
-    (`version_reglas`). Prioriza municipios; no traza rutas.
+    """Pide organizar por municipio las decisiones de una ejecucion `EXITOSA` de `decision/v1`, con
+    las reglas territoriales de este servicio. La peticion no organiza: deja la ejecucion
+    `EN_PROCESO` y su trabajo en la cola durable, en una sola transaccion, y responde de inmediato.
+    Un worker la ejecuta; consulta `Location` hasta que deje de estar `EN_PROCESO`. No recibe
+    cuerpo ni elige version: la respuesta dice con cual se organiza (`version_reglas`). Prioriza
+    municipios; no traza rutas.
 
-    **201 quiere decir que la ejecucion se creo, no que el motor tuvo exito.** Su `estado` dice
-    como termino: `EXITOSA`, con un resultado por cada municipio con decisiones, o `FALLIDA`, sin
-    ninguno y con el motivo en `detalle`. Una `FALLIDA` se reintenta con otro POST, que crea otra
-    ejecucion.
+    **201 quiere decir que la ejecucion se creo, no que el motor termino**, y menos que tuvo exito.
+    Al terminar, su `estado` dice como: `EXITOSA`, con un resultado por cada municipio con
+    decisiones, o `FALLIDA`, sin ninguno y con el motivo en `detalle`. Una `FALLIDA` se reintenta
+    con otro POST, que crea otra ejecucion.
 
     **409 `TERRITORIAL_YA_GENERADO` si esas decisiones ya se organizaron con exito** con esta
-    version: organizarlas otra vez duplicaria sus municipios. La respuesta no dice cual ejecucion
-    los publico; lo dice `GET /decisiones/{decision_run_id}/territoriales`. Tambien es 409 si otra
-    peticion los publico mientras esta organizaba: esta ejecucion queda `FALLIDA` en el historial.
+    version: organizarlas otra vez duplicaria sus municipios. **409 `TERRITORIAL_EN_PROCESO` si ya
+    se estan organizando**: a lo mas hay una ejecucion activa por fuente y version. Ninguno dice
+    cual ejecucion fue; lo dice `GET /decisiones/{decision_run_id}/territoriales`.
 
     **409 `DECISION_NO_TERRITORIALIZABLE` si la ejecucion de decision no termino `EXITOSA` o se
     decidio con otra version de las reglas**: no hay decisiones que estas reglas sepan organizar, y
     no se registra ninguna ejecucion territorial.
+
+    **Las decisiones de un flujo automatico las organiza el flujo**: mientras va a hacerlo, 409
+    `FLUJO_EN_PROCESO`, y si se detuvo en esta etapa, 409 `FLUJO_DETENIDO`: se reintenta con
+    `POST /flujos/{flujo_id}/reanudar`.
     """
     ejecucion_decision_id, run_id = _buscar_decision(s, decision_run_id)
-    # La sesion de la peticion solo sirvio para encontrar la ejecucion de decision. Se termina su
-    # transaccion antes de organizar, que puede tardar y abre las suyas, para que la conexion vuelva
-    # al pool. No queda ningun objeto del ORM que pueda caducar: solo el id interno, el
-    # decision_run_id pedido y el run_id de la corrida.
-    s.rollback()
     try:
-        ejecucion = territorializar_decision(ejecucion_decision_id)
+        ejecucion = encolar_territorial(s, ejecucion_decision_id, config=request.app.state.config)
+    except FlujoEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_EN_PROCESO",
+            f"Las decisiones son del flujo {exc.flujo_id}, que sigue EN_PROCESO en {exc.etapa} y "
+            f"las va a organizar por su cuenta. Consulta /flujos/{exc.flujo_id}.",
+            run_id=run_id,
+        ) from exc
+    except FlujoDetenido as exc:
+        raise ErrorDeApi(
+            409,
+            "FLUJO_DETENIDO",
+            f"Las decisiones son del flujo {exc.flujo_id}, que se detuvo en la organizacion "
+            f"territorial. Para reintentarla: POST /flujos/{exc.flujo_id}/reanudar.",
+            run_id=run_id,
+        ) from exc
     except DecisionNoTerritorializable as exc:
         # El motivo es el texto que el servicio armo al revisar la fuente; no se vuelve a leer la
         # ejecucion de decision que trae la excepcion, que ya no tiene sesion.
@@ -146,6 +191,14 @@ def crear_ejecucion_territorial(
             "TERRITORIAL_YA_GENERADO",
             "Las decisiones de esta ejecucion ya se organizaron con exito con "
             f"{VERSION_REGLAS_TERRITORIAL}. Consulta /decisiones/{decision_run_id}/territoriales.",
+            run_id=run_id,
+        ) from exc
+    except TerritorialEnProceso as exc:
+        raise ErrorDeApi(
+            409,
+            "TERRITORIAL_EN_PROCESO",
+            "Las decisiones de esta ejecucion ya se estan organizando con "
+            f"{exc.activa.version_reglas}. Consulta /decisiones/{decision_run_id}/territoriales.",
             run_id=run_id,
         ) from exc
 
@@ -207,18 +260,22 @@ def listar_ejecuciones_territoriales(
     "/territoriales/{territorial_run_id}",
     response_model=EjecucionTerritorialRespuesta,
     summary="Una ejecucion del Motor Territorial: version de las reglas, estado y conteos",
-    responses=errores(
-        *SIN_CLAVE,
-        TERRITORIAL_NO_EXISTE,
-        (422, "ENTRADA_INVALIDA", "El territorial_run_id no es un UUID."),
-    ),
+    responses={
+        200: {"description": "La ejecucion, en cualquier estado.", **EJEMPLOS_DE_EJECUCION},
+        **errores(
+            *SIN_CLAVE,
+            TERRITORIAL_NO_EXISTE,
+            (422, "ENTRADA_INVALIDA", "El territorial_run_id no es un UUID."),
+        ),
+    },
 )
 def obtener_ejecucion_territorial(
     territorial_run_id: UUID, s: Sesion
 ) -> EjecucionTerritorialRespuesta:
-    """Mientras el estado sea `EN_PROCESO`, la ejecucion sigue organizando. En una `FALLIDA`,
-    `territorios_publicados` es cero aunque `territorios_evaluados` diga hasta donde llego el motor.
-    Trae el `decision_run_id` de las decisiones que organizo y el `run_id` de su corrida.
+    """Mientras el estado sea `EN_PROCESO`, el worker todavia no la termina: vuelve a consultar. En
+    una `FALLIDA`, `territorios_publicados` es cero aunque `territorios_evaluados` diga hasta donde
+    llego el motor. Trae el `decision_run_id` de las decisiones que organizo y el `run_id` de su
+    corrida.
     """
     ejecucion, decision_run_id, run_id = _buscar_territorial(s, territorial_run_id)
     return _respuesta_ejecucion(ejecucion, decision_run_id, run_id)
@@ -312,9 +369,8 @@ def listar_municipios(
 
 def _buscar_decision(s: Session, decision_run_id: UUID) -> tuple[int, UUID]:
     """El id interno de la ejecucion de decision con ese decision_run_id y el run_id de su corrida,
-    o 404. Dos valores y no la ejecucion: el POST termina la transaccion de la busqueda antes de
-    organizar, y asi no queda ningun objeto del ORM que pueda caducar. El id interno solo sirve para
-    llamar al servicio; no sale en ninguna respuesta."""
+    o 404. Dos valores y no la ejecucion: el id interno solo sirve para pedir la ejecucion
+    territorial; no sale en ninguna respuesta."""
     fila = s.exec(
         select(EjecucionDecision.id, Corrida.run_id)
         .select_from(EjecucionDecision)

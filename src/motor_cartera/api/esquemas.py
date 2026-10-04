@@ -17,8 +17,12 @@ from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
 from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
+    EstadoFlujo,
     EstadoRuteo,
     EstadoTerritorial,
+    EstadoTrabajo,
+    EtapaFlujo,
+    TipoTrabajo,
 )
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.ingesta.lectores import REQUERIDAS
@@ -96,10 +100,10 @@ class CorridaRespuesta(BaseModel):
 
     run_id: UUID
     estado: EstadoCorrida = Field(
-        description="EN_PROCESO mientras trabaja. Al terminar: EXITOSA (publico sus cuentas), "
-        "RECHAZADA (demasiados registros no cumplen el contrato, o la cartera trae mas de una "
-        "fecha de corte; no publico nada) o FALLIDA (no se pudo juzgar: archivo ilegible o "
-        "error; no publico nada)."
+        description="EN_PROCESO desde que se sube hasta que el worker la termina. Al terminar: "
+        "EXITOSA (publico sus cuentas), RECHAZADA (demasiados registros no cumplen el contrato, o "
+        "la cartera trae mas de una fecha de corte; no publico nada) o FALLIDA (no se pudo "
+        "juzgar: archivo ilegible o error; no publico nada)."
     )
     origen: str = Field(description="Nombre del archivo recibido.")
     firma: str = Field(description="SHA-256 del archivo: misma firma, mismo archivo.")
@@ -218,7 +222,7 @@ EJEMPLO_EJECUCION = {
     "detalle": f"Se decidieron 9,800 cuentas con {VERSION_REGLAS_DECISION}.",
 }
 
-# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ninguna decision.
+# Como queda si el motor falla: la ejecucion existe, pero no publico ninguna decision.
 EJEMPLO_EJECUCION_FALLIDA = {
     **EJEMPLO_EJECUCION,
     "estado": "FALLIDA",
@@ -227,6 +231,17 @@ EJEMPLO_EJECUCION_FALLIDA = {
     "cuentas_evaluadas": 4000,
     "cuentas_decididas": 0,
     "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Lo que responde el POST: la ejecucion recien creada, con su trabajo en la cola y sin decidir nada.
+EJEMPLO_EJECUCION_EN_PROCESO = {
+    **EJEMPLO_EJECUCION,
+    "estado": "EN_PROCESO",
+    "terminada_en": None,
+    "duracion_segundos": None,
+    "cuentas_evaluadas": 0,
+    "cuentas_decididas": 0,
+    "detalle": None,
 }
 
 # Una cuenta con 65 dias de atraso y 62,000.00 de saldo, decidida con decision/v1.
@@ -248,14 +263,17 @@ class EjecucionDecisionRespuesta(BaseModel):
     """Una ejecucion del Decision Engine sobre una corrida: con que reglas, como va o como termino,
     y cuantas cuentas decidio."""
 
-    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION]})
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [EJEMPLO_EJECUCION, EJEMPLO_EJECUCION_EN_PROCESO]}
+    )
 
     decision_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
     run_id: UUID = Field(description="La corrida que se decidio.")
     version_reglas: str = Field(description="Con que reglas se decidio, p. ej. `decision/v1`.")
     estado: EstadoDecision = Field(
-        description="EN_PROCESO mientras decide. Al terminar: EXITOSA (publico una decision por "
-        "cada cuenta de la corrida) o FALLIDA (no publico ninguna; `detalle` dice por que)."
+        description="EN_PROCESO desde que se pide hasta que el worker la termina. Al terminar: "
+        "EXITOSA (publico una decision por cada cuenta de la corrida) o FALLIDA (no publico "
+        "ninguna; `detalle` dice por que)."
     )
     iniciada_en: datetime
     terminada_en: datetime | None
@@ -344,7 +362,7 @@ EJEMPLO_EJECUCION_TERRITORIAL = {
     f"{VERSION_REGLAS_TERRITORIAL}.",
 }
 
-# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ningun municipio.
+# Como queda si el motor falla: la ejecucion existe, pero no publico ningun municipio.
 EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA = {
     **EJEMPLO_EJECUCION_TERRITORIAL,
     "estado": "FALLIDA",
@@ -352,6 +370,17 @@ EJEMPLO_EJECUCION_TERRITORIAL_FALLIDA = {
     "duracion_segundos": 0.31,
     "territorios_publicados": 0,
     "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Lo que responde el POST: la ejecucion recien creada, con su trabajo en la cola.
+EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO = {
+    **EJEMPLO_EJECUCION_TERRITORIAL,
+    "estado": "EN_PROCESO",
+    "terminada_en": None,
+    "duracion_segundos": None,
+    "territorios_evaluados": 0,
+    "territorios_publicados": 0,
+    "detalle": None,
 }
 
 # Un municipio con 37 cuentas de campo, organizado con territorial/v1.
@@ -373,7 +402,11 @@ class EjecucionTerritorialRespuesta(BaseModel):
     """Una ejecucion del Motor Territorial sobre una ejecucion de decision: con que reglas, como va
     o como termino, y cuantos municipios evaluo y publico."""
 
-    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION_TERRITORIAL]})
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [EJEMPLO_EJECUCION_TERRITORIAL, EJEMPLO_EJECUCION_TERRITORIAL_EN_PROCESO]
+        }
+    )
 
     territorial_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
     decision_run_id: UUID = Field(
@@ -382,8 +415,9 @@ class EjecucionTerritorialRespuesta(BaseModel):
     run_id: UUID = Field(description="La corrida de esas decisiones.")
     version_reglas: str = Field(description="Con que reglas se organizo, p. ej. `territorial/v1`.")
     estado: EstadoTerritorial = Field(
-        description="EN_PROCESO mientras organiza. Al terminar: EXITOSA (publico un resultado por "
-        "cada municipio con decisiones) o FALLIDA (no publico ninguno; `detalle` dice por que)."
+        description="EN_PROCESO desde que se pide hasta que el worker la termina. Al terminar: "
+        "EXITOSA (publico un resultado por cada municipio con decisiones) o FALLIDA (no publico "
+        "ninguno; `detalle` dice por que)."
     )
     iniciada_en: datetime
     terminada_en: datetime | None
@@ -483,7 +517,7 @@ EJEMPLO_EJECUCION_RUTEO = {
     "detalle": f"Se rutearon 2,968 cuentas de campo en 403 municipios con {VERSION_REGLAS_RUTEO}.",
 }
 
-# Lo que responde el POST si el motor falla: la ejecucion se creo, pero no publico ninguna ruta.
+# Como queda si el motor falla: la ejecucion existe, pero no publico ninguna ruta.
 EJEMPLO_EJECUCION_RUTEO_FALLIDA = {
     **EJEMPLO_EJECUCION_RUTEO,
     "estado": "FALLIDA",
@@ -492,6 +526,19 @@ EJEMPLO_EJECUCION_RUTEO_FALLIDA = {
     "rutas_publicadas": 0,
     "paradas_publicadas": 0,
     "detalle": "Error interno (RuntimeError); ver la bitacora.",
+}
+
+# Lo que responde el POST: la ejecucion recien creada, con su trabajo en la cola.
+EJEMPLO_EJECUCION_RUTEO_EN_PROCESO = {
+    **EJEMPLO_EJECUCION_RUTEO,
+    "estado": "EN_PROCESO",
+    "terminada_en": None,
+    "duracion_segundos": None,
+    "rutas_evaluadas": 0,
+    "rutas_publicadas": 0,
+    "paradas_evaluadas": 0,
+    "paradas_publicadas": 0,
+    "detalle": None,
 }
 
 # Un municipio con cinco cuentas de campo, ruteado con ruteo/v1: el 2-opt le quito 9,108 metros
@@ -521,7 +568,11 @@ class EjecucionRuteoRespuesta(BaseModel):
     """Una ejecucion del Motor de Ruteo sobre una ejecucion territorial: con que reglas, como va o
     como termino, y cuantas rutas y paradas calculo y publico."""
 
-    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_EJECUCION_RUTEO]})
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [EJEMPLO_EJECUCION_RUTEO, EJEMPLO_EJECUCION_RUTEO_EN_PROCESO]
+        }
+    )
 
     ruteo_run_id: UUID = Field(description="Identificador publico de la ejecucion.")
     territorial_run_id: UUID = Field(
@@ -531,8 +582,9 @@ class EjecucionRuteoRespuesta(BaseModel):
     run_id: UUID = Field(description="La corrida de esas decisiones.")
     version_reglas: str = Field(description="Con que reglas se ruteo, p. ej. `ruteo/v1`.")
     estado: EstadoRuteo = Field(
-        description="EN_PROCESO mientras rutea. Al terminar: EXITOSA (publico una ruta por cada "
-        "municipio con cuentas de campo) o FALLIDA (no publico ninguna; `detalle` dice por que)."
+        description="EN_PROCESO desde que se pide hasta que el worker la termina. Al terminar: "
+        "EXITOSA (publico una ruta por cada municipio con cuentas de campo) o FALLIDA (no publico "
+        "ninguna; `detalle` dice por que)."
     )
     iniciada_en: datetime
     terminada_en: datetime | None
@@ -630,3 +682,166 @@ class PaginaParadas(Pagina[ParadaRutaRespuesta]):
     version_reglas: str = Field(description="Las reglas que trazaron la ruta.")
     estado: EstadoRuteo
     clave_territorio: str = Field(description="El municipio de la ruta.")
+
+
+# --- la orquestacion ------------------------------------------------------------------------------
+#
+# Lo que la API deja ver de la cola durable: el flujo de una corrida y sus trabajos, con los
+# identificadores publicos de lo que tocan. Nunca el worker que tiene un trabajo, ni un id interno.
+
+EJEMPLO_FLUJO = {
+    "flujo_id": "9b2d4f6a-8c0e-4a1b-9d3f-5e7a9c1b3d5f",
+    "run_id": EJEMPLO_CORRIDA["run_id"],
+    "estado": "COMPLETADO",
+    "etapa": "COMPLETADA",
+    "decision_run_id": EJEMPLO_EJECUCION["decision_run_id"],
+    "territorial_run_id": EJEMPLO_EJECUCION_TERRITORIAL["territorial_run_id"],
+    "ruteo_run_id": EJEMPLO_EJECUCION_RUTEO["ruteo_run_id"],
+    "creado_en": "2026-09-30T15:04:05.123456Z",
+    "actualizado_en": "2026-09-30T15:14:01.250000Z",
+    "terminado_en": "2026-09-30T15:14:01.250000Z",
+    "duracion_segundos": 596.127,
+    "detalle": (
+        "La ingesta, la decision, la organizacion territorial y el ruteo terminaron EXITOSA."
+    ),
+}
+
+# Como lo ve el cliente mientras el worker trabaja: ya tiene su decision y espera la territorial.
+EJEMPLO_FLUJO_EN_PROCESO = {
+    **EJEMPLO_FLUJO,
+    "estado": "EN_PROCESO",
+    "etapa": "TERRITORIAL",
+    "ruteo_run_id": None,
+    "actualizado_en": "2026-09-30T15:10:01.851000Z",
+    "terminado_en": None,
+    "duracion_segundos": None,
+    "detalle": "La decision termino EXITOSA; la organizacion territorial esta en la cola.",
+}
+
+# Detenido en la decision: se reanuda con POST /flujos/{flujo_id}/reanudar.
+EJEMPLO_FLUJO_DETENIDO = {
+    **EJEMPLO_FLUJO,
+    "estado": "DETENIDO",
+    "etapa": "DECISION",
+    "territorial_run_id": None,
+    "ruteo_run_id": None,
+    "actualizado_en": "2026-09-30T15:10:00.921000Z",
+    "terminado_en": "2026-09-30T15:10:00.921000Z",
+    "duracion_segundos": 355.798,
+    "detalle": "La decision termino FALLIDA. Para reintentarla, reanuda el flujo.",
+}
+
+EJEMPLO_TRABAJO = {
+    "trabajo_id": "2c4e6a8b-0d1f-4a3c-8e5b-7d9f1a3c5e7b",
+    "flujo_id": EJEMPLO_FLUJO["flujo_id"],
+    "tipo": "DECISION",
+    "estado": "COMPLETADO",
+    "objetivo_run_id": EJEMPLO_EJECUCION["decision_run_id"],
+    "intentos": 1,
+    "max_intentos": 5,
+    "creado_en": "2026-09-30T15:09:59.912000Z",
+    "disponible_desde": "2026-09-30T15:09:59.912000Z",
+    "tomado_en": "2026-09-30T15:10:00.004000Z",
+    "latido_en": "2026-09-30T15:10:00.004000Z",
+    "lease_hasta": None,
+    "terminado_en": "2026-09-30T15:10:01.846000Z",
+    "ultimo_error": None,
+}
+
+# Uno que fallo una vez por un error del worker y espera su segundo intento.
+EJEMPLO_TRABAJO_PENDIENTE = {
+    **EJEMPLO_TRABAJO,
+    "estado": "PENDIENTE",
+    "disponible_desde": "2026-09-30T15:10:01.231000Z",
+    "terminado_en": None,
+    "ultimo_error": "Error de worker (OperationalError); ver la bitacora.",
+}
+
+
+class FlujoRespuesta(BaseModel):
+    """El flujo automatico de una corrida: en que etapa va, como va, y que ejecucion publico o esta
+    ejecutando cada etapa a la que ya llego."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [EJEMPLO_FLUJO, EJEMPLO_FLUJO_EN_PROCESO, EJEMPLO_FLUJO_DETENIDO]
+        }
+    )
+
+    flujo_id: UUID = Field(description="Identificador publico del flujo.")
+    run_id: UUID = Field(description="La corrida que el flujo lleva de la ingesta al ruteo.")
+    estado: EstadoFlujo = Field(
+        description="EN_PROCESO mientras puede avanzar. COMPLETADO si llego hasta un ruteo "
+        "EXITOSA. DETENIDO si una etapa termino sin poder continuar: `etapa` dice cual, y "
+        "`detalle` por que."
+    )
+    etapa: EtapaFlujo = Field(
+        description="Hasta donde llego: INGESTA, DECISION, TERRITORIAL o RUTEO, o COMPLETADA."
+    )
+    decision_run_id: UUID | None = Field(
+        description="La ejecucion de decision del flujo; null hasta que llega a esa etapa."
+    )
+    territorial_run_id: UUID | None = Field(
+        description="La ejecucion territorial del flujo; null hasta que llega a esa etapa."
+    )
+    ruteo_run_id: UUID | None = Field(
+        description="La ejecucion de ruteo del flujo; null hasta que llega a esa etapa."
+    )
+    creado_en: datetime
+    actualizado_en: datetime = Field(description="El ultimo cambio de etapa o de estado.")
+    terminado_en: datetime | None = Field(description="Null mientras esta EN_PROCESO.")
+    detalle: str | None = Field(description="En que va, o por que se detuvo, en palabras.")
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminado_en is None:
+            return None
+        return round((self.terminado_en - self.creado_en).total_seconds(), 3)
+
+
+class TrabajoRespuesta(BaseModel):
+    """Un trabajo de la cola durable: ejecutar el motor de su tipo sobre un recurso. Es el estado de
+    la entrega, no el del motor: un trabajo COMPLETADO puede tener su ejecucion FALLIDA."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [EJEMPLO_TRABAJO, EJEMPLO_TRABAJO_PENDIENTE]}
+    )
+
+    trabajo_id: UUID = Field(description="Identificador publico del trabajo.")
+    flujo_id: UUID | None = Field(
+        description="El flujo del que es; null si su etapa se pidio a mano."
+    )
+    tipo: TipoTrabajo = Field(
+        description="Que motor ejecuta: INGESTA, DECISION, TERRITORIAL o RUTEO."
+    )
+    estado: EstadoTrabajo = Field(
+        description="PENDIENTE (en la cola), EJECUTANDO (lo tiene un worker), COMPLETADO (su "
+        "recurso termino, EXITOSA o no) o FALLIDO (agoto sus intentos sin que su recurso "
+        "terminara)."
+    )
+    objetivo_run_id: UUID = Field(
+        description="El identificador publico de su recurso, segun el tipo: run_id, "
+        "decision_run_id, territorial_run_id o ruteo_run_id."
+    )
+    intentos: int = Field(description="Cuantas veces lo ha tomado un worker para ejecutarlo.")
+    max_intentos: int = Field(description="Cuantas veces se puede tomar, desde que nacio.")
+    creado_en: datetime
+    disponible_desde: datetime = Field(
+        description="Desde cuando se puede tomar: tras un error, despues de su espera."
+    )
+    tomado_en: datetime | None = Field(description="La ultima vez que un worker lo tomo.")
+    latido_en: datetime | None = Field(description="El ultimo latido de su worker.")
+    lease_hasta: datetime | None = Field(
+        description="Hasta cuando es de su worker, solo mientras esta EJECUTANDO. Si vence sin un "
+        "latido, otro worker lo toma."
+    )
+    terminado_en: datetime | None
+    ultimo_error: str | None = Field(
+        description="El ultimo error del worker, sin traza: el detalle esta en su bitacora."
+    )
+
+
+class PaginaTrabajos(Pagina[TrabajoRespuesta]):
+    flujo_id: UUID
+    run_id: UUID = Field(description="La corrida del flujo.")

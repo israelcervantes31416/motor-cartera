@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, File, Query, Request, Response, UploadFile
 from sqlmodel import func, select
 
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
@@ -20,8 +20,9 @@ from motor_cartera.api.esquemas import (
 )
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import EstadoCorrida, Rechazo
-from motor_cartera.ingesta.corridas import ArchivoDuplicado, abrir_corrida, procesar_corrida
+from motor_cartera.ingesta.corridas import ArchivoDuplicado
 from motor_cartera.ingesta.lectores import FORMATOS
+from motor_cartera.orquestacion.flujo import crear_flujo_ingesta
 
 router = APIRouter(prefix="/corridas", tags=["corridas"])
 
@@ -39,7 +40,9 @@ NO_EXISTE = (404, "CORRIDA_NO_ENCONTRADA", "No existe una corrida con ese run_id
     summary="Inicia una corrida de ingesta sobre un archivo de cartera",
     responses={
         201: {
-            "description": "La corrida quedo registrada y se procesa en segundo plano.",
+            "description": "La corrida quedo registrada EN_PROCESO, con su archivo, su flujo y el "
+            "trabajo de su ingesta en la cola durable. El worker la procesa y encadena las demas "
+            "etapas: consulta `Location` y `/corridas/{run_id}/flujo`.",
             "content": {"application/json": {"example": EJEMPLO_CORRIDA_EN_PROCESO}},
         },
         **errores(
@@ -56,12 +59,16 @@ NO_EXISTE = (404, "CORRIDA_NO_ENCONTRADA", "No existe una corrida con ese run_id
 def crear_corrida(
     request: Request,
     response: Response,
-    fondo: BackgroundTasks,
     s: Sesion,
     archivo: Annotated[UploadFile, File(description="La cartera, en xlsx, csv o zip.")],
 ) -> CorridaRespuesta:
-    """Registra la corrida y la procesa en segundo plano. Responde de inmediato, con la
+    """Registra la corrida y deja su ingesta en la cola durable. Responde de inmediato, con la
     corrida `EN_PROCESO` y su direccion en `Location`: consultala hasta que termine.
+
+    La peticion no lee el archivo ni lo juzga: lo guarda, con la corrida, su flujo automatico y el
+    trabajo de la ingesta, en una sola transaccion, y un worker hace lo demas. Si la API se reinicia
+    despues de responder, no se pierde nada: el archivo ya esta en la base. El flujo lleva la
+    corrida hasta el ruteo sin que se pida cada etapa; se sigue en `/corridas/{run_id}/flujo`.
 
     **201.** La peticion crea la corrida antes de responder: ya tiene `run_id` y se puede
     consultar. Lo que sigue en curso es su procesamiento, y eso es su `estado`. Un 202
@@ -98,15 +105,18 @@ def crear_corrida(
         raise ErrorDeApi(422, "ARCHIVO_VACIO", f"{nombre!r} llego vacio.")
 
     try:
-        corrida = abrir_corrida(
-            s, origen=nombre, contenido=contenido, tolerancia=config.tolerancia_rechazo
+        corrida, _ = crear_flujo_ingesta(
+            s,
+            origen=nombre,
+            contenido=contenido,
+            tolerancia=config.tolerancia_rechazo,
+            config=config,
         )
     except ArchivoDuplicado as exc:
         publicado = exc.previa.estado == EstadoCorrida.EXITOSA
         codigo = "ARCHIVO_YA_PUBLICADO" if publicado else "ARCHIVO_EN_PROCESO"
         raise ErrorDeApi(409, codigo, str(exc), run_id=exc.previa.run_id) from exc
 
-    fondo.add_task(procesar_corrida, corrida.id, contenido)
     response.headers["Location"] = f"/corridas/{corrida.run_id}"
     return CorridaRespuesta.model_validate(corrida)
 
