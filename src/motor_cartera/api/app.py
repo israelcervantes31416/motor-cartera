@@ -55,6 +55,14 @@ el cliente pida cada etapa:
    organizacion territorial o el ruteo. Una ingesta que no publico no se reanuda: se vuelve a subir
    el archivo, y eso es otra corrida con otro flujo.
 
+**Las fuentes oficiales.** Sin el campo `contrato`, el archivo es de `cartera/v1`, la cartera
+minima de siempre. Una cartera oficial (la hoja CARTERA, con sus 93 columnas) se sube con
+`contrato=cartera/v2` y su `fecha_corte`, que no es una columna: es metadata del lote. Cada archivo
+se guarda tal como llego en un almacen por contenido y no se borra; `GET /corridas/{run_id}/fuente`
+da la evidencia: el original, el dataset conformado y la auditoria de CARRIER. Los pagos (pagos/v1,
+23 columnas, un movimiento por fila) tienen su propio recurso: `POST /pagos`,
+`GET /pagos/{pagos_run_id}`, sus `/rechazos` y su `/fuente`. Ningun movimiento se deduplica.
+
 **La cartera.**
 
 5. `GET /corridas/{run_id}`: estado, conteos y tiempos de una corrida.

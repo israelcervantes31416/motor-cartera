@@ -39,6 +39,13 @@ independiente de la API, toma cada trabajo, ejecuta su motor y deja en la cola l
 de la ingesta al ruteo. Si un worker muere a la mitad, su trabajo no se pierde: cuando vence su
 lease, otro lo retoma.
 
+Desde v0.6.0, el sistema recibe las **fuentes oficiales** del acreedor tal como llegan: la cartera
+completa (`cartera/v2`, sus 93 columnas, con su hoja compañera CARRIER) y los pagos (`pagos/v1`,
+sus 23 columnas, un movimiento por fila). Cada archivo se guarda entero y para siempre en un
+**almacén por contenido**, donde su SHA-256 es su identidad, y sus registros válidos quedan en un
+**dataset conformado** en Parquet, cada uno atado a su fila de origen. La cartera mínima de
+siempre, `cartera/v1`, sigue igual. Todo está en [docs/fuentes.md](docs/fuentes.md).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -50,8 +57,10 @@ propósito para que el contrato tenga de dónde agarrarse.
 
 El `.gitignore` lo cuida por nombre, pero solo frena lo que todavía no está trackeado. Lo
 trackeado lo revisa `scripts/verificar_archivos_trackeados.py` en el CI: falla si entró algo
-que el `.gitignore` excluye (con `git add -f`, o en mayúsculas donde git las distingue) o una
-hoja de cálculo o un zip con cualquier nombre. Antes de un commit también se corre a mano:
+que el `.gitignore` excluye (con `git add -f`, o en mayúsculas donde git las distingue) o, con
+cualquier nombre, una hoja de cálculo, un zip, un Parquet o un Arrow, un archivo comprimido (gzip,
+bzip2, xz, zstd, 7z, rar), un volcado de `pg_dump` o una base SQLite, que reconoce por sus primeros
+bytes. Antes de un commit también se corre a mano:
 
 ```bash
 python scripts/verificar_archivos_trackeados.py
@@ -59,7 +68,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay cinco versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay seis versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -72,6 +81,10 @@ punta:
 - **v0.5.0 ✅ Orquestación Durable**: la API registra el trabajo y un worker independiente lo
   ejecuta desde una cola sobre PostgreSQL, con lease, latido y reintentos acotados. Una subida
   recorre sola la ingesta, la decisión, la organización territorial y el ruteo.
+- **v0.6.0 ✅ Fuentes Oficiales, Evidencia Inmutable y Escala**: la cartera oficial (`cartera/v2`,
+  93 columnas) y los pagos (`pagos/v1`, 23 columnas) entran con estructura exacta; cada archivo
+  original se conserva en un almacén por contenido, con su dataset conformado y su linaje; y la
+  ingesta procesa 500,000 cuentas (el escenario empresarial objetivo) con memoria acotada.
 
 Lo que ya hace:
 
@@ -104,10 +117,36 @@ Lo que ya hace:
 - [x] API asíncrona: cada `POST` que pide trabajo responde `201` con el recurso `EN_PROCESO`
 - [x] `docker compose up` levanta todo, con el worker en su propio contenedor; CI con PostgreSQL y
   la prueba de humo del flujo automático en un compose limpio
+- [x] Contratos de las fuentes oficiales: `cartera/v2` (93 columnas) y `pagos/v1` (23 columnas),
+  con estructura exacta, sin descartes silenciosos; `cartera/v1` congelado y compatible
+- [x] Almacén de artefactos por contenido (SHA-256): cada archivo original se guarda una vez, de
+  forma atómica, y no se borra nunca; en el compose, en un volumen propio
+- [x] Dataset conformado en Parquet, reproducible byte por byte, con la fila de origen de cada
+  registro, y linaje del original al conformado y a la corrida
+- [x] Proyección operacional explícita de `cartera/v2` a `Cuenta`, con el catálogo público del
+  INEGI: la cartera oficial llega por el flujo hasta el ruteo
+- [x] CARRIER reconocida y auditada como hoja compañera, sin bloquear CARTERA
+- [x] Ingesta de pagos con su propia entidad y su trabajo durable, sin deduplicar movimientos
+- [x] Detección de formato por contenido, no solo por la extensión
+- [x] Generador de CARTERA, CARRIER y PAGOS; perfiles de escala de XS a XXL; escenario
+  longitudinal de varios cortes, determinista por semilla
+- [x] Benchmark de escala fuera del CI: XL (500,000 cuentas) medido de punta a punta, sin OOM
 
-Lo que sigue:
+Lo que sigue, en este orden, sin adelantar ninguna:
 
-- [ ] **v0.6.0 — Cloud + observabilidad**: despliegue en nube, métricas, trazas y alertas
+- [ ] **v0.7** Modelo canónico/histórico + Cuenta 360
+- [ ] **v0.8** Motor de pagos: dedup, conciliación, reversos, atribución
+- [ ] **v0.9** Lifecycle: gestión, contacto, promesa, convenio, visita, resultado
+- [ ] **v0.10** Decision Engine v2
+- [ ] **v0.11** Geografía real + Territorial v2 + bases
+- [ ] **v0.12** Campo v2: zonas, subzonas, tramos, capacidad, jornadas
+- [ ] **v0.13** Ruteo vial v2: OSRM, matrices, restricciones, heurísticas
+- [ ] **v0.14** Collection Analytics
+- [ ] **v0.15** Predictive Intelligence
+- [ ] **v0.16** Optimización Matemática
+- [ ] **v0.17** App operativa + dashboards
+- [ ] **v0.18** Cloud + observabilidad + hardening
+- [ ] **v1.0** Collection Intelligence Platform
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -122,6 +161,8 @@ Eso levanta PostgreSQL, aplica las migraciones y arranca la API en <http://local
 worker, cada uno en su contenedor, sin pasos manuales. La documentación interactiva está en
 <http://localhost:8000/docs>. La clave de desarrollo es `clave-local-de-desarrollo`; se cambia
 con la variable `MC_API_KEY`. Para correr varios workers: `docker compose up --scale worker=3`.
+Los archivos recibidos se guardan en el volumen `fuentes`, aparte del de PostgreSQL: sobreviven a
+un `docker compose down` (sin `-v`, que borra los volúmenes).
 
 ## El flujo completo
 
@@ -142,8 +183,11 @@ curl -i -H "X-API-Key: clave-local-de-desarrollo" -F "archivo=@datos/cartera.xls
 ```
 
 Responde `201` de inmediato, con la corrida `EN_PROCESO` y su dirección en `Location`. La API no
-lee el archivo: lo guarda en PostgreSQL con la corrida, su flujo automático y el trabajo de la
-ingesta, en una sola transacción, y el worker hace lo demás.
+juzga el archivo: lo copia por bloques al almacén de artefactos y registra, en una sola
+transacción, su artefacto, la corrida, su flujo automático y el trabajo de la ingesta; el worker
+hace lo demás. Sin el campo `contrato`, el archivo es de `cartera/v1`, como siempre; una cartera
+oficial se sube con `contrato=cartera/v2` y su `fecha_corte` (ver
+[Fuentes oficiales](#fuentes-oficiales)).
 
 **3. Seguir su flujo** hasta que deje de estar `EN_PROCESO`:
 
@@ -484,7 +528,66 @@ python scripts/prueba_de_humo.py datos/humo.xlsx
 ```
 
 Solo usa la biblioteca estándar de Python; también corre dentro del contenedor con
-`docker compose exec api python scripts/prueba_de_humo.py datos/humo.xlsx`.
+`docker compose exec api python scripts/prueba_de_humo.py datos/humo.xlsx`. Con
+`--oficial <archivo> --corte <fecha>` lleva además una cartera oficial por el flujo hasta el ruteo y
+verifica su evidencia, y con `--pagos <archivo>`, una ingesta de pagos:
+
+```bash
+docker compose exec api motor-cartera generar-oficial --destino datos --formato zip --fecha-corte 2026-09-30
+python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial_2026-09-30.zip \
+  --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip
+```
+
+## Fuentes oficiales
+
+Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
+
+| Contrato | Qué es | Columnas | Dónde entra |
+|---|---|---|---|
+| `cartera/v1` | La cartera mínima de siempre, congelada | 8, con alias | `POST /corridas` (por omisión) |
+| `cartera/v2` | La hoja CARTERA de la cartera oficial | [93 exactas](docs/diccionario_cartera.md) | `POST /corridas` con `contrato=cartera/v2` y `fecha_corte` |
+| `pagos/v1` | Los movimientos económicos de un periodo | [23 exactas](docs/diccionario_pagos.md) | `POST /pagos` |
+
+```bash
+# Una cartera oficial (con CARRIER) y los pagos de la semana que termina en su corte
+docker compose exec api motor-cartera generar-oficial --destino datos --fecha-corte 2026-09-30
+curl -i -H "X-API-Key: clave-local-de-desarrollo" -F "archivo=@datos/cartera_oficial_2026-09-30.xlsx" \
+  -F contrato=cartera/v2 -F fecha_corte=2026-09-30 http://localhost:8000/corridas
+curl -i -H "X-API-Key: clave-local-de-desarrollo" \
+  -F "archivo=@datos/pagos_oficial_2026-09-24_2026-09-30.xlsx" http://localhost:8000/pagos
+```
+
+- **Estructura exacta.** cartera/v2 y pagos/v1 exigen exactamente sus columnas, en cualquier
+  orden. Una que falta, una que sobra o un encabezado repetido deja la corrida `FALLIDA` sin juzgar
+  ningún registro: no hay descartes silenciosos.
+- **La fecha de corte es metadata.** Las 93 columnas no traen una: se declara al subir y queda en
+  la corrida. El mismo `CLIENTE_UNICO` en cortes distintos es válido; repetido dentro de un corte,
+  se rechazan todas sus copias.
+- **El original es evidencia.** Cada archivo se guarda en un almacén por contenido (su SHA-256 es
+  su nombre), de forma atómica, de solo lectura y para siempre: no se borra al terminar la ingesta
+  ni al bajar la migración. `motor-cartera verificar-fuentes` vuelve a firmar cada artefacto.
+- **El conformado es la fuente tipada.** Los registros válidos quedan en un Parquet con las
+  columnas del contrato, tipadas, y la fila y la hoja de origen de cada uno. Se reproduce byte por
+  byte desde el original. `GET /corridas/{run_id}/fuente` y `GET /pagos/{pagos_run_id}/fuente` dan
+  el linaje, sin decir nunca dónde vive un objeto.
+- **La cartera oficial llega hasta el ruteo.** La proyección explícita `operacional/v1` lleva cada
+  registro a `Cuenta`, con las claves del INEGI resueltas desde el estado y la población por un
+  catálogo público y versionado; lo que no se resuelve o es ambiguo se rechaza con su motivo.
+- **CARRIER se audita, no se publica.** La hoja compañera se reconoce y sus advertencias quedan en
+  la evidencia, sin bloquear CARTERA ([docs/carrier.md](docs/carrier.md)).
+- **Los pagos no se deduplican.** Una fila es un movimiento: dos filas idénticas son dos
+  movimientos. Un solo movimiento inválido rechaza el archivo (tolerancia 0 por omisión). Su
+  ingesta es un trabajo durable, `INGESTA_PAGOS`, y no encadena nada.
+- **Un despacho, una cartera.** `DSP_001` y `CARTERA_PRINCIPAL` (configurables con `MC_DESPACHO_ID`
+  y `MC_CARTERA_ID`) quedan en cada corrida e ingesta: son metadata del sistema, no columnas.
+
+**Escala.** El generador tiene perfiles de XS (1,000 cuentas, el valor por omisión) a XXL
+(1,000,000); **XL, 500,000, es el escenario empresarial objetivo**. `generar-escenario` escribe
+varios cortes relacionados, con altas, bajas, saldos y atrasos que cambian y los pagos entre
+cortes, determinista por semilla. `scripts/benchmark_escala.py` mide cada fase fuera del CI: en la
+máquina de desarrollo, una cartera XL en zip se ingiere en 149 s (3,355 filas por segundo) con 930
+MiB de memoria pico. El detalle, las invariantes del escenario y los resultados completos están en
+[docs/fuentes.md](docs/fuentes.md).
 
 ## El Decision Engine
 
@@ -739,9 +842,10 @@ ejecución `FALLIDA`, se reintenta con `POST /flujos/{flujo_id}/reanudar`: otra 
 etapa, y el flujo sigue hasta el ruteo. La ingesta no se reanuda, porque una corrida terminada es
 evidencia inmutable: se vuelve a subir el archivo.
 
-**El archivo.** Se guarda en PostgreSQL antes de responder, para que la ingesta sobreviva a que la
-API muera, y se borra en cuanto la ingesta termina. Es una decisión del alcance actual: en la nube
-(v0.6.0) iría a un *object storage*.
+**El archivo.** Se copia al almacén de artefactos antes de responder, para que la ingesta
+sobreviva a que la API muera, y no se borra nunca: es la evidencia de lo que llegó. Las corridas que
+v0.5 dejó en la cola guardaban su archivo en PostgreSQL, y el worker las termina con él; las nuevas
+no guardan archivos en la base.
 
 **Parámetros del worker.** Son parámetros operativos, no reglas de decisión: cambian cuándo y
 cuántas veces se intenta un trabajo, nunca qué calcula un motor.
@@ -760,9 +864,14 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 
 | Método y ruta | Qué hace | Respuestas |
 |---|---|---|
-| `POST /corridas` | Guarda el archivo y registra la corrida `EN_PROCESO`, con su flujo automático y el trabajo de su ingesta | 201, 401, 409, 413, 415, 422 |
+| `POST /corridas` | Guarda el archivo en el almacén de artefactos y registra la corrida `EN_PROCESO`, con su flujo automático y el trabajo de su ingesta. `contrato` (`cartera/v1` por omisión, o `cartera/v2`) y, con cartera/v2, `fecha_corte` | 201, 401, 409, 413, 415, 422 |
 | `GET /corridas/{run_id}` | Estado: conteos, tiempos y resultado | 200, 401, 404, 422 |
 | `GET /corridas/{run_id}/rechazos` | Registros rechazados con su fila y motivo, paginados | 200, 401, 404, 409, 422 |
+| `GET /corridas/{run_id}/fuente` | La evidencia: el archivo original, el dataset conformado y la auditoría de CARRIER | 200, 401, 404, 422 |
+| `POST /pagos` | Guarda el archivo de pagos y registra la ingesta `EN_PROCESO` con su trabajo `INGESTA_PAGOS` | 201, 401, 409, 413, 415, 422 |
+| `GET /pagos/{pagos_run_id}` | Una ingesta de pagos: estado, conteos, firmas, tiempos y su trabajo | 200, 401, 404, 422 |
+| `GET /pagos/{pagos_run_id}/rechazos` | Los movimientos rechazados con su fila, sus 23 valores y su motivo, paginados | 200, 401, 404, 409, 422 |
+| `GET /pagos/{pagos_run_id}/fuente` | La evidencia de una ingesta de pagos: el original y el conformado | 200, 401, 404, 422 |
 | `GET /corridas/{run_id}/flujo` | El flujo automático de la corrida: estado, etapa y el identificador de cada ejecución | 200, 401, 404, 422 |
 | `GET /flujos/{flujo_id}` | Lo mismo, por el identificador del flujo | 200, 401, 404, 422 |
 | `GET /flujos/{flujo_id}/trabajos` | Los trabajos del flujo, en el orden en que entraron a la cola, con sus intentos y su lease, paginados | 200, 401, 404, 422 |
@@ -791,12 +900,14 @@ Todas las respuestas de error tienen la misma forma, también las que genera el 
   "codigo": "ARCHIVO_YA_PUBLICADO",
   "mensaje": "Este archivo ya lo publico la corrida 4cce3e0d-….",
   "detalles": [],
-  "run_id": "4cce3e0d-…"
+  "run_id": "4cce3e0d-…",
+  "pagos_run_id": null
 }
 ```
 
-El cliente compara `codigo`, que es estable; `mensaje` es para personas. En `/docs`, cada
-ruta lista sus códigos de error con un ejemplo de cada uno.
+El cliente compara `codigo`, que es estable; `mensaje` es para personas. `run_id` o `pagos_run_id`
+dicen con qué corrida o con qué ingesta de pagos tiene que ver el error, si con alguna. En `/docs`,
+cada ruta lista sus códigos de error con un ejemplo de cada uno.
 
 Las reglas que un cliente tiene que conocer:
 
@@ -822,6 +933,11 @@ Las reglas que un cliente tiene que conocer:
 - **Lo publicado solo existe para una ejecución `EXITOSA`.** Las decisiones, los municipios, las
   rutas y las paradas de otra dan `409 DECISION_NO_PUBLICADA`, `TERRITORIAL_NO_PUBLICADO` o
   `RUTEO_NO_PUBLICADO`; un municipio sin ruta en esa ejecución, `404 RUTA_NO_ENCONTRADA`.
+- **El contrato se declara.** cartera/v2 sin `fecha_corte` da `422 FECHA_CORTE_REQUERIDA`, y
+  cartera/v1 con una, `422 FECHA_CORTE_NO_APLICA`, sin guardar nada. Un archivo cuyos bytes no son
+  los de su extensión da `415 FORMATO_NO_CORRESPONDE`.
+- **Un archivo de pagos se acepta una vez.** Si otra ingesta ya lo aceptó o lo está procesando,
+  `POST /pagos` responde `409 PAGOS_YA_ACEPTADOS` o `PAGOS_EN_PROCESO`, con su `pagos_run_id`.
 
 Por qué cada código es el que es (201 y no 202, 422 y no 400, cuándo 409, por qué un
 archivo con registros inválidos no es un error HTTP, por qué una ejecución que termina `FALLIDA`
@@ -843,6 +959,19 @@ motor-cartera cargar datos/cartera.xlsx              # la ingesta en primer plan
 uvicorn --factory motor_cartera.api.app:crear_app --reload
 motor-cartera worker                                 # en otra terminal: ejecuta la cola
 ```
+
+Las fuentes oficiales, también sin la API:
+
+```bash
+motor-cartera generar-oficial --destino datos/oficial --fecha-corte 2026-09-30
+motor-cartera cargar datos/oficial/cartera_oficial_2026-09-30.xlsx --contrato cartera/v2 --fecha-corte 2026-09-30
+motor-cartera cargar-pagos datos/oficial/pagos_oficial_2026-09-24_2026-09-30.xlsx
+motor-cartera generar-escenario --destino datos/escenario --cortes 4 --primer-corte 2026-09-02
+motor-cartera verificar-fuentes                      # vuelve a firmar cada artefacto del almacén
+```
+
+El almacén de artefactos es el directorio de `MC_SOURCE_STORE_ROOT` (`datos/fuentes` en el
+`.env.example`); la API, el worker y el CLI tienen que ver el mismo.
 
 Sin un worker corriendo, la API registra el trabajo pero nadie lo ejecuta: el flujo se queda en la
 cola. `motor-cartera worker --una-vez` procesa a lo más un trabajo y sale, para probar o
@@ -885,23 +1014,47 @@ antes del motor, a media transacción y después de su `COMMIT`. Hay pruebas de 
 workers a la vez, del lease vencido y del dueño anterior que ya no cierra, del latido, de la
 espera entre intentos y de los intentos agotados, y del flujo completo, detenido y reanudado.
 
+Las fuentes oficiales se prueban igual, contra PostgreSQL y con archivos sintéticos de cada
+formato: el almacén (idempotencia, atomicidad, objetos faltantes y dañados, persistencia después de
+la ingesta), la detección de formato por contenido, cada desviación de estructura de cartera/v2 y de
+pagos/v1, las llaves repetidas entre lotes, la firma de contenido independiente del formato y del
+orden, el conformado regenerado byte por byte desde el original, la proyección con el catálogo del
+INEGI, CARRIER, los pagos sin deduplicar con su barrera y su trabajo durable (lease vencido,
+reintentos, dos workers), la migración 0007 de ida y de vuelta, y las invariantes del escenario
+longitudinal sobre los archivos que escribe. El benchmark de escala no corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
 la agregación en la base, la transacción todo o nada, la concurrencia entre ejecuciones, la
 idempotencia y la API del historial, incluidos resultados de otras versiones de las reglas; y el
 `docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
-prueba de humo del flujo automático vía HTTP.
+prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo y una ingesta
+de pagos; después baja los contenedores sin borrar los volúmenes, los vuelve a levantar y verifica
+que cada artefacto siga en el almacén con sus mismos bytes. El benchmark de escala es un workflow
+aparte, que solo corre a mano.
 
 ## Arquitectura
 
 ```
 src/motor_cartera/
 ├── config.py          Configuración desde el entorno (prefijo MC_)
-├── contratos/         Qué forma deben tener los datos; el juicio registro por registro
+├── contratos/         Qué forma deben tener los datos: cartera/v1 (cartera.py), las fuentes
+│                      oficiales (fuente.py, cartera_v2.py y pagos.py) y su juicio vectorizado
+├── fuentes/
+│   ├── almacen.py     El almacén de artefactos por contenido (SHA-256, atómico, de solo lectura)
+│   ├── artefactos.py  El artefacto en la base: primero el objeto, después su fila; la auditoría
+│   ├── formatos.py    Qué es un archivo por su contenido: xlsx, csv o zip
+│   ├── lotes.py       La fuente leída por lotes, con su fila y su hoja; la hoja compañera
+│   ├── conformado.py  El dataset conformado en Parquet, reproducible
+│   ├── geografia.py   El catálogo público del INEGI y cómo se resuelve un nombre, sin adivinar
+│   └── proyeccion.py  operacional/v1: de cartera/v2 a Cuenta
 ├── ingesta/
-│   ├── lectores.py    Excel, CSV y ZIP a nombres canónicos; elige la hoja o el archivo útil
-│   └── corridas.py    La corrida: lee, juzga, decide y publica. La usan la API y el CLI
+│   ├── lectores.py    Excel, CSV y ZIP a nombres canónicos de cartera/v1
+│   ├── corridas.py    La corrida: lee, juzga, decide y publica. La usan la API y el CLI
+│   ├── fuente_oficial.py  Las dos pasadas de una fuente oficial: llaves globales y firma
+│   ├── cartera_v2.py  cartera/v2: juicio, conformado, proyección y CARRIER, todo o nada
+│   └── pagos.py       pagos/v1: su ingesta, su barrera y su conformado, sin deduplicar
 ├── atraso.py          Tramos de atraso: la única fuente de sus fronteras
 ├── segmentacion.py    El resumen por segmento, agregado en la base
 ├── decision/
@@ -919,15 +1072,20 @@ src/motor_cartera/
 │   ├── flujo.py       El flujo automático: encola, encadena las etapas, detiene y reanuda
 │   └── objetivos.py   El recurso de cada tipo de trabajo y sus estados terminales
 ├── db/                Modelo: la corrida, sus cuentas y rechazos, las ejecuciones con lo que
-│                      publican (decisiones por cuenta, resultados por municipio, rutas y paradas)
-│                      y la orquestación (el archivo de cada corrida, su flujo y los trabajos)
-├── generador/         Cartera sintética, único origen de datos del proyecto
-├── api/               FastAPI: corridas, orquestación, cartera, decisiones, territorial y ruteo;
-│                      esquemas, errores y autenticación
-└── cli.py             Comandos: generar, cargar y worker
+│                      publican (decisiones por cuenta, resultados por municipio, rutas y paradas),
+│                      la orquestación (flujos y trabajos) y la evidencia (artefactos, datasets
+│                      conformados, hojas compañeras e ingestas de pagos con sus rechazos)
+├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py)
+│                      y las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py)
+├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial y
+│                      ruteo; subidas, esquemas, errores y autenticación
+└── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
+                       verificar-fuentes y worker
 migraciones/           Versiones de Alembic
-scripts/               Prueba de humo del flujo completo y control de archivos trackeados
-docs/decisiones.md     Por qué está hecho así, y qué haría distinto
+scripts/               Prueba de humo, control de archivos trackeados, benchmark de escala y
+                       actualización del catálogo del INEGI
+docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
+                       los diccionarios de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -935,6 +1093,13 @@ número, la respuesta es una fila de esa tabla: qué archivo llegó (con su firm
 qué cartera traía (con la firma de su contenido, la misma en cualquier formato), con qué
 tolerancia y qué versión del contrato se juzgó, cuántos registros se leyeron, validaron y
 rechazaron, y por qué.
+
+Desde v0.6.0, la corrida apunta a su **ArtefactoFuente**: los bytes exactos que llegaron, en el
+almacén. Una corrida de cartera/v2 tiene además su **DatasetConformado** (el Parquet de sus
+registros válidos, otro artefacto) y su **HojaCompanera** (la auditoría de CARRIER). Los pagos
+cuelgan de una **IngestaPagos**, que no es una corrida: apunta a su artefacto, tiene sus rechazos,
+su conformado y su trabajo en la cola, y no publica cuentas. Del artefacto al conformado y del
+conformado a cada fila de origen, el linaje está en la base y en cada registro.
 
 Las decisiones cuelgan de una **EjecucionDecision**, y la ejecución, de la corrida que decidió.
 Si alguien pregunta por qué a una cuenta se le recomienda `CAMPO`, la respuesta son sus motivos
@@ -962,14 +1127,39 @@ aplica el núcleo municipio por municipio y publica todas las rutas y paradas o 
 La orquestación cuelga de esos mismos recursos sin cambiarlos. Un **FlujoOrquestacion** por cada
 corrida subida por la API apunta a la ejecución de cada etapa a la que llegó; un
 **TrabajoOrquestacion** por recurso dice qué motor ejecutar, quién lo tiene, hasta cuándo y cuántas
-veces se intentó; y el **ArchivoCorrida** guarda el archivo mientras la ingesta lo necesita.
+veces se intentó; y el **ArchivoCorrida**, que desde v0.6.0 solo conserva el archivo de las corridas
+que v0.5 dejó en la cola.
 `orquestacion/` no sabe qué calcula cada motor: llama a su servicio y lee el estado de su recurso.
 Por eso v0.5.0 no cambió `cartera/v1`, `decision/v1`, `territorial/v1` ni `ruteo/v1`.
 
 ## Limitaciones conocidas
 
+**De las fuentes oficiales (v0.6.0).** Lo que v0.6.0 deja a propósito para después:
+
+- **El almacén es un directorio local.** Sin réplica, sin respaldos automáticos y sin *object
+  storage* en la nube: un disco que se pierde se lleva la evidencia, y respaldarlo es de la
+  operación. GCS o S3, detrás de la misma interfaz, son de v0.18.
+- **Los huérfanos no se recolectan.** Si la base falla después de guardar un objeto, el objeto se
+  queda en el almacén sin una fila que lo registre. Ocupa disco y nada más; no hay política de
+  retención ni de limpieza.
+- **Leer un xlsx grande es lento.** openpyxl, en modo de solo lectura, lee del orden de 90,000
+  celdas por segundo: una cartera XL en xlsx tarda varios minutos solo en leerse. Para XL y XXL,
+  csv o zip.
+- **CARRIER se audita, no se publica**, y sus advertencias no bloquean nada.
+- **Los pagos no se deduplican, no se concilian y no se atribuyen.** pagos/v1 acepta cada
+  movimiento tal como llega y no lo cruza con las cuentas de un corte. Deduplicar con la llave
+  histórica, interpretar reversos y atribuir cada pago a una gestión es de v0.8.
+- **La geografía es por municipio.** La proyección resuelve el estado y la población a claves
+  municipales del INEGI; localidades, colonias, códigos postales y coordenadas son de v0.11. El
+  catálogo es una foto (consultada el 2026-10-05) que se actualiza con su script.
+- **El escenario longitudinal no es un modelo financiero**: es coherencia básica y determinismo.
+- **La escala medida es la de la ingesta.** El benchmark mide la ingesta de cartera/v2 y de pagos/v1
+  hasta 1,000,000 de cuentas. Los motores (decisión, territorial y ruteo) no están medidos a esa
+  escala, y cartera/v1 todavía lee su archivo entero en memoria.
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
-se recupere, no la operación en producción. Esto le toca a **v0.6.0 — Cloud + observabilidad**:
+se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
+hardening**:
 
 - **PostgreSQL es la cola.** No hay un broker dedicado: los workers preguntan por trabajo cada
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
@@ -980,8 +1170,6 @@ se recupere, no la operación en producción. Esto le toca a **v0.6.0 — Cloud 
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
 - **Sin métricas, alertas ni trazas distribuidas productivas.** Hay bitácora de la API y del
   worker, y los flujos y trabajos se consultan por la API.
-- **El archivo vive en PostgreSQL** mientras la ingesta lo necesita, hasta `MC_TAMANO_MAXIMO_MB`:
-  no hay *object storage*.
 
 Y dos que son del diseño, no pendientes:
 
@@ -1009,20 +1197,19 @@ Y dos que son del diseño, no pendientes:
   xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
   que es la misma, lo deja a la vista, pero todavía no lo impide.
 - **El control de archivos revisa lo trackeado, no la historia.** Un archivo que se subió y
-  después se borró sigue en la historia, y en un repositorio público ya salió. Un csv con
-  otro nombre no se reconoce por sus bytes, y el control confía en el `.gitignore` del mismo
-  commit: quitar una regla también la quita del control.
-- **Límites de tamaño incompletos.** El tope de subida (`MC_TAMANO_MAXIMO_MB`) se revisa
-  cuando el archivo ya llegó completo, y no hay tope a lo que un zip descomprime. El límite
-  real le toca a un proxy delante de la API.
-- **El contrato no valida contra el catálogo INEGI completo**: revisa la forma de las
-  claves, no que existan. El Motor Territorial agrupa por esas mismas claves, así que un
-  municipio que no existe se organizaría como cualquier otro. Y un saldo con más de dos
-  decimales se redondea al guardarse en lugar de rechazarse.
-- **Rendimiento medido solo hasta 10,000 filas**: menos de 3 s por corrida en una laptop,
-  casi todo leyendo el Excel. A la escala de cientos de miles de cuentas no está medido. El
-  Decision Engine, el Motor Territorial y el Motor de Ruteo se prueban en el CI con las 9,800
-  cuentas de la prueba de humo, y tampoco están medidos más allá.
+  después se borró sigue en la historia, y en un repositorio público ya salió. Un csv o un
+  volcado en SQL plano con otro nombre no se reconocen por sus bytes, y el control confía en el
+  `.gitignore` del mismo commit: quitar una regla también la quita del control.
+- **Límites de tamaño incompletos.** El tope de subida (`MC_TAMANO_MAXIMO_MB`) se aplica al
+  copiar el archivo al almacén, por bloques, pero el servidor ya recibió la subida completa, y no
+  hay tope a lo que un zip descomprime. El límite real le toca a un proxy delante de la API.
+- **cartera/v1 no valida contra el catálogo INEGI**: revisa la forma de las claves, no que
+  existan, y el Motor Territorial agrupa por esas mismas claves. Y en cartera/v1 un saldo con más
+  de dos decimales se redondea al guardarse en lugar de rechazarse. cartera/v2 resuelve sus claves
+  con el catálogo y rechaza un importe con más de dos decimales.
+- **Los motores se miden con la cartera de la prueba de humo.** El Decision Engine, el Motor
+  Territorial y el Motor de Ruteo se prueban en el CI con sus 9,800 cuentas y no están medidos a
+  la escala de 500,000.
 - **Una sola API key**, sin usuarios, permisos ni rotación.
 - **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se desarrolla el
   proyecto no tiene Docker, así que en Windows y macOS no está probado.

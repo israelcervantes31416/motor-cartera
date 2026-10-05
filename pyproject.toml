@@ -1,6 +1,6 @@
 [project]
 name = "motor-cartera"
-version = "0.5.0"
+version = "0.6.0"
 description = "Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético determinista de cartera de crédito al consumo, con orquestación durable sobre PostgreSQL, sobre datos sintéticos"
 readme = "README.md"
 requires-python = ">=3.12"
