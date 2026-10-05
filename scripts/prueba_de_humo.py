@@ -6,10 +6,16 @@ de la ingesta al ruteo. Despues revisa los trabajos de la cola que lo ejecutaron
 lo que publico cada etapa con los identificadores del flujo: la corrida con sus rechazos y su
 resumen, las decisiones por cuenta, los municipios, las rutas y las paradas de la primera.
 Comprueba que ninguna etapa se publica dos veces, ni a mano, y que el OpenAPI corresponde a esta
-version y documenta la orquestacion. Verifica los codigos HTTP de cada paso. Solo usa la
-biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una laptop:
+version y documenta la orquestacion. Verifica los codigos HTTP de cada paso.
+
+Con --oficial, hace lo mismo con una cartera oficial (cartera/v2, 93 columnas) y su fecha de
+corte declarada: el flujo la lleva de la ingesta al ruteo, y la evidencia de la corrida trae el
+archivo original (con el mismo SHA-256 que se calcula aqui sobre el archivo subido), el dataset
+conformado y su hoja CARRIER. Solo usa la biblioteca estandar, para correr igual en el CI, dentro
+del contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
+    python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -17,6 +23,8 @@ cuanto algo no sale como debe.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 import re
@@ -46,19 +54,23 @@ def pedir(metodo, ruta, *, cuerpo=None, tipo=None, con_clave=True, timeout=30):
         return error.code, dict(error.headers), json.loads(error.read() or b"{}")
 
 
-def subir(archivo: Path, *, con_clave=True):
+def subir(archivo: Path, *, con_clave=True, ruta="/corridas", **campos):
     frontera = uuid.uuid4().hex
-    cuerpo = b"".join(
-        [
-            f"--{frontera}\r\n".encode(),
-            f'Content-Disposition: form-data; name="archivo"; filename="{archivo.name}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n".encode(),
-            archivo.read_bytes(),
-            f"\r\n--{frontera}--\r\n".encode(),
-        ]
-    )
+    partes = [
+        f"--{frontera}\r\n".encode(),
+        f'Content-Disposition: form-data; name="archivo"; filename="{archivo.name}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n".encode(),
+        archivo.read_bytes(),
+        b"\r\n",
+    ]
+    for nombre, valor in campos.items():
+        partes.append(
+            f'--{frontera}\r\nContent-Disposition: form-data; name="{nombre}"\r\n\r\n'
+            f"{valor}\r\n".encode()
+        )
+    partes.append(f"--{frontera}--\r\n".encode())
     tipo = f"multipart/form-data; boundary={frontera}"
-    return pedir("POST", "/corridas", cuerpo=cuerpo, tipo=tipo, con_clave=con_clave)
+    return pedir("POST", ruta, cuerpo=b"".join(partes), tipo=tipo, con_clave=con_clave)
 
 
 def esperar(condicion: bool, descripcion: str) -> None:
@@ -107,7 +119,70 @@ def seguir_el_flujo(run_id: str) -> dict:
         time.sleep(0.5)
 
 
-def main(archivo: Path) -> None:
+def la_cartera_oficial(archivo: Path, corte: str) -> None:
+    """cartera/v2 de punta a punta: el contrato y el corte declarados, el flujo hasta el ruteo y la
+    evidencia de la corrida, con su linaje."""
+    print(f"Cartera oficial (cartera/v2) con {archivo}, corte {corte}")
+    sha256 = hashlib.sha256(archivo.read_bytes()).hexdigest()
+
+    estado, _, error = subir(archivo, contrato="cartera/v2")
+    esperar(
+        estado == 422 and error["codigo"] == "FECHA_CORTE_REQUERIDA",
+        "cartera/v2 sin fecha de corte: 422 FECHA_CORTE_REQUERIDA",
+    )
+    estado, encabezados, corrida = subir(archivo, contrato="cartera/v2", fecha_corte=corte)
+    esperar(
+        estado == 201
+        and corrida["version_contrato"] == "cartera/v2"
+        and corrida["fecha_corte"] == corte,
+        f"POST /corridas con cartera/v2: {estado} {corrida.get('estado')}, corte {corte}",
+    )
+    run_id = corrida["run_id"]
+    flujo = seguir_el_flujo(run_id)
+    esperar(
+        (flujo.get("estado"), flujo.get("etapa")) == ("COMPLETADO", "COMPLETADA"),
+        f"el flujo de cartera/v2: {flujo.get('estado')} en {flujo.get('etapa')}",
+    )
+    estado, _, corrida = pedir("GET", f"/corridas/{run_id}")
+    esperar(
+        estado == 200
+        and corrida["estado"] == "EXITOSA"
+        and corrida["filas_validas"] > 0
+        and corrida["version_proyeccion"] == "operacional/v1",
+        f"la corrida termino EXITOSA: {corrida.get('detalle', '')[:120]}",
+    )
+    estado, _, fuente = pedir("GET", f"/corridas/{run_id}/fuente")
+    artefacto = fuente.get("artefacto") or {}
+    conformado = fuente.get("conformado") or {}
+    hojas = fuente.get("hojas_companeras") or []
+    esperar(
+        estado == 200 and artefacto.get("sha256") == sha256 == corrida["firma"],
+        f"GET /corridas/{{run_id}}/fuente: el original, con el SHA-256 del archivo subido "
+        f"({sha256[:12]}...)",
+    )
+    esperar(
+        conformado.get("filas") == corrida["filas_validas"]
+        and conformado.get("columnas") == 93
+        and conformado.get("firma_contenido") == corrida["firma_contenido"]
+        and (conformado.get("artefacto") or {}).get("formato") == "parquet",
+        f"el dataset conformado: {conformado.get('filas')} registros en Parquet, misma firma",
+    )
+    esperar(
+        len(hojas) == 1 and hojas[0]["estructura_reconocida"] and hojas[0]["columnas"] == 85,
+        f"CARRIER reconocida: {hojas[0]['filas'] if hojas else 0} filas, 85 columnas",
+    )
+    estado, _, decision = pedir("GET", f"/decisiones/{flujo['decision_run_id']}")
+    estado_r, _, ruteo = pedir("GET", f"/ruteos/{flujo['ruteo_run_id']}")
+    esperar(
+        estado == estado_r == 200
+        and decision["cuentas_decididas"] == corrida["filas_validas"]
+        and ruteo["estado"] == "EXITOSA",
+        f"decision/v1 decidio {decision.get('cuentas_decididas')} cuentas y ruteo/v1 publico "
+        f"{ruteo.get('rutas_publicadas')} rutas",
+    )
+
+
+def main(archivo: Path, oficial: Path | None = None, corte: str | None = None) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
     estado, salud = esperar_a_la_api()
@@ -179,6 +254,14 @@ def main(archivo: Path) -> None:
     esperar(
         estado == 200 and corrida["estado"] == "EXITOSA",
         f"la corrida termino EXITOSA: {corrida.get('detalle')}",
+    )
+    # El archivo no se borro al terminar: sigue en el almacen, con su SHA-256.
+    estado, _, fuente = pedir("GET", f"{ubicacion}/fuente")
+    sha256 = hashlib.sha256(archivo.read_bytes()).hexdigest()
+    esperar(
+        estado == 200
+        and (fuente.get("artefacto") or {}).get("sha256") == sha256 == corrida["firma"],
+        f"GET /corridas/{{run_id}}/fuente: el archivo original sigue ahi ({sha256[:12]}...)",
     )
     esperar(
         bool(corrida["version_contrato"]) and len(corrida["firma_contenido"] or "") == 64,
@@ -432,18 +515,26 @@ def main(archivo: Path) -> None:
         "/flujos/{flujo_id}/reanudar",
         "/territoriales/{territorial_run_id}/municipios",
         "/ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas",
+        "/corridas/{run_id}/fuente",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
-        f"GET /openapi.json {estado}: version {version}, con la orquestacion, el Motor "
-        "Territorial y el Motor de Ruteo",
+        f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores y "
+        "la evidencia de las fuentes",
     )
+    if oficial is not None:
+        la_cartera_oficial(oficial, corte)
     print("Todo en orden.")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    main(Path(sys.argv[1]))
+    argumentos = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    argumentos.add_argument("archivo", type=Path, help="Una cartera de cartera/v1.")
+    argumentos.add_argument("--oficial", type=Path, help="Una cartera oficial de cartera/v2.")
+    argumentos.add_argument("--corte", help="La fecha de corte de la cartera oficial, AAAA-MM-DD.")
+    leidos = argumentos.parse_args()
+    if (leidos.oficial is None) != (leidos.corte is None):
+        argumentos.error("--oficial y --corte van juntos.")
+    main(leidos.archivo, leidos.oficial, leidos.corte)

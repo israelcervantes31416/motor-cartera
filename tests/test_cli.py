@@ -209,3 +209,85 @@ def test_el_worker_se_anuncia_en_la_ayuda():
     ayuda = re.sub(r"\x1b\[[0-9;]*m", "", resultado.output)
     assert resultado.exit_code == 0
     assert "--una-vez" in ayuda
+
+
+# --- cartera/v2 y las fuentes oficiales -----------------------------------------------------------
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_una_cartera_oficial_con_su_fecha_de_corte(tmp_path):
+    generado = cli.invoke(
+        app,
+        [
+            "generar-oficial",
+            "--destino",
+            str(tmp_path),
+            "--n",
+            "40",
+            "--formato",
+            "zip",
+            "--fecha-corte",
+            "2026-09-30",
+            "--semilla",
+            "3",
+        ],
+    )
+    assert generado.exit_code == 0, generado.output
+    ruta = tmp_path / "cartera_oficial_2026-09-30.zip"
+
+    resultado = cli.invoke(
+        app, ["cargar", str(ruta), "--contrato", "cartera/v2", "--fecha-corte", "2026-09-30"]
+    )
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "EXITOSA" in resultado.output
+    assert "leidas 40, validas 40, rechazadas 0" in resultado.output
+    assert "Hoja companera 'CARRIER.csv'" in resultado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_cartera_v2_sin_fecha_de_corte_se_niega_sin_registrar_nada(tmp_path):
+    ruta = tmp_path / "c.csv"
+    ruta.write_text("CLIENTE_UNICO\nCU00000001\n", encoding="utf-8")
+
+    resultado = cli.invoke(app, ["cargar", str(ruta), "--contrato", "cartera/v2"])
+
+    assert resultado.exit_code == 1
+    assert "se declara con la corrida" in resultado.output
+    assert _cuantos(Corrida) == 0
+
+
+def test_generar_oficial_escribe_la_cartera_y_su_carrier(tmp_path):
+    resultado = cli.invoke(
+        app,
+        [
+            "generar-oficial",
+            "--destino",
+            str(tmp_path),
+            "--n",
+            "25",
+            "--formato",
+            "xlsx",
+            "--fecha-corte",
+            "2026-09-30",
+        ],
+    )
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "25 cuentas" in resultado.output and "filas de CARRIER" in resultado.output
+    assert (tmp_path / "cartera_oficial_2026-09-30.xlsx").exists()
+
+
+def test_generar_oficial_por_omision_es_pequena(tmp_path):
+    # Una cartera grande se pide con su perfil; nunca sale por accidente.
+    resultado = cli.invoke(app, ["generar-oficial", "--destino", str(tmp_path), "--formato", "csv"])
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "1,000 cuentas" in resultado.output
+
+
+def test_generar_oficial_con_un_perfil_desconocido(tmp_path):
+    resultado = cli.invoke(app, ["generar-oficial", "--destino", str(tmp_path), "--perfil", "XXXL"])
+
+    assert resultado.exit_code == 2
+    assert "Perfil desconocido: XXXL. Usa XS, S, M, L, XL, XXL." in resultado.output

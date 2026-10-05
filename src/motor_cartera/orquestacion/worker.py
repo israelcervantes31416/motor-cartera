@@ -25,6 +25,7 @@ import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -33,6 +34,7 @@ from sqlmodel import Session
 
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import (
     ArchivoCorrida,
     ArtefactoFuente,
@@ -46,7 +48,7 @@ from motor_cartera.db.sesion import sesion
 from motor_cartera.decision.ejecuciones import DecisionYaGenerada, ejecutar_decision
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
-from motor_cartera.ingesta.corridas import procesar_corrida
+from motor_cartera.ingesta.corridas import procesar_corrida, verificar_declaracion
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
@@ -257,7 +259,12 @@ def ejecutar_worker(
 
 
 def ingerir_en_primer_plano(
-    ruta: str | Path, *, tolerancia: float | None = None, config: Config | None = None
+    ruta: str | Path,
+    *,
+    tolerancia: float | None = None,
+    config: Config | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
 ) -> Corrida:
     """La ingesta del CLI: el archivo al almacen de artefactos y, en una transaccion, su artefacto,
     la corrida y su trabajo, con el trabajo ya tomado por este proceso; despues, la ingesta en
@@ -270,6 +277,7 @@ def ingerir_en_primer_plano(
     """
     config = config or config_del_entorno
     ruta = Path(ruta)
+    verificar_declaracion(contrato, fecha_corte)
     if ruta.stat().st_size == 0:
         raise ValueError(f"{ruta.name!r} esta vacio: no hay nada que ingerir.")
     with ruta.open("rb") as archivo:
@@ -280,6 +288,8 @@ def ingerir_en_primer_plano(
             s,
             origen=ruta.name,
             guardado=guardado,
+            contrato=contrato,
+            fecha_corte=fecha_corte,
             tolerancia=tolerancia,
             config=config,
             tomado_por=worker_id,

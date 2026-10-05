@@ -22,6 +22,7 @@ correr: el recurso EN_PROCESO y su trabajo, en una transaccion. No compiten con 
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -29,6 +30,7 @@ from sqlalchemy import ColumnElement
 from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.config import Config
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import (
     Corrida,
     EjecucionDecision,
@@ -139,6 +141,8 @@ def crear_flujo_ingesta(
     config: Config,
     contenido: bytes | None = None,
     guardado: ArtefactoGuardado | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
 ) -> tuple[Corrida, FlujoOrquestacion]:
     """El artefacto, la corrida EN_PROCESO, su flujo en INGESTA y el trabajo de la ingesta, en una
     sola transaccion: no hay un instante en que exista la corrida sin todo lo demas.
@@ -153,6 +157,8 @@ def crear_flujo_ingesta(
         origen=origen,
         contenido=contenido,
         guardado=guardado,
+        contrato=contrato,
+        fecha_corte=fecha_corte,
         tolerancia=tolerancia,
         confirmar=False,
         config=config,
@@ -182,6 +188,8 @@ def encolar_ingesta(
     config: Config,
     contenido: bytes | None = None,
     guardado: ArtefactoGuardado | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
     tomado_por: str | None = None,
 ) -> tuple[Corrida, TrabajoOrquestacion]:
     """Una ingesta pedida a mano, sin flujo: el artefacto, la corrida EN_PROCESO y su trabajo, en
@@ -192,6 +200,8 @@ def encolar_ingesta(
         origen=origen,
         contenido=contenido,
         guardado=guardado,
+        contrato=contrato,
+        fecha_corte=fecha_corte,
         tolerancia=tolerancia,
         confirmar=False,
         config=config,

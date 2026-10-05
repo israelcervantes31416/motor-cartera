@@ -89,6 +89,9 @@ _PROBLEMAS = {
     "uuid_parsing": "Debe ser un UUID.",
     "string_pattern_mismatch": "Debe cumplir el patron {pattern}.",
     "enum": "Debe ser uno de: {expected}.",
+    "literal_error": "Debe ser uno de: {expected}.",
+    "date_parsing": "Debe ser una fecha AAAA-MM-DD.",
+    "date_from_datetime_parsing": "Debe ser una fecha AAAA-MM-DD.",
 }
 
 

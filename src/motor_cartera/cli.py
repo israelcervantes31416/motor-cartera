@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-app = typer.Typer(help="Motor de cartera: ingesta, validacion, persistencia y su worker.")
+app = typer.Typer(
+    help="Motor de cartera: fuentes oficiales, ingesta, validacion, persistencia y su worker."
+)
 
 
 @app.command()
@@ -39,22 +42,89 @@ def generar(
     typer.echo(f"Escrito: {ruta}")
 
 
+@app.command("generar-oficial")
+def generar_oficial(
+    destino: Annotated[
+        str, typer.Option(help="El directorio donde se escriben.")
+    ] = "datos/oficial",
+    perfil: Annotated[
+        str,
+        typer.Option(
+            help="XS (1,000), S (10,000), M (100,000), L (250,000), XL (500,000: el escenario "
+            "empresarial objetivo) o XXL (1,000,000: prueba de esfuerzo)."
+        ),
+    ] = "XS",
+    n: Annotated[int | None, typer.Option(help="Cuantas cuentas; reemplaza al perfil.")] = None,
+    formato: Annotated[str, typer.Option(help="xlsx, csv o zip.")] = "xlsx",
+    fecha_corte: Annotated[
+        datetime | None, typer.Option(formats=["%Y-%m-%d"], help="Por omision, hoy.")
+    ] = None,
+    semilla: Annotated[int | None, typer.Option(help="Por omision, MC_SEMILLA.")] = None,
+    carrier: Annotated[
+        bool, typer.Option(help="Con la hoja companera CARRIER, en xlsx y zip.")
+    ] = True,
+) -> None:
+    """Genera la cartera oficial sintetica (cartera/v2, 93 columnas) en un archivo: en xlsx, las
+    hojas CARTERA y CARRIER; en zip, CARTERA.csv y CARRIER.csv; en csv, solo CARTERA.
+
+    Por omision es pequena (XS): una cartera grande se pide con su perfil, nunca por accidente. Se
+    arma y se escribe por bloques, asi que XL y XXL no se cargan enteras en memoria; para ellas
+    conviene csv o zip, porque escribir un xlsx de ese tamano es lento por el formato.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.generador.oficial import PERFILES, escribir_cartera, estado_inicial
+
+    if n is None and perfil.upper() not in PERFILES:
+        typer.echo(f"Perfil desconocido: {perfil}. Usa {', '.join(PERFILES)}.", err=True)
+        raise typer.Exit(code=2)
+    cuantas = n if n is not None else PERFILES[perfil.upper()]
+    corte = fecha_corte.date() if fecha_corte else date.today()
+    semilla = config.semilla if semilla is None else semilla
+    estado = estado_inicial(cuantas, semilla=semilla, fecha_corte=corte)
+    ruta = Path(destino) / f"cartera_oficial_{corte.isoformat()}.{formato.lower().lstrip('.')}"
+    escrito = escribir_cartera(
+        estado, ruta, semilla=semilla, fecha_corte=corte, con_carrier=carrier
+    )
+    typer.echo(
+        f"Escrito: {escrito.ruta} ({escrito.filas:,} cuentas"
+        + (f", {escrito.filas_carrier:,} filas de CARRIER" if escrito.filas_carrier else "")
+        + f"; fecha de corte {corte.isoformat()}, que se declara al cargarla)"
+    )
+
+
 @app.command()
-def cargar(ruta: str) -> None:
+def cargar(
+    ruta: str,
+    contrato: Annotated[
+        str,
+        typer.Option(help="cartera/v1 (8 columnas, por omision) o cartera/v2 (93 columnas)."),
+    ] = "cartera/v1",
+    fecha_corte: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%d"],
+            help="Obligatoria con cartera/v2, que no la trae en el archivo; no con cartera/v1.",
+        ),
+    ] = None,
+) -> None:
     """Lee un archivo, lo juzga contra el contrato y lo publica como una corrida.
 
-    Pasa por la cola durable, como la API, pero en primer plano: la corrida, su archivo y su
-    trabajo se registran juntos, y el trabajo ya es de este proceso. No encadena la decision ni
-    las demas etapas. Si se interrumpe, el trabajo queda en la cola y un worker lo termina cuando
-    vence su lease. Termina con codigo 1 si la corrida no publico, para que un script o un
-    programador de tareas lo note.
+    Pasa por la cola durable, como la API, pero en primer plano: el archivo queda en el almacen de
+    artefactos, y su corrida y su trabajo se registran juntos, con el trabajo ya de este proceso.
+    No encadena la decision ni las demas etapas. Si se interrumpe, el trabajo queda en la cola y
+    un worker lo termina cuando vence su lease. Termina con codigo 1 si la corrida no publico, para
+    que un script o un programador de tareas lo note.
     """
     from motor_cartera.db.modelos import EstadoCorrida
     from motor_cartera.ingesta.corridas import ArchivoDuplicado
     from motor_cartera.orquestacion.worker import ingerir_en_primer_plano
 
     try:
-        corrida = ingerir_en_primer_plano(ruta)
+        corrida = ingerir_en_primer_plano(
+            ruta,
+            contrato=contrato,
+            fecha_corte=fecha_corte.date() if fecha_corte else None,
+        )
     except (ArchivoDuplicado, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

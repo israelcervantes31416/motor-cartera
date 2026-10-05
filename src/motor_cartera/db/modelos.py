@@ -102,6 +102,18 @@ class Corrida(SQLModel, table=True):
 
     __tablename__ = "corrida"
     __table_args__ = (
+        # cartera/v2 trae la fecha de corte como metadata del lote, y su archivo siempre en el
+        # almacen: una corrida de cartera/v2 sin las dos no existe. Y se proyecta a Cuenta con una
+        # version de la proyeccion, que una de cartera/v1 no tiene: v1 ya es la forma de Cuenta.
+        sa.CheckConstraint(
+            "version_contrato <> 'cartera/v2' "
+            "OR (artefacto_fuente_id IS NOT NULL AND fecha_corte IS NOT NULL)",
+            name=conv("ck_corrida_v2_fuente"),
+        ),
+        sa.CheckConstraint(
+            "(version_contrato = 'cartera/v2') = (version_proyeccion IS NOT NULL)",
+            name=conv("ck_corrida_proyeccion"),
+        ),
         # Una cartera (mismo archivo, misma firma) se publica una sola vez. Lo garantiza la
         # base y no solo el codigo: dos peticiones simultaneas con el mismo archivo no
         # pueden publicar las dos. Las corridas que no publicaron no cuentan.
@@ -181,6 +193,12 @@ class Corrida(SQLModel, table=True):
         max_length=32,
         description="La cartera del sistema cuando se registro: metadata, no un dato del archivo",
     )
+    version_proyeccion: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Con que version de la proyeccion operacional se llevo cartera/v2 a Cuenta. "
+        "Vacia en cartera/v1, que ya tiene la forma de Cuenta",
+    )
 
 
 class Cuenta(SQLModel, table=True):
@@ -224,6 +242,76 @@ class Rechazo(SQLModel, table=True):
     """El registro tal como se leyo, en texto."""
     motivos: list[dict[str, str]] = Field(sa_type=JSONB)
     """Las reglas que no cumplio: [{"campo": ..., "regla": ...}]."""
+
+
+class DatasetConformado(SQLModel, table=True):
+    """El dataset conformado (source-conformed) que publico una ingesta de una fuente oficial.
+
+    Es el linaje de punta a punta: de que artefacto original salio, en que artefacto (un Parquet en
+    el mismo almacen) quedo, con que contrato se juzgo, cuantos registros trae y la firma de su
+    contenido. Existe solo si la ingesta publico: es la fuente validada, no un intento.
+    """
+
+    __tablename__ = "dataset_conformado"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_conformado_corrida"),
+        sa.ForeignKeyConstraint(
+            ["artefacto_original_id"], ["artefacto_fuente.id"], name="fk_conformado_original"
+        ),
+        sa.ForeignKeyConstraint(
+            ["artefacto_conformado_id"], ["artefacto_fuente.id"], name="fk_conformado_parquet"
+        ),
+        # Una ingesta publica a lo mas un dataset conformado.
+        sa.UniqueConstraint("corrida_id", name="uq_conformado_corrida"),
+        sa.CheckConstraint("filas >= 0 AND columnas > 0", name=conv("ck_conformado_conteos")),
+        sa.CheckConstraint("firma_contenido ~ '^[0-9a-f]{64}$'", name=conv("ck_conformado_firma")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    dataset_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    contrato: str = Field(max_length=32)
+    """Con que contrato se juzgo: cartera/v2 o pagos/v1."""
+    corrida_id: int
+    """La corrida que lo publico. Su llave foranea esta en __table_args__."""
+    artefacto_original_id: int = Field(index=True)
+    """El archivo tal como llego."""
+    artefacto_conformado_id: int = Field(index=True)
+    """El Parquet con los registros validos, en el mismo almacen."""
+    firma_contenido: str = Field(max_length=64)
+    """La firma de su contenido canonico: la misma que la de la ingesta que lo publico."""
+    filas: int = Field(sa_type=sa.BigInteger)
+    columnas: int
+    """Las del contrato, sin contar las dos tecnicas (_source_row y _source_sheet)."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class HojaCompanera(SQLModel, table=True):
+    """Una hoja companera que traia el archivo de una corrida, como CARRIER junto a CARTERA.
+
+    Se reconoce y se audita, pero no se juzga ni se publica, y no decide si la corrida publica: sus
+    reglas de negocio todavia no estan definidas. Lo que se encontro queda aqui: cuantas filas y
+    columnas trae, si su estructura es la esperada y lo incoherente, como advertencias. Sus bytes
+    estan en el artefacto original, que es el libro o el zip completo.
+    """
+
+    __tablename__ = "hoja_companera"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_companera_corrida"),
+        sa.UniqueConstraint("corrida_id", "nombre", name="uq_companera_corrida_nombre"),
+        sa.CheckConstraint("filas >= 0 AND columnas >= 0", name=conv("ck_companera_conteos")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    corrida_id: int
+    nombre: str = Field(max_length=255)
+    """La hoja del xlsx, o el miembro del zip."""
+    filas: int = Field(sa_type=sa.BigInteger)
+    columnas: int
+    estructura_reconocida: bool
+    """Si trae exactamente las columnas esperadas."""
+    advertencias: list[str] = Field(sa_type=JSONB)
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
 class EstadoDecision(StrEnum):

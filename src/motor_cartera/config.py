@@ -43,6 +43,9 @@ class Config(BaseSettings):
 
     Es opcional aqui solo porque el CLI, Alembic y las pruebas no la necesitan.
     """
+    filas_por_lote: int = Field(default=50_000, ge=100)
+    """De cuantas filas se lee y se juzga cada lote de una fuente oficial (cartera/v2 y pagos/v1).
+    Es un parametro operativo: cambia la memoria que se usa, nunca el resultado de una corrida."""
     tamano_maximo_mb: int = Field(default=512, gt=0)
     """Tope del archivo que aceptan POST /corridas y POST /pagos, en MiB. El archivo se copia al
     almacen por bloques mientras llega, sin cargarlo en memoria: el tope cuida el disco, y alcanza

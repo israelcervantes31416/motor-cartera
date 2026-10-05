@@ -96,8 +96,16 @@ jobs:
       - name: Generar una cartera sintetica
         run: docker compose exec -T api motor-cartera generar --destino datos/humo.xlsx
 
+      # La cartera oficial (cartera/v2, 93 columnas) con su hoja CARRIER, en el perfil mas pequeno.
+      - name: Generar una cartera oficial sintetica
+        run: >-
+          docker compose exec -T api motor-cartera generar-oficial --destino datos --perfil XS
+          --formato zip --fecha-corte 2026-09-30
+
       - name: Prueba de humo por la API
-        run: python3 scripts/prueba_de_humo.py datos/humo.xlsx
+        run: >-
+          python3 scripts/prueba_de_humo.py datos/humo.xlsx
+          --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
@@ -106,7 +114,7 @@ jobs:
         run: |
           docker compose down
           docker compose up -d
-          docker compose exec -T worker motor-cartera verificar-fuentes --minimo 1
+          docker compose exec -T worker motor-cartera verificar-fuentes --minimo 3
 
       # Lo que hizo el worker: cada trabajo que tomo y como lo cerro.
       - name: Bitacora del worker

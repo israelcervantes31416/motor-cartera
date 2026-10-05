@@ -3,6 +3,7 @@ from motor_cartera.db.modelos import (
     ArtefactoFuente,
     Corrida,
     Cuenta,
+    DatasetConformado,
     DecisionCuenta,
     EjecucionDecision,
     EjecucionRuteo,
@@ -15,6 +16,7 @@ from motor_cartera.db.modelos import (
     EstadoTrabajo,
     EtapaFlujo,
     FlujoOrquestacion,
+    HojaCompanera,
     ParadaRuta,
     Rechazo,
     ResultadoTerritorial,
@@ -26,6 +28,8 @@ from motor_cartera.db.sesion import crear_motor, sesion
 
 __all__ = [
     "ArtefactoFuente",
+    "DatasetConformado",
+    "HojaCompanera",
     "Cuenta",
     "Corrida",
     "EstadoCorrida",

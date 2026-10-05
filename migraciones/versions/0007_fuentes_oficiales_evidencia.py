@@ -1,4 +1,4 @@
-"""fuentes oficiales y evidencia inmutable: el artefacto fuente de cada corrida
+"""fuentes oficiales y evidencia inmutable: artefactos, cartera/v2 y datasets conformados
 
 Revision ID: 0007
 Revises: 0006
@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 import sqlmodel
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "0007"
 down_revision = "0006"
@@ -36,6 +37,15 @@ CIERRE = (
     "Cerrada al bajar la base a la 0006: su archivo vive en el almacen de artefactos, que la v0.5 "
     "no conoce. El archivo sigue en el almacen; para reintentar, vuelve a subirlo."
 )
+# cartera/v2: la fecha de corte es metadata del lote y el archivo siempre esta en el almacen; se
+# proyecta a Cuenta con una version de la proyeccion, que cartera/v1 no tiene. Las corridas de antes
+# son de cartera/v1 o 'sin-registro': cumplen las dos sin que se toque ninguna.
+V2_CON_FUENTE = (
+    "version_contrato <> 'cartera/v2' "
+    "OR (artefacto_fuente_id IS NOT NULL AND fecha_corte IS NOT NULL)"
+)
+PROYECCION = "(version_contrato = 'cartera/v2') = (version_proyeccion IS NOT NULL)"
+
 SOLO_EN_EL_ALMACEN = (
     "SELECT c.id FROM corrida c WHERE c.estado = 'EN_PROCESO' "
     "AND c.artefacto_fuente_id IS NOT NULL "
@@ -101,6 +111,60 @@ def upgrade() -> None:
             ),
         )
         op.alter_column("corrida", columna, server_default=None)
+    op.add_column(
+        "corrida",
+        sa.Column("version_proyeccion", sqlmodel.sql.sqltypes.AutoString(length=32), nullable=True),
+    )
+    op.create_check_constraint(op.f("ck_corrida_v2_fuente"), "corrida", V2_CON_FUENTE)
+    op.create_check_constraint(op.f("ck_corrida_proyeccion"), "corrida", PROYECCION)
+
+    # El dataset conformado que publico cada ingesta: su Parquet y de que artefacto original salio.
+    op.create_table(
+        "dataset_conformado",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("dataset_id", sa.Uuid(), nullable=False),
+        sa.Column("contrato", sqlmodel.sql.sqltypes.AutoString(length=32), nullable=False),
+        sa.Column("corrida_id", sa.Integer(), nullable=False),
+        sa.Column("artefacto_original_id", sa.Integer(), nullable=False),
+        sa.Column("artefacto_conformado_id", sa.Integer(), nullable=False),
+        sa.Column("firma_contenido", sqlmodel.sql.sqltypes.AutoString(length=64), nullable=False),
+        sa.Column("filas", sa.BigInteger(), nullable=False),
+        sa.Column("columnas", sa.Integer(), nullable=False),
+        sa.Column("creado_en", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("filas >= 0 AND columnas > 0", name=op.f("ck_conformado_conteos")),
+        sa.CheckConstraint("firma_contenido ~ '^[0-9a-f]{64}$'", name=op.f("ck_conformado_firma")),
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_conformado_corrida"),
+        sa.ForeignKeyConstraint(
+            ["artefacto_original_id"], ["artefacto_fuente.id"], name="fk_conformado_original"
+        ),
+        sa.ForeignKeyConstraint(
+            ["artefacto_conformado_id"], ["artefacto_fuente.id"], name="fk_conformado_parquet"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_dataset_conformado")),
+        sa.UniqueConstraint("dataset_id", name=op.f("uq_dataset_conformado_dataset_id")),
+        sa.UniqueConstraint("corrida_id", name="uq_conformado_corrida"),
+    )
+    for columna in ("artefacto_original_id", "artefacto_conformado_id"):
+        op.create_index(
+            op.f(f"ix_dataset_conformado_{columna}"), "dataset_conformado", [columna], unique=False
+        )
+
+    # Las hojas companeras de cada corrida (CARRIER): se reconocen y se auditan, no se publican.
+    op.create_table(
+        "hoja_companera",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("corrida_id", sa.Integer(), nullable=False),
+        sa.Column("nombre", sqlmodel.sql.sqltypes.AutoString(length=255), nullable=False),
+        sa.Column("filas", sa.BigInteger(), nullable=False),
+        sa.Column("columnas", sa.Integer(), nullable=False),
+        sa.Column("estructura_reconocida", sa.Boolean(), nullable=False),
+        sa.Column("advertencias", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("creado_en", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("filas >= 0 AND columnas >= 0", name=op.f("ck_companera_conteos")),
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_companera_corrida"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_hoja_companera")),
+        sa.UniqueConstraint("corrida_id", "nombre", name="uq_companera_corrida_nombre"),
+    )
 
 
 def downgrade() -> None:
@@ -126,6 +190,15 @@ def downgrade() -> None:
             f"WHERE id IN ({SOLO_EN_EL_ALMACEN})"
         ).bindparams(motivo=CIERRE)
     )
+    op.drop_table("hoja_companera")
+    for columna in ("artefacto_conformado_id", "artefacto_original_id"):
+        op.drop_index(op.f(f"ix_dataset_conformado_{columna}"), table_name="dataset_conformado")
+    op.drop_table("dataset_conformado")
+    # Las corridas de cartera/v2 se quedan, con sus cuentas: son historia. Solo pierden la version
+    # de su proyeccion y el vinculo con su artefacto, que la 0006 no sabe guardar.
+    op.drop_constraint(op.f("ck_corrida_proyeccion"), "corrida", type_="check")
+    op.drop_constraint(op.f("ck_corrida_v2_fuente"), "corrida", type_="check")
+    op.drop_column("corrida", "version_proyeccion")
     for columna in reversed(METADATA_DEL_SISTEMA):
         op.drop_column("corrida", columna)
     op.drop_index(op.f("ix_corrida_artefacto_fuente_id"), table_name="corrida")

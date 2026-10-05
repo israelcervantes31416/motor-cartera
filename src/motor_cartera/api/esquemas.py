@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
+from motor_cartera.contratos.cartera_v2 import VERSION_CONTRATO_V2
 from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
@@ -25,7 +26,7 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
 )
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
-from motor_cartera.ingesta.lectores import REQUERIDAS
+from motor_cartera.fuentes.proyeccion import VERSION_PROYECCION
 from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 from motor_cartera.segmentacion import Dimension
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
@@ -76,6 +77,7 @@ EJEMPLO_CORRIDA = {
     "hoja 'LEEME': ...",
     "despacho_id": "DSP_001",
     "cartera_id": "CARTERA_PRINCIPAL",
+    "version_proyeccion": None,
 }
 
 # Lo que responde POST /corridas: la corrida recien registrada, antes de leer nada.
@@ -134,6 +136,11 @@ class CorridaRespuesta(BaseModel):
     cartera_id: str = Field(
         description="La cartera del acreedor que gestiona ese despacho. Metadata del sistema."
     )
+    version_proyeccion: str | None = Field(
+        description=f"Con que version de la proyeccion operacional ({VERSION_PROYECCION}) se llevo "
+        f"una cartera {VERSION_CONTRATO_V2} a las cuentas que leen los motores. Null en "
+        f"{VERSION_CONTRATO}, que ya tiene esa forma."
+    )
 
     @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
     @property
@@ -155,19 +162,100 @@ class RechazoRespuesta(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     fila: int = Field(description="Fila del archivo; el encabezado es la fila 1.")
-    valores: dict[str, str | None] = Field(description="El registro tal como llego, en texto.")
+    valores: dict[str, str | None] = Field(
+        description="El registro tal como llego, en texto, con las columnas en el orden de su "
+        "contrato."
+    )
     motivos: list[MotivoRespuesta]
 
-    @field_validator("valores")
-    @classmethod
-    def _en_el_orden_del_contrato(cls, valores: dict[str, str | None]) -> dict[str, str | None]:
-        # JSONB no conserva el orden de las llaves; quien corrige el archivo lo lee en este.
-        return {columna: valores[columna] for columna in REQUERIDAS if columna in valores}
+
+def ordenar_valores(
+    valores: dict[str, str | None], orden: tuple[str, ...]
+) -> dict[str, str | None]:
+    """JSONB no conserva el orden de las llaves; quien corrige el archivo lo lee en el de su
+    contrato. Una llave que el contrato no tiene va al final, en orden alfabetico: no se pierde."""
+    conocidas = {columna: valores[columna] for columna in orden if columna in valores}
+    otras = {columna: valores[columna] for columna in sorted(valores) if columna not in conocidas}
+    return {**conocidas, **otras}
 
 
 class PaginaRechazos(Pagina[RechazoRespuesta]):
     run_id: UUID
     estado: EstadoCorrida
+
+
+# --- la evidencia de una fuente -------------------------------------------------------------------
+
+EJEMPLO_ARTEFACTO = {
+    "artifact_id": "5f1c2e3d-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+    "sha256": EJEMPLO_CORRIDA["firma"],
+    "tamano_bytes": 48211337,
+    "nombre_original": "cartera_oficial_2026-09-30.zip",
+    "formato": "zip",
+    "media_type": "application/zip",
+    "creado_en": "2026-09-30T15:04:04.981000Z",
+}
+
+
+class ArtefactoRespuesta(BaseModel):
+    """Un archivo guardado en el almacen de artefactos, tal como llego. Nunca se dice donde vive."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: UUID = Field(description="Identificador publico del artefacto.")
+    sha256: str = Field(description="SHA-256 de sus bytes: su identidad.")
+    tamano_bytes: int
+    nombre_original: str = Field(
+        description="El nombre con que llego la primera vez. Es metadata: no identifica nada."
+    )
+    formato: str = Field(description="xlsx, csv o zip; parquet, si es un dataset conformado.")
+    media_type: str | None
+    creado_en: datetime
+
+
+class ConformadoRespuesta(BaseModel):
+    """El dataset conformado que publico la ingesta: sus registros validos, en Parquet."""
+
+    dataset_id: UUID
+    contrato: str = Field(description="Con que contrato se juzgo.")
+    filas: int
+    columnas: int = Field(description="Las del contrato, sin las dos tecnicas.")
+    firma_contenido: str
+    artefacto: ArtefactoRespuesta = Field(description="El Parquet, en el mismo almacen.")
+    creado_en: datetime
+
+
+class CompaneraRespuesta(BaseModel):
+    """Una hoja companera del archivo, como CARRIER: se reconoce y se audita, no se publica."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    nombre: str
+    filas: int
+    columnas: int
+    estructura_reconocida: bool = Field(description="Si trae exactamente las columnas esperadas.")
+    advertencias: list[str] = Field(description="Lo incoherente. No bloquea la publicacion.")
+
+
+class FuenteCorridaRespuesta(BaseModel):
+    """La evidencia de una corrida y su linaje: el archivo original, el dataset conformado que
+    publico y las hojas companeras que traia."""
+
+    run_id: UUID
+    version_contrato: str
+    version_proyeccion: str | None
+    fecha_corte: date | None
+    despacho_id: str
+    cartera_id: str
+    artefacto: ArtefactoRespuesta | None = Field(
+        description="El archivo tal como llego. Null solo en las corridas anteriores a v0.6.0, "
+        "cuyo archivo no se conservo."
+    )
+    conformado: ConformadoRespuesta | None = Field(
+        description=f"El dataset conformado, si la corrida publico una cartera "
+        f"{VERSION_CONTRATO_V2}. Null en {VERSION_CONTRATO}, y en una corrida que no publico."
+    )
+    hojas_companeras: list[CompaneraRespuesta]
 
 
 class ParametrosResumen(Paginacion):

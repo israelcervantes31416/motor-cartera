@@ -46,9 +46,11 @@ from motor_cartera.db.modelos import (
     ArchivoCorrida,
     ArtefactoFuente,
     Corrida,
+    DatasetConformado,
     EjecucionRuteo,
     EjecucionTerritorial,
     FlujoOrquestacion,
+    HojaCompanera,
     ParadaRuta,
     ResultadoTerritorial,
     RutaTerritorial,
@@ -2883,13 +2885,19 @@ INSERTAR_CORRIDA_0007 = text(
     "'cartera/v1', 0, 0, 0, :artefacto_fuente_id, :despacho_id, :cartera_id) RETURNING id"
 )
 
-TABLAS_DE_FUENTES = {"artefacto_fuente"}
+TABLAS_DE_FUENTES = {"artefacto_fuente", "dataset_conformado", "hoja_companera"}
 # Las tablas que existen antes de la 0007, que se comparan completas, columna por columna.
 PREVIAS_A_LA_0007 = (*PREVIAS_A_LA_0006, "flujo_orquestacion", "trabajo_orquestacion")
-COLUMNAS_NUEVAS_DE_LA_CORRIDA = {"artefacto_fuente_id", "despacho_id", "cartera_id"}
+COLUMNAS_NUEVAS_DE_LA_CORRIDA = {
+    "artefacto_fuente_id",
+    "despacho_id",
+    "cartera_id",
+    "version_proyeccion",
+}
 
 RESTRICCIONES_0007 = RESTRICCIONES.replace(
-    "'ejecucion_decision', 'decision_cuenta'", "'artefacto_fuente'"
+    "'ejecucion_decision', 'decision_cuenta'",
+    "'artefacto_fuente', 'dataset_conformado', 'hoja_companera'",
 )
 RESTRICCIONES_DE_FUENTES = {
     "pk_artefacto_fuente",
@@ -2900,8 +2908,32 @@ RESTRICCIONES_DE_FUENTES = {
     "ck_artefacto_tamano_positivo",
     "ck_artefacto_storage_key",
     "ck_artefacto_fuente_formato_artefacto",
+    "pk_dataset_conformado",
+    "uq_dataset_conformado_dataset_id",
+    "uq_conformado_corrida",
+    "fk_conformado_corrida",
+    "fk_conformado_original",
+    "fk_conformado_parquet",
+    "ck_conformado_conteos",
+    "ck_conformado_firma",
+    "pk_hoja_companera",
+    "fk_companera_corrida",
+    "uq_companera_corrida_nombre",
+    "ck_companera_conteos",
 }
 FK_CORRIDA_ARTEFACTO = "fk_corrida_artefacto_fuente_id_artefacto_fuente"
+CHECKS_DE_LA_CORRIDA = {"ck_corrida_v2_fuente", "ck_corrida_proyeccion"}
+INSERTAR_CONFORMADO = text(
+    "INSERT INTO dataset_conformado (dataset_id, contrato, corrida_id, artefacto_original_id, "
+    "artefacto_conformado_id, firma_contenido, filas, columnas, creado_en) VALUES (:dataset_id, "
+    "'cartera/v2', :corrida_id, :original, :conformado, :firma, :filas, :columnas, now()) "
+    "RETURNING id"
+)
+INSERTAR_COMPANERA = text(
+    "INSERT INTO hoja_companera (corrida_id, nombre, filas, columnas, estructura_reconocida, "
+    "advertencias, creado_en) VALUES (:corrida_id, :nombre, :filas, :columnas, true, "
+    "CAST('[]' AS JSONB), now()) RETURNING id"
+)
 
 
 def _cierre_0007() -> str:
@@ -2985,7 +3017,8 @@ def test_la_cabeza_es_la_0007():
 
 def test_los_modelos_declaran_el_esquema_de_la_0007():
     # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base.
-    tabla = ArtefactoFuente.__table__
+    tablas = (ArtefactoFuente.__table__, DatasetConformado.__table__, HojaCompanera.__table__)
+    tabla = tablas[0]
     columnas = {c.name: (type(c.type), c.nullable) for c in tabla.columns}
     assert columnas["tamano_bytes"] == (BigInteger, False)
     assert columnas["sha256"][1] is False and columnas["storage_key"][1] is False
@@ -2993,7 +3026,7 @@ def test_los_modelos_declaran_el_esquema_de_la_0007():
     assert tabla.c.formato.type.length == 12
     assert set(tabla.c.formato.type.enums) == {"xlsx", "csv", "zip", "parquet"}
     preparador = postgresql.dialect().identifier_preparer
-    nombres = {preparador.format_constraint(c) for c in tabla.constraints}
+    nombres = {preparador.format_constraint(c) for t in tablas for c in t.constraints}
     assert nombres == RESTRICCIONES_DE_FUENTES
     # La corrida apunta a su artefacto, y registra el despacho y la cartera del sistema.
     corrida = Corrida.__table__
@@ -3001,7 +3034,10 @@ def test_los_modelos_declaran_el_esquema_de_la_0007():
     assert (corrida.c.despacho_id.nullable, corrida.c.cartera_id.nullable) == (False, False)
     llaves = {preparador.format_constraint(c) for c in corrida.foreign_key_constraints}
     assert FK_CORRIDA_ARTEFACTO in llaves
-    assert all(len(nombre) <= 63 for nombre in nombres | llaves)
+    checks = {preparador.format_constraint(c) for c in corrida.constraints if c.name}
+    assert CHECKS_DE_LA_CORRIDA <= checks
+    assert corrida.c.version_proyeccion.nullable is True
+    assert all(len(nombre) <= 63 for nombre in nombres | llaves | checks)
 
 
 def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0007):
@@ -3021,14 +3057,16 @@ def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0
                     "artefacto_fuente_id": None,
                     "despacho_id": "DSP_001",
                     "cartera_id": "CARTERA_PRINCIPAL",
+                    "version_proyeccion": None,
                 }
             assert fila == antes, tabla
     # El archivo de la corrida que seguia en la cola no se toca: la v0.6 lo va a leer.
     assert _archivos(motor) == b.archivos
 
-    # B. La tabla nueva, vacia, con sus restricciones por nombre.
+    # B. Las tablas nuevas, vacias, con sus restricciones por nombre.
     assert TABLAS_DE_FUENTES <= set(_consultar(motor, TABLAS))
-    assert _consultar(motor, "SELECT count(*) FROM artefacto_fuente") == [0]
+    for tabla in sorted(TABLAS_DE_FUENTES):
+        assert _consultar(motor, f"SELECT count(*) FROM {tabla}") == [0]
     assert set(_consultar(motor, RESTRICCIONES_0007)) == RESTRICCIONES_DE_FUENTES
     with motor.connect() as conexion:
         columnas = {
@@ -3038,7 +3076,8 @@ def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0
                     "SELECT column_name, data_type, character_maximum_length, is_nullable, "
                     "column_default FROM information_schema.columns "
                     "WHERE table_schema = current_schema() AND table_name = 'corrida' "
-                    "AND column_name IN ('artefacto_fuente_id', 'despacho_id', 'cartera_id')"
+                    "AND column_name IN ('artefacto_fuente_id', 'despacho_id', 'cartera_id', "
+                    "'version_proyeccion')"
                 )
             )
         }
@@ -3047,7 +3086,14 @@ def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0
         "artefacto_fuente_id": ("integer", None, "YES", None),
         "despacho_id": ("character varying", 32, "NO", None),
         "cartera_id": ("character varying", 32, "NO", None),
+        "version_proyeccion": ("character varying", 32, "YES", None),
     }
+    checks = _consultar(
+        motor,
+        "SELECT conname FROM pg_constraint WHERE conrelid = CAST('corrida' AS regclass) "
+        "AND contype = 'c'",
+    )
+    assert CHECKS_DE_LA_CORRIDA <= set(checks)
 
 
 def test_un_artefacto_se_identifica_por_su_contenido(base_en_0007):
@@ -3098,6 +3144,103 @@ def test_una_corrida_apunta_a_su_artefacto_sin_cascada(base_en_0007):
     # Y el despacho y la cartera no son opcionales.
     with pytest.raises(IntegrityError, match="despacho_id"), motor.begin() as conexion:
         conexion.execute(INSERTAR_CORRIDA_0007, _corrida_0007("FALLIDA", None, despacho_id=None))
+
+
+def test_una_corrida_de_cartera_v2_trae_su_archivo_su_corte_y_su_proyeccion(base_en_0007):
+    motor = base_en_0007.motor
+    (artefacto,) = _insertar(motor, INSERTAR_ARTEFACTO, _artefacto())
+    v2 = {"version_contrato": "cartera/v2", "fecha_corte": "2026-09-30"}
+    insertar = text(
+        "INSERT INTO corrida (run_id, iniciada_en, origen, firma, estado, tolerancia_rechazo, "
+        "version_contrato, fecha_corte, version_proyeccion, filas_leidas, filas_validas, "
+        "filas_rechazadas, artefacto_fuente_id, despacho_id, cartera_id) VALUES (:run_id, now(), "
+        "'c.xlsx', :firma, 'EN_PROCESO', 0.05, :version_contrato, :fecha_corte, "
+        ":version_proyeccion, 0, 0, 0, :artefacto_fuente_id, 'DSP_001', 'CARTERA_PRINCIPAL') "
+        "RETURNING id"
+    )
+
+    def corrida(**cambios) -> dict:
+        base = {
+            "run_id": uuid4(),
+            "firma": uuid4().hex * 2,
+            **v2,
+            "version_proyeccion": "operacional/v1",
+            "artefacto_fuente_id": artefacto,
+        }
+        return {**base, **cambios}
+
+    # F. cartera/v2 sin su archivo en el almacen, o sin su corte, no existe; ni sin su proyeccion.
+    _insertar(motor, insertar, corrida())
+    _rechaza(motor, "ck_corrida_v2_fuente", insertar, corrida(artefacto_fuente_id=None))
+    _rechaza(motor, "ck_corrida_v2_fuente", insertar, corrida(fecha_corte=None))
+    _rechaza(motor, "ck_corrida_proyeccion", insertar, corrida(version_proyeccion=None))
+    # cartera/v1 ya es la forma de Cuenta: no tiene proyeccion.
+    _rechaza(
+        motor,
+        "ck_corrida_proyeccion",
+        insertar,
+        corrida(version_contrato="cartera/v1", fecha_corte=None),
+    )
+    _insertar(
+        motor,
+        insertar,
+        corrida(version_contrato="cartera/v1", fecha_corte=None, version_proyeccion=None),
+    )
+
+
+def test_el_conformado_y_la_companera_cuelgan_de_su_corrida(base_en_0007):
+    motor = base_en_0007.motor
+    original, parquet = _insertar(
+        motor,
+        INSERTAR_ARTEFACTO,
+        _artefacto(b"original"),
+        _artefacto(b"parquet", formato="parquet"),
+    )
+    (corrida,) = _insertar(motor, INSERTAR_CORRIDA_0007, _corrida_0007("EXITOSA", original))
+
+    def conformado(**cambios) -> dict:
+        base = {
+            "dataset_id": uuid4(),
+            "corrida_id": corrida,
+            "original": original,
+            "conformado": parquet,
+            "firma": "a" * 64,
+            "filas": 10,
+            "columnas": 93,
+        }
+        return {**base, **cambios}
+
+    # G. Un conformado por corrida, con una firma valida y conteos que no son negativos.
+    (dataset,) = _insertar(motor, INSERTAR_CONFORMADO, conformado())
+    _rechaza(motor, "uq_conformado_corrida", INSERTAR_CONFORMADO, conformado())
+    (otra,) = _insertar(motor, INSERTAR_CORRIDA_0007, _corrida_0007("EXITOSA", original))
+    _rechaza(
+        motor, "ck_conformado_firma", INSERTAR_CONFORMADO, conformado(corrida_id=otra, firma="x")
+    )
+    _rechaza(
+        motor, "ck_conformado_conteos", INSERTAR_CONFORMADO, conformado(corrida_id=otra, filas=-1)
+    )
+    _rechaza(
+        motor,
+        "fk_conformado_parquet",
+        INSERTAR_CONFORMADO,
+        conformado(corrida_id=otra, conformado=999_999),
+    )
+    # Una companera por nombre en cada corrida.
+    companera = {"corrida_id": corrida, "nombre": "CARRIER", "filas": 3, "columnas": 85}
+    _insertar(motor, INSERTAR_COMPANERA, companera)
+    _rechaza(motor, "uq_companera_corrida_nombre", INSERTAR_COMPANERA, companera)
+    _rechaza(
+        motor, "ck_companera_conteos", INSERTAR_COMPANERA, {**companera, "nombre": "X", "filas": -1}
+    )
+    # Y nada se borra en cascada: el artefacto de un conformado no se puede borrar.
+    _rechaza(
+        motor,
+        "fk_conformado_parquet",
+        text("DELETE FROM artefacto_fuente WHERE id = :id"),
+        {"id": parquet},
+    )
+    assert _consultar(motor, f"SELECT filas FROM dataset_conformado WHERE id = {dataset}") == [10]
 
 
 def test_la_0007_baja_cerrando_lo_que_la_v05_no_podria_terminar_y_vuelve_a_subir(base_en_0007):
