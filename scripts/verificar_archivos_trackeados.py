@@ -9,9 +9,11 @@ sus archivos:
   - Lo excluiria sin distinguir mayusculas. `CARTERA.XLSX` es tan cartera como
     `cartera.xlsx` (el lector del motor no las distingue), pero en Linux, WSL y el CI git si
     las distingue, y ahi `*.xlsx` no lo detiene.
-  - Es por dentro una hoja de calculo o un zip, con cualquier nombre: un xlsx renombrado, un
-    xlsm o un ods (que son un zip) o un xls (un documento OLE2). Un csv no tiene firma, asi
-    que a ese solo lo detiene su nombre.
+  - Es por dentro una hoja de calculo, un archivo comprimido, un formato de datos o un
+    volcado de una base, con cualquier nombre: un xlsx renombrado, un xlsm o un ods (que son un
+    zip), un xls (un documento OLE2), un Parquet, un Arrow, un gzip, un 7z, un rar, un bzip2,
+    un xz, un zstd, un volcado de pg_dump o una base SQLite. Un csv o un volcado en SQL plano no
+    tienen firma, asi que a esos solo los detiene su nombre.
 
 Solo usa git y la biblioteca estandar, para correr igual en el CI que en una laptop, donde
 antes de un commit revisa tambien lo que ya esta en stage:
@@ -27,12 +29,26 @@ from __future__ import annotations
 import subprocess
 import sys
 
-# Lo que el .gitignore prohibe por nombre (xlsx, xls, zip), reconocido por sus primeros bytes.
+# Lo que el .gitignore prohibe por nombre, reconocido por sus primeros bytes.
 FIRMAS = {
     b"PK\x03\x04": "un zip (xlsx, xlsm, ods o zip)",
     b"PK\x05\x06": "un zip vacio",
     b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1": "un documento OLE2 (xls)",
+    b"PAR1": "un Parquet",
+    b"ARROW1": "un Arrow o Feather",
+    b"\x1f\x8b": "un gzip",
+    b"7z\xbc\xaf\x27\x1c": "un 7z",
+    b"Rar!\x1a\x07": "un rar",
+    b"\xfd7zXZ\x00": "un xz",
+    b"\x28\xb5\x2f\xfd": "un zstd",
+    b"PGDMP": "un volcado de pg_dump",
+    b"SQLite format 3\x00": "una base SQLite",
 }
+# bzip2: BZh, el nivel (1 a 9) y la marca de su primer bloque, o la del final si esta vacio.
+for _nivel in "123456789":
+    FIRMAS[f"BZh{_nivel}".encode() + b"1AY&SY"] = "un bzip2"
+    FIRMAS[f"BZh{_nivel}".encode() + b"\x17rE8P\x90"] = "un bzip2"
+
 LARGO_FIRMA = max(len(firma) for firma in FIRMAS)
 REGULARES = (b"100644", b"100755")  # los enlaces y los submodulos no tienen contenido propio
 
@@ -132,8 +148,8 @@ def main() -> int:
     total = len({ruta for _, _, ruta in entradas})
     if not problemas:
         print(
-            f"{total} archivos trackeados: ninguno lo excluye el .gitignore "
-            "ni es por dentro una hoja de calculo o un zip."
+            f"{total} archivos trackeados: ninguno lo excluye el .gitignore ni es por dentro "
+            "una hoja de calculo, un comprimido, un formato de datos o un volcado."
         )
         return 0
 

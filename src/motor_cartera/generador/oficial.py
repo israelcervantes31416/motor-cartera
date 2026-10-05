@@ -24,10 +24,11 @@ estan enteras en memoria como texto.
 from __future__ import annotations
 
 import hashlib
+import json
 import zipfile
 from collections.abc import Iterator
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -135,6 +136,9 @@ LEEME = (
     "Fuente oficial sintetica generada por motor-cartera. Ningun dato corresponde a una persona: "
     "los telefonos empiezan con 0 y no se pueden marcar."
 )
+FECHA_EN_ZIP = (1980, 1, 1, 0, 0, 0)
+"""La fecha de cada miembro de un zip generado: la minima del formato, siempre la misma. Asi el
+mismo contenido produce los mismos bytes, y un escenario se verifica por su SHA-256."""
 
 # --- el hash que fija los atributos de cada cliente -----------------------------------------------
 
@@ -709,15 +713,25 @@ def escribir_cartera(
         with zipfile.ZipFile(
             ruta, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
         ) as paquete:
-            paquete.writestr("LEEME.txt", LEEME)
-            with paquete.open(f"{HOJA_CARTERA}.csv", "w", force_zip64=True) as miembro:
+            paquete.writestr(_miembro("LEEME.txt"), LEEME)
+            with paquete.open(_miembro(f"{HOJA_CARTERA}.csv"), "w", force_zip64=True) as miembro:
                 filas = _escribir_csv(miembro, carteras())
             filas_carrier = 0
             if con_carrier:
-                with paquete.open(f"{HOJA_CARRIER}.csv", "w", force_zip64=True) as miembro:
+                with paquete.open(
+                    _miembro(f"{HOJA_CARRIER}.csv"), "w", force_zip64=True
+                ) as miembro:
                     filas_carrier = _escribir_csv(miembro, carriers())
         return Escrito(ruta, filas, filas_carrier)
     return _escribir_xlsx(ruta, carteras(), carriers() if con_carrier else None)
+
+
+def _miembro(nombre: str) -> zipfile.ZipInfo:
+    """Un miembro comprimido de un zip generado, sin la hora en que se escribio."""
+    info = zipfile.ZipInfo(nombre, date_time=FECHA_EN_ZIP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    return info
 
 
 def _escribir_csv(sink, bloques: Iterator[pa.Table]) -> int:
@@ -799,8 +813,26 @@ def _celda(valor: str | None, tipo: Tipo):
 # --- PAGOS: los movimientos economicos de un periodo ----------------------------------------------
 
 CONCEPTOS = ("PAGO NORMAL", "ABONO", "LIQUIDACION")
+PESO_CONCEPTO = (0.70, 0.27, 0.03)
 # Comisiones genericas (5%, 8% y 10%), en puntos base: no son las de ningun contrato.
 COMISIONES_PUNTOS_BASE = (500, 800, 1000)
+
+
+@dataclass(frozen=True)
+class Movimientos:
+    """Los pagos de un periodo: las 23 columnas y, para evolucionar la cartera, de que cuenta es
+    cada movimiento distinto, cuando se recibio y cuanto."""
+
+    tabla: pa.Table
+    """Las 23 columnas, como texto, con los repetidos exactos, ordenadas por Fecha_Recepción."""
+    cuenta: np.ndarray
+    """La posicion en el estado de la cuenta de cada movimiento distinto, sin los repetidos."""
+    recepcion: np.ndarray
+    """Cuando se recibio cada movimiento distinto (datetime64[s])."""
+    recuperado_centavos: np.ndarray
+    repetidos: int
+    """Cuantas filas de la tabla son copias exactas de otra: el mismo pago reportado dos veces."""
+    ajustes: int
 
 
 def tabla_pagos(
@@ -813,21 +845,45 @@ def tabla_pagos(
     repetidos: float = 0.005,
     ajustes: float = 0.003,
 ) -> pa.Table:
+    """Los movimientos de un periodo, de `desde` a `hasta` inclusive, de las cuentas de `estado`:
+    las 23 columnas de `movimientos_del_periodo`."""
+    return movimientos_del_periodo(
+        estado,
+        semilla=semilla,
+        desde=desde,
+        hasta=hasta,
+        fraccion=fraccion,
+        repetidos=repetidos,
+        ajustes=ajustes,
+    ).tabla
+
+
+def movimientos_del_periodo(
+    estado: EstadoCartera,
+    *,
+    semilla: int,
+    desde: date,
+    hasta: date,
+    fraccion: float = 0.35,
+    repetidos: float = 0.005,
+    ajustes: float = 0.003,
+) -> Movimientos:
     """Los movimientos de un periodo, de `desde` a `hasta` inclusive, de las cuentas de `estado`.
 
     Paga una fraccion de las cuentas, de una a cuatro veces cada una, siempre dentro del periodo, y
-    con lo que el acreedor sabia de la cuenta (su territorio, su gestor, su atraso). Una fraccion
-    pequena de movimientos se repite exacta, con el mismo cliente, el mismo segundo y el mismo
-    importe (la llave historica de deduplicacion), y otra es un ajuste negativo: v0.6 no deduplica
-    ni interpreta signos, y las pruebas lo verifican. Las 23 columnas, como texto y en el orden del
-    contrato, ordenadas por Fecha_Recepción.
+    con lo que el acreedor sabia de la cuenta (su territorio, su gestor, su atraso). Una liquidacion
+    paga el saldo entero. Una fraccion pequena de movimientos se repite exacta, con el mismo
+    cliente, el mismo segundo y el mismo importe (la llave historica de deduplicacion), y otra es un
+    ajuste negativo: v0.6 no deduplica ni interpreta signos, y las pruebas lo verifican. Las 23
+    columnas, como texto y en el orden del contrato, ordenadas por Fecha_Recepción.
     """
     if hasta < desde:
         raise ValueError(f"El periodo termina antes de empezar: {desde} a {hasta}.")
     rng = np.random.default_rng([semilla, desde.toordinal(), hasta.toordinal(), 3])
     pagan = np.flatnonzero(rng.random(len(estado)) < fraccion)
     veces = 1 + np.minimum(rng.poisson(0.6, size=len(pagan)), 3)
-    cuentas = estado.tomar(np.repeat(pagan, veces))
+    indices = np.repeat(pagan, veces)
+    cuentas = estado.tomar(indices)
     m = len(cuentas)
     c = cuentas.cliente
     azar = _Azar(c, semilla)
@@ -847,7 +903,10 @@ def tabla_pagos(
 
     pago_normal = np.maximum(cuentas.saldo_centavos // 52, 5000)
     recuperado = np.maximum((pago_normal * (0.5 + 2.5 * rng.random(m))).astype(np.int64), 5000)
-    concepto = rng.choice(len(CONCEPTOS), size=m, p=[0.7, 0.2, 0.1])
+    concepto = rng.choice(len(CONCEPTOS), size=m, p=PESO_CONCEPTO)
+    # Una liquidacion paga el saldo entero: la cuenta sale de la cartera en el corte siguiente.
+    liquida = concepto == CONCEPTOS.index("LIQUIDACION")
+    recuperado = np.where(liquida, np.maximum(cuentas.saldo_centavos, 5000), recuperado)
     ajuste = rng.random(m) < ajustes
     recuperado = np.where(ajuste, -np.minimum(recuperado, 50_000), recuperado)
     cargos = np.where(rng.random(m) < 0.05, rng.integers(1_000, 5_001, size=m), 0)
@@ -897,7 +956,14 @@ def tabla_pagos(
     copias = rng.choice(m, size=round(m * repetidos), replace=False) if m else np.array([], int)
     tabla = pa.concat_tables([tabla, tabla.take(pa.array(np.sort(copias), type=pa.int64()))])
     orden = pc.sort_indices(tabla, sort_keys=[("Fecha_Recepción", "ascending")])
-    return tabla.take(orden)
+    return Movimientos(
+        tabla=tabla.take(orden),
+        cuenta=indices,
+        recepcion=recepcion,
+        recuperado_centavos=recuperado,
+        repetidos=len(copias),
+        ajustes=int(ajuste.sum()),
+    )
 
 
 def _instantes(segundos: np.ndarray) -> pa.Array:
@@ -934,8 +1000,8 @@ def escribir_pagos(tabla: pa.Table | pd.DataFrame, destino: str | Path) -> Escri
         with zipfile.ZipFile(
             ruta, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
         ) as paquete:
-            paquete.writestr("LEEME.txt", LEEME)
-            with paquete.open(f"{HOJA_PAGOS}.csv", "w", force_zip64=True) as miembro:
+            paquete.writestr(_miembro("LEEME.txt"), LEEME)
+            with paquete.open(_miembro(f"{HOJA_PAGOS}.csv"), "w", force_zip64=True) as miembro:
                 filas = _escribir_csv(miembro, iter([tabla]))
         return EscritoPagos(ruta, filas)
     import openpyxl
@@ -946,3 +1012,243 @@ def escribir_pagos(tabla: pa.Table | pd.DataFrame, destino: str | Path) -> Escri
     )
     libro.save(ruta)
     return EscritoPagos(ruta, filas)
+
+
+# --- el escenario longitudinal: varios cortes y los pagos entre ellos -----------------------------
+
+
+@dataclass(frozen=True)
+class Evolucion:
+    """Que paso con las cuentas de un corte al siguiente."""
+
+    continuan: int
+    liquidadas: int
+    """Lo que pagaron en el periodo cubrio su saldo: salen de la cartera."""
+    retiradas: int
+    """El acreedor las retiro del despacho."""
+    altas: int
+    """Cuentas nuevas, de clientes que nunca habian estado en la cartera."""
+
+
+def evolucionar(
+    estado: EstadoCartera,
+    movimientos: Movimientos,
+    *,
+    semilla: int,
+    corte: date,
+    siguiente: date,
+    usados: set[int],
+    tasa_altas: float = 0.02,
+    tasa_retiros: float = 0.01,
+) -> tuple[EstadoCartera, Evolucion]:
+    """Las cuentas del corte `siguiente`, a partir de las de `corte` y de sus pagos del periodo.
+
+    - Cada cuenta resta de su SALDO lo que recupero en el periodo, contando una vez cada movimiento
+      (un repetido exacto es el mismo pago reportado dos veces); un ajuste negativo lo aumenta. Si
+      llega a cero o menos, se liquido y sale de la cartera.
+    - El acreedor retira al azar una fraccion `tasa_retiros` de las demas.
+    - Las que continuan conservan su identidad y sus atributos fijos. Su atraso vuelve a 0 si
+      pagaron algo en el periodo; si no, crece con los dias del periodo, hasta el tope. Sus pagos
+      positivos se suman a su historial y el ultimo es el de su ultimo pago.
+    - Llegan cuentas nuevas, una fraccion `tasa_altas` del corte, de clientes que nunca habian
+      estado en la cartera (`usados`), asignadas dentro del periodo.
+    """
+    dias_periodo = (siguiente - corte).days
+    if dias_periodo < 1:
+        raise ValueError(f"El corte siguiente tiene que ser posterior: {corte} y {siguiente}.")
+    n = len(estado)
+    cuenta, centavos = movimientos.cuenta, movimientos.recuperado_centavos
+    pagado = np.zeros(n, dtype=np.int64)
+    np.add.at(pagado, cuenta, centavos)
+    positivo = centavos > 0
+    veces = np.bincount(cuenta[positivo], minlength=n)
+    monto = np.zeros(n, dtype=np.int64)
+    np.add.at(monto, cuenta[positivo], centavos[positivo])
+    # El ultimo pago positivo de cada cuenta: el de recepcion mas reciente.
+    orden = np.lexsort((movimientos.recepcion[positivo], cuenta[positivo]))
+    de_cuenta = cuenta[positivo][orden]
+    ultimo = np.r_[de_cuenta[1:] != de_cuenta[:-1], True] if len(de_cuenta) else de_cuenta > 0
+    con_pago = de_cuenta[ultimo]
+
+    rng = np.random.default_rng([semilla, siguiente.toordinal(), 5])
+    saldo = estado.saldo_centavos - pagado
+    liquidadas = saldo <= 0
+    retiradas = ~liquidadas & (rng.random(n) < tasa_retiros)
+    continuan = ~(liquidadas | retiradas)
+    dias = np.where(pagado > 0, 0, np.minimum(estado.dias_atraso + dias_periodo, TOPE_ATRASO))
+    ultimo_pago = estado.ultimo_pago.copy()
+    ultimo_pago[con_pago] = movimientos.recepcion[positivo][orden][ultimo].astype("datetime64[D]")
+    ultimo_centavos = estado.ultimo_pago_centavos.copy()
+    ultimo_centavos[con_pago] = centavos[positivo][orden][ultimo]
+    siguen = EstadoCartera(
+        cliente=estado.cliente,
+        saldo_centavos=saldo,
+        moratorios_centavos=(np.maximum(saldo, 0) * 0.0015 * dias).astype(np.int64),
+        dias_atraso=dias,
+        atraso_maximo=np.maximum(estado.atraso_maximo, dias),
+        asignacion=estado.asignacion,
+        pagos=estado.pagos + veces,
+        monto_pagos_centavos=estado.monto_pagos_centavos + monto,
+        ultimo_pago=ultimo_pago,
+        ultimo_pago_centavos=ultimo_centavos,
+    ).tomar(np.flatnonzero(continuan))
+
+    altas = int(rng.binomial(n, tasa_altas)) if n else 0
+    nuevas = _cuentas_nuevas(nuevos_clientes(altas, rng, usados), rng, semilla, siguiente)
+    llegada = np.datetime64(siguiente, "D") - rng.integers(0, dias_periodo, size=altas).astype(
+        "timedelta64[D]"
+    )
+    nuevas = replace(nuevas, asignacion=llegada.astype("datetime64[D]"))
+    juntas = EstadoCartera(
+        **{
+            campo: np.concatenate([getattr(siguen, campo), getattr(nuevas, campo)])
+            for campo in EstadoCartera.__dataclass_fields__
+        }
+    )
+    evolucion = Evolucion(
+        continuan=int(continuan.sum()),
+        liquidadas=int(liquidadas.sum()),
+        retiradas=int(retiradas.sum()),
+        altas=altas,
+    )
+    return juntas, evolucion
+
+
+INVARIANTES = (
+    "Determinista: la misma semilla y los mismos parametros producen los mismos archivos, byte por "
+    "byte, y el mismo manifiesto.",
+    "Cada corte cumple cartera/v2 y cada periodo cumple pagos/v1; CLIENTE_UNICO es unico en cada "
+    "corte.",
+    "Una alta nunca reusa un cliente que ya estuvo en la cartera, aunque haya salido.",
+    "Una cuenta que continua conserva su identidad y sus atributos fijos: nombre, domicilio, "
+    "telefonos, producto, municipio y fecha de asignacion.",
+    "Los pagos de un periodo son de cuentas del corte que lo abre y se reciben dentro del periodo: "
+    "despues de ese corte y hasta el corte que lo cierra, inclusive.",
+    "Para cada cuenta que continua, su SALDO es el anterior menos lo que recupero en el periodo, "
+    "contando una vez cada movimiento: un repetido exacto es el mismo pago reportado dos veces.",
+    "Una cuenta cuyos pagos del periodo cubren su saldo se liquida y sale de la cartera.",
+    "El atraso de una cuenta que continua vuelve a 0 si pago algo en el periodo; si no, crece con "
+    "los dias del periodo, hasta el tope.",
+    "Las cuentas de un corte son las que continuan mas las altas: las demas se liquidaron o se "
+    "retiraron, y el manifiesto lo cuenta.",
+    "CARRIER no introduce clientes ni telefonos que su corte no traiga, y todas las cuentas son de "
+    "un solo despacho.",
+)
+"""Lo que cumple todo escenario. Las pruebas lo verifican sobre los archivos escritos."""
+
+MANIFIESTO = "escenario.json"
+
+
+@dataclass(frozen=True)
+class Escenario:
+    """Un escenario escrito: su directorio y su manifiesto."""
+
+    destino: Path
+    manifiesto: dict
+
+
+def generar_escenario(
+    destino: str | Path,
+    *,
+    cuentas: int,
+    cortes: int,
+    primer_corte: date,
+    semilla: int,
+    dias_entre_cortes: int = 7,
+    formato: str = "zip",
+    con_carrier: bool = True,
+    tasa_altas: float = 0.02,
+    tasa_retiros: float = 0.01,
+) -> Escenario:
+    """Escribe `cortes` cortes de la misma cartera, cada `dias_entre_cortes` dias desde
+    `primer_corte`, y los pagos de cada periodo entre un corte y el siguiente; y un manifiesto,
+    escenario.json, con cada archivo, su SHA-256, sus conteos y las invariantes que cumple.
+
+    Cada corte sale del anterior con `evolucionar`: los pagos del periodo bajan los saldos y curan
+    el atraso, las cuentas liquidadas y las retiradas salen y llegan altas. Todo se deriva de la
+    semilla: el mismo escenario sale igual, byte por byte, en csv y en zip.
+    """
+    if cortes < 1:
+        raise ValueError("Un escenario tiene al menos un corte.")
+    if dias_entre_cortes < 1:
+        raise ValueError("Entre un corte y el siguiente pasa al menos un dia.")
+    extension = formato.lower().lstrip(".")
+    if extension not in ("xlsx", "csv", "zip"):
+        raise ValueError(f"Formato no soportado: {formato!r}. Usa xlsx, csv o zip.")
+    directorio = Path(destino)
+    directorio.mkdir(parents=True, exist_ok=True)
+    usados: set[int] = set()
+    estado = estado_inicial(cuentas, semilla=semilla, fecha_corte=primer_corte, usados=usados)
+    registro_cortes: list[dict] = []
+    registro_periodos: list[dict] = []
+    evolucion: Evolucion | None = None
+    corte = primer_corte
+    for numero in range(cortes):
+        ruta = directorio / f"cartera_oficial_{corte.isoformat()}.{extension}"
+        escrito = escribir_cartera(
+            estado, ruta, semilla=semilla, fecha_corte=corte, con_carrier=con_carrier
+        )
+        registro_cortes.append(
+            {
+                "fecha_corte": corte.isoformat(),
+                "archivo": ruta.name,
+                "sha256": _sha256(ruta),
+                "cuentas": escrito.filas,
+                "filas_carrier": escrito.filas_carrier,
+                **(asdict(evolucion) if evolucion is not None else {}),
+            }
+        )
+        if numero == cortes - 1:
+            break
+        siguiente = corte + timedelta(days=dias_entre_cortes)
+        desde = corte + timedelta(days=1)
+        movimientos = movimientos_del_periodo(estado, semilla=semilla, desde=desde, hasta=siguiente)
+        ruta = directorio / f"pagos_oficial_{desde.isoformat()}_{siguiente.isoformat()}.{extension}"
+        escritos = escribir_pagos(movimientos.tabla, ruta)
+        registro_periodos.append(
+            {
+                "desde": desde.isoformat(),
+                "hasta": siguiente.isoformat(),
+                "archivo": ruta.name,
+                "sha256": _sha256(ruta),
+                "movimientos": escritos.filas,
+                "repetidos_exactos": movimientos.repetidos,
+                "ajustes": movimientos.ajustes,
+            }
+        )
+        estado, evolucion = evolucionar(
+            estado,
+            movimientos,
+            semilla=semilla,
+            corte=corte,
+            siguiente=siguiente,
+            usados=usados,
+            tasa_altas=tasa_altas,
+            tasa_retiros=tasa_retiros,
+        )
+        corte = siguiente
+    manifiesto = {
+        "version": "escenario/v1",
+        "semilla": semilla,
+        "cuentas_iniciales": cuentas,
+        "dias_entre_cortes": dias_entre_cortes,
+        "tasa_altas": tasa_altas,
+        "tasa_retiros": tasa_retiros,
+        "formato": extension,
+        "contratos": {"cortes": CONTRATO_V2.version, "periodos": CONTRATO_PAGOS.version},
+        "cortes": registro_cortes,
+        "periodos": registro_periodos,
+        "invariantes": list(INVARIANTES),
+    }
+    (directorio / MANIFIESTO).write_text(
+        json.dumps(manifiesto, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return Escenario(directorio, manifiesto)
+
+
+def _sha256(ruta: Path) -> str:
+    digesto = hashlib.sha256()
+    with ruta.open("rb") as archivo:
+        while bloque := archivo.read(1 << 20):
+            digesto.update(bloque)
+    return digesto.hexdigest()

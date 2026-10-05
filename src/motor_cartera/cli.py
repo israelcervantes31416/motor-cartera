@@ -110,6 +110,80 @@ def generar_oficial(
         typer.echo(f"Escrito: {escritos.ruta} ({escritos.filas:,} movimientos)")
 
 
+@app.command("generar-escenario")
+def generar_escenario(
+    destino: Annotated[
+        str, typer.Option(help="El directorio donde se escriben.")
+    ] = "datos/escenario",
+    perfil: Annotated[
+        str, typer.Option(help="El tamano del primer corte: XS, S, M, L, XL o XXL.")
+    ] = "XS",
+    cuentas: Annotated[
+        int | None, typer.Option(help="Cuantas cuentas en el primer corte; reemplaza al perfil.")
+    ] = None,
+    cortes: Annotated[int, typer.Option(min=1, help="Cuantos cortes.")] = 4,
+    primer_corte: Annotated[
+        datetime | None, typer.Option(formats=["%Y-%m-%d"], help="Por omision, hoy.")
+    ] = None,
+    dias_entre_cortes: Annotated[int, typer.Option(min=1, help="Dias entre un corte y otro.")] = 7,
+    formato: Annotated[str, typer.Option(help="zip (por omision), csv o xlsx.")] = "zip",
+    semilla: Annotated[int | None, typer.Option(help="Por omision, MC_SEMILLA.")] = None,
+    tasa_altas: Annotated[
+        float, typer.Option(min=0.0, max=1.0, help="Fraccion del corte que llega nueva.")
+    ] = 0.02,
+    tasa_retiros: Annotated[
+        float, typer.Option(min=0.0, max=1.0, help="Fraccion que el acreedor retira.")
+    ] = 0.01,
+) -> None:
+    """Genera un escenario longitudinal: varios cortes de la misma cartera (cartera/v2) y los pagos
+    de cada periodo entre un corte y el siguiente (pagos/v1), con un manifiesto, escenario.json.
+
+    De un corte al siguiente, los pagos bajan los saldos y curan el atraso, las cuentas liquidadas
+    y las retiradas salen y llegan altas que nunca habian estado en la cartera. Todo se deriva de la
+    semilla: el mismo escenario sale igual, byte por byte. El manifiesto trae cada archivo con su
+    SHA-256, lo que paso en cada corte y las invariantes que cumple el escenario.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.generador.oficial import PERFILES
+    from motor_cartera.generador.oficial import generar_escenario as escribir_escenario
+
+    if cuentas is None and perfil.upper() not in PERFILES:
+        typer.echo(f"Perfil desconocido: {perfil}. Usa {', '.join(PERFILES)}.", err=True)
+        raise typer.Exit(code=2)
+    inicio = primer_corte.date() if primer_corte else date.today()
+    try:
+        escenario = escribir_escenario(
+            destino,
+            cuentas=cuentas if cuentas is not None else PERFILES[perfil.upper()],
+            cortes=cortes,
+            primer_corte=inicio,
+            semilla=config.semilla if semilla is None else semilla,
+            dias_entre_cortes=dias_entre_cortes,
+            formato=formato,
+            tasa_altas=tasa_altas,
+            tasa_retiros=tasa_retiros,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    manifiesto = escenario.manifiesto
+    typer.echo(
+        f"Escenario de {len(manifiesto['cortes'])} cortes cada {dias_entre_cortes} dias desde "
+        f"{inicio.isoformat()}, en {escenario.destino}"
+    )
+    periodos = [None, *manifiesto["periodos"]]
+    for corte, periodo in zip(manifiesto["cortes"], periodos, strict=True):
+        linea = f"  {corte['fecha_corte']}: {corte['cuentas']:,} cuentas"
+        if periodo is not None:
+            linea += (
+                f" (continuan {corte['continuan']:,}, liquidadas {corte['liquidadas']:,}, "
+                f"retiradas {corte['retiradas']:,}, altas {corte['altas']:,}); pagos del "
+                f"{periodo['desde']} al {periodo['hasta']}: {periodo['movimientos']:,} movimientos"
+            )
+        typer.echo(linea)
+    typer.echo(f"Manifiesto: {escenario.destino / 'escenario.json'}")
+
+
 @app.command()
 def cargar(
     ruta: str,

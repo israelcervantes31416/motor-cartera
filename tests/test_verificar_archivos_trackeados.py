@@ -6,12 +6,20 @@ una escrita aqui a mano.
 
 from __future__ import annotations
 
+import bz2
+import gzip
+import io
+import lzma
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.feather as feather
+import pyarrow.parquet as pq
 import pytest
 
 from motor_cartera.generador.sintetico import generar_archivo
@@ -82,7 +90,20 @@ def test_una_cartera_metida_con_git_add_f_dice_por_que_no_debe_estar(repo, carte
     assert "datos/cartera.xlsx: lo excluye el .gitignore; por dentro es un zip" in resultado.stdout
 
 
-@pytest.mark.parametrize("ruta", [".env", "config/.env", "reportes/cartera.csv"])
+@pytest.mark.parametrize(
+    "ruta",
+    [
+        ".env",
+        "config/.env",
+        "reportes/cartera.csv",
+        "datos_conformados/cartera.parquet",
+        "respaldos/cartera.dump",
+        "respaldos/volcado.sql",
+        "respaldos/volcado.sql.gz",
+        "locales/cartera.sqlite",
+        "entregas/cartera.7z",
+    ],
+)
 def test_nada_de_lo_que_el_gitignore_excluye_se_cuela(repo, ruta):
     archivo = repo / ruta
     archivo.parent.mkdir(parents=True, exist_ok=True)
@@ -116,7 +137,7 @@ def test_las_mayusculas_no_esconden_una_cartera_donde_git_las_distingue(repo):
     ("nombre", "formato", "que_es"),
     [
         ("respaldo.dat", "xlsx", "un zip"),  # un xlsx renombrado
-        ("cartera.xlsm", "xlsx", "un zip"),  # una extension que el .gitignore no conoce
+        ("cartera.hoja", "xlsx", "un zip"),  # una extension que el .gitignore no conoce
         ("entrega.bin", "zip", "un zip"),
         ("historico.txt", "xls", "un documento OLE2"),
     ],
@@ -131,6 +152,81 @@ def test_una_hoja_de_calculo_o_un_zip_se_reconoce_por_dentro(
 
     assert resultado.returncode == 1
     assert f"{nombre}: por dentro es {que_es}" in resultado.stdout
+
+
+def _tabla() -> pa.Table:
+    return pa.table({"cliente_unico": ["CU00000001", "CU00000002"], "saldo": [1.5, 2.5]})
+
+
+def _parquet() -> bytes:
+    destino = io.BytesIO()
+    pq.write_table(_tabla(), destino)
+    return destino.getvalue()
+
+
+def _feather() -> bytes:
+    destino = io.BytesIO()
+    feather.write_feather(_tabla(), destino)
+    return destino.getvalue()
+
+
+def _sqlite(tmp_path: Path) -> bytes:
+    ruta = tmp_path / "base"
+    with sqlite3.connect(ruta) as conexion:
+        conexion.execute("CREATE TABLE cuenta (cliente_unico TEXT)")
+    conexion.close()
+    return ruta.read_bytes()
+
+
+TEXTO = b"cliente_unico,saldo\nCU00000001,1.50\n"
+
+
+@pytest.mark.parametrize(
+    ("nombre", "contenido", "que_es"),
+    [
+        ("conformado.bin", _parquet, "un Parquet"),
+        ("tabla.bin", _feather, "un Arrow o Feather"),
+        ("respaldo.dat", lambda: gzip.compress(TEXTO), "un gzip"),
+        ("respaldo.bin", lambda: bz2.compress(TEXTO), "un bzip2"),
+        ("vacio.bin", lambda: bz2.compress(b""), "un bzip2"),
+        ("respaldo.raw", lambda: lzma.compress(TEXTO), "un xz"),
+        ("respaldo.blob", lambda: pa.Codec("zstd").compress(TEXTO).to_pybytes(), "un zstd"),
+        # Sin con que escribirlos aqui: basta su cabecera, que es lo que se revisa.
+        ("entrega.dat", lambda: b"7z\xbc\xaf\x27\x1c" + bytes(32), "un 7z"),
+        ("entrega.bin", lambda: b"Rar!\x1a\x07\x01\x00" + bytes(32), "un rar"),
+        ("base.dat", lambda: b"PGDMP\x01\x0e\x00" + bytes(32), "un volcado de pg_dump"),
+    ],
+    ids=["parquet", "feather", "gzip", "bzip2", "bzip2-vacio", "xz", "zstd", "7z", "rar", "pgdump"],
+)
+def test_un_formato_de_datos_un_comprimido_o_un_volcado_se_reconoce_por_dentro(
+    repo, nombre, contenido, que_es
+):
+    (repo / nombre).write_bytes(contenido())
+    git(repo, "add", nombre)
+
+    resultado = revisar(repo)
+
+    assert resultado.returncode == 1
+    assert f"{nombre}: por dentro es {que_es}" in resultado.stdout
+
+
+def test_una_base_sqlite_se_reconoce_por_dentro(repo, tmp_path):
+    (repo / "local.dat").write_bytes(_sqlite(tmp_path))
+    git(repo, "add", "local.dat")
+
+    resultado = revisar(repo)
+
+    assert resultado.returncode == 1
+    assert "local.dat: por dentro es una base SQLite" in resultado.stdout
+
+
+def test_un_texto_que_empieza_como_un_formato_no_es_ese_formato(repo):
+    # Las firmas son de varios bytes: un texto que empieza con BZh o con PAR no es un bzip2 ni
+    # un Parquet.
+    (repo / "notas.md").write_text("BZh es como empieza un bzip2; PAR, un Parquet.\n")
+    git(repo, "add", "notas.md")
+
+    assert revisar(repo).returncode == 0
 
 
 def test_una_imagen_no_es_una_hoja_de_calculo(repo):
