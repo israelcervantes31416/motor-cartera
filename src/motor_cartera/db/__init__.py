@@ -1,5 +1,6 @@
 from motor_cartera.db.modelos import (
     ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     Cuenta,
     DecisionCuenta,
@@ -24,6 +25,7 @@ from motor_cartera.db.modelos import (
 from motor_cartera.db.sesion import crear_motor, sesion
 
 __all__ = [
+    "ArtefactoFuente",
     "Cuenta",
     "Corrida",
     "EstadoCorrida",

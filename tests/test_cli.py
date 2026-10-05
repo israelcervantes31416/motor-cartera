@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from motor_cartera.cli import app
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
-    ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     EjecucionDecision,
     EstadoCorrida,
@@ -86,8 +86,9 @@ def test_cargar_pasa_por_la_cola_y_no_encadena_nada(tmp_path):
         None,
     )
     assert (trabajo.worker_id, trabajo.lease_hasta) == (None, None)
-    assert [_cuantos(m) for m in (ArchivoCorrida, FlujoOrquestacion, EjecucionDecision)] == [
-        0,
+    # El archivo queda como artefacto, y no hay flujo ni decision.
+    assert [_cuantos(m) for m in (ArtefactoFuente, FlujoOrquestacion, EjecucionDecision)] == [
+        1,
         0,
         0,
     ]
@@ -144,7 +145,7 @@ def test_si_cargar_muere_a_la_mitad_un_worker_termina_la_ingesta(tmp_path, monke
     assert trabajo.estado == EstadoTrabajo.EJECUTANDO
     with sesion() as s:
         assert s.get_one(Corrida, trabajo.corrida_id).estado == EstadoCorrida.EN_PROCESO
-    assert _cuantos(ArchivoCorrida) == 1  # el archivo sobrevive al proceso que lo leyo
+    assert _cuantos(ArtefactoFuente) == 1  # el archivo sobrevive al proceso que lo leyo
 
     monkeypatch.setattr(worker, "procesar_corrida", procesar)
     with sesion() as s:
@@ -155,7 +156,7 @@ def test_si_cargar_muere_a_la_mitad_un_worker_termina_la_ingesta(tmp_path, monke
     assert (procesado.intentos, procesado.estado) == (2, EstadoTrabajo.COMPLETADO)
     with sesion() as s:
         assert s.get_one(Corrida, trabajo.corrida_id).estado == EstadoCorrida.EXITOSA
-    assert _cuantos(ArchivoCorrida) == 0
+    assert _cuantos(ArtefactoFuente) == 1  # y despues de la ingesta sigue ahi: es evidencia
 
 
 @pytest.mark.usefixtures("bd")

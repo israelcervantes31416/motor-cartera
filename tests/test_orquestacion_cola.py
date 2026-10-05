@@ -30,7 +30,9 @@ LEASE = 60.0
 def _corrida() -> int:
     """Una corrida EN_PROCESO de un archivo propio: el objetivo de un trabajo de ingesta."""
     with sesion() as s:
-        return abrir_corrida(s, origen="cartera.csv", contenido=uuid4().bytes).id
+        # Texto unico: un archivo propio para cada corrida, y que el almacen reconoce como csv.
+        contenido = f"cartera {uuid4()}\n".encode()
+        return abrir_corrida(s, origen="cartera.csv", contenido=contenido).id
 
 
 def _encolar(max_intentos: int = 5, **campos) -> int:

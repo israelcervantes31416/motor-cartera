@@ -1,12 +1,16 @@
 """Fixtures compartidas.
 
 Las pruebas que tocan la base usan una base propia, nunca la de desarrollo, y la vacian
-antes de cada prueba.
+antes de cada prueba. El almacen de artefactos de las pruebas es un directorio temporal, aparte
+del de desarrollo, que se borra al terminar.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import stat
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,6 +29,46 @@ if not (make_url(URL_PRUEBAS).database or "").endswith("_test"):
     oculta = make_url(URL_PRUEBAS).render_as_string(hide_password=True)
     raise pytest.UsageError(f"MC_DATABASE_URL_PRUEBAS debe apuntar a una base *_test: {oculta}")
 os.environ["MC_DATABASE_URL"] = URL_PRUEBAS
+
+# Un solo almacen para toda la sesion, fijado antes de que se construya cualquier Config: varios
+# modulos de prueba construyen la suya al importarse, y la API, el flujo y el worker tienen que ver
+# el mismo almacen, como en produccion. Por contenido, un objeto de otra prueba no estorba.
+ALMACEN_DE_PRUEBAS = Path(tempfile.mkdtemp(prefix="motor-cartera-fuentes-"))
+os.environ["MC_SOURCE_STORE_ROOT"] = str(ALMACEN_DE_PRUEBAS)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _almacen_de_la_sesion() -> Iterator[None]:
+    """Borra el almacen de las pruebas al terminar. Los objetos son de solo lectura."""
+    yield
+
+    def hacer_borrable(funcion, ruta, _error):
+        os.chmod(ruta, stat.S_IWRITE)
+        funcion(ruta)
+
+    shutil.rmtree(ALMACEN_DE_PRUEBAS, onexc=hacer_borrable)
+
+
+@pytest.fixture
+def almacen():
+    """El almacen de artefactos que ven la API, el flujo y el worker durante las pruebas."""
+    from motor_cartera.fuentes.almacen import LocalContentAddressedStore
+
+    return LocalContentAddressedStore(ALMACEN_DE_PRUEBAS)
+
+
+@pytest.fixture
+def objetos(almacen):
+    """Los SHA-256 de los objetos que tiene el almacen al llamarla: para comparar antes y despues
+    de algo que no debe guardar nada."""
+
+    def objetos() -> set[str]:
+        raiz = almacen.raiz / "sha256"
+        if not raiz.exists():
+            return set()
+        return {ruta.name for ruta in raiz.rglob("*") if ruta.is_file()}
+
+    return objetos
 
 
 @pytest.fixture
@@ -66,7 +110,9 @@ def bd(_esquema) -> Iterator[None]:
     from motor_cartera.db.sesion import crear_motor
 
     with crear_motor().begin() as conexion:
-        conexion.execute(text("TRUNCATE corrida, cuenta, rechazo RESTART IDENTITY CASCADE"))
+        conexion.execute(
+            text("TRUNCATE corrida, cuenta, rechazo, artefacto_fuente RESTART IDENTITY CASCADE")
+        )
     yield
 
 

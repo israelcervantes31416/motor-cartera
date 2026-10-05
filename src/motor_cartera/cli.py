@@ -69,6 +69,33 @@ def cargar(ruta: str) -> None:
         raise typer.Exit(code=1)
 
 
+@app.command("verificar-fuentes")
+def verificar_fuentes(
+    minimo: Annotated[
+        int, typer.Option(help="Cuantos artefactos tiene que haber al menos, para un smoke.")
+    ] = 0,
+) -> None:
+    """Vuelve a firmar cada artefacto fuente que la base registra y comprueba que el almacen tenga
+    exactamente sus bytes.
+
+    Lee cada objeto por bloques, sin modificar nada. Termina con codigo 1 si alguno falta o esta
+    danado, o si hay menos de --minimo: un almacen que no se monto, o que se perdio, no se da por
+    bueno.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.fuentes.artefactos import almacen_de, auditar_artefactos
+
+    with sesion() as s:
+        revisados = auditar_artefactos(s, almacen_de(config))
+    problemas = [r for r in revisados if r.problema is not None]
+    for revisado in problemas:
+        typer.echo(f"  {revisado.artefacto.artifact_id}: {revisado.problema}", err=True)
+    typer.echo(f"{len(revisados) - len(problemas)} de {len(revisados)} artefactos intactos.")
+    if problemas or len(revisados) < minimo:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def worker(
     una_vez: Annotated[

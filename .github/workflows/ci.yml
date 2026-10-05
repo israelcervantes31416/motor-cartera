@@ -99,6 +99,15 @@ jobs:
       - name: Prueba de humo por la API
         run: python3 scripts/prueba_de_humo.py datos/humo.xlsx
 
+      # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
+      # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
+      # base registra tiene que seguir en el almacen con sus mismos bytes.
+      - name: Persistencia del almacen de artefactos
+        run: |
+          docker compose down
+          docker compose up -d
+          docker compose exec -T worker motor-cartera verificar-fuentes --minimo 1
+
       # Lo que hizo el worker: cada trabajo que tomo y como lo cerro.
       - name: Bitacora del worker
         if: always()

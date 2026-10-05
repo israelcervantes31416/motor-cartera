@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
 from typing import Annotated
 from uuid import UUID
 
@@ -18,10 +17,10 @@ from motor_cartera.api.esquemas import (
     PaginaRechazos,
     RechazoRespuesta,
 )
+from motor_cartera.api.subidas import ERRORES_DE_SUBIDA, guardar_subida, nombre_de
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import EstadoCorrida, Rechazo
 from motor_cartera.ingesta.corridas import ArchivoDuplicado
-from motor_cartera.ingesta.lectores import FORMATOS
 from motor_cartera.orquestacion.flujo import crear_flujo_ingesta
 
 router = APIRouter(prefix="/corridas", tags=["corridas"])
@@ -40,18 +39,17 @@ NO_EXISTE = (404, "CORRIDA_NO_ENCONTRADA", "No existe una corrida con ese run_id
     summary="Inicia una corrida de ingesta sobre un archivo de cartera",
     responses={
         201: {
-            "description": "La corrida quedo registrada EN_PROCESO, con su archivo, su flujo y el "
-            "trabajo de su ingesta en la cola durable. El worker la procesa y encadena las demas "
-            "etapas: consulta `Location` y `/corridas/{run_id}/flujo`.",
+            "description": "La corrida quedo registrada EN_PROCESO: su archivo, ya guardado en el "
+            "almacen de artefactos, su flujo y el trabajo de su ingesta en la cola durable. El "
+            "worker la procesa y encadena las demas etapas: consulta `Location` y "
+            "`/corridas/{run_id}/flujo`.",
             "content": {"application/json": {"example": EJEMPLO_CORRIDA_EN_PROCESO}},
         },
         **errores(
             *SIN_CLAVE,
             (409, "ARCHIVO_YA_PUBLICADO", "Otra corrida ya publico ese archivo; run_id dice cual."),
             (409, "ARCHIVO_EN_PROCESO", "Otra corrida lo esta procesando; run_id dice cual."),
-            (413, "ARCHIVO_DEMASIADO_GRANDE", "El archivo pasa del tope (MC_TAMANO_MAXIMO_MB)."),
-            (415, "FORMATO_NO_SOPORTADO", "El archivo no es xlsx, csv ni zip."),
-            (422, "ARCHIVO_VACIO", "El archivo llego vacio."),
+            *ERRORES_DE_SUBIDA,
             (422, "ENTRADA_INVALIDA", "La peticion no trae el campo archivo."),
         ),
     },
@@ -65,10 +63,11 @@ def crear_corrida(
     """Registra la corrida y deja su ingesta en la cola durable. Responde de inmediato, con la
     corrida `EN_PROCESO` y su direccion en `Location`: consultala hasta que termine.
 
-    La peticion no lee el archivo ni lo juzga: lo guarda, con la corrida, su flujo automatico y el
-    trabajo de la ingesta, en una sola transaccion, y un worker hace lo demas. Si la API se reinicia
-    despues de responder, no se pierde nada: el archivo ya esta en la base. El flujo lleva la
-    corrida hasta el ruteo sin que se pida cada etapa; se sigue en `/corridas/{run_id}/flujo`.
+    La peticion no juzga el archivo: lo copia por bloques al almacen de artefactos, donde queda
+    guardado por su SHA-256 y no se borra nunca, y despues registra el artefacto, la corrida, su
+    flujo automatico y el trabajo de la ingesta en una sola transaccion. Un worker hace lo demas.
+    Si la API se reinicia despues de responder, no se pierde nada. El flujo lleva la corrida hasta
+    el ruteo sin que se pida cada etapa; se sigue en `/corridas/{run_id}/flujo`.
 
     **201.** La peticion crea la corrida antes de responder: ya tiene `run_id` y se puede
     consultar. Lo que sigue en curso es su procesamiento, y eso es su `estado`. Un 202
@@ -77,7 +76,10 @@ def crear_corrida(
 
     **Un archivo con registros invalidos no es un error de la peticion.** La peticion es
     valida y crea la corrida; el veredicto sobre el contenido llega en el estado de la
-    corrida y en `/rechazos`. Los 4xx son solo para lo que se decide sin leer el archivo.
+    corrida y en `/rechazos`. Los 4xx son para lo que se decide sin juzgar ningun registro: un
+    formato que no se recibe, un archivo vacio o demasiado grande, o bytes que no son los de su
+    extension (`415 FORMATO_NO_CORRESPONDE`): un xlsx tiene que ser un libro de Excel, y un csv,
+    texto.
 
     **409 si el mismo archivo ya se publico o se esta procesando**: volver a ingerirlo
     duplicaria la cartera o repetiria el trabajo, y un doble clic o un reintento por
@@ -85,30 +87,13 @@ def crear_corrida(
     archivo que no llego a publicarse (RECHAZADA o FALLIDA) si se puede reintentar.
     """
     config: Config = request.app.state.config
-    nombre = PurePosixPath((archivo.filename or "").replace("\\", "/")).name
-    if PurePosixPath(nombre).suffix.lower() not in FORMATOS:
-        raise ErrorDeApi(
-            415,
-            "FORMATO_NO_SOPORTADO",
-            f"Formato no soportado: {nombre!r}. Se aceptan {', '.join(FORMATOS)}.",
-        )
-
-    limite = config.tamano_maximo_mb * 1024 * 1024
-    contenido = archivo.file.read(limite + 1)
-    if len(contenido) > limite:
-        raise ErrorDeApi(
-            413,
-            "ARCHIVO_DEMASIADO_GRANDE",
-            f"El archivo pasa del tope de {config.tamano_maximo_mb} MiB.",
-        )
-    if not contenido:
-        raise ErrorDeApi(422, "ARCHIVO_VACIO", f"{nombre!r} llego vacio.")
-
+    nombre = nombre_de(archivo)
+    guardado = guardar_subida(archivo, nombre, config)
     try:
         corrida, _ = crear_flujo_ingesta(
             s,
             origen=nombre,
-            contenido=contenido,
+            guardado=guardado,
             tolerancia=config.tolerancia_rechazo,
             config=config,
         )

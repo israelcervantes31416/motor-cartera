@@ -74,6 +74,8 @@ EJEMPLO_CORRIDA = {
     "detalle": "Se publicaron 9,800 cuentas; 200 registros (2.0%) se rechazaron, dentro de la "
     "tolerancia de 5.0%. Origen: hoja 'cartera' de 'cartera_sintetica.xlsx'. Descartado: "
     "hoja 'LEEME': ...",
+    "despacho_id": "DSP_001",
+    "cartera_id": "CARTERA_PRINCIPAL",
 }
 
 # Lo que responde POST /corridas: la corrida recien registrada, antes de leer nada.
@@ -125,6 +127,13 @@ class CorridaRespuesta(BaseModel):
     iniciada_en: datetime
     terminada_en: datetime | None
     detalle: str | None = Field(description="Que paso, en palabras, y de donde se leyo.")
+    despacho_id: str = Field(
+        description="El despacho que opera el sistema, cuando se registro la corrida. Es metadata "
+        "del sistema, no un dato del archivo."
+    )
+    cartera_id: str = Field(
+        description="La cartera del acreedor que gestiona ese despacho. Metadata del sistema."
+    )
 
     @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
     @property

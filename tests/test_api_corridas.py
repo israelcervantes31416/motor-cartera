@@ -1,12 +1,14 @@
 """POST /corridas, GET /corridas/{run_id} y GET /corridas/{run_id}/rechazos.
 
-El POST no ingiere: guarda el archivo con la corrida EN_PROCESO, su flujo y el trabajo de la
-ingesta, y responde 201. Las pruebas hacen lo que haria el worker con la ingesta, y nada mas: lo
-que el flujo encadena despues se prueba en test_api_orquestacion.
+El POST no ingiere: guarda el archivo en el almacen de artefactos y registra la corrida
+EN_PROCESO, su flujo y el trabajo de la ingesta, y responde 201. Las pruebas hacen lo que haria el
+worker con la ingesta, y nada mas: lo que el flujo encadena despues se prueba en
+test_api_orquestacion.
 """
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from uuid import uuid4
 
@@ -17,7 +19,7 @@ from motor_cartera.api.esquemas import EJEMPLO_CORRIDA, EJEMPLO_CORRIDA_EN_PROCE
 from motor_cartera.config import Config
 from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import (
-    ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     Cuenta,
     EstadoFlujo,
@@ -89,10 +91,10 @@ def test_post_crea_la_corrida_201_con_location_y_estado_inicial(cliente, tmp_pat
 
 
 def test_el_post_guarda_el_archivo_y_deja_la_ingesta_en_la_cola_sin_leerlo(
-    cliente, tmp_path, monkeypatch
+    cliente, tmp_path, monkeypatch, almacen
 ):
-    # La peticion no lee el archivo ni lo juzga: lo guarda con la corrida, su flujo y el trabajo
-    # de la ingesta, en una sola transaccion. Lo demas lo hace el worker.
+    # La peticion no juzga el archivo: lo guarda en el almacen y registra su artefacto, la corrida,
+    # su flujo y el trabajo de la ingesta, en una sola transaccion. Lo demas lo hace el worker.
     contenido = _cartera(tmp_path)
     leidos = []
     monkeypatch.setattr(ingesta, "leer_contenido", lambda *argumentos: leidos.append(argumentos))
@@ -104,11 +106,25 @@ def test_el_post_guarda_el_archivo_y_deja_la_ingesta_en_la_cola_sin_leerlo(
     assert _filas(Cuenta) == _filas(Rechazo) == 0
     with sesion() as s:
         corrida = s.exec(select(Corrida)).one()
-        archivo = s.get_one(ArchivoCorrida, corrida.id)
+        artefacto = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id)
         flujo = s.exec(select(FlujoOrquestacion)).one()
         trabajo = s.exec(select(TrabajoOrquestacion)).one()
     assert str(corrida.run_id) == respuesta.json()["run_id"]
-    assert (archivo.contenido, archivo.tamano_bytes) == (contenido, len(contenido))
+    # El archivo, byte por byte, en el almacen: la firma de la corrida es la de su artefacto.
+    sha256 = hashlib.sha256(contenido).hexdigest()
+    assert (artefacto.sha256, artefacto.tamano_bytes, corrida.firma) == (
+        sha256,
+        len(contenido),
+        sha256,
+    )
+    assert (artefacto.nombre_original, artefacto.formato, artefacto.media_type) == (
+        "cartera.csv",
+        "csv",
+        "text/csv",
+    )
+    with almacen.abrir(sha256) as objeto:
+        assert objeto.read() == contenido
+    assert (corrida.despacho_id, corrida.cartera_id) == ("DSP_001", "CARTERA_PRINCIPAL")
     assert (flujo.corrida_id, flujo.estado, flujo.etapa) == (
         corrida.id,
         EstadoFlujo.EN_PROCESO,
@@ -124,8 +140,9 @@ def test_el_post_guarda_el_archivo_y_deja_la_ingesta_en_la_cola_sin_leerlo(
     assert trabajo.max_intentos == cliente.app.state.config.worker_max_intentos
 
 
-def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
-    ubicacion = _subir(cliente, _cartera(tmp_path)).headers["Location"]
+def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path, almacen):
+    contenido = _cartera(tmp_path)
+    ubicacion = _subir(cliente, contenido).headers["Location"]
     _ingerir()
 
     respuesta = cliente.get(ubicacion)
@@ -147,8 +164,10 @@ def test_get_da_conteos_tiempos_y_resultado(cliente, tmp_path):
     assert not corrida["detalle"].endswith("..")
     # En UTC, se configure como se configure el servidor de PostgreSQL.
     assert corrida["iniciada_en"].endswith("Z") and corrida["terminada_en"].endswith("Z")
-    # Publicada la corrida, su archivo ya no hace falta.
-    assert _filas(ArchivoCorrida) == 0
+    assert (corrida["despacho_id"], corrida["cartera_id"]) == ("DSP_001", "CARTERA_PRINCIPAL")
+    # Publicada la corrida, su archivo sigue en el almacen, intacto: es la evidencia.
+    assert _filas(ArtefactoFuente) == 1
+    almacen.verificar(corrida["firma"], len(contenido))
 
 
 def test_un_archivo_malformado_si_crea_la_corrida_y_esta_termina_fallida(cliente):
@@ -160,7 +179,7 @@ def test_un_archivo_malformado_si_crea_la_corrida_y_esta_termina_fallida(cliente
     corrida = cliente.get(respuesta.headers["Location"]).json()
     assert corrida["estado"] == "FALLIDA"
     assert "Faltan columnas requeridas" in corrida["detalle"]
-    assert _filas(ArchivoCorrida) == 0
+    assert _filas(ArtefactoFuente) == 1  # tambien la evidencia de lo que no se pudo juzgar
 
 
 def test_el_nombre_del_archivo_se_queda_sin_ruta(cliente, tmp_path):
@@ -172,12 +191,18 @@ def test_el_nombre_del_archivo_se_queda_sin_ruta(cliente, tmp_path):
 # --- POST /corridas: cada error, a proposito ------------------------------------------------
 
 
-def test_sin_api_key_401_y_no_registra_nada(cliente, tmp_path):
-    respuesta = _subir(cliente, _cartera(tmp_path), headers={"X-API-Key": ""})
+def test_sin_api_key_401_y_no_registra_nada(cliente, tmp_path, almacen, objetos):
+    contenido = _cartera(tmp_path, semilla=uuid4().int % 2**31)  # un archivo que nadie subio
+    antes = objetos()
+
+    respuesta = _subir(cliente, contenido, headers={"X-API-Key": ""})
 
     assert respuesta.status_code == 401
-    for modelo in (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion):
+    for modelo in (Corrida, ArtefactoFuente, FlujoOrquestacion, TrabajoOrquestacion):
         assert _filas(modelo) == 0
+    # Ni un byte en el almacen.
+    assert objetos() == antes
+    assert not almacen.existe(hashlib.sha256(contenido).hexdigest())
 
 
 def test_el_mismo_archivo_otra_vez_409_con_la_corrida_que_ya_lo_publico(cliente, tmp_path):
@@ -205,8 +230,8 @@ def test_el_mismo_archivo_mientras_su_ingesta_sigue_en_la_cola_409(cliente, tmp_
     assert respuesta.json()["codigo"] == "ARCHIVO_EN_PROCESO"
     assert respuesta.json()["run_id"] == primera
     assert "Location" not in respuesta.headers
-    # Ni otra corrida, ni otro archivo, ni otro flujo, ni otro trabajo.
-    for modelo in (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion):
+    # Ni otra corrida, ni otro artefacto, ni otro flujo, ni otro trabajo.
+    for modelo in (Corrida, ArtefactoFuente, FlujoOrquestacion, TrabajoOrquestacion):
         assert _filas(modelo) == 1
 
 
@@ -221,6 +246,11 @@ def test_un_archivo_que_no_se_publico_se_vuelve_a_subir_con_otra_corrida_y_otro_
     assert respuesta.status_code == 201
     assert respuesta.json()["run_id"] != fallida["run_id"]
     assert _filas(Corrida) == _filas(FlujoOrquestacion) == 2
+    # Las dos corridas apuntan al mismo artefacto: es el mismo contenido.
+    with sesion() as s:
+        artefactos = s.exec(select(Corrida.artefacto_fuente_id)).all()
+    assert len(artefactos) == 2 and len(set(artefactos)) == 1
+    assert _filas(ArtefactoFuente) == 1
 
 
 def test_el_mismo_archivo_mientras_otra_corrida_lo_procesa_409(cliente, tmp_path):
@@ -235,26 +265,90 @@ def test_el_mismo_archivo_mientras_otra_corrida_lo_procesa_409(cliente, tmp_path
     assert respuesta.json()["run_id"] == str(en_curso.run_id)
 
 
-def test_formato_no_soportado_415(cliente):
+def _temporales(almacen) -> list:
+    return list((almacen.raiz / "tmp").glob("*")) if (almacen.raiz / "tmp").exists() else []
+
+
+def test_formato_no_soportado_415(cliente, objetos):
+    antes = objetos()
+
     respuesta = _subir(cliente, b"%PDF-1.7", nombre="cartera.pdf")
 
     assert respuesta.status_code == 415
     assert respuesta.json()["codigo"] == "FORMATO_NO_SOPORTADO"
+    assert objetos() == antes
 
 
-def test_archivo_demasiado_grande_413(cliente):
-    # La app de prueba tiene un tope de 1 MiB.
+@pytest.mark.parametrize(
+    ("contenido", "nombre", "motivo"),
+    [
+        (b"no soy un excel", "cartera.xlsx", "no es un Excel legible"),
+        (b"PK\x03\x04 un zip roto", "cartera.zip", "no es un zip legible"),
+        (b"%PDF-1.7 renombrado", "cartera.csv", "por dentro es un PDF"),
+        (b"cliente,saldo\nCU1,\x00\x00\n", "cartera.csv", "bytes nulos"),
+    ],
+    ids=["xlsx-que-no-es-zip", "zip-roto", "pdf-como-csv", "csv-binario"],
+)
+def test_bytes_que_no_son_los_de_su_extension_415_sin_guardar_nada(
+    cliente, almacen, objetos, contenido, nombre, motivo
+):
+    antes = objetos()
+
+    respuesta = _subir(cliente, contenido, nombre=nombre)
+
+    assert respuesta.status_code == 415
+    assert respuesta.json()["codigo"] == "FORMATO_NO_CORRESPONDE"
+    assert motivo in respuesta.json()["mensaje"]
+    assert _filas(Corrida) == _filas(ArtefactoFuente) == 0
+    assert objetos() == antes and _temporales(almacen) == []
+
+
+def test_archivo_demasiado_grande_413(cliente, almacen, objetos):
+    # La app de prueba tiene un tope de 1 MiB. Se corta al copiar, y no queda nada a medias.
+    antes = objetos()
+
     respuesta = _subir(cliente, b"x" * (1024 * 1024 + 1))
 
     assert respuesta.status_code == 413
     assert respuesta.json()["codigo"] == "ARCHIVO_DEMASIADO_GRANDE"
+    assert objetos() == antes and _temporales(almacen) == []
 
 
-def test_archivo_vacio_422(cliente):
+def test_archivo_vacio_422(cliente, objetos):
+    antes = objetos()
+
     respuesta = _subir(cliente, b"")
 
     assert respuesta.status_code == 422
     assert respuesta.json()["codigo"] == "ARCHIVO_VACIO"
+    assert objetos() == antes
+
+
+def test_si_la_base_falla_despues_de_guardar_queda_un_objeto_huerfano_y_ninguna_corrida(
+    app, clave_api, tmp_path, almacen, monkeypatch
+):
+    # El orden seguro: primero el objeto durable, despues la base. Si la base falla, el objeto
+    # queda sin fila que lo registre (un huerfano que no corrompe nada), y no hay ninguna corrida
+    # que apunte a un archivo que no existe.
+    from motor_cartera.orquestacion import cola
+
+    def revienta(*_, **__):
+        raise RuntimeError("la base se cayo a media transaccion")
+
+    monkeypatch.setattr(cola, "crear", revienta)
+    contenido = _cartera(tmp_path, semilla=uuid4().int % 2**31)
+    sha256 = hashlib.sha256(contenido).hexdigest()
+    assert not almacen.existe(sha256)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, headers={"X-API-Key": clave_api}, raise_server_exceptions=False) as c:
+        respuesta = _subir(c, contenido)
+
+    assert respuesta.status_code == 500
+    for modelo in (Corrida, ArtefactoFuente, FlujoOrquestacion, TrabajoOrquestacion):
+        assert _filas(modelo) == 0
+    almacen.verificar(sha256, len(contenido))  # el huerfano, entero
 
 
 def test_sin_archivo_422_dice_que_falta(cliente):
@@ -362,6 +456,7 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
 
     post = rutas["/corridas"]["post"]
     assert set(post["responses"]) == {"201", "401", "409", "413", "415", "422"}
+    assert "`FORMATO_NO_CORRESPONDE`" in post["responses"]["415"]["description"]
     # El ejemplo del 201 es lo que de verdad responde el POST, no una corrida terminada.
     ejemplo = post["responses"]["201"]["content"]["application/json"]["example"]
     assert ejemplo["estado"] == "EN_PROCESO"

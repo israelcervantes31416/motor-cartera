@@ -12,6 +12,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.elements import conv
 from sqlmodel import Field, SQLModel
 
+from motor_cartera.config import config
+from motor_cartera.fuentes.formatos import Formato
+
 # Nombres deterministas para indices y restricciones. Sin esto PostgreSQL los inventa, y
 # una migracion futura que necesite borrar o cambiar una restriccion no sabe como se llama.
 SQLModel.metadata.naming_convention = {
@@ -25,6 +28,56 @@ SQLModel.metadata.naming_convention = {
 
 def ahora() -> datetime:
     return datetime.now(UTC)
+
+
+CLAVE_DEL_CONTENIDO = "storage_key = 'sha256/' || substr(sha256, 1, 2) || '/' || sha256"
+"""La identidad fisica de un artefacto sale de su SHA-256, nunca de su nombre."""
+
+
+class ArtefactoFuente(SQLModel, table=True):
+    """Un archivo recibido, tal como llego: la evidencia original de una ingesta.
+
+    Los bytes viven en el almacen de artefactos (MC_SOURCE_STORE_ROOT), no en PostgreSQL; esta fila
+    es su registro. Hay una por contenido: la identidad es el SHA-256, y el mismo archivo subido dos
+    veces, aunque sea con otro nombre, es el mismo artefacto. Cada corrida o ingesta que lo usa
+    conserva su propio nombre de origen y su propia historia.
+
+    El objeto es inmutable y no se borra al terminar una ingesta: es lo que permite volver a
+    reproducir exactamente lo que se recibio. Tambien se registra aqui el Parquet de un dataset
+    conformado, que se guarda en el mismo almacen.
+    """
+
+    __tablename__ = "artefacto_fuente"
+    __table_args__ = (
+        sa.CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name=conv("ck_artefacto_sha256")),
+        sa.CheckConstraint("tamano_bytes > 0", name=conv("ck_artefacto_tamano_positivo")),
+        sa.CheckConstraint(CLAVE_DEL_CONTENIDO, name=conv("ck_artefacto_storage_key")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    artifact_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. El `id` es interno, como en las demas tablas."""
+    sha256: str = Field(max_length=64, unique=True)
+    """SHA-256 de los bytes, calculado mientras se copiaban al almacen."""
+    tamano_bytes: int = Field(sa_type=sa.BigInteger)
+    nombre_original: str = Field(max_length=255)
+    """El nombre con que llego la primera vez. Es metadata: no identifica nada."""
+    formato: Formato = Field(
+        sa_type=sa.Enum(
+            Formato,
+            name="formato_artefacto",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+            # El valor (xlsx) y no el nombre del miembro (XLSX), que guardaria por omision.
+            values_callable=lambda formatos: [formato.value for formato in formatos],
+        )
+    )
+    """El formato reconocido por sus bytes, que coincide con su extension."""
+    media_type: str | None = Field(default=None, max_length=100)
+    storage_key: str = Field(max_length=80, unique=True)
+    """Donde vive dentro del almacen: `sha256/ab/abcdef...`. Nunca sale por la API."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
 class EstadoCorrida(StrEnum):
@@ -111,6 +164,23 @@ class Corrida(SQLModel, table=True):
     filas_validas: int = 0
     filas_rechazadas: int = 0
     detalle: str | None = None
+    artefacto_fuente_id: int | None = Field(
+        default=None,
+        foreign_key="artefacto_fuente.id",
+        index=True,
+        description="El archivo recibido, en el almacen de artefactos. Vacio solo en las corridas "
+        "anteriores a la 0007, cuyo archivo no se conservo",
+    )
+    despacho_id: str = Field(
+        default_factory=lambda: config.despacho_id,
+        max_length=32,
+        description="El despacho del sistema cuando se registro: metadata, no un dato del archivo",
+    )
+    cartera_id: str = Field(
+        default_factory=lambda: config.cartera_id,
+        max_length=32,
+        description="La cartera del sistema cuando se registro: metadata, no un dato del archivo",
+    )
 
 
 class Cuenta(SQLModel, table=True):
@@ -628,12 +698,13 @@ PROPIEDAD_DEL_TRABAJO = (
 
 
 class ArchivoCorrida(SQLModel, table=True):
-    """El archivo de una corrida, tal como llego, mientras la ingesta todavia lo puede necesitar.
+    """El archivo de una corrida de v0.5, en BYTEA. Desde la 0007 es una estructura heredada.
 
-    La API ya no le pasa los bytes a una tarea en memoria: los guarda aqui, en la misma transaccion
-    que abre la corrida, para que sobrevivan a la muerte del proceso que los recibio y cualquier
-    worker pueda hacer la ingesta. Se borra cuando la corrida ya es terminal y el trabajo de ingesta
-    se cierra. No copia el origen ni la firma: viven en la corrida. Nunca sale por la API.
+    En v0.5 la API guardaba aqui el archivo y el worker lo borraba al terminar la ingesta. Desde
+    v0.6 el archivo original es evidencia y vive en el almacen de artefactos (ArtefactoFuente):
+    nada escribe ni borra en esta tabla. Se conserva para que una corrida de v0.5 que seguia en la
+    cola al migrar todavia se pueda procesar con su archivo, y para que bajar a la 0006 sea seguro.
+    No copia el origen ni la firma: viven en la corrida. Nunca sale por la API.
     """
 
     __tablename__ = "archivo_corrida"
