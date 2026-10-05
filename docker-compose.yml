@@ -1,6 +1,7 @@
 # `docker compose up` levanta PostgreSQL, aplica las migraciones y arranca la API y el worker,
 # en ese orden y sin pasos manuales. La API queda en http://localhost:8000 (documentacion en
-# /docs). La API registra el trabajo en la cola durable, en PostgreSQL; el worker lo ejecuta.
+# /docs). La API guarda cada archivo en el almacen de artefactos y registra el trabajo en la cola
+# durable, en PostgreSQL; el worker lo ejecuta.
 
 x-app: &app
   build: .
@@ -11,8 +12,12 @@ x-app: &app
     # Clave solo para desarrollo local. En cualquier otro entorno MC_API_KEY se define
     # fuera del repositorio; la API se niega a arrancar sin una.
     MC_API_KEY: ${MC_API_KEY:-clave-local-de-desarrollo}
+    # El almacen de artefactos fuente: cada archivo recibido, por su SHA-256, sin borrarse nunca. La
+    # API lo escribe y el worker lo lee; es un volumen propio, aparte del de PostgreSQL.
+    MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
   volumes:
     - ./:/app
+    - fuentes:/var/lib/motor-cartera/fuentes
 
 services:
   postgres:
@@ -81,3 +86,5 @@ services:
 
 volumes:
   pgdata:
+  # Sobrevive a `docker compose down` (no a `down -v`): los artefactos son evidencia.
+  fuentes:

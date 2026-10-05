@@ -14,6 +14,7 @@ from sqlmodel import func, select
 from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import sesion
+from motor_cartera.fuentes.formatos import FormatoNoCorresponde
 from motor_cartera.generador.sintetico import generar_archivo, generar_cartera
 from motor_cartera.ingesta import corridas
 from motor_cartera.ingesta.corridas import (
@@ -102,14 +103,19 @@ def test_un_archivo_malformado_falla_sin_escribir_nada(tmp_path):
     assert corrida.version_contrato == VERSION_CONTRATO
 
 
-def test_un_excel_que_no_es_excel_falla(tmp_path):
+def test_un_excel_que_no_es_excel_se_rechaza_antes_de_registrar_nada(tmp_path, objetos):
+    # Desde v0.6 el formato se reconoce por los bytes antes de guardar: un xlsx que no es un libro
+    # de Excel no llega a ser un artefacto ni una corrida.
     ruta = tmp_path / "cartera.xlsx"
     ruta.write_bytes(b"no soy un excel")
+    antes = objetos()
 
-    corrida = ingerir_archivo(ruta)
+    with pytest.raises(FormatoNoCorresponde, match="no es un Excel legible"):
+        ingerir_archivo(ruta)
 
-    assert corrida.estado == EstadoCorrida.FALLIDA
-    assert "no es un Excel legible" in corrida.detalle
+    with sesion() as s:
+        assert s.exec(select(Corrida)).all() == []
+    assert objetos() == antes
 
 
 def test_el_rechazo_guarda_su_fila_lo_que_traia_y_por_que(tmp_path):

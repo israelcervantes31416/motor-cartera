@@ -9,6 +9,7 @@ veces. Las pruebas de la ultima seccion no tocan la base.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import signal
 import threading
@@ -24,6 +25,7 @@ from sqlmodel import select
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     Cuenta,
     DecisionCuenta,
@@ -178,7 +180,12 @@ def test_el_worker_lleva_una_cartera_de_la_ingesta_al_ruteo(tmp_path, trabajar):
     assert (completado.estado, completado.etapa) == (EstadoFlujo.COMPLETADO, EtapaFlujo.COMPLETADA)
     # Cada trabajo termino sin dueno ni lease, y es el de un recurso que termino EXITOSA.
     trabajos = _trabajos()
-    assert [t.tipo for t in trabajos] == list(TipoTrabajo)
+    assert [t.tipo for t in trabajos] == [
+        TipoTrabajo.INGESTA,
+        TipoTrabajo.DECISION,
+        TipoTrabajo.TERRITORIAL,
+        TipoTrabajo.RUTEO,
+    ]
     assert all(t.flujo_id == flujo_id and t.terminado_en is not None for t in trabajos)
     assert not any(t.worker_id or t.lease_hasta or t.ultimo_error for t in trabajos)
     objetivos = [
@@ -197,8 +204,8 @@ def test_el_worker_lleva_una_cartera_de_la_ingesta_al_ruteo(tmp_path, trabajar):
         ruteada.paradas_publicadas,
     )
     assert ruteada.rutas_publicadas > 0
-    # El archivo ya no hace falta.
-    assert _cuantas(ArchivoCorrida) == 0
+    # El artefacto sigue ahi, y nada se escribio en la tabla heredada de v0.5.
+    assert (_cuantas(ArtefactoFuente), _cuantas(ArchivoCorrida)) == (1, 0)
 
 
 @en_la_base
@@ -301,25 +308,83 @@ def test_un_error_del_worker_devuelve_el_trabajo_con_su_espera_y_sin_traza(
     espera = timedelta(seconds=3)
     assert antes + espera <= trabajo.disponible_desde <= despues + espera
     assert procesar_un_trabajo("worker-b", CONFIG) is None
-    # La corrida sigue EN_PROCESO, con su archivo: todavia hay quien la termine.
+    # La corrida sigue EN_PROCESO, con su artefacto: todavia hay quien la termine.
     assert _de(Corrida, corrida_id).estado == EstadoCorrida.EN_PROCESO
-    assert _cuantas(ArchivoCorrida) == 1
+    assert _cuantas(ArtefactoFuente) == 1
 
 
 @en_la_base
-def test_una_ingesta_sin_su_archivo_es_un_error_del_worker_y_no_toca_la_corrida(tmp_path):
-    corrida_id, _ = _crear(tmp_path)
+def test_una_ingesta_sin_su_objeto_en_el_almacen_es_un_error_del_worker_y_no_toca_la_corrida(
+    tmp_path, almacen
+):
+    # Como un volumen que no se monto: la base registra el artefacto y el almacen no lo tiene. No
+    # es la corrida la que esta mal: el trabajo se reintenta, y cuando el objeto vuelve, termina.
+    # Un archivo propio (n=151): el almacen de las pruebas es compartido.
+    corrida_id, _ = _crear(tmp_path, n=151)
     with sesion() as s:
-        s.delete(s.get_one(ArchivoCorrida, corrida_id))
-        s.commit()
+        sha256 = s.get_one(ArtefactoFuente, _de(Corrida, corrida_id).artefacto_fuente_id).sha256
+    ruta = almacen.ruta(sha256)
+    contenido = ruta.read_bytes()
+    ruta.chmod(0o600)
+    ruta.unlink()
 
     procesado = procesar_un_trabajo("worker-a", CONFIG)
 
     assert procesado.estado == EstadoTrabajo.PENDIENTE
     assert _trabajo(TipoTrabajo.INGESTA).ultimo_error == (
-        "Error de worker (ArchivoFaltante); ver la bitacora."
+        "Error de worker (ArtefactoFaltante); ver la bitacora."
     )
     assert _de(Corrida, corrida_id).estado == EstadoCorrida.EN_PROCESO
+
+    almacen.guardar(__import__("io").BytesIO(contenido))
+    _cambiar(_trabajo(TipoTrabajo.INGESTA).id, disponible_desde=func.now())
+    procesado = procesar_un_trabajo("worker-a", CONFIG)
+
+    assert (procesado.intentos, procesado.estado) == (2, EstadoTrabajo.COMPLETADO)
+    assert _de(Corrida, corrida_id).estado == EstadoCorrida.EXITOSA
+
+
+@en_la_base
+def test_un_objeto_danado_deja_la_corrida_fallida_y_dice_por_que(tmp_path, almacen):
+    # Los bytes ya no son los de su firma: reintentar no lo arregla. La corrida termina FALLIDA,
+    # con el motivo, y no publica nada. Un archivo propio (n=137), porque se dana a proposito.
+    corrida_id, _ = _crear(tmp_path, n=137)
+    with sesion() as s:
+        sha256 = s.get_one(ArtefactoFuente, _de(Corrida, corrida_id).artefacto_fuente_id).sha256
+    ruta = almacen.ruta(sha256)
+    ruta.chmod(0o600)
+    ruta.write_bytes(ruta.read_bytes().replace(b"CONSUMO", b"TARJETA", 1))
+
+    procesado = procesar_un_trabajo("worker-a", CONFIG)
+
+    assert procesado.estado == EstadoTrabajo.COMPLETADO
+    corrida = _de(Corrida, corrida_id)
+    assert corrida.estado == EstadoCorrida.FALLIDA
+    assert f"El artefacto {sha256} esta danado" in corrida.detalle
+    assert _cuantas(Cuenta) == 0
+
+
+@en_la_base
+def test_una_corrida_de_v05_que_seguia_en_la_cola_se_procesa_con_su_archivo_heredado(tmp_path):
+    # Antes de la 0007 la corrida guardaba su archivo en BYTEA y no tenia artefacto. Si seguia en
+    # la cola al migrar, el worker la termina con ese archivo, y ya no lo borra.
+    corrida_id, _ = _crear(tmp_path)
+    with sesion() as s:
+        corrida = s.get_one(Corrida, corrida_id)
+        sha256 = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id).sha256
+        contenido = generar_archivo(tmp_path / "c200.csv", n=200, semilla=1, fecha_corte=CORTE)
+        datos = contenido.read_bytes()
+        assert hashlib.sha256(datos).hexdigest() == sha256
+        corrida.artefacto_fuente_id = None  # como la dejaba la v0.5
+        s.add(corrida)
+        s.add(ArchivoCorrida(corrida_id=corrida_id, contenido=datos, tamano_bytes=len(datos)))
+        s.commit()
+
+    procesado = procesar_un_trabajo("worker-a", CONFIG)
+
+    assert procesado.estado == EstadoTrabajo.COMPLETADO
+    assert _de(Corrida, corrida_id).estado == EstadoCorrida.EXITOSA
+    assert _cuantas(ArchivoCorrida) == 1
 
 
 @en_la_base
@@ -382,7 +447,7 @@ def test_cada_intento_espera_el_doble_y_sin_intentos_todo_queda_fallido(tmp_path
         "Su trabajo agoto los 4 intentos de la cola sin que terminara; ver la bitacora del worker.",
     )
     assert corrida.terminada_en is not None
-    assert _cuantas(ArchivoCorrida) == 0
+    assert _cuantas(ArtefactoFuente) == 1  # su artefacto se conserva
     detenido = _flujo(flujo_id)
     assert (detenido.estado, detenido.etapa) == (EstadoFlujo.DETENIDO, EtapaFlujo.INGESTA)
     assert detenido.detalle == (

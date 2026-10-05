@@ -12,6 +12,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.elements import conv
 from sqlmodel import Field, SQLModel
 
+from motor_cartera.config import config
+from motor_cartera.fuentes.formatos import Formato
+
 # Nombres deterministas para indices y restricciones. Sin esto PostgreSQL los inventa, y
 # una migracion futura que necesite borrar o cambiar una restriccion no sabe como se llama.
 SQLModel.metadata.naming_convention = {
@@ -25,6 +28,56 @@ SQLModel.metadata.naming_convention = {
 
 def ahora() -> datetime:
     return datetime.now(UTC)
+
+
+CLAVE_DEL_CONTENIDO = "storage_key = 'sha256/' || substr(sha256, 1, 2) || '/' || sha256"
+"""La identidad fisica de un artefacto sale de su SHA-256, nunca de su nombre."""
+
+
+class ArtefactoFuente(SQLModel, table=True):
+    """Un archivo recibido, tal como llego: la evidencia original de una ingesta.
+
+    Los bytes viven en el almacen de artefactos (MC_SOURCE_STORE_ROOT), no en PostgreSQL; esta fila
+    es su registro. Hay una por contenido: la identidad es el SHA-256, y el mismo archivo subido dos
+    veces, aunque sea con otro nombre, es el mismo artefacto. Cada corrida o ingesta que lo usa
+    conserva su propio nombre de origen y su propia historia.
+
+    El objeto es inmutable y no se borra al terminar una ingesta: es lo que permite volver a
+    reproducir exactamente lo que se recibio. Tambien se registra aqui el Parquet de un dataset
+    conformado, que se guarda en el mismo almacen.
+    """
+
+    __tablename__ = "artefacto_fuente"
+    __table_args__ = (
+        sa.CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name=conv("ck_artefacto_sha256")),
+        sa.CheckConstraint("tamano_bytes > 0", name=conv("ck_artefacto_tamano_positivo")),
+        sa.CheckConstraint(CLAVE_DEL_CONTENIDO, name=conv("ck_artefacto_storage_key")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    artifact_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. El `id` es interno, como en las demas tablas."""
+    sha256: str = Field(max_length=64, unique=True)
+    """SHA-256 de los bytes, calculado mientras se copiaban al almacen."""
+    tamano_bytes: int = Field(sa_type=sa.BigInteger)
+    nombre_original: str = Field(max_length=255)
+    """El nombre con que llego la primera vez. Es metadata: no identifica nada."""
+    formato: Formato = Field(
+        sa_type=sa.Enum(
+            Formato,
+            name="formato_artefacto",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+            # El valor (xlsx) y no el nombre del miembro (XLSX), que guardaria por omision.
+            values_callable=lambda formatos: [formato.value for formato in formatos],
+        )
+    )
+    """El formato reconocido por sus bytes, que coincide con su extension."""
+    media_type: str | None = Field(default=None, max_length=100)
+    storage_key: str = Field(max_length=80, unique=True)
+    """Donde vive dentro del almacen: `sha256/ab/abcdef...`. Nunca sale por la API."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
 class EstadoCorrida(StrEnum):
@@ -49,6 +102,18 @@ class Corrida(SQLModel, table=True):
 
     __tablename__ = "corrida"
     __table_args__ = (
+        # cartera/v2 trae la fecha de corte como metadata del lote, y su archivo siempre en el
+        # almacen: una corrida de cartera/v2 sin las dos no existe. Y se proyecta a Cuenta con una
+        # version de la proyeccion, que una de cartera/v1 no tiene: v1 ya es la forma de Cuenta.
+        sa.CheckConstraint(
+            "version_contrato <> 'cartera/v2' "
+            "OR (artefacto_fuente_id IS NOT NULL AND fecha_corte IS NOT NULL)",
+            name=conv("ck_corrida_v2_fuente"),
+        ),
+        sa.CheckConstraint(
+            "(version_contrato = 'cartera/v2') = (version_proyeccion IS NOT NULL)",
+            name=conv("ck_corrida_proyeccion"),
+        ),
         # Una cartera (mismo archivo, misma firma) se publica una sola vez. Lo garantiza la
         # base y no solo el codigo: dos peticiones simultaneas con el mismo archivo no
         # pueden publicar las dos. Las corridas que no publicaron no cuentan.
@@ -111,6 +176,29 @@ class Corrida(SQLModel, table=True):
     filas_validas: int = 0
     filas_rechazadas: int = 0
     detalle: str | None = None
+    artefacto_fuente_id: int | None = Field(
+        default=None,
+        foreign_key="artefacto_fuente.id",
+        index=True,
+        description="El archivo recibido, en el almacen de artefactos. Vacio solo en las corridas "
+        "anteriores a la 0007, cuyo archivo no se conservo",
+    )
+    despacho_id: str = Field(
+        default_factory=lambda: config.despacho_id,
+        max_length=32,
+        description="El despacho del sistema cuando se registro: metadata, no un dato del archivo",
+    )
+    cartera_id: str = Field(
+        default_factory=lambda: config.cartera_id,
+        max_length=32,
+        description="La cartera del sistema cuando se registro: metadata, no un dato del archivo",
+    )
+    version_proyeccion: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Con que version de la proyeccion operacional se llevo cartera/v2 a Cuenta. "
+        "Vacia en cartera/v1, que ya tiene la forma de Cuenta",
+    )
 
 
 class Cuenta(SQLModel, table=True):
@@ -154,6 +242,86 @@ class Rechazo(SQLModel, table=True):
     """El registro tal como se leyo, en texto."""
     motivos: list[dict[str, str]] = Field(sa_type=JSONB)
     """Las reglas que no cumplio: [{"campo": ..., "regla": ...}]."""
+
+
+class DatasetConformado(SQLModel, table=True):
+    """El dataset conformado (source-conformed) que publico una ingesta de una fuente oficial.
+
+    Es el linaje de punta a punta: de que artefacto original salio, en que artefacto (un Parquet en
+    el mismo almacen) quedo, con que contrato se juzgo, cuantos registros trae y la firma de su
+    contenido. Existe solo si la ingesta publico: es la fuente validada, no un intento.
+    """
+
+    __tablename__ = "dataset_conformado"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_conformado_corrida"),
+        sa.ForeignKeyConstraint(
+            ["ingesta_pagos_id"], ["ingesta_pagos.id"], name="fk_conformado_pagos"
+        ),
+        sa.ForeignKeyConstraint(
+            ["artefacto_original_id"], ["artefacto_fuente.id"], name="fk_conformado_original"
+        ),
+        sa.ForeignKeyConstraint(
+            ["artefacto_conformado_id"], ["artefacto_fuente.id"], name="fk_conformado_parquet"
+        ),
+        # Una ingesta publica a lo mas un dataset conformado.
+        sa.UniqueConstraint("corrida_id", name="uq_conformado_corrida"),
+        sa.UniqueConstraint("ingesta_pagos_id", name="uq_conformado_pagos"),
+        # De una corrida de cartera o de una ingesta de pagos, nunca de las dos ni de ninguna.
+        sa.CheckConstraint(
+            "(corrida_id IS NULL) <> (ingesta_pagos_id IS NULL)", name=conv("ck_conformado_origen")
+        ),
+        sa.CheckConstraint("filas >= 0 AND columnas > 0", name=conv("ck_conformado_conteos")),
+        sa.CheckConstraint("firma_contenido ~ '^[0-9a-f]{64}$'", name=conv("ck_conformado_firma")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    dataset_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    contrato: str = Field(max_length=32)
+    """Con que contrato se juzgo: cartera/v2 o pagos/v1."""
+    corrida_id: int | None = None
+    """La corrida de cartera que lo publico, si es de una. Su llave esta en __table_args__."""
+    ingesta_pagos_id: int | None = None
+    """La ingesta de pagos que lo acepto, si es de una."""
+    artefacto_original_id: int = Field(index=True)
+    """El archivo tal como llego."""
+    artefacto_conformado_id: int = Field(index=True)
+    """El Parquet con los registros validos, en el mismo almacen."""
+    firma_contenido: str = Field(max_length=64)
+    """La firma de su contenido canonico: la misma que la de la ingesta que lo publico."""
+    filas: int = Field(sa_type=sa.BigInteger)
+    columnas: int
+    """Las del contrato, sin contar las dos tecnicas (_source_row y _source_sheet)."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class HojaCompanera(SQLModel, table=True):
+    """Una hoja companera que traia el archivo de una corrida, como CARRIER junto a CARTERA.
+
+    Se reconoce y se audita, pero no se juzga ni se publica, y no decide si la corrida publica: sus
+    reglas de negocio todavia no estan definidas. Lo que se encontro queda aqui: cuantas filas y
+    columnas trae, si su estructura es la esperada y lo incoherente, como advertencias. Sus bytes
+    estan en el artefacto original, que es el libro o el zip completo.
+    """
+
+    __tablename__ = "hoja_companera"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(["corrida_id"], ["corrida.id"], name="fk_companera_corrida"),
+        sa.UniqueConstraint("corrida_id", "nombre", name="uq_companera_corrida_nombre"),
+        sa.CheckConstraint("filas >= 0 AND columnas >= 0", name=conv("ck_companera_conteos")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    corrida_id: int
+    nombre: str = Field(max_length=255)
+    """La hoja del xlsx, o el miembro del zip."""
+    filas: int = Field(sa_type=sa.BigInteger)
+    columnas: int
+    estructura_reconocida: bool
+    """Si trae exactamente las columnas esperadas."""
+    advertencias: list[str] = Field(sa_type=JSONB)
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
 class EstadoDecision(StrEnum):
@@ -587,6 +755,101 @@ class ParadaRuta(SQLModel, table=True):
     """Desde la parada anterior; la primera, desde el deposito."""
 
 
+class EstadoIngestaPagos(StrEnum):
+    """En que quedo una ingesta de pagos. Solo una EXITOSA acepta sus movimientos."""
+
+    EN_PROCESO = "EN_PROCESO"  # registrada; se estan leyendo y juzgando sus movimientos
+    EXITOSA = "EXITOSA"  # acepto sus movimientos: su dataset conformado es la fuente validada
+    RECHAZADA = "RECHAZADA"  # se juzgo y no paso: mas rechazos que la tolerancia
+    FALLIDA = "FALLIDA"  # no se pudo juzgar: archivo ilegible, estructura distinta o error
+
+
+class IngestaPagos(SQLModel, table=True):
+    """Una ingesta de pagos/v1: un archivo de movimientos economicos, juzgado y, si pasa, aceptado.
+
+    No es una corrida: una corrida publica cuentas, que son un corte; una ingesta de pagos acepta
+    movimientos de un periodo, y un cliente puede tener muchos. Por eso es su propia entidad, con su
+    identificador publico, su artefacto, sus rechazos y su trabajo en la cola. Lo que acepta es su
+    dataset conformado, con todos sus movimientos validos, sin deduplicar: la conciliacion es de un
+    motor posterior.
+    """
+
+    __tablename__ = "ingesta_pagos"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["artefacto_fuente_id"], ["artefacto_fuente.id"], name="fk_pagos_artefacto"
+        ),
+        # El mismo archivo se acepta una sola vez, y a lo mas una ingesta lo procesa a la vez. Lo
+        # garantiza la base, como en las corridas.
+        sa.Index(
+            "ux_ingesta_pagos_firma_publicada",
+            "firma",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_ingesta_pagos_firma_en_proceso",
+            "firma",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint(
+            "filas_leidas >= 0 AND filas_validas >= 0 AND filas_rechazadas >= 0 "
+            "AND filas_leidas = filas_validas + filas_rechazadas",
+            name=conv("ck_pagos_conteos"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    pagos_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. No se llama run_id: ese es el de las corridas de cartera."""
+    artefacto_fuente_id: int = Field(index=True)
+    """El archivo recibido, en el almacen de artefactos. Su llave esta en __table_args__."""
+    origen: str = Field(description="Nombre del archivo recibido")
+    firma: str = Field(max_length=64, description="SHA-256 del archivo tal como llego")
+    version_contrato: str = Field(max_length=32)
+    estado: EstadoIngestaPagos = Field(
+        default=EstadoIngestaPagos.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoIngestaPagos,
+            name="estado_ingesta_pagos",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    despacho_id: str = Field(default_factory=lambda: config.despacho_id, max_length=32)
+    cartera_id: str = Field(default_factory=lambda: config.cartera_id, max_length=32)
+    tolerancia_rechazo: float
+    """La fraccion de movimientos rechazados con que se juzgo. Por omision 0: todo o nada."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    filas_leidas: int = Field(default=0, sa_type=sa.BigInteger)
+    filas_validas: int = Field(default=0, sa_type=sa.BigInteger)
+    filas_rechazadas: int = Field(default=0, sa_type=sa.BigInteger)
+    firma_contenido: str | None = Field(default=None, max_length=64)
+    """La firma de sus movimientos validos en forma canonica. Cuenta los repetidos."""
+    detalle: str | None = None
+
+
+class RechazoPago(SQLModel, table=True):
+    """Un movimiento que no cumplio pagos/v1: su fila, lo que traia y por que. Ninguno se oculta."""
+
+    __tablename__ = "rechazo_pago"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ingesta_pagos_id"], ["ingesta_pagos.id"], name="fk_rechazo_pago_ingesta"
+        ),
+        sa.UniqueConstraint("ingesta_pagos_id", "fila", name="uq_rechazo_pago_fila"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    ingesta_pagos_id: int
+    fila: int = Field(description="Numero de fila en el archivo; el encabezado es la fila 1")
+    valores: dict[str, str | None] = Field(sa_type=JSONB)
+    motivos: list[dict[str, str]] = Field(sa_type=JSONB)
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -611,10 +874,11 @@ OBJETIVO_DEL_TRABAJO = (
     "(tipo = 'INGESTA') = (corrida_id IS NOT NULL) "
     "AND (tipo = 'DECISION') = (ejecucion_decision_id IS NOT NULL) "
     "AND (tipo = 'TERRITORIAL') = (ejecucion_territorial_id IS NOT NULL) "
-    "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL)"
+    "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL) "
+    "AND (tipo = 'INGESTA_PAGOS') = (ingesta_pagos_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
-que su objetivo exista y a que los otros tres esten vacios."""
+que su objetivo exista y a que los demas esten vacios."""
 
 PROPIEDAD_DEL_TRABAJO = (
     "(estado = 'PENDIENTE' AND worker_id IS NULL AND lease_hasta IS NULL "
@@ -628,12 +892,13 @@ PROPIEDAD_DEL_TRABAJO = (
 
 
 class ArchivoCorrida(SQLModel, table=True):
-    """El archivo de una corrida, tal como llego, mientras la ingesta todavia lo puede necesitar.
+    """El archivo de una corrida de v0.5, en BYTEA. Desde la 0007 es una estructura heredada.
 
-    La API ya no le pasa los bytes a una tarea en memoria: los guarda aqui, en la misma transaccion
-    que abre la corrida, para que sobrevivan a la muerte del proceso que los recibio y cualquier
-    worker pueda hacer la ingesta. Se borra cuando la corrida ya es terminal y el trabajo de ingesta
-    se cierra. No copia el origen ni la firma: viven en la corrida. Nunca sale por la API.
+    En v0.5 la API guardaba aqui el archivo y el worker lo borraba al terminar la ingesta. Desde
+    v0.6 el archivo original es evidencia y vive en el almacen de artefactos (ArtefactoFuente):
+    nada escribe ni borra en esta tabla. Se conserva para que una corrida de v0.5 que seguia en la
+    cola al migrar todavia se pueda procesar con su archivo, y para que bajar a la 0006 sea seguro.
+    No copia el origen ni la firma: viven en la corrida. Nunca sale por la API.
     """
 
     __tablename__ = "archivo_corrida"
@@ -744,12 +1009,14 @@ class FlujoOrquestacion(SQLModel, table=True):
 
 
 class TipoTrabajo(StrEnum):
-    """Que motor ejecuta un trabajo, y por tanto cual de sus cuatro objetivos tiene."""
+    """Que motor ejecuta un trabajo, y por tanto cual de sus objetivos tiene."""
 
     INGESTA = "INGESTA"
     DECISION = "DECISION"
     TERRITORIAL = "TERRITORIAL"
     RUTEO = "RUTEO"
+    INGESTA_PAGOS = "INGESTA_PAGOS"
+    """Desde la 0007: juzgar un archivo de pagos/v1. No es de ningun flujo: no encadena nada."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -789,10 +1056,14 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ejecucion_ruteo_id"], ["ejecucion_ruteo.id"], name="fk_trabajo_ruteo"
         ),
+        sa.ForeignKeyConstraint(
+            ["ingesta_pagos_id"], ["ingesta_pagos.id"], name="fk_trabajo_pagos"
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
         sa.UniqueConstraint("ejecucion_ruteo_id", name="uq_trabajo_ruteo"),
+        sa.UniqueConstraint("ingesta_pagos_id", name="uq_trabajo_pagos"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -821,9 +1092,10 @@ class TrabajoOrquestacion(SQLModel, table=True):
     flujo."""
     tipo: TipoTrabajo = Field(
         sa_type=sa.Enum(
-            TipoTrabajo, name="tipo_trabajo", native_enum=False, create_constraint=True, length=12
+            TipoTrabajo, name="tipo_trabajo", native_enum=False, create_constraint=True, length=16
         )
     )
+    """VARCHAR(16) desde la 0007: INGESTA_PAGOS no cabia en los 12 de antes."""
     estado: EstadoTrabajo = Field(
         default=EstadoTrabajo.PENDIENTE,
         sa_type=sa.Enum(
@@ -839,6 +1111,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     ejecucion_decision_id: int | None = None
     ejecucion_territorial_id: int | None = None
     ejecucion_ruteo_id: int | None = None
+    ingesta_pagos_id: int | None = None
+    """El objetivo de un trabajo INGESTA_PAGOS, desde la 0007."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

@@ -18,6 +18,7 @@ from motor_cartera.api import (
     corridas,
     decisiones,
     orquestacion,
+    pagos,
     ruteo,
     salud,
     territorial,
@@ -53,6 +54,14 @@ el cliente pida cada etapa:
 4. `POST /flujos/{flujo_id}/reanudar` reintenta la etapa en que se detuvo, si es la decision, la
    organizacion territorial o el ruteo. Una ingesta que no publico no se reanuda: se vuelve a subir
    el archivo, y eso es otra corrida con otro flujo.
+
+**Las fuentes oficiales.** Sin el campo `contrato`, el archivo es de `cartera/v1`, la cartera
+minima de siempre. Una cartera oficial (la hoja CARTERA, con sus 93 columnas) se sube con
+`contrato=cartera/v2` y su `fecha_corte`, que no es una columna: es metadata del lote. Cada archivo
+se guarda tal como llego en un almacen por contenido y no se borra; `GET /corridas/{run_id}/fuente`
+da la evidencia: el original, el dataset conformado y la auditoria de CARRIER. Los pagos (pagos/v1,
+23 columnas, un movimiento por fila) tienen su propio recurso: `POST /pagos`,
+`GET /pagos/{pagos_run_id}`, sus `/rechazos` y su `/fuente`. Ningun movimiento se deduplica.
 
 **La cartera.**
 
@@ -114,6 +123,12 @@ ETIQUETAS = [
         "registro y, si pasa, publicado. Todo lo que se escribe cuelga de una.",
     },
     {
+        "name": "pagos",
+        "description": "Una ingesta de pagos es un archivo de movimientos economicos (pagos/v1), "
+        "guardado tal como llego, juzgado movimiento por movimiento y, si pasa, aceptado sin "
+        "deduplicar nada. No es una corrida: no publica cuentas.",
+    },
+    {
         "name": "orquestacion",
         "description": "El flujo automatico de cada corrida, de la ingesta al ruteo, y los "
         "trabajos de la cola durable que lo ejecutan. La API los registra; un worker los ejecuta.",
@@ -161,6 +176,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     registrar_manejadores(app)
     protegidas = [Depends(exigir_api_key)]
     app.include_router(corridas.router, dependencies=protegidas)
+    app.include_router(pagos.router, dependencies=protegidas)
     app.include_router(orquestacion.router, dependencies=protegidas)
     app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(decisiones.router, dependencies=protegidas)

@@ -1,0 +1,73 @@
+name: Benchmark de escala
+
+# Solo a mano, desde la pestana Actions: no corre en ningun push ni en ningun pull request. Mide
+# un perfil grande de punta a punta contra PostgreSQL (generacion, almacen, validacion, dataset
+# conformado, proyeccion y persistencia) y deja la tabla en el resumen del run.
+on:
+  workflow_dispatch:
+    inputs:
+      perfil:
+        description: "Perfil de escala"
+        type: choice
+        options: [XS, S, M, L, XL, XXL]
+        default: XL
+      formato:
+        description: "Formato de los archivos (xlsx de este tamano es lento por el formato)"
+        type: choice
+        options: [zip, csv]
+        default: zip
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: motor
+          POSTGRES_PASSWORD: motor
+          POSTGRES_DB: cartera_bench
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U motor -d cartera_bench"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_bench
+      PERFIL: ${{ inputs.perfil }}
+      FORMATO: ${{ inputs.formato }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: uv y Python 3.12
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.21"
+          python-version: "3.12"
+          activate-environment: true
+
+      - name: Dependencias
+        run: uv sync --locked
+
+      # Los archivos y el almacen, en el disco temporal del runner: nada de esto se sube.
+      - name: Benchmark
+        run: |
+          python scripts/benchmark_escala.py --perfil "$PERFIL" --formato "$FORMATO" \
+            --destino "$RUNNER_TEMP/benchmark" --salida "$RUNNER_TEMP/benchmark.json" \
+            | tee "$RUNNER_TEMP/benchmark.md"
+          {
+            echo "## Benchmark de escala: perfil $PERFIL en $FORMATO"
+            echo
+            grep '^|' "$RUNNER_TEMP/benchmark.md"
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/benchmark.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen

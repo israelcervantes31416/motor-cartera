@@ -6,7 +6,7 @@ una sola transaccion con lo que sigue:
 
 - si el recurso llego a un estado terminal, el trabajo queda COMPLETADO, aunque el motor haya
   terminado FALLIDA: el trabajo cumplio con ejecutarlo. Si es de un flujo, el flujo avanza o se
-  detiene en esa misma transaccion; si era una ingesta, se borra su archivo;
+  detiene en esa misma transaccion. El archivo de una ingesta no se borra: es evidencia;
 - si no, fue un error del worker y no del motor: el trabajo vuelve a la cola, con una espera que se
   duplica en cada intento, o, si ya no le quedan intentos, queda FALLIDO junto con su recurso, y su
   flujo se detiene.
@@ -25,26 +25,33 @@ import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import (
     ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     EstadoCorrida,
+    EstadoIngestaPagos,
     EstadoTrabajo,
     EtapaFlujo,
+    IngestaPagos,
     TipoTrabajo,
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.decision.ejecuciones import DecisionYaGenerada, ejecutar_decision
-from motor_cartera.ingesta.corridas import procesar_corrida
+from motor_cartera.fuentes.almacen import ArtefactoFaltante
+from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
+from motor_cartera.ingesta.corridas import procesar_corrida, verificar_declaracion
+from motor_cartera.ingesta.pagos import procesar_ingesta_pagos
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
@@ -58,22 +65,50 @@ ya quedo FALLIDA: no es un error del worker."""
 
 
 class ArchivoFaltante(Exception):
-    """Una corrida EN_PROCESO sin su archivo guardado: no hay de donde leer la ingesta."""
+    """Una corrida EN_PROCESO sin artefacto y sin su archivo de v0.5: no hay de donde leer."""
 
 
 def _ingerir(corrida_id: int) -> None:
-    """La ingesta de un trabajo: lee el archivo guardado de la corrida y la procesa. Si la corrida
-    ya termino no hace nada, ni lee el archivo."""
+    """La ingesta de un trabajo: procesa la corrida con el archivo de su artefacto. Si la corrida ya
+    termino no hace nada, ni lee el archivo.
+
+    Si el almacen no tiene el objeto, es un error del worker y no de la corrida: el volumen puede
+    no estar montado, y el trabajo se reintenta con su espera, como cualquier otro error del
+    worker. Una corrida de v0.5 que seguia en la cola al migrar no tiene artefacto: se procesa con
+    su archivo en BYTEA, que tampoco se borra.
+    """
     with sesion() as s:
-        estado = s.exec(select(Corrida.estado).where(Corrida.id == corrida_id)).one()
-        if estado != EstadoCorrida.EN_PROCESO:
-            log.info("corrida %s ya termino %s; no se vuelve a procesar", corrida_id, estado)
+        corrida = s.get_one(Corrida, corrida_id)
+        if corrida.estado != EstadoCorrida.EN_PROCESO:
+            log.info("corrida %s ya termino %s; no se procesa otra vez", corrida_id, corrida.estado)
             return
-        archivo = s.get(ArchivoCorrida, corrida_id)
-        if archivo is None:
-            raise ArchivoFaltante(f"La corrida {corrida_id} esta EN_PROCESO y no tiene su archivo.")
-        contenido = archivo.contenido
+        if corrida.artefacto_fuente_id is not None:
+            sha256 = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id).sha256
+            contenido = None
+        else:
+            archivo = s.get(ArchivoCorrida, corrida_id)
+            if archivo is None:
+                raise ArchivoFaltante(
+                    f"La corrida {corrida_id} esta EN_PROCESO y no tiene artefacto ni archivo."
+                )
+            sha256, contenido = None, archivo.contenido
+    if sha256 is not None and not almacen_de(config_del_entorno).existe(sha256):
+        raise ArtefactoFaltante(sha256)
     procesar_corrida(corrida_id, contenido)
+
+
+def _ingerir_pagos(ingesta_id: int) -> None:
+    """La ingesta de pagos de un trabajo, con el archivo de su artefacto. Si ya termino no hace
+    nada; si el almacen no tiene el objeto, es un error del worker y el trabajo se reintenta."""
+    with sesion() as s:
+        ingesta = s.get_one(IngestaPagos, ingesta_id)
+        if ingesta.estado != EstadoIngestaPagos.EN_PROCESO:
+            log.info("ingesta de pagos %s ya termino %s", ingesta_id, ingesta.estado)
+            return
+        sha256 = s.get_one(ArtefactoFuente, ingesta.artefacto_fuente_id).sha256
+    if not almacen_de(config_del_entorno).existe(sha256):
+        raise ArtefactoFaltante(sha256)
+    procesar_ingesta_pagos(ingesta_id)
 
 
 MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
@@ -81,6 +116,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.DECISION: ejecutar_decision,
     TipoTrabajo.TERRITORIAL: ejecutar_territorial,
     TipoTrabajo.RUTEO: ejecutar_ruteo,
+    TipoTrabajo.INGESTA_PAGOS: _ingerir_pagos,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -241,27 +277,37 @@ def ejecutar_worker(
 
 
 def ingerir_en_primer_plano(
-    ruta: str | Path, *, tolerancia: float | None = None, config: Config | None = None
+    ruta: str | Path,
+    *,
+    tolerancia: float | None = None,
+    config: Config | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
 ) -> Corrida:
-    """La ingesta del CLI: la corrida, su archivo y su trabajo en una transaccion, con el trabajo ya
-    tomado por este proceso, y la ingesta en primer plano, con su latido. No crea un flujo: no
-    encadena ninguna otra etapa.
+    """La ingesta del CLI: el archivo al almacen de artefactos y, en una transaccion, su artefacto,
+    la corrida y su trabajo, con el trabajo ya tomado por este proceso; despues, la ingesta en
+    primer plano, con su latido. No crea un flujo: no encadena ninguna otra etapa.
 
     Si el proceso muere a la mitad, el trabajo queda en la cola con su lease: cuando vence,
-    cualquier worker termina la ingesta. Propaga ArchivoDuplicado, y ValueError si el archivo esta
-    vacio.
+    cualquier worker termina la ingesta con el mismo artefacto. Propaga ArchivoDuplicado,
+    ValueError si el archivo esta vacio, y FormatoNoSoportado o FormatoNoCorresponde si no es lo
+    que dice su extension.
     """
     config = config or config_del_entorno
     ruta = Path(ruta)
-    contenido = ruta.read_bytes()
-    if not contenido:
+    verificar_declaracion(contrato, fecha_corte)
+    if ruta.stat().st_size == 0:
         raise ValueError(f"{ruta.name!r} esta vacio: no hay nada que ingerir.")
+    with ruta.open("rb") as archivo:
+        guardado = guardar_artefacto(almacen_de(config), archivo, ruta.name)
     worker_id = identificador_worker()
     with sesion() as s:
         corrida, trabajo = flujo.encolar_ingesta(
             s,
             origen=ruta.name,
-            contenido=contenido,
+            guardado=guardado,
+            contrato=contrato,
+            fecha_corte=fecha_corte,
             tolerancia=tolerancia,
             config=config,
             tomado_por=worker_id,
@@ -270,6 +316,36 @@ def ingerir_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(Corrida, corrida.id)
+
+
+def ingerir_pagos_en_primer_plano(
+    ruta: str | Path, *, tolerancia: float | None = None, config: Config | None = None
+) -> IngestaPagos:
+    """La ingesta de pagos del CLI: el archivo al almacen y, en una transaccion, su artefacto, la
+    ingesta y su trabajo, ya tomado por este proceso; despues, la ingesta en primer plano, con su
+    latido. Si el proceso muere, cualquier worker la termina cuando vence el lease. Propaga
+    PagosDuplicados, ValueError si el archivo esta vacio, y FormatoNoSoportado o
+    FormatoNoCorresponde si no es lo que dice su extension."""
+    config = config or config_del_entorno
+    ruta = Path(ruta)
+    if ruta.stat().st_size == 0:
+        raise ValueError(f"{ruta.name!r} esta vacio: no hay nada que ingerir.")
+    with ruta.open("rb") as archivo:
+        guardado = guardar_artefacto(almacen_de(config), archivo, ruta.name)
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ingesta, trabajo = flujo.encolar_ingesta_pagos(
+            s,
+            origen=ruta.name,
+            guardado=guardado,
+            tolerancia=tolerancia,
+            config=config,
+            tomado_por=worker_id,
+        )
+        reclamo = cola.reclamo_de(trabajo)
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(IngestaPagos, ingesta.id)
 
 
 def _cerrar(
@@ -302,8 +378,6 @@ def _cerrar(
             cerrado = EstadoTrabajo.PENDIENTE
         elif objetivos.fallar(s, reclamo.tipo, reclamo.objetivo_id, _sin_terminar(reclamo)):
             cola.agotar(s, reclamo.id, worker_id, error=_ultimo_error(reclamo, error))
-            if reclamo.tipo == TipoTrabajo.INGESTA:
-                _borrar_archivo(s, reclamo.objetivo_id)
             if reclamo.flujo_id is not None:
                 flujo.detener(s, reclamo.flujo_id, _flujo_sin_terminar(reclamo))
             cerrado = EstadoTrabajo.FALLIDO
@@ -325,11 +399,10 @@ def _cerrar(
 
 
 def _completar(s: Session, reclamo: Reclamo, worker_id: str, config: Config) -> None:
-    """El trabajo COMPLETADO y lo que sigue, en la misma transaccion: el archivo de una ingesta ya
-    no hace falta, y el flujo avanza o se detiene. Un crash no deja un hueco entre etapas."""
+    """El trabajo COMPLETADO y lo que sigue, en la misma transaccion: el flujo avanza o se
+    detiene. Un crash no deja un hueco entre etapas. El artefacto de una ingesta se queda: es la
+    evidencia de lo que se recibio."""
     cola.completar(s, reclamo.id, worker_id)
-    if reclamo.tipo == TipoTrabajo.INGESTA:
-        _borrar_archivo(s, reclamo.objetivo_id)
     if reclamo.flujo_id is not None:
         flujo.avanzar(
             s,
@@ -338,11 +411,6 @@ def _completar(s: Session, reclamo: Reclamo, worker_id: str, config: Config) -> 
             reclamo.objetivo_id,
             max_intentos=config.worker_max_intentos,
         )
-
-
-def _borrar_archivo(s: Session, corrida_id: int) -> None:
-    """El archivo de una corrida que ya termino: la ingesta ya no lo necesita."""
-    s.execute(delete(ArchivoCorrida).where(ArchivoCorrida.corrida_id == corrida_id))
 
 
 def _ultimo_error(reclamo: Reclamo, error: Exception | None) -> str:

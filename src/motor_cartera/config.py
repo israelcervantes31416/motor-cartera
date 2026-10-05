@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+IDENTIFICADOR_INTERNO = r"^[A-Z0-9_]{1,32}$"
+"""Forma de despacho_id y cartera_id: mayusculas, digitos y guion bajo, como DSP_001."""
 
 
 class Config(BaseSettings):
@@ -14,6 +18,19 @@ class Config(BaseSettings):
     database_url: str = "postgresql+psycopg://motor:motor@localhost:5434/cartera_dev"
     semilla: int = 31416
     """Semilla fija para que el generador sea reproducible."""
+
+    source_store_root: Path = Path("datos/fuentes")
+    """MC_SOURCE_STORE_ROOT: la raiz del almacen de artefactos fuente, donde cada archivo recibido
+    se guarda por su SHA-256 y no se borra. La API y el worker tienen que ver la misma: en el
+    compose es un volumen propio, aparte del de PostgreSQL, que guarda solo su registro."""
+
+    # Un despacho y una cartera: metadata del sistema, no columnas de las fuentes. Cada corrida y
+    # cada ingesta de pagos guarda con cual se registro. v0.6 no administra varios despachos; que
+    # el valor viaje con cada registro es lo que permite cambiarlo despues sin reescribir nada.
+    despacho_id: str = Field(default="DSP_001", pattern=IDENTIFICADOR_INTERNO)
+    """El despacho que opera este sistema."""
+    cartera_id: str = Field(default="CARTERA_PRINCIPAL", pattern=IDENTIFICADOR_INTERNO)
+    """La cartera del acreedor que ese despacho gestiona."""
     tolerancia_rechazo: float = Field(default=0.05, ge=0, lt=1)
     """Fraccion maxima de registros rechazados con la que una corrida todavia publica.
 
@@ -21,13 +38,25 @@ class Config(BaseSettings):
     fijarla, la barrera seria opcional. 0 es todo o nada. 1 no se admite: publicaria
     aunque no pasara ningun registro.
     """
+    tolerancia_rechazo_pagos: float = Field(default=0.0, ge=0, lt=1)
+    """Fraccion maxima de movimientos rechazados con la que una ingesta de pagos todavia se acepta.
+
+    Por omision 0: un solo movimiento invalido rechaza el archivo entero. Un archivo de dinero
+    aceptado a medias subestimaria la recuperacion sin que nadie lo notara. Como la de cartera, vive
+    en el servidor y cada ingesta guarda con cual se juzgo.
+    """
     api_key: SecretStr | None = None
     """Clave que la API exige en la cabecera X-API-Key. Sin ella la API no arranca.
 
     Es opcional aqui solo porque el CLI, Alembic y las pruebas no la necesitan.
     """
-    tamano_maximo_mb: int = Field(default=50, gt=0)
-    """Tope del archivo que acepta POST /corridas, en MiB."""
+    filas_por_lote: int = Field(default=50_000, ge=100)
+    """De cuantas filas se lee y se juzga cada lote de una fuente oficial (cartera/v2 y pagos/v1).
+    Es un parametro operativo: cambia la memoria que se usa, nunca el resultado de una corrida."""
+    tamano_maximo_mb: int = Field(default=512, gt=0)
+    """Tope del archivo que aceptan POST /corridas y POST /pagos, en MiB. El archivo se copia al
+    almacen por bloques mientras llega, sin cargarlo en memoria: el tope cuida el disco, y alcanza
+    para la cartera objetivo de 500,000 cuentas."""
 
     # El worker. Son parametros operativos: deciden cuando, cada cuanto y cuantas veces se ejecuta
     # un trabajo, nunca que calcula un motor. Ninguno cambia una decision, un municipio ni una ruta.

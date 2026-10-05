@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from motor_cartera.cli import app
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
-    ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     EjecucionDecision,
     EstadoCorrida,
@@ -86,8 +86,9 @@ def test_cargar_pasa_por_la_cola_y_no_encadena_nada(tmp_path):
         None,
     )
     assert (trabajo.worker_id, trabajo.lease_hasta) == (None, None)
-    assert [_cuantos(m) for m in (ArchivoCorrida, FlujoOrquestacion, EjecucionDecision)] == [
-        0,
+    # El archivo queda como artefacto, y no hay flujo ni decision.
+    assert [_cuantos(m) for m in (ArtefactoFuente, FlujoOrquestacion, EjecucionDecision)] == [
+        1,
         0,
         0,
     ]
@@ -144,7 +145,7 @@ def test_si_cargar_muere_a_la_mitad_un_worker_termina_la_ingesta(tmp_path, monke
     assert trabajo.estado == EstadoTrabajo.EJECUTANDO
     with sesion() as s:
         assert s.get_one(Corrida, trabajo.corrida_id).estado == EstadoCorrida.EN_PROCESO
-    assert _cuantos(ArchivoCorrida) == 1  # el archivo sobrevive al proceso que lo leyo
+    assert _cuantos(ArtefactoFuente) == 1  # el archivo sobrevive al proceso que lo leyo
 
     monkeypatch.setattr(worker, "procesar_corrida", procesar)
     with sesion() as s:
@@ -155,7 +156,7 @@ def test_si_cargar_muere_a_la_mitad_un_worker_termina_la_ingesta(tmp_path, monke
     assert (procesado.intentos, procesado.estado) == (2, EstadoTrabajo.COMPLETADO)
     with sesion() as s:
         assert s.get_one(Corrida, trabajo.corrida_id).estado == EstadoCorrida.EXITOSA
-    assert _cuantos(ArchivoCorrida) == 0
+    assert _cuantos(ArtefactoFuente) == 1  # y despues de la ingesta sigue ahi: es evidencia
 
 
 @pytest.mark.usefixtures("bd")
@@ -208,3 +209,174 @@ def test_el_worker_se_anuncia_en_la_ayuda():
     ayuda = re.sub(r"\x1b\[[0-9;]*m", "", resultado.output)
     assert resultado.exit_code == 0
     assert "--una-vez" in ayuda
+
+
+# --- cartera/v2 y las fuentes oficiales -----------------------------------------------------------
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_una_cartera_oficial_con_su_fecha_de_corte(tmp_path):
+    generado = cli.invoke(
+        app,
+        [
+            "generar-oficial",
+            "--destino",
+            str(tmp_path),
+            "--n",
+            "40",
+            "--formato",
+            "zip",
+            "--fecha-corte",
+            "2026-09-30",
+            "--semilla",
+            "3",
+        ],
+    )
+    assert generado.exit_code == 0, generado.output
+    ruta = tmp_path / "cartera_oficial_2026-09-30.zip"
+
+    resultado = cli.invoke(
+        app, ["cargar", str(ruta), "--contrato", "cartera/v2", "--fecha-corte", "2026-09-30"]
+    )
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "EXITOSA" in resultado.output
+    assert "leidas 40, validas 40, rechazadas 0" in resultado.output
+    assert "Hoja companera 'CARRIER.csv'" in resultado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_cartera_v2_sin_fecha_de_corte_se_niega_sin_registrar_nada(tmp_path):
+    ruta = tmp_path / "c.csv"
+    ruta.write_text("CLIENTE_UNICO\nCU00000001\n", encoding="utf-8")
+
+    resultado = cli.invoke(app, ["cargar", str(ruta), "--contrato", "cartera/v2"])
+
+    assert resultado.exit_code == 1
+    assert "se declara con la corrida" in resultado.output
+    assert _cuantos(Corrida) == 0
+
+
+def test_generar_oficial_escribe_la_cartera_y_su_carrier(tmp_path):
+    resultado = cli.invoke(
+        app,
+        [
+            "generar-oficial",
+            "--destino",
+            str(tmp_path),
+            "--n",
+            "25",
+            "--formato",
+            "xlsx",
+            "--fecha-corte",
+            "2026-09-30",
+        ],
+    )
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "25 cuentas" in resultado.output and "filas de CARRIER" in resultado.output
+    assert (tmp_path / "cartera_oficial_2026-09-30.xlsx").exists()
+
+
+def test_generar_oficial_por_omision_es_pequena(tmp_path):
+    # Una cartera grande se pide con su perfil; nunca sale por accidente.
+    resultado = cli.invoke(app, ["generar-oficial", "--destino", str(tmp_path), "--formato", "csv"])
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "1,000 cuentas" in resultado.output
+
+
+def test_generar_oficial_con_un_perfil_desconocido(tmp_path):
+    resultado = cli.invoke(app, ["generar-oficial", "--destino", str(tmp_path), "--perfil", "XXXL"])
+
+    assert resultado.exit_code == 2
+    assert "Perfil desconocido: XXXL. Usa XS, S, M, L, XL, XXL." in resultado.output
+
+
+# --- pagos ----------------------------------------------------------------------------------------
+
+
+def _generar_oficial(destino, *extra: str):
+    argumentos = ["generar-oficial", "--destino", str(destino), "--n", "120"]
+    return cli.invoke(app, [*argumentos, "--fecha-corte", "2026-09-30", "--semilla", "5", *extra])
+
+
+def test_generar_oficial_escribe_tambien_los_pagos_de_la_semana_del_corte(tmp_path):
+    resultado = _generar_oficial(tmp_path, "--formato", "zip")
+
+    assert resultado.exit_code == 0, resultado.output
+    pagos = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.zip"
+    assert pagos.exists() and (tmp_path / "cartera_oficial_2026-09-30.zip").exists()
+    assert re.search(
+        r"pagos_oficial_2026-09-24_2026-09-30\.zip \([\d,]+ movimientos\)",
+        (resultado.output.replace("\n", "")),
+    )
+
+
+def test_generar_oficial_sin_pagos(tmp_path):
+    resultado = _generar_oficial(tmp_path, "--formato", "csv", "--no-pagos")
+
+    assert resultado.exit_code == 0, resultado.output
+    assert [ruta.name for ruta in tmp_path.iterdir()] == ["cartera_oficial_2026-09-30.csv"]
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_acepta_por_la_cola_y_dice_como_quedo(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "EXITOSA" in resultado.output
+    assert re.search(r"leidas (\d+), validas \1, rechazadas 0", resultado.output)
+    (trabajo,) = _trabajos()
+    assert (trabajo.tipo, trabajo.estado, trabajo.intentos, trabajo.flujo_id) == (
+        TipoTrabajo.INGESTA_PAGOS,
+        EstadoTrabajo.COMPLETADO,
+        1,
+        None,
+    )
+    assert _cuantos(Corrida) == 0
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_dos_veces_el_mismo_archivo_se_niega(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+    cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 1
+    assert "Este archivo de pagos ya lo acepto la ingesta" in resultado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_con_un_movimiento_invalido_termina_con_error(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+    lineas = ruta.read_text(encoding="utf-8").splitlines()
+    lineas[3] = lineas[3].replace('"', "").replace("2026-09-", "2026-13-", 1)
+    invalido = tmp_path / "invalido.csv"
+    invalido.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+
+    rechazado = cli.invoke(app, ["cargar-pagos", str(invalido)])
+    tolerado = cli.invoke(app, ["cargar-pagos", str(invalido), "--tolerancia", "0.5"])
+
+    assert rechazado.exit_code == 1
+    assert "RECHAZADA" in rechazado.output and "rechazadas 1" in rechazado.output
+    assert tolerado.exit_code == 0, tolerado.output
+    assert "EXITOSA" in tolerado.output and "dentro de la tolerancia" in tolerado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_vacio_se_niega_sin_registrar_nada(tmp_path):
+    ruta = tmp_path / "pagos.csv"
+    ruta.write_bytes(b"")
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 1
+    assert "'pagos.csv' esta vacio" in resultado.output
+    assert _cuantos(TrabajoOrquestacion) == 0

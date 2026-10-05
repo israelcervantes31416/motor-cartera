@@ -8,6 +8,7 @@ publicadas en modo directo, que no tienen flujo.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -18,7 +19,7 @@ from sqlmodel import select
 
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
-    ArchivoCorrida,
+    ArtefactoFuente,
     Corrida,
     EjecucionDecision,
     EjecucionRuteo,
@@ -140,19 +141,22 @@ def _publicada(tmp_path: Path) -> int:
 
 
 @en_la_base
-def test_una_corrida_nace_con_su_archivo_su_flujo_y_el_trabajo_de_su_ingesta(tmp_path):
+def test_una_corrida_nace_con_su_artefacto_su_flujo_y_el_trabajo_de_su_ingesta(tmp_path, almacen):
     contenido = _contenido(tmp_path)
 
     corrida_id, flujo_id = _crear(contenido, Config(worker_max_intentos=7))
 
     with sesion() as s:
         corrida = s.get_one(Corrida, corrida_id)
-        archivo = s.get_one(ArchivoCorrida, corrida_id)
+        artefacto = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id)
     nuevo = _flujo(flujo_id)
     (trabajo,) = _trabajos()
     assert corrida.estado == EstadoCorrida.EN_PROCESO
-    # El archivo tal como llego, y su tamano.
-    assert (archivo.contenido, archivo.tamano_bytes) == (contenido, len(contenido))
+    # El archivo tal como llego, en el almacen, con su firma y su tamano.
+    sha256 = hashlib.sha256(contenido).hexdigest()
+    assert (artefacto.sha256, artefacto.tamano_bytes) == (sha256, len(contenido))
+    with almacen.abrir(sha256) as objeto:
+        assert objeto.read() == contenido
     assert (nuevo.corrida_id, nuevo.estado, nuevo.etapa) == (
         corrida_id,
         EstadoFlujo.EN_PROCESO,
@@ -186,7 +190,7 @@ def test_si_algo_falla_al_registrar_no_queda_una_corrida_sin_su_flujo(tmp_path, 
     with pytest.raises(RuntimeError, match="falla simulada"):
         _crear(_contenido(tmp_path))
 
-    modelos = (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion)
+    modelos = (Corrida, ArtefactoFuente, FlujoOrquestacion, TrabajoOrquestacion)
     assert [_cuantos(modelo) for modelo in modelos] == [0, 0, 0, 0]
 
 
@@ -199,7 +203,7 @@ def test_el_mismo_archivo_otra_vez_no_registra_nada(tmp_path):
         _crear(contenido)
 
     assert exc.value.previa.id == primera
-    modelos = (Corrida, ArchivoCorrida, FlujoOrquestacion, TrabajoOrquestacion)
+    modelos = (Corrida, ArtefactoFuente, FlujoOrquestacion, TrabajoOrquestacion)
     assert [_cuantos(modelo) for modelo in modelos] == [1, 1, 1, 1]
 
 
@@ -243,8 +247,9 @@ def test_cada_etapa_exitosa_encadena_la_siguiente_hasta_completar(tmp_path):
     assert (completado.estado, completado.etapa) == (EstadoFlujo.COMPLETADO, EtapaFlujo.COMPLETADA)
     assert completado.terminado_en is not None and completado.detalle == flujo.COMPLETADO
     assert _procesar(1) == [None]  # la cola quedo vacia
-    with sesion() as s:
-        assert s.get(ArchivoCorrida, corrida_id) is None  # la ingesta ya no lo necesita
+    with sesion() as s:  # el artefacto sigue ahi: es la evidencia de lo que se recibio
+        assert s.get_one(Corrida, corrida_id).artefacto_fuente_id is not None
+    assert _cuantos(ArtefactoFuente) == 1
 
 
 @en_la_base
@@ -255,7 +260,9 @@ def test_cada_etapa_exitosa_encadena_la_siguiente_hasta_completar(tmp_path):
         pytest.param("malformado", "FALLIDA", id="FALLIDA"),
     ],
 )
-def test_una_ingesta_que_no_publica_detiene_el_flujo_y_borra_su_archivo(tmp_path, archivo, estado):
+def test_una_ingesta_que_no_publica_detiene_el_flujo_y_conserva_su_artefacto(
+    tmp_path, archivo, estado, almacen
+):
     contenido = _contenido(tmp_path, n=100, tasa=0.5) if archivo == "rechazada" else MALFORMADO
     corrida_id, flujo_id = _crear(contenido)
 
@@ -270,8 +277,10 @@ def test_una_ingesta_que_no_publica_detiene_el_flujo_y_borra_su_archivo(tmp_path
     )
     assert detenido.terminado_en is not None
     with sesion() as s:
-        assert s.get_one(Corrida, corrida_id).estado == estado
-        assert s.get(ArchivoCorrida, corrida_id) is None
+        corrida = s.get_one(Corrida, corrida_id)
+        artefacto = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id)
+    assert corrida.estado == estado
+    almacen.verificar(artefacto.sha256, artefacto.tamano_bytes)
     # No se abrio ninguna decision, y la cola quedo vacia.
     assert _cuantos(EjecucionDecision) == 0
     assert _procesar(1) == [None]

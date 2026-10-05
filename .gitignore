@@ -14,5 +14,28 @@ datos/*
 !datos/.gitkeep
 *.xlsx
 *.xls
+*.xlsm
+*.xlsb
+*.ods
 *.csv
 *.zip
+
+# Ni formatos de datos, ni comprimidos, ni volcados de una base, aunque sean sinteticos: el
+# generador los produce cuando hacen falta. El CI tambien los reconoce por sus primeros bytes.
+*.parquet
+*.feather
+*.arrow
+*.gz
+*.tgz
+*.bz2
+*.xz
+*.zst
+*.7z
+*.rar
+*.dump
+*.backup
+*.pgdump
+*.sql
+*.sqlite
+*.sqlite3
+*.db

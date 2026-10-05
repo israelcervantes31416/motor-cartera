@@ -14,7 +14,7 @@ from motor_cartera.api import crear_app, salud
 from motor_cartera.api.seguridad import exigir_api_key
 from motor_cartera.config import Config
 
-CAMPOS_DE_ERROR = {"codigo", "mensaje", "detalles", "run_id"}
+CAMPOS_DE_ERROR = {"codigo", "mensaje", "detalles", "run_id", "pagos_run_id"}
 
 
 @pytest.fixture

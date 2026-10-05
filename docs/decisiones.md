@@ -1,13 +1,15 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo y Orquestación Durable
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable y Fuentes Oficiales
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
-de Ruteo (v0.4.0) y la Orquestación Durable (v0.5.0) están hechos como están, y qué haría distinto
-o cuándo cambiaría cada decisión. El uso está en el [README](../README.md); aquí va el porqué.
+de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0) y las Fuentes Oficiales, Evidencia Inmutable y
+Escala (v0.6.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión. El
+uso está en el [README](../README.md) y en [fuentes.md](fuentes.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
-Territorial; las 31 a 41, del Motor de Ruteo, y las 42 a 53, de la Orquestación Durable. Donde las
-de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de v0.5.0. Las
-secciones que v0.5.0 cambió lo dicen al final, en un párrafo *Desde v0.5.0*.
+Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable, y las 54 a
+70, de las Fuentes Oficiales. Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es
+la orquestación durable de v0.5.0. Las secciones que v0.5.0 o v0.6.0 cambiaron lo dicen al final,
+en un párrafo *Desde v0.5.0* o *Desde v0.6.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -62,6 +64,23 @@ secciones que v0.5.0 cambió lo dicen al final, en un párrafo *Desde v0.5.0*.
 51. [API asíncrona y semántica 201](#51-api-asíncrona-y-semántica-201)
 52. [Por qué todavía no Redis/Celery](#52-por-qué-todavía-no-rediscelery)
 53. [Qué queda para Cloud + observabilidad](#53-qué-queda-para-cloud--observabilidad)
+54. [El archivo original es evidencia](#54-el-archivo-original-es-evidencia)
+55. [Un almacén por contenido, local, detrás de una interfaz](#55-un-almacén-por-contenido-local-detrás-de-una-interfaz)
+56. [Primero el objeto, después la base](#56-primero-el-objeto-después-la-base)
+57. [Los artefactos no se borran, ni al bajar la migración](#57-los-artefactos-no-se-borran-ni-al-bajar-la-migración)
+58. [cartera/v1 congelado; cartera/v2 es otro contrato, declarado](#58-carterav1-congelado-carterav2-es-otro-contrato-declarado)
+59. [Estructura exacta, sin descartes silenciosos](#59-estructura-exacta-sin-descartes-silenciosos)
+60. [La fecha de corte es metadata del lote](#60-la-fecha-de-corte-es-metadata-del-lote)
+61. [Dos firmas: la del archivo y la del contenido](#61-dos-firmas-la-del-archivo-y-la-del-contenido)
+62. [Original y conformado: dos representaciones](#62-original-y-conformado-dos-representaciones)
+63. [Juicio por lotes en dos pasadas, todo o nada](#63-juicio-por-lotes-en-dos-pasadas-todo-o-nada)
+64. [Proyección operacional explícita, con el catálogo público del INEGI](#64-proyección-operacional-explícita-con-el-catálogo-público-del-inegi)
+65. [CARRIER es una hoja compañera observada](#65-carrier-es-una-hoja-compañera-observada)
+66. [pagos/v1: su propia ingesta, sin deduplicar, con barrera conservadora](#66-pagosv1-su-propia-ingesta-sin-deduplicar-con-barrera-conservadora)
+67. [Un despacho, una cartera](#67-un-despacho-una-cartera)
+68. [Detección de formato por contenido](#68-detección-de-formato-por-contenido)
+69. [Escala: perfiles, escenario longitudinal y benchmark fuera del CI](#69-escala-perfiles-escenario-longitudinal-y-benchmark-fuera-del-ci)
+70. [Qué no resuelve v0.6.0, y qué queda para v0.7](#70-qué-no-resuelve-v060-y-qué-queda-para-v07)
 
 ---
 
@@ -1269,6 +1288,9 @@ longitud, calles ni tiempos.
   proceso murió después de T0 no la cierra nadie hasta v0.5.0, que lo resolvió (ver 42 a 53);
 - despliegue en nube y observabilidad productiva: v0.6.0.
 
+**Desde v0.6.0.** El despliegue en nube y la observabilidad productiva pasaron a v0.18; v0.6.0 fue
+de las fuentes oficiales (ver 54 a 70).
+
 v0.4.0 secuencia las visitas de campo dentro de cada municipio, de forma reproducible y explicable,
 sobre un plano que se declara sintético. No manda a nadie a una dirección.
 
@@ -1324,6 +1346,14 @@ cuando vence el lease.
 **Qué haría distinto.** Es una decisión del alcance actual: el tope lo pone `MC_TAMANO_MAXIMO_MB`, y
 PostgreSQL no es un almacén de objetos. En la nube (v0.6.0), el archivo iría a un *object storage* y
 la base guardaría solo su referencia.
+
+**Desde v0.6.0 esta decisión se corrige: el archivo original ahora SÍ forma parte de la evidencia
+reproducible** (ver 54). Ya no se guarda en `archivo_corrida` ni se borra al terminar la ingesta: se
+copia, antes de responder, a un almacén por contenido, donde se queda para siempre, y la corrida
+apunta a él (ver 55 a 57). La corrida y sus resultados siguen siendo evidencia, pero ya no son
+suficientes para reproducir exactamente el input. `archivo_corrida` solo conserva el archivo de las
+corridas que la v0.5 dejó en la cola, para que el worker las termine. El CLI sigue pasando por la
+cola, igual que la API.
 
 ## 44. At-least-once y no exactly-once
 
@@ -1591,3 +1621,295 @@ la API al worker, y el autoscaling de los workers.
 
 v0.5.0 cambia cuándo, dónde y quién ejecuta los motores, no qué calculan: `cartera/v1`,
 `decision/v1`, `territorial/v1` y `ruteo/v1` publican exactamente lo mismo que en v0.4.0.
+
+**Desde v0.6.0.** Cloud + observabilidad pasó a v0.18 — Cloud + observabilidad + hardening, y v0.6.0
+fue de las fuentes oficiales. Una de las piezas de esta lista ya cambió: el archivo ya no vive en
+PostgreSQL, sino en un almacén de artefactos local y por contenido, para siempre (ver 54 y 55). El
+*object storage* en la nube, detrás de la misma interfaz, sigue pendiente, con lo demás de esta
+lista.
+
+## 54. El archivo original es evidencia
+
+**Decisión.** Cada archivo que se recibe, de `cartera/v1`, `cartera/v2` o `pagos/v1`, se guarda tal
+como llegó en el almacén de artefactos y **no se borra**: ni al terminar la ingesta, ni al cerrar su
+trabajo, ni cuando el trabajo agota sus intentos. La corrida, o la ingesta de pagos, apunta a su
+artefacto.
+
+**Por qué, y por qué se corrige la 43.** v0.5.0 decidió lo contrario: la evidencia era la corrida,
+con la firma del archivo y la de su contenido, sus cuentas y sus rechazos, y el archivo se borraba al
+terminar. Eso basta para saber qué se publicó, pero no para reproducir exactamente lo que llegó: con
+una firma se comprueba que un archivo es el mismo, pero no se recupera. Con cartera/v2 la distancia
+se vuelve evidente: de sus 93 columnas, siete llegan a `Cuenta`. Una versión posterior que quiera
+reinterpretar una columna, o un auditor que pregunte qué decía exactamente una fila, necesita los
+bytes. **El archivo original ahora sí forma parte de la evidencia reproducible.** La corrida y sus
+resultados siguen siendo evidencia, pero ya no son suficientes para reproducir el input.
+
+**Lo que se conserva de la 43.** El orden: el archivo está a salvo antes de responder `201`, y la
+ingesta sobrevive a que la API muera. Lo que cambia es dónde vive (un almacén por contenido, no un
+`BYTEA`) y cuánto tiempo (siempre).
+
+**Cuándo cambiaría.** Una política de retención (cuánto tiempo, quién borra, con qué aprobación) es
+una decisión de gobierno de datos, no de código. Cuando exista, se aplicará sobre el almacén, como
+una operación aparte y auditada, nunca al cerrar un trabajo.
+
+## 55. Un almacén por contenido, local, detrás de una interfaz
+
+**Decisión.** `SourceArtifactStore` es lo que la ingesta necesita de un almacén (guardar por bloques,
+saber si un objeto existe, verificarlo, leerlo), y `LocalContentAddressedStore` lo implementa sobre
+un directorio: cada objeto en `sha256/ab/<sha256>`, de solo lectura, escrito a un temporal en la
+misma raíz, con `fsync`, y publicado con `os.replace`. La raíz es `MC_SOURCE_STORE_ROOT`; en el
+compose, un volumen propio, aparte del de PostgreSQL.
+
+**Por qué por contenido.** Si la identidad de un objeto es su SHA-256, guardar el mismo archivo dos
+veces no duplica bytes, la ruta sale del contenido y no de un nombre que manda el cliente (nada de
+rutas relativas ni de choques entre dos `cartera.xlsx`), y verificar un objeto es volver a firmarlo.
+El nombre original es metadata, en la base.
+
+**Por qué local y no un bucket.** v0.6.0 no se despliega en la nube, y un directorio local con la
+misma semántica (publicación atómica, inmutabilidad, verificación) prueba el contrato. La interfaz
+deja que un *object storage* lo implemente después sin tocar la ingesta.
+
+**Por qué no en PostgreSQL.** La base no es un almacén de objetos: los archivos grandes inflan la
+base, sus respaldos y su replicación, y un `BYTEA` no se lee ni se escribe por bloques con
+naturalidad. Desde v0.6.0 PostgreSQL no guarda archivos de manera permanente: guarda la fila que
+dice qué objeto es, con su SHA-256, su tamaño, su formato y su nombre original.
+
+**Cuándo cambiaría.** Con la nube (v0.18): un *object storage* con versionado y bloqueo de
+retención, detrás de la misma interfaz, y las mismas filas en la base.
+
+## 56. Primero el objeto, después la base
+
+**Decisión.** La subida se copia al almacén, completa y durable, antes de abrir la transacción que
+registra el artefacto, la corrida y su trabajo. Si la base falla después de guardar, el objeto queda
+en el almacén sin una fila que lo registre: un huérfano.
+
+**Por qué.** El orden contrario podría dejar una fila que apunta a bytes que no existen, y eso es
+evidencia perdida. Un huérfano solo ocupa disco: no es evidencia de nada y nadie lo lee. Un *commit*
+atómico entre un sistema de archivos y una base no existe; el orden seguro basta.
+
+**Lo que no hace.** No recolecta huérfanos. `motor-cartera verificar-fuentes` revisa los artefactos
+registrados (que existan y que sus bytes sean los de su firma); listar los huérfanos, comparando el
+almacén con la tabla, es una herramienta de operación posterior.
+
+## 57. Los artefactos no se borran, ni al bajar la migración
+
+**Decisión.** Ningún código borra un objeto del almacén. Bajar la `0007` quita la tabla
+`artefacto_fuente`, que la `0006` no conoce, pero deja los archivos; volver a subirla empieza con el
+registro vacío y el almacén intacto.
+
+**Por qué.** Alembic gobierna el esquema, no el sistema de archivos. Bajar un esquema se deshace;
+borrar evidencia, no.
+
+**Lo que hace la bajada.** Cierra como `FALLIDA`, con un motivo que lo dice, lo que la v0.5 no
+podría terminar: las corridas de cartera/v2 y las que solo tienen su archivo en el almacén, con sus
+trabajos y sus flujos. Las ingestas de pagos, que la `0006` no conoce, se van con sus rechazos y
+sus trabajos. Las corridas que la v0.5 dejó en la cola, con su archivo en `archivo_corrida`, se
+quedan como estaban.
+
+## 58. cartera/v1 congelado; cartera/v2 es otro contrato, declarado
+
+**Decisión.** `cartera/v1` no cambia: sus 8 columnas, sus alias, su validación y su firma. La cartera
+oficial es otro contrato, `cartera/v2`, y quien sube el archivo lo declara (`contrato`), con su
+`fecha_corte`. El servidor revisa la declaración antes de guardar nada: cartera/v2 sin fecha de
+corte es `422 FECHA_CORTE_REQUERIDA`; cartera/v1 con una, `422 FECHA_CORTE_NO_APLICA`. Sin el campo,
+el contrato es cartera/v1, como siempre.
+
+**Por qué declarado y no adivinado.** Con dos contratos que un archivo puede cumplir a medias,
+adivinar es una decisión silenciosa. Declarado, un archivo que no corresponde falla explícitamente:
+uno de v1 declarado v2, o al revés, termina `FALLIDA` por estructura, sin juzgar nada. Y los clientes
+que ya existen, que no mandan `contrato`, siguen igual.
+
+**Por qué congelar v1.** Cada corrida que ya se juzgó con v1 se tiene que poder volver a explicar
+igual. Cambiar v1 para que aceptara la cartera oficial habría cambiado, en silencio, lo que esas
+corridas significan.
+
+## 59. Estructura exacta, sin descartes silenciosos
+
+**Decisión.** cartera/v2 y pagos/v1 exigen exactamente su conjunto de columnas, en cualquier orden.
+Un encabezado solo se normaliza quitándole los espacios de alrededor y llevándolo a NFC. Una columna
+que falta, una que sobra, un encabezado repetido o una columna sin nombre dejan la corrida `FALLIDA`,
+con el detalle, sin juzgar ningún registro. No hay un `strict="filter"` que descarte columnas.
+
+**Por qué.** Una columna de más que se descarta en silencio esconde un cambio de la fuente (una
+columna nueva, o una que cambió de nombre). Una que falta no se puede inventar. El orden no lleva
+significado; el nombre sí.
+
+**Qué se tipa.** Solo las columnas cuyo significado no es ambiguo por su nombre: fechas, importes,
+enteros, códigos postales, teléfonos y coordenadas, más los dos catálogos que la proyección copia
+(`PRODUCTO` y `CANAL`). Las demás se conservan como texto: tiparlas sería inventar reglas que la
+fuente no declara.
+
+## 60. La fecha de corte es metadata del lote
+
+**Decisión.** La fecha de corte de una cartera oficial se declara al subirla y queda en la corrida
+(y, por la proyección, en cada `Cuenta`). No es una columna 94.
+
+**Por qué.** Las 93 columnas no traen una, y agregar una columna sintética haría que el contrato no
+fuera el del archivo real. Una cartera es la foto de un día: una fecha por archivo, que dice quien lo
+entrega.
+
+**Consecuencia.** El mismo `CLIENTE_UNICO` en cortes distintos es válido: son corridas distintas.
+Dentro de un corte, un `CLIENTE_UNICO` repetido rechaza todas sus copias, porque no hay forma de
+saber cuál es la buena.
+
+## 61. Dos firmas: la del archivo y la del contenido
+
+**Decisión.** `firma` es el SHA-256 de los bytes: identifica el artefacto y evita publicar dos veces
+el mismo archivo. `firma_contenido` es el SHA-256 de los registros válidos en forma canónica: cada
+registro, una línea canónica (cada valor con su largo, sin escapar nada), y las huellas de las
+líneas, ordenadas. No depende del formato, del orden de las filas ni del orden de las columnas, y
+está versionada con el contrato.
+
+**Por qué.** La misma cartera exportada en xlsx y en csv es el mismo contenido, y reordenar sus
+filas no la vuelve otra. La firma de contenido lo deja a la vista; la del archivo sigue siendo la
+identidad de lo que llegó.
+
+**Lo que todavía no hace.** Una cartera se publica una vez por archivo, no por contenido: la misma
+cartera en dos formatos se publica dos veces. La firma de contenido lo detecta, pero no lo impide
+(ver limitaciones del README).
+
+## 62. Original y conformado: dos representaciones
+
+**Decisión.** De cada archivo aceptado quedan dos cosas: el **original**, los bytes exactos, y el
+**conformado** (*source-conformed*): un Parquet con los registros válidos, las columnas del contrato
+en su orden oficial, cada valor tipado desde su forma canónica, y dos columnas técnicas,
+`_source_row` y `_source_sheet`, que atan cada registro a su fila. No lleva scores ni variables
+derivadas. Se guarda en el mismo almacén y se registra en `dataset_conformado`, con su contrato, su
+firma, sus conteos y de qué artefacto original salió.
+
+**Por qué.** El original es la evidencia, pero no es cómodo de leer a escala: un xlsx de cientos de
+miles de filas tarda minutos solo en abrirse, y cada lectura tendría que volver a interpretarlo. v0.7
+tiene que construir el modelo canónico sobre algo ya validado y tipado. El conformado es derivado, y
+por eso es reproducible: el mismo archivo con la misma versión del contrato produce el mismo
+Parquet, byte por byte, y una prueba lo regenera desde el original y compara los bytes.
+
+**Por qué Parquet.** Columnar, tipado, comprimido (zstd) y escrito por lotes, un *row group* por
+lote, sin tener el archivo entero en memoria.
+
+## 63. Juicio por lotes en dos pasadas, todo o nada
+
+**Decisión.** Una fuente oficial se lee por lotes (`MC_FILAS_POR_LOTE`). En la primera pasada cada
+lote se juzga con validaciones vectorizadas, los rechazos se copian a PostgreSQL con `COPY`, los
+válidos van a un Parquet provisional en disco y se cuentan las llaves. En la segunda, con las llaves
+de todo el archivo a la vista, se rechazan todas las copias de una llave repetida, y lo válido se
+firma, se conforma, se proyecta y se publica. Todo en una transacción.
+
+**Por qué.** La memoria queda acotada por el lote, no por el archivo. Las invariantes globales
+(una llave única en todo el archivo) necesitan ver el archivo entero. Y publicar todo o nada es la
+misma semántica de siempre (ver 2 y 28).
+
+**El costo.** Los válidos se leen dos veces (la segunda, de un Parquet local, que es rápido), y un
+archivo grande es una transacción larga.
+
+## 64. Proyección operacional explícita, con el catálogo público del INEGI
+
+**Decisión.** La proyección `operacional/v1` lleva siete columnas de cartera/v2 a `Cuenta`
+(`CLIENTE_UNICO`, `SALDO_TOTAL`, `DIAS_ATRASO`, `PRODUCTO`, `CANAL` y, desde `ESTADO_CTE` y
+`POBLACION_CTE`, las claves del INEGI) y la corrida registra su versión. Los nombres se resuelven con
+una foto del catálogo público del INEGI (servicio wscatgeo v2), versionada con el código, comparando
+sin acentos ni mayúsculas y con unos pocos alias controlados a mano. Un estado o un municipio que no
+está, o un nombre que corresponde a dos municipios de la misma entidad, rechaza el registro con su
+motivo.
+
+**Por qué.** Los motores leen `Cuenta`, y cambiarlos no era de v0.6.0. Una proyección explícita y
+versionada los deja intactos y hace auditable el mapeo: la cartera oficial llega por el mismo flujo
+hasta el ruteo. El catálogo es público (no es un dato privado) y hace falta porque cartera/v2 trae
+nombres, no claves. Adivinar un municipio ambiguo sería publicar una cuenta en el lugar equivocado.
+
+**Cuándo cambiaría.** Con la geografía real (v0.11): localidades, colonias, códigos postales y
+coordenadas.
+
+## 65. CARRIER es una hoja compañera observada
+
+**Decisión.** CARRIER se reconoce (una hoja de xlsx, o un miembro de zip, con ese nombre) y se audita
+sin juzgarla registro por registro: si su estructura es la esperada (85 columnas), cuántas filas
+trae, cuántas traen un cliente que CARTERA no tiene y cuántas un teléfono sin forma. Cada problema es
+una advertencia que queda en `hoja_companera` y en la evidencia de la corrida. No se publica, no se
+proyecta y no gobierna la publicación de CARTERA.
+
+**Por qué.** Todo lo que CARRIER dice ya está en CARTERA: sus clientes son los de CARTERA y sus
+teléfonos, las columnas anchas de cada fila. Publicarla duplicaría los datos de contacto sin agregar
+nada que la plataforma use todavía. Lo que sí importa es saber si el archivo la trae y si es
+coherente, porque una CARRIER incoherente dice que el archivo no se armó bien. El original, con
+CARRIER incluida, se conserva entero (ver 54).
+
+## 66. pagos/v1: su propia ingesta, sin deduplicar, con barrera conservadora
+
+**Decisión.** Un archivo de pagos tiene su propia entidad (`IngestaPagos`, con `pagos_run_id`), su
+propio recurso (`/pagos`), sus rechazos y su trabajo `INGESTA_PAGOS` en la misma cola durable, con
+lease, latido, reintentos e idempotencia. Una fila es un movimiento y **no se deduplica nada**. La
+tolerancia por omisión es 0. El mismo archivo se acepta una vez y se procesa a lo más en una ingesta
+a la vez (dos índices únicos parciales sobre la firma); uno rechazado se puede corregir y volver a
+subir. No encadena nada.
+
+**Por qué no es una corrida.** Una corrida publica las cuentas de un corte; un archivo de pagos trae
+los movimientos de un periodo. Reusar la corrida habría mezclado semánticas (la tolerancia, el
+corte, la proyección, el flujo hasta el ruteo) que no le corresponden.
+
+**Por qué no deduplicar.** La llave histórica (cliente, recepción al segundo e importe a centavos)
+es una heurística: también junta dos pagos legítimos e iguales. Deduplicar, conciliar e interpretar
+reversos tiene que poder explicar qué movimiento fuente produjo cada movimiento canónico, y eso es
+el motor de pagos de v0.8, que va a partir de este conformado, que trae todos los movimientos.
+
+**Por qué tolerancia 0.** Es dinero: un archivo aceptado a medias subestimaría la recuperación sin
+que nadie lo notara. Sus rechazos quedan a la vista, con su fila, sus 23 valores y su motivo.
+
+**La API.** `POST /pagos`, `GET /pagos/{pagos_run_id}`, `/rechazos` y `/fuente`, con la misma forma
+que las corridas. Los errores traen `pagos_run_id` cuando tienen que ver con una ingesta de pagos,
+igual que `run_id` con una corrida (null si no): la forma de los errores sigue siendo una sola.
+
+## 67. Un despacho, una cartera
+
+**Decisión.** `despacho_id` y `cartera_id` son configuración del sistema (`DSP_001` y
+`CARTERA_PRINCIPAL` por omisión) que cada corrida y cada ingesta de pagos guarda. No son columnas de
+las fuentes, y no hay multitenancy.
+
+**Por qué.** Operar varios despachos o varias carteras va a necesitar el valor en cada registro.
+Guardarlo desde ahora cuesta una columna; implementar la administración de varios no es de v0.6.0.
+
+## 68. Detección de formato por contenido
+
+**Decisión.** Antes de guardar, se comprueba que los bytes sean lo que dice la extensión: un xlsx es
+un zip con la estructura de un libro de Excel; un zip, un zip legible; un csv, texto en UTF-8 o
+cp1252, sin bytes nulos ni la firma de un binario conocido. Lo que no corresponde se rechaza con
+`415 FORMATO_NO_CORRESPONDE` y no se guarda.
+
+**Por qué.** La extensión es un nombre. Un PDF renombrado `.csv` no debe quedar como evidencia de
+una cartera ni llegar al lector.
+
+## 69. Escala: perfiles, escenario longitudinal y benchmark fuera del CI
+
+**Decisión.** El generador tiene perfiles de XS (1,000 cuentas) a XXL (1,000,000); XL (500,000) es
+el escenario empresarial objetivo, y XS es el valor por omisión. Se genera por bloques, con los
+atributos fijos de cada cliente derivados de un hash de su número y la semilla. `generar-escenario`
+escribe varios cortes relacionados y los pagos entre ellos, con sus invariantes en un manifiesto, y
+los zip que escribe no llevan la hora en que se escribieron, así que el mismo escenario sale igual,
+byte por byte. `scripts/benchmark_escala.py` mide cada fase de punta a punta, y un workflow manual lo
+corre en GitHub.
+
+**Por qué fuera del CI.** El CI tiene que ser rápido y determinista. La escala se mide donde se puede
+repetir con las mismas condiciones, y no se fija un SLA: los tiempos dependen del hardware. Lo que
+se fija es que el perfil objetivo se procesa entero, con la memoria acotada.
+
+**Lo que se midió.** En la máquina de desarrollo, una cartera XL en zip (500,000 cuentas y 1,150,136
+filas de CARRIER) se ingirió en 149 s, a 3,355 filas por segundo, con 930 MiB de memoria pico, y sus
+279,959 pagos, en 21.5 s. El detalle por fase, y la prueba de esfuerzo XXL, están en
+[fuentes.md](fuentes.md).
+
+## 70. Qué no resuelve v0.6.0, y qué queda para v0.7
+
+**Lo que v0.6.0 no hace**, a propósito: el modelo canónico de persona y crédito, Cliente 360, un
+identificador de crédito inventado, la deduplicación económica de pagos, su conciliación, los
+reversos y la atribución de pagos a gestiones; gestiones, contactos, promesas, convenios y visitas;
+un Decision Engine nuevo, scores y modelos; geografía con polígonos, bases, zonas, capacidades y
+jornadas; ruteo vial; tableros; el despliegue en la nube, el *object storage*, las trazas y el
+autoscaling; un broker; multitenancy y multidespacho. Las interfaces no los bloquean: el original
+se conserva entero, el conformado trae cada registro con su fila, los cortes de un mismo cliente se
+pueden publicar uno tras otro, los pagos traen cada movimiento y cada registro guarda su despacho y
+su cartera.
+
+**Lo que queda para v0.7 — Modelo canónico/histórico + Cuenta 360.** Construir, sobre los datasets
+conformados de cartera/v2 y de pagos/v1, el modelo canónico e histórico: una cuenta a través de sus
+cortes (cuándo entró, cómo cambió su saldo y su atraso, cuándo salió), con sus pagos y su evidencia,
+sin volver a interpretar un solo archivo. Los escenarios longitudinales del generador son su banco
+de pruebas.

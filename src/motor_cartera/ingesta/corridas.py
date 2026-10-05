@@ -1,8 +1,9 @@
 """La corrida: leer, juzgar, decidir y publicar, con trazabilidad de punta a punta.
 
 El orden importa:
-  1. abre una Corrida y registra el origen, la firma del archivo y la version del contrato
-  2. lee el archivo
+  1. guarda el archivo en el almacen de artefactos, abre una Corrida que apunta a el y registra el
+     origen, la firma del archivo y la version del contrato
+  2. lee el archivo, del almacen
   3. juzga cada registro contra el contrato
   4. decide: publica solo si los rechazos caben en la tolerancia y la cartera trae un solo
      corte
@@ -14,6 +15,9 @@ decision aqui, no en un endpoint: asi ninguna puerta de entrada puede saltarse l
 
 Procesar es idempotente: la corrida se toma con su fila bloqueada, y si ya termino no se vuelve a
 procesar. La cola la entrega al menos una vez, y una segunda entrega no publica dos veces.
+
+El archivo no se borra cuando la corrida termina: es la evidencia de lo que se recibio, y con el se
+puede reproducir exactamente la entrada de cualquier corrida.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
-from motor_cartera.config import config
+from motor_cartera.config import Config, config
 from motor_cartera.contratos import (
     VERSION_CONTRATO,
     ErrorDeContrato,
@@ -42,8 +46,20 @@ from motor_cartera.contratos import (
     firmar_contenido,
     separar_rechazos,
 )
-from motor_cartera.db.modelos import Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
+from motor_cartera.contratos.cartera_v2 import VERSION_CONTRATO_V2
+from motor_cartera.contratos.fuente import ErrorDeEstructura
+from motor_cartera.db.modelos import ArtefactoFuente, Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
 from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.fuentes.almacen import ArtefactoCorrupto
+from motor_cartera.fuentes.artefactos import (
+    ArtefactoGuardado,
+    almacen_de,
+    guardar_artefacto,
+    guardar_contenido,
+    leer_verificado,
+    registrar_artefacto,
+)
+from motor_cartera.fuentes.proyeccion import VERSION_PROYECCION
 from motor_cartera.ingesta.lectores import ErrorDeLectura, Lectura, leer_contenido
 
 log = logging.getLogger(__name__)
@@ -51,10 +67,17 @@ log = logging.getLogger(__name__)
 INDICE_FIRMA_PUBLICADA = "ux_corrida_firma_publicada"
 INDICE_FIRMA_EN_PROCESO = "ux_corrida_firma_en_proceso"
 
+CONTRATOS_DE_CARTERA = (VERSION_CONTRATO, VERSION_CONTRATO_V2)
+"""Los contratos con que se puede juzgar una cartera. cartera/v1 sigue congelado y disponible."""
+
 INTENTOS_DE_APERTURA = 3
 """Cuantas veces se revisa y se inserta una corrida que pierde la carrera contra otra apertura del
 mismo archivo. La segunda revision ya ve a la que gano; solo se vuelve a insertar si esa termino,
 sin publicar, entre el rechazo y la revision."""
+
+
+class CorridaMalDeclarada(ValueError):
+    """El contrato o la fecha de corte que se declararon no son una combinacion valida."""
 
 
 class ArchivoDuplicado(Exception):
@@ -79,11 +102,24 @@ def abrir_corrida(
     s: Session,
     *,
     origen: str,
-    contenido: bytes,
+    contenido: bytes | None = None,
+    guardado: ArtefactoGuardado | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
     tolerancia: float | None = None,
     confirmar: bool = True,
+    config: Config = config,
 ) -> Corrida:
     """Registra la corrida EN_PROCESO, antes de leer nada: si algo falla, queda rastro.
+
+    El contrato se declara, nunca se adivina por la forma del archivo. Con cartera/v1, la fecha de
+    corte viene dentro del archivo y no se declara; con cartera/v2, que no la trae, es metadata del
+    lote y es obligatoria. Una combinacion distinta levanta CorridaMalDeclarada.
+
+    El archivo llega ya guardado en el almacen de artefactos (`guardado`, como lo deja la API), o
+    en `contenido`, y entonces se guarda aqui antes de tocar la base: primero el objeto durable,
+    despues la fila que apunta a el. La corrida nace apuntando a su ArtefactoFuente, con el
+    despacho y la cartera de la configuracion.
 
     Desde aqui quedan fijas las reglas con que se va a juzgar: la tolerancia y la version
     del contrato.
@@ -100,9 +136,15 @@ def abrir_corrida(
     un SAVEPOINT y vuelve a revisar, y entonces levanta ArchivoDuplicado con la que gano.
 
     Con confirmar=False no confirma: deja la corrida en la transaccion de quien llama, que la
-    confirma junto con lo que tenga que escribir con ella (su archivo, su flujo y su trabajo).
+    confirma junto con lo que tenga que escribir con ella (su artefacto, su flujo y su trabajo).
     """
-    firma = firmar(contenido)
+    if (contenido is None) == (guardado is None):
+        raise ValueError("Una corrida se abre con su contenido o con su artefacto ya guardado.")
+    verificar_declaracion(contrato, fecha_corte)
+    if guardado is None:
+        guardado = guardar_contenido(almacen_de(config), contenido, origen)
+    firma = guardado.objeto.sha256
+    artefacto = registrar_artefacto(s, guardado)
     for _ in range(INTENTOS_DE_APERTURA):
         previa = s.exec(_previa(firma)).first()
         if previa is not None:
@@ -112,7 +154,12 @@ def abrir_corrida(
             origen=origen,
             firma=firma,
             tolerancia_rechazo=config.tolerancia_rechazo if tolerancia is None else tolerancia,
-            version_contrato=VERSION_CONTRATO,
+            version_contrato=contrato,
+            fecha_corte=fecha_corte,
+            version_proyeccion=VERSION_PROYECCION if contrato == VERSION_CONTRATO_V2 else None,
+            artefacto_fuente_id=artefacto.id,
+            despacho_id=config.despacho_id,
+            cartera_id=config.cartera_id,
         )
         error = insertar_en_savepoint(s, corrida)
         if error is None:
@@ -129,8 +176,12 @@ def abrir_corrida(
     return corrida
 
 
-def procesar_corrida(corrida_id: int, contenido: bytes) -> None:
+def procesar_corrida(corrida_id: int, contenido: bytes | None = None) -> None:
     """Lee, juzga, decide y publica. Deja la corrida en un estado terminal.
+
+    Lee el archivo de su artefacto, comprobado contra su SHA-256: si el almacen ya no tiene los
+    mismos bytes, la corrida queda FALLIDA y lo dice. `contenido` es solo para las corridas de v0.5
+    que seguian en la cola al migrar, con su archivo en BYTEA y sin artefacto.
 
     La corrida se toma con su fila bloqueada, hasta el commit o el rollback: la procesa un solo
     worker a la vez. Si ya termino (EXITOSA, RECHAZADA o FALLIDA) no se vuelve a procesar: una
@@ -154,9 +205,16 @@ def procesar_corrida(corrida_id: int, contenido: bytes) -> None:
         # Se lee ahora: despues de un rollback la corrida en memoria caduca.
         etiqueta = corrida.run_id
         try:
-            lectura = leer_contenido(contenido, corrida.origen)
-            _cerrar(s, corrida, lectura, separar_rechazos(lectura.datos))
-        except (ErrorDeLectura, ErrorDeContrato) as exc:
+            if corrida.version_contrato == VERSION_CONTRATO_V2:
+                from motor_cartera.ingesta.cartera_v2 import juzgar_y_publicar
+
+                juzgar_y_publicar(s, corrida, config=config)
+                s.commit()
+            else:
+                datos = contenido if contenido is not None else _contenido_de(s, corrida)
+                lectura = leer_contenido(datos, corrida.origen)
+                _cerrar(s, corrida, lectura, separar_rechazos(lectura.datos))
+        except (ErrorDeLectura, ErrorDeContrato, ErrorDeEstructura, ArtefactoCorrupto) as exc:
             s.rollback()
             _fallar(s, corrida_id, etiqueta, str(exc))
         except IntegrityError as exc:
@@ -184,17 +242,50 @@ def procesar_corrida(corrida_id: int, contenido: bytes) -> None:
             _fallar(s, corrida_id, etiqueta, motivo)
 
 
-def ingerir_archivo(ruta: str | Path, *, tolerancia: float | None = None) -> Corrida:
+def ingerir_archivo(
+    ruta: str | Path,
+    *,
+    tolerancia: float | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
+) -> Corrida:
     """Una corrida completa en primer plano, en modo directo: sin cola, sin trabajo y sin lease.
     Si el proceso muere a la mitad, la corrida queda EN_PROCESO y nadie la cierra; un trabajo de
-    la cola durable, en cambio, se recupera cuando vence su lease."""
+    la cola durable, en cambio, se recupera cuando vence su lease. El archivo se guarda en el
+    almacen igual que en cualquier otra corrida."""
     ruta = Path(ruta)
-    contenido = ruta.read_bytes()
+    verificar_declaracion(contrato, fecha_corte)
+    with ruta.open("rb") as archivo:
+        guardado = guardar_artefacto(almacen_de(config), archivo, ruta.name)
     with sesion() as s:
-        corrida = abrir_corrida(s, origen=ruta.name, contenido=contenido, tolerancia=tolerancia)
-    procesar_corrida(corrida.id, contenido)
+        corrida = abrir_corrida(
+            s,
+            origen=ruta.name,
+            guardado=guardado,
+            tolerancia=tolerancia,
+            contrato=contrato,
+            fecha_corte=fecha_corte,
+        )
+    procesar_corrida(corrida.id)
     with sesion() as s:
         return s.get_one(Corrida, corrida.id)
+
+
+def verificar_declaracion(contrato: str, fecha_corte: date | None) -> None:
+    """Que el contrato exista y que la fecha de corte se declare solo donde el archivo no la trae.
+    Se revisa antes de guardar el archivo: una declaracion invalida no deja nada."""
+    if contrato not in CONTRATOS_DE_CARTERA:
+        raise CorridaMalDeclarada(
+            f"Contrato desconocido: {contrato!r}. Se aceptan {', '.join(CONTRATOS_DE_CARTERA)}."
+        )
+    if contrato == VERSION_CONTRATO_V2 and fecha_corte is None:
+        raise CorridaMalDeclarada(
+            "cartera/v2 no trae la fecha de corte en el archivo: se declara con la corrida."
+        )
+    if contrato == VERSION_CONTRATO and fecha_corte is not None:
+        raise CorridaMalDeclarada(
+            "En cartera/v1 la fecha de corte viene en el archivo: no se declara aparte."
+        )
 
 
 def decidir(
@@ -254,6 +345,14 @@ def corrida_vigente(s: Session) -> Corrida | None:
         .where(Corrida.estado == EstadoCorrida.EXITOSA)
         .order_by(Corrida.fecha_corte.desc(), Corrida.terminada_en.desc(), Corrida.id.desc())
     ).first()
+
+
+def _contenido_de(s: Session, corrida: Corrida) -> bytes:
+    """El archivo de la corrida, leido de su artefacto y comprobado contra su SHA-256."""
+    if corrida.artefacto_fuente_id is None:
+        raise ErrorDeLectura("La corrida no tiene un artefacto del que leer su archivo.")
+    artefacto = s.get_one(ArtefactoFuente, corrida.artefacto_fuente_id)
+    return leer_verificado(almacen_de(config), artefacto)
 
 
 def _previa(firma: str) -> SelectOfScalar[Corrida]:

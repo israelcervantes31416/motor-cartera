@@ -1,8 +1,9 @@
 """El flujo automatico de una corrida, y los trabajos que se piden a mano.
 
-Una corrida que llega por la API nace con su flujo: la corrida, su archivo, el flujo y el trabajo de
-la ingesta se registran en una sola transaccion. Cuando el trabajo de una etapa termina, el worker
-encadena la siguiente en la misma transaccion que lo cierra:
+Una corrida que llega por la API nace con su flujo: el artefacto de su archivo, la corrida, el flujo
+y el trabajo de la ingesta se registran en una sola transaccion, despues de que el archivo ya es
+durable en el almacen de artefactos. Cuando el trabajo de una etapa termina, el worker encadena la
+siguiente en la misma transaccion que lo cierra:
 
     INGESTA -> DECISION -> TERRITORIAL -> RUTEO -> COMPLETADA
 
@@ -21,6 +22,7 @@ correr: el recurso EN_PROCESO y su trabajo, en una transaccion. No compiten con 
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -28,8 +30,8 @@ from sqlalchemy import ColumnElement
 from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.config import Config
+from motor_cartera.contratos import VERSION_CONTRATO
 from motor_cartera.db.modelos import (
-    ArchivoCorrida,
     Corrida,
     EjecucionDecision,
     EjecucionRuteo,
@@ -37,12 +39,15 @@ from motor_cartera.db.modelos import (
     EstadoFlujo,
     EtapaFlujo,
     FlujoOrquestacion,
+    IngestaPagos,
     TipoTrabajo,
     TrabajoOrquestacion,
     ahora,
 )
 from motor_cartera.decision import ejecuciones as decision
+from motor_cartera.fuentes.artefactos import ArtefactoGuardado
 from motor_cartera.ingesta.corridas import abrir_corrida
+from motor_cartera.ingesta.pagos import abrir_ingesta_pagos
 from motor_cartera.orquestacion import cola, objetivos
 from motor_cartera.ruteo import ejecuciones as ruteo
 from motor_cartera.territorial import ejecuciones as territorial
@@ -131,19 +136,35 @@ class FlujoNoReanudable(_ErrorDeFlujo):
 
 
 def crear_flujo_ingesta(
-    s: Session, *, origen: str, contenido: bytes, tolerancia: float, config: Config
+    s: Session,
+    *,
+    origen: str,
+    tolerancia: float,
+    config: Config,
+    contenido: bytes | None = None,
+    guardado: ArtefactoGuardado | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
 ) -> tuple[Corrida, FlujoOrquestacion]:
-    """La corrida EN_PROCESO, su archivo, su flujo en INGESTA y el trabajo de la ingesta, en una
+    """El artefacto, la corrida EN_PROCESO, su flujo en INGESTA y el trabajo de la ingesta, en una
     sola transaccion: no hay un instante en que exista la corrida sin todo lo demas.
 
-    El archivo se guarda en la base y no en la memoria de quien lo recibio: asi sobrevive a la
+    El archivo ya esta en el almacen de artefactos (`guardado`), o se guarda ahi antes de la
+    transaccion (`contenido`): no vive en la memoria de quien lo recibio, asi que sobrevive a la
     muerte de ese proceso, y cualquier worker puede hacer la ingesta. Propaga ArchivoDuplicado, y
-    entonces no se registra nada.
+    entonces no se registra nada en la base.
     """
     corrida = abrir_corrida(
-        s, origen=origen, contenido=contenido, tolerancia=tolerancia, confirmar=False
+        s,
+        origen=origen,
+        contenido=contenido,
+        guardado=guardado,
+        contrato=contrato,
+        fecha_corte=fecha_corte,
+        tolerancia=tolerancia,
+        confirmar=False,
+        config=config,
     )
-    _guardar_archivo(s, corrida.id, contenido)
     flujo = FlujoOrquestacion(corrida_id=corrida.id, detalle=EN_COLA[EtapaFlujo.INGESTA])
     s.add(flujo)
     s.flush()
@@ -165,18 +186,28 @@ def encolar_ingesta(
     s: Session,
     *,
     origen: str,
-    contenido: bytes,
     tolerancia: float | None,
     config: Config,
+    contenido: bytes | None = None,
+    guardado: ArtefactoGuardado | None = None,
+    contrato: str = VERSION_CONTRATO,
+    fecha_corte: date | None = None,
     tomado_por: str | None = None,
 ) -> tuple[Corrida, TrabajoOrquestacion]:
-    """Una ingesta pedida a mano, sin flujo: la corrida EN_PROCESO, su archivo y su trabajo, en una
-    sola transaccion. Al terminar no encadena nada. Con `tomado_por`, el trabajo nace ya tomado por
-    ese worker, que la va a ejecutar en primer plano. Propaga ArchivoDuplicado."""
+    """Una ingesta pedida a mano, sin flujo: el artefacto, la corrida EN_PROCESO y su trabajo, en
+    una sola transaccion. Al terminar no encadena nada. Con `tomado_por`, el trabajo nace ya tomado
+    por ese worker, que la va a ejecutar en primer plano. Propaga ArchivoDuplicado."""
     corrida = abrir_corrida(
-        s, origen=origen, contenido=contenido, tolerancia=tolerancia, confirmar=False
+        s,
+        origen=origen,
+        contenido=contenido,
+        guardado=guardado,
+        contrato=contrato,
+        fecha_corte=fecha_corte,
+        tolerancia=tolerancia,
+        confirmar=False,
+        config=config,
     )
-    _guardar_archivo(s, corrida.id, contenido)
     trabajo = cola.crear(
         s,
         TipoTrabajo.INGESTA,
@@ -189,6 +220,43 @@ def encolar_ingesta(
     s.refresh(corrida)
     s.refresh(trabajo)
     return corrida, trabajo
+
+
+def encolar_ingesta_pagos(
+    s: Session,
+    *,
+    origen: str,
+    tolerancia: float | None,
+    config: Config,
+    contenido: bytes | None = None,
+    guardado: ArtefactoGuardado | None = None,
+    tomado_por: str | None = None,
+) -> tuple[IngestaPagos, TrabajoOrquestacion]:
+    """Una ingesta de pagos: su artefacto, la ingesta EN_PROCESO y su trabajo INGESTA_PAGOS, en una
+    sola transaccion. No es de ningun flujo y no encadena nada: la conciliacion es posterior. Con
+    `tomado_por`, el trabajo nace ya tomado por ese worker. Propaga PagosDuplicados."""
+    ingesta = abrir_ingesta_pagos(
+        s,
+        origen=origen,
+        contenido=contenido,
+        guardado=guardado,
+        tolerancia=tolerancia,
+        confirmar=False,
+        config=config,
+    )
+    trabajo = cola.crear(
+        s,
+        TipoTrabajo.INGESTA_PAGOS,
+        ingesta.id,
+        max_intentos=config.worker_max_intentos,
+        tomado_por=tomado_por,
+        lease_segundos=config.worker_lease_segundos,
+    )
+    s.commit()
+    s.refresh(ingesta)
+    s.refresh(trabajo)
+    log.info("ingesta de pagos %s en la cola", ingesta.pagos_run_id)
+    return ingesta, trabajo
 
 
 def encolar_decision(s: Session, corrida_id: int, *, config: Config) -> EjecucionDecision:
@@ -345,10 +413,6 @@ def reanudar_flujo(s: Session, flujo_id: UUID, *, config: Config) -> FlujoOrques
 def objetivo_de(trabajo: TrabajoOrquestacion) -> int:
     """El id del recurso que ejecuta un trabajo: la columna de su tipo."""
     return getattr(trabajo, objetivos.OBJETIVOS[trabajo.tipo].columna)
-
-
-def _guardar_archivo(s: Session, corrida_id: int, contenido: bytes) -> None:
-    s.add(ArchivoCorrida(corrida_id=corrida_id, contenido=contenido, tamano_bytes=len(contenido)))
 
 
 def _encolar(s: Session, tipo: TipoTrabajo, ejecucion: SQLModel, config: Config) -> Any:
