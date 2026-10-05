@@ -51,7 +51,9 @@ from motor_cartera.db.modelos import (
     EjecucionTerritorial,
     FlujoOrquestacion,
     HojaCompanera,
+    IngestaPagos,
     ParadaRuta,
+    RechazoPago,
     ResultadoTerritorial,
     RutaTerritorial,
     TrabajoOrquestacion,
@@ -1989,6 +1991,8 @@ RESTRICCIONES_DE_ORQUESTACION = {
 }
 INDICES_DE_ORQUESTACION = {"ix_trabajo_orquestacion_flujo_id", "ix_trabajo_reclamable"}
 """Los indices que no salen de una llave ni de una restriccion unica."""
+RESTRICCIONES_DE_PAGOS_EN_LA_COLA = {"fk_trabajo_pagos", "uq_trabajo_pagos"}
+"""Lo que la 0007 agrega a trabajo_orquestacion para las ingestas de pagos."""
 
 # Un intento activo por fuente y version, y una publicacion: cada indice con su tabla, sus
 # columnas y el estado de su predicado. Los de las EXITOSA son de antes y se quedan.
@@ -2177,7 +2181,8 @@ def base_en_0006(base_en_0005) -> BaseEn0006:
 
 def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
     # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base
-    # subida hasta la 0006.
+    # subida hasta la cabeza. Incluye lo que la 0007 agrega a la cola para las ingestas de pagos: su
+    # tipo de trabajo, su columna, su llave foranea y su restriccion unica.
     archivo, flujo, trabajo = tablas = (
         ArchivoCorrida.__table__,
         FlujoOrquestacion.__table__,
@@ -2245,6 +2250,7 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
         "ejecucion_decision_id",
         "ejecucion_territorial_id",
         "ejecucion_ruteo_id",
+        "ingesta_pagos_id",
         "intentos",
         "max_intentos",
         "creado_en",
@@ -2262,6 +2268,7 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
         "ejecucion_decision_id",
         "ejecucion_territorial_id",
         "ejecucion_ruteo_id",
+        "ingesta_pagos_id",
         "tomado_en",
         "latido_en",
         "lease_hasta",
@@ -2269,7 +2276,14 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
         "worker_id",
         "ultimo_error",
     ]
-    assert columnas["tipo"].type.enums == ["INGESTA", "DECISION", "TERRITORIAL", "RUTEO"]
+    assert columnas["tipo"].type.enums == [
+        "INGESTA",
+        "DECISION",
+        "TERRITORIAL",
+        "RUTEO",
+        "INGESTA_PAGOS",
+    ]
+    assert columnas["tipo"].type.length == 16  # INGESTA_PAGOS no cabe en 12
     assert columnas["estado"].type.enums == ["PENDIENTE", "EJECUTANDO", "COMPLETADO", "FALLIDO"]
     assert {columnas[n].type.native_enum for n in ("tipo", "estado")} == {False}
     assert (columnas["worker_id"].type.length, columnas["ultimo_error"].type.length) == (200, 500)
@@ -2300,6 +2314,7 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
         ("trabajo_orquestacion", "ejecucion_decision_id"): ("ejecucion_decision.id", None),
         ("trabajo_orquestacion", "ejecucion_territorial_id"): ("ejecucion_territorial.id", None),
         ("trabajo_orquestacion", "ejecucion_ruteo_id"): ("ejecucion_ruteo.id", None),
+        ("trabajo_orquestacion", "ingesta_pagos_id"): ("ingesta_pagos.id", None),
     }
 
     # Una corrida, a lo mas un flujo y un trabajo; una ejecucion, a lo mas un flujo y un trabajo. Y
@@ -2321,6 +2336,7 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
         "uq_trabajo_decision": ["ejecucion_decision_id"],
         "uq_trabajo_territorial": ["ejecucion_territorial_id"],
         "uq_trabajo_ruteo": ["ejecucion_ruteo_id"],
+        "uq_trabajo_pagos": ["ingesta_pagos_id"],
     }
     # Los CHECK estructurales, por nombre, y los de los cuatro catalogos.
     revisiones = {
@@ -2367,7 +2383,9 @@ def test_los_modelos_de_orquestacion_declaran_el_esquema_de_la_0006():
     nombres = {preparador.format_constraint(c) for t in tablas for c in t.constraints} | {
         preparador.format_index(i) for t in tablas for i in t.indexes
     }
-    assert nombres == RESTRICCIONES_DE_ORQUESTACION | INDICES_DE_ORQUESTACION
+    assert nombres == (
+        RESTRICCIONES_DE_ORQUESTACION | RESTRICCIONES_DE_PAGOS_EN_LA_COLA | INDICES_DE_ORQUESTACION
+    )
     assert all(len(nombre) <= 63 for nombre in nombres)
 
 
@@ -2885,7 +2903,13 @@ INSERTAR_CORRIDA_0007 = text(
     "'cartera/v1', 0, 0, 0, :artefacto_fuente_id, :despacho_id, :cartera_id) RETURNING id"
 )
 
-TABLAS_DE_FUENTES = {"artefacto_fuente", "dataset_conformado", "hoja_companera"}
+TABLAS_DE_FUENTES = {
+    "artefacto_fuente",
+    "dataset_conformado",
+    "hoja_companera",
+    "ingesta_pagos",
+    "rechazo_pago",
+}
 # Las tablas que existen antes de la 0007, que se comparan completas, columna por columna.
 PREVIAS_A_LA_0007 = (*PREVIAS_A_LA_0006, "flujo_orquestacion", "trabajo_orquestacion")
 COLUMNAS_NUEVAS_DE_LA_CORRIDA = {
@@ -2897,7 +2921,7 @@ COLUMNAS_NUEVAS_DE_LA_CORRIDA = {
 
 RESTRICCIONES_0007 = RESTRICCIONES.replace(
     "'ejecucion_decision', 'decision_cuenta'",
-    "'artefacto_fuente', 'dataset_conformado', 'hoja_companera'",
+    "'artefacto_fuente', 'dataset_conformado', 'hoja_companera', 'ingesta_pagos', 'rechazo_pago'",
 )
 RESTRICCIONES_DE_FUENTES = {
     "pk_artefacto_fuente",
@@ -2911,15 +2935,26 @@ RESTRICCIONES_DE_FUENTES = {
     "pk_dataset_conformado",
     "uq_dataset_conformado_dataset_id",
     "uq_conformado_corrida",
+    "uq_conformado_pagos",
     "fk_conformado_corrida",
+    "fk_conformado_pagos",
     "fk_conformado_original",
     "fk_conformado_parquet",
     "ck_conformado_conteos",
     "ck_conformado_firma",
+    "ck_conformado_origen",
     "pk_hoja_companera",
     "fk_companera_corrida",
     "uq_companera_corrida_nombre",
     "ck_companera_conteos",
+    "pk_ingesta_pagos",
+    "uq_ingesta_pagos_pagos_run_id",
+    "fk_pagos_artefacto",
+    "ck_pagos_conteos",
+    "ck_ingesta_pagos_estado_ingesta_pagos",
+    "pk_rechazo_pago",
+    "fk_rechazo_pago_ingesta",
+    "uq_rechazo_pago_fila",
 }
 FK_CORRIDA_ARTEFACTO = "fk_corrida_artefacto_fuente_id_artefacto_fuente"
 CHECKS_DE_LA_CORRIDA = {"ck_corrida_v2_fuente", "ck_corrida_proyeccion"}
@@ -3017,7 +3052,13 @@ def test_la_cabeza_es_la_0007():
 
 def test_los_modelos_declaran_el_esquema_de_la_0007():
     # Sin base: lo que declaran los modelos. En el CI, alembic check los compara ademas con la base.
-    tablas = (ArtefactoFuente.__table__, DatasetConformado.__table__, HojaCompanera.__table__)
+    tablas = (
+        ArtefactoFuente.__table__,
+        DatasetConformado.__table__,
+        HojaCompanera.__table__,
+        IngestaPagos.__table__,
+        RechazoPago.__table__,
+    )
     tabla = tablas[0]
     columnas = {c.name: (type(c.type), c.nullable) for c in tabla.columns}
     assert columnas["tamano_bytes"] == (BigInteger, False)
@@ -3038,6 +3079,29 @@ def test_los_modelos_declaran_el_esquema_de_la_0007():
     assert CHECKS_DE_LA_CORRIDA <= checks
     assert corrida.c.version_proyeccion.nullable is True
     assert all(len(nombre) <= 63 for nombre in nombres | llaves | checks)
+    # Un dataset conformado es de una corrida o de una ingesta de pagos, nunca de las dos.
+    conformado = DatasetConformado.__table__
+    assert (conformado.c.corrida_id.nullable, conformado.c.ingesta_pagos_id.nullable) == (
+        True,
+        True,
+    )
+    # La ingesta de pagos: conteos que caben en BIGINT, sus cuatro estados y sus indices parciales.
+    pagos = IngestaPagos.__table__
+    assert all(
+        isinstance(pagos.c[columna].type, BigInteger)
+        for columna in ("filas_leidas", "filas_validas", "filas_rechazadas")
+    )
+    assert pagos.c.estado.type.enums == ["EN_PROCESO", "EXITOSA", "RECHAZADA", "FALLIDA"]
+    assert (pagos.c.firma_contenido.nullable, pagos.c.terminada_en.nullable) == (True, True)
+    parciales = {
+        indice.name: str(indice.dialect_options["postgresql"]["where"])
+        for indice in pagos.indexes
+        if indice.unique
+    }
+    assert parciales == {
+        "ux_ingesta_pagos_firma_publicada": "estado = 'EXITOSA'",
+        "ux_ingesta_pagos_firma_en_proceso": "estado = 'EN_PROCESO'",
+    }
 
 
 def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0007):
@@ -3045,7 +3109,8 @@ def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0
     motor = b.motor
 
     # A. Cada fila de antes sigue ahi, identica. La corrida solo gana tres columnas: sin artefacto,
-    # porque su archivo no se conservo, y con el despacho y la cartera del sistema.
+    # porque su archivo no se conservo, y con el despacho y la cartera del sistema. Un trabajo, la
+    # de su ingesta de pagos: ninguno es de una.
     despues = _por_columna(motor, PREVIAS_A_LA_0007)
     for tabla, filas in b.previas.items():
         assert len(despues[tabla]) == len(filas), tabla
@@ -3059,6 +3124,8 @@ def test_la_0007_agrega_el_artefacto_fuente_y_no_toca_lo_que_ya_estaba(base_en_0
                     "cartera_id": "CARTERA_PRINCIPAL",
                     "version_proyeccion": None,
                 }
+            if tabla == "trabajo_orquestacion":
+                assert fila.pop("ingesta_pagos_id") is None
             assert fila == antes, tabla
     # El archivo de la corrida que seguia en la cola no se toca: la v0.6 lo va a leer.
     assert _archivos(motor) == b.archivos
@@ -3243,6 +3310,147 @@ def test_el_conformado_y_la_companera_cuelgan_de_su_corrida(base_en_0007):
     assert _consultar(motor, f"SELECT filas FROM dataset_conformado WHERE id = {dataset}") == [10]
 
 
+INSERTAR_INGESTA_PAGOS = text(
+    "INSERT INTO ingesta_pagos (pagos_run_id, artefacto_fuente_id, origen, firma, "
+    "version_contrato, estado, despacho_id, cartera_id, tolerancia_rechazo, iniciada_en, "
+    "filas_leidas, filas_validas, filas_rechazadas) VALUES (:pagos_run_id, :artefacto, "
+    "'pagos.csv', :firma, 'pagos/v1', :estado, 'DSP_001', 'CARTERA_PRINCIPAL', 0, now(), "
+    ":leidas, :validas, :rechazadas) RETURNING id"
+)
+INSERTAR_RECHAZO_PAGO = text(
+    "INSERT INTO rechazo_pago (ingesta_pagos_id, fila, valores, motivos) VALUES (:ingesta, "
+    ":fila, CAST('{}' AS JSONB), CAST('[]' AS JSONB)) RETURNING id"
+)
+INSERTAR_TRABAJO_DE_PAGOS = text(
+    "INSERT INTO trabajo_orquestacion (trabajo_id, tipo, estado, corrida_id, ingesta_pagos_id, "
+    "intentos, max_intentos, creado_en, disponible_desde) VALUES (:trabajo_id, :tipo, "
+    "'PENDIENTE', :corrida_id, :ingesta, 0, 5, now(), now()) RETURNING id"
+)
+INSERTAR_CONFORMADO_DE_PAGOS = text(
+    "INSERT INTO dataset_conformado (dataset_id, contrato, corrida_id, ingesta_pagos_id, "
+    "artefacto_original_id, artefacto_conformado_id, firma_contenido, filas, columnas, creado_en) "
+    "VALUES (:dataset_id, 'pagos/v1', :corrida_id, :ingesta, :original, :conformado, :firma, 10, "
+    "23, now()) RETURNING id"
+)
+BORRAR_INGESTA = text("DELETE FROM ingesta_pagos WHERE id = :id")
+
+
+def _ingesta_pagos(artefacto: int, estado: str = "EN_PROCESO", **cambios) -> dict:
+    """Una ingesta de pagos de ese artefacto; `cambios` reemplaza cualquier valor."""
+    base = {
+        "pagos_run_id": uuid4(),
+        "artefacto": artefacto,
+        "firma": "b" * 64,
+        "estado": estado,
+        "leidas": 0,
+        "validas": 0,
+        "rechazadas": 0,
+    }
+    return {**base, **cambios}
+
+
+def test_una_ingesta_de_pagos_con_su_trabajo_sus_rechazos_y_su_conformado(base_en_0007):
+    motor = base_en_0007.motor
+    original, parquet = _insertar(
+        motor,
+        INSERTAR_ARTEFACTO,
+        _artefacto(b"pagos"),
+        _artefacto(b"parquet de pagos", formato="parquet"),
+    )
+
+    # H. Un archivo se procesa en una sola ingesta a la vez y se acepta una vez; las que no se
+    # aceptaron no estorban. Los conteos cuadran y el estado es uno de los cuatro.
+    (abierta,) = _insertar(motor, INSERTAR_INGESTA_PAGOS, _ingesta_pagos(original))
+    _rechaza(
+        motor,
+        "ux_ingesta_pagos_firma_en_proceso",
+        INSERTAR_INGESTA_PAGOS,
+        _ingesta_pagos(original),
+    )
+    aceptada = {"estado": "EXITOSA", "leidas": 3, "validas": 3}
+    (exitosa,) = _insertar(motor, INSERTAR_INGESTA_PAGOS, _ingesta_pagos(original, **aceptada))
+    _rechaza(
+        motor,
+        "ux_ingesta_pagos_firma_publicada",
+        INSERTAR_INGESTA_PAGOS,
+        _ingesta_pagos(original, **aceptada),
+    )
+    rechazada, _ = _insertar(
+        motor,
+        INSERTAR_INGESTA_PAGOS,
+        _ingesta_pagos(original, "RECHAZADA", leidas=2, validas=1, rechazadas=1),
+        _ingesta_pagos(original, "FALLIDA"),
+    )
+    for restriccion, ingesta in (
+        (
+            "ck_pagos_conteos",
+            _ingesta_pagos(original, "FALLIDA", leidas=2, validas=2, rechazadas=1),
+        ),
+        ("ck_ingesta_pagos_estado_ingesta_pagos", _ingesta_pagos(original, "PUBLICADA")),
+        ("fk_pagos_artefacto", _ingesta_pagos(999_999, "FALLIDA")),
+    ):
+        _rechaza(motor, restriccion, INSERTAR_INGESTA_PAGOS, ingesta)
+    # Un rechazo por fila.
+    _insertar(motor, INSERTAR_RECHAZO_PAGO, {"ingesta": rechazada, "fila": 7})
+    _rechaza(
+        motor, "uq_rechazo_pago_fila", INSERTAR_RECHAZO_PAGO, {"ingesta": rechazada, "fila": 7}
+    )
+
+    # I. Su trabajo, uno por ingesta, apunta a ella y a nada mas. INGESTA_PAGOS cabe en el tipo.
+    trabajo = {
+        "trabajo_id": uuid4(),
+        "tipo": "INGESTA_PAGOS",
+        "corrida_id": None,
+        "ingesta": abierta,
+    }
+    _insertar(motor, INSERTAR_TRABAJO_DE_PAGOS, trabajo)
+    otro = {**trabajo, "trabajo_id": uuid4()}
+    _rechaza(motor, "uq_trabajo_pagos", INSERTAR_TRABAJO_DE_PAGOS, otro)
+    _rechaza(motor, "ck_trabajo_objetivo", INSERTAR_TRABAJO_DE_PAGOS, {**otro, "ingesta": None})
+    (corrida,) = _insertar(motor, INSERTAR_CORRIDA_0007, _corrida_0007("EN_PROCESO", None))
+    _rechaza(
+        motor,
+        "ck_trabajo_objetivo",
+        INSERTAR_TRABAJO_DE_PAGOS,
+        {**otro, "tipo": "INGESTA", "corrida_id": corrida, "ingesta": rechazada},
+    )
+    largo = (
+        "SELECT character_maximum_length FROM information_schema.columns WHERE table_schema = "
+        "current_schema() AND table_name = 'trabajo_orquestacion' AND column_name = 'tipo'"
+    )
+    assert _consultar(motor, largo) == [16]
+
+    # J. Un conformado es de una corrida o de una ingesta de pagos: nunca de las dos ni de ninguna.
+    conformado = {
+        "dataset_id": uuid4(),
+        "corrida_id": None,
+        "ingesta": exitosa,
+        "original": original,
+        "conformado": parquet,
+        "firma": "c" * 64,
+    }
+    _insertar(motor, INSERTAR_CONFORMADO_DE_PAGOS, conformado)
+    otro = {**conformado, "dataset_id": uuid4()}
+    _rechaza(motor, "uq_conformado_pagos", INSERTAR_CONFORMADO_DE_PAGOS, otro)
+    for cambios in ({"ingesta": rechazada, "corrida_id": corrida}, {"ingesta": None}):
+        _rechaza(motor, "ck_conformado_origen", INSERTAR_CONFORMADO_DE_PAGOS, {**otro, **cambios})
+
+    # Y nada se borra en cascada: ni la ingesta con su trabajo, ni con sus rechazos, ni con su
+    # conformado, ni el artefacto de una ingesta.
+    for restriccion, ingesta in (
+        ("fk_trabajo_pagos", abierta),
+        ("fk_rechazo_pago_ingesta", rechazada),
+        ("fk_conformado_pagos", exitosa),
+    ):
+        _rechaza(motor, restriccion, BORRAR_INGESTA, {"id": ingesta})
+    _rechaza(
+        motor,
+        "fk_pagos_artefacto",
+        text("DELETE FROM artefacto_fuente WHERE id = :id"),
+        {"id": original},
+    )
+
+
 def test_la_0007_baja_cerrando_lo_que_la_v05_no_podria_terminar_y_vuelve_a_subir(base_en_0007):
     b = base_en_0007
     motor = b.motor
@@ -3314,3 +3522,46 @@ def test_la_0007_baja_cerrando_lo_que_la_v05_no_podria_terminar_y_vuelve_a_subir
         motor, "SELECT count(*) FROM corrida WHERE artefacto_fuente_id IS NOT NULL"
     ) == [0]
     assert _consultar(motor, "SELECT version_num FROM alembic_version") == ["0007"]
+
+
+def test_la_0007_baja_quitando_las_ingestas_de_pagos_y_sus_trabajos(base_en_0007):
+    b = base_en_0007
+    motor = b.motor
+    (artefacto,) = _insertar(motor, INSERTAR_ARTEFACTO, _artefacto(b"pagos para bajar"))
+    (ingesta,) = _insertar(motor, INSERTAR_INGESTA_PAGOS, _ingesta_pagos(artefacto))
+    _insertar(motor, INSERTAR_RECHAZO_PAGO, {"ingesta": ingesta, "fila": 2})
+    _insertar(
+        motor,
+        INSERTAR_TRABAJO_DE_PAGOS,
+        {"trabajo_id": uuid4(), "tipo": "INGESTA_PAGOS", "corrida_id": None, "ingesta": ingesta},
+    )
+    trabajos = "SELECT tipo FROM trabajo_orquestacion ORDER BY id"
+    assert _consultar(motor, trabajos) == ["INGESTA", "INGESTA_PAGOS"]
+
+    command.downgrade(_alembic(), "0006")
+
+    # La 0006 no conoce las ingestas de pagos: se van sus trabajos, sus rechazos y ellas. El trabajo
+    # de la corrida de v0.5 se queda. El almacen conserva sus archivos: bajar no borra evidencia.
+    assert _consultar(motor, trabajos) == ["INGESTA"]
+    assert not {"ingesta_pagos", "rechazo_pago"} & set(_consultar(motor, TABLAS))
+    columnas = (
+        "SELECT column_name, character_maximum_length FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'trabajo_orquestacion' "
+        "AND column_name IN ('tipo', 'ingesta_pagos_id')"
+    )
+    with motor.connect() as conexion:
+        assert [tuple(fila) for fila in conexion.execute(text(columnas))] == [("tipo", 12)]
+    assert set(_consultar(motor, RESTRICCIONES_0006)) == RESTRICCIONES_DE_ORQUESTACION
+    # Y sus CHECK vuelven a ser los de la 0006: el tipo INGESTA_PAGOS ya no existe.
+    definiciones = _consultar(
+        motor,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname IN "
+        "('ck_trabajo_objetivo', 'ck_trabajo_orquestacion_tipo_trabajo')",
+    )
+    assert len(definiciones) == 2
+    assert not any("INGESTA_PAGOS" in d or "ingesta_pagos_id" in d for d in definiciones)
+
+    command.upgrade(_alembic(), "0007")
+
+    assert set(_consultar(motor, RESTRICCIONES_0007)) == RESTRICCIONES_DE_FUENTES
+    assert _consultar(motor, "SELECT count(*) FROM ingesta_pagos") == [0]

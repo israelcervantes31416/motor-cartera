@@ -39,6 +39,7 @@ from motor_cartera.db.modelos import (
     EstadoFlujo,
     EtapaFlujo,
     FlujoOrquestacion,
+    IngestaPagos,
     TipoTrabajo,
     TrabajoOrquestacion,
     ahora,
@@ -46,6 +47,7 @@ from motor_cartera.db.modelos import (
 from motor_cartera.decision import ejecuciones as decision
 from motor_cartera.fuentes.artefactos import ArtefactoGuardado
 from motor_cartera.ingesta.corridas import abrir_corrida
+from motor_cartera.ingesta.pagos import abrir_ingesta_pagos
 from motor_cartera.orquestacion import cola, objetivos
 from motor_cartera.ruteo import ejecuciones as ruteo
 from motor_cartera.territorial import ejecuciones as territorial
@@ -218,6 +220,43 @@ def encolar_ingesta(
     s.refresh(corrida)
     s.refresh(trabajo)
     return corrida, trabajo
+
+
+def encolar_ingesta_pagos(
+    s: Session,
+    *,
+    origen: str,
+    tolerancia: float | None,
+    config: Config,
+    contenido: bytes | None = None,
+    guardado: ArtefactoGuardado | None = None,
+    tomado_por: str | None = None,
+) -> tuple[IngestaPagos, TrabajoOrquestacion]:
+    """Una ingesta de pagos: su artefacto, la ingesta EN_PROCESO y su trabajo INGESTA_PAGOS, en una
+    sola transaccion. No es de ningun flujo y no encadena nada: la conciliacion es posterior. Con
+    `tomado_por`, el trabajo nace ya tomado por ese worker. Propaga PagosDuplicados."""
+    ingesta = abrir_ingesta_pagos(
+        s,
+        origen=origen,
+        contenido=contenido,
+        guardado=guardado,
+        tolerancia=tolerancia,
+        confirmar=False,
+        config=config,
+    )
+    trabajo = cola.crear(
+        s,
+        TipoTrabajo.INGESTA_PAGOS,
+        ingesta.id,
+        max_intentos=config.worker_max_intentos,
+        tomado_por=tomado_por,
+        lease_segundos=config.worker_lease_segundos,
+    )
+    s.commit()
+    s.refresh(ingesta)
+    s.refresh(trabajo)
+    log.info("ingesta de pagos %s en la cola", ingesta.pagos_run_id)
+    return ingesta, trabajo
 
 
 def encolar_decision(s: Session, corrida_id: int, *, config: Config) -> EjecucionDecision:

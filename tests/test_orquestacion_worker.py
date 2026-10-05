@@ -180,7 +180,12 @@ def test_el_worker_lleva_una_cartera_de_la_ingesta_al_ruteo(tmp_path, trabajar):
     assert (completado.estado, completado.etapa) == (EstadoFlujo.COMPLETADO, EtapaFlujo.COMPLETADA)
     # Cada trabajo termino sin dueno ni lease, y es el de un recurso que termino EXITOSA.
     trabajos = _trabajos()
-    assert [t.tipo for t in trabajos] == list(TipoTrabajo)
+    assert [t.tipo for t in trabajos] == [
+        TipoTrabajo.INGESTA,
+        TipoTrabajo.DECISION,
+        TipoTrabajo.TERRITORIAL,
+        TipoTrabajo.RUTEO,
+    ]
     assert all(t.flujo_id == flujo_id and t.terminado_en is not None for t in trabajos)
     assert not any(t.worker_id or t.lease_hasta or t.ultimo_error for t in trabajos)
     objetivos = [

@@ -291,3 +291,92 @@ def test_generar_oficial_con_un_perfil_desconocido(tmp_path):
 
     assert resultado.exit_code == 2
     assert "Perfil desconocido: XXXL. Usa XS, S, M, L, XL, XXL." in resultado.output
+
+
+# --- pagos ----------------------------------------------------------------------------------------
+
+
+def _generar_oficial(destino, *extra: str):
+    argumentos = ["generar-oficial", "--destino", str(destino), "--n", "120"]
+    return cli.invoke(app, [*argumentos, "--fecha-corte", "2026-09-30", "--semilla", "5", *extra])
+
+
+def test_generar_oficial_escribe_tambien_los_pagos_de_la_semana_del_corte(tmp_path):
+    resultado = _generar_oficial(tmp_path, "--formato", "zip")
+
+    assert resultado.exit_code == 0, resultado.output
+    pagos = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.zip"
+    assert pagos.exists() and (tmp_path / "cartera_oficial_2026-09-30.zip").exists()
+    assert re.search(
+        r"pagos_oficial_2026-09-24_2026-09-30\.zip \([\d,]+ movimientos\)",
+        (resultado.output.replace("\n", "")),
+    )
+
+
+def test_generar_oficial_sin_pagos(tmp_path):
+    resultado = _generar_oficial(tmp_path, "--formato", "csv", "--no-pagos")
+
+    assert resultado.exit_code == 0, resultado.output
+    assert [ruta.name for ruta in tmp_path.iterdir()] == ["cartera_oficial_2026-09-30.csv"]
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_acepta_por_la_cola_y_dice_como_quedo(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 0, resultado.output
+    assert "EXITOSA" in resultado.output
+    assert re.search(r"leidas (\d+), validas \1, rechazadas 0", resultado.output)
+    (trabajo,) = _trabajos()
+    assert (trabajo.tipo, trabajo.estado, trabajo.intentos, trabajo.flujo_id) == (
+        TipoTrabajo.INGESTA_PAGOS,
+        EstadoTrabajo.COMPLETADO,
+        1,
+        None,
+    )
+    assert _cuantos(Corrida) == 0
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_dos_veces_el_mismo_archivo_se_niega(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+    cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 1
+    assert "Este archivo de pagos ya lo acepto la ingesta" in resultado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_con_un_movimiento_invalido_termina_con_error(tmp_path):
+    _generar_oficial(tmp_path, "--formato", "csv")
+    ruta = tmp_path / "pagos_oficial_2026-09-24_2026-09-30.csv"
+    lineas = ruta.read_text(encoding="utf-8").splitlines()
+    lineas[3] = lineas[3].replace('"', "").replace("2026-09-", "2026-13-", 1)
+    invalido = tmp_path / "invalido.csv"
+    invalido.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+
+    rechazado = cli.invoke(app, ["cargar-pagos", str(invalido)])
+    tolerado = cli.invoke(app, ["cargar-pagos", str(invalido), "--tolerancia", "0.5"])
+
+    assert rechazado.exit_code == 1
+    assert "RECHAZADA" in rechazado.output and "rechazadas 1" in rechazado.output
+    assert tolerado.exit_code == 0, tolerado.output
+    assert "EXITOSA" in tolerado.output and "dentro de la tolerancia" in tolerado.output
+
+
+@pytest.mark.usefixtures("bd")
+def test_cargar_pagos_vacio_se_niega_sin_registrar_nada(tmp_path):
+    ruta = tmp_path / "pagos.csv"
+    ruta.write_bytes(b"")
+
+    resultado = cli.invoke(app, ["cargar-pagos", str(ruta)])
+
+    assert resultado.exit_code == 1
+    assert "'pagos.csv' esta vacio" in resultado.output
+    assert _cuantos(TrabajoOrquestacion) == 0

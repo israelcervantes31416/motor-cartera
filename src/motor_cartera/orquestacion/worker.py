@@ -40,8 +40,10 @@ from motor_cartera.db.modelos import (
     ArtefactoFuente,
     Corrida,
     EstadoCorrida,
+    EstadoIngestaPagos,
     EstadoTrabajo,
     EtapaFlujo,
+    IngestaPagos,
     TipoTrabajo,
 )
 from motor_cartera.db.sesion import sesion
@@ -49,6 +51,7 @@ from motor_cartera.decision.ejecuciones import DecisionYaGenerada, ejecutar_deci
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
 from motor_cartera.ingesta.corridas import procesar_corrida, verificar_declaracion
+from motor_cartera.ingesta.pagos import procesar_ingesta_pagos
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
@@ -94,11 +97,26 @@ def _ingerir(corrida_id: int) -> None:
     procesar_corrida(corrida_id, contenido)
 
 
+def _ingerir_pagos(ingesta_id: int) -> None:
+    """La ingesta de pagos de un trabajo, con el archivo de su artefacto. Si ya termino no hace
+    nada; si el almacen no tiene el objeto, es un error del worker y el trabajo se reintenta."""
+    with sesion() as s:
+        ingesta = s.get_one(IngestaPagos, ingesta_id)
+        if ingesta.estado != EstadoIngestaPagos.EN_PROCESO:
+            log.info("ingesta de pagos %s ya termino %s", ingesta_id, ingesta.estado)
+            return
+        sha256 = s.get_one(ArtefactoFuente, ingesta.artefacto_fuente_id).sha256
+    if not almacen_de(config_del_entorno).existe(sha256):
+        raise ArtefactoFaltante(sha256)
+    procesar_ingesta_pagos(ingesta_id)
+
+
 MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.INGESTA: _ingerir,
     TipoTrabajo.DECISION: ejecutar_decision,
     TipoTrabajo.TERRITORIAL: ejecutar_territorial,
     TipoTrabajo.RUTEO: ejecutar_ruteo,
+    TipoTrabajo.INGESTA_PAGOS: _ingerir_pagos,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -298,6 +316,36 @@ def ingerir_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(Corrida, corrida.id)
+
+
+def ingerir_pagos_en_primer_plano(
+    ruta: str | Path, *, tolerancia: float | None = None, config: Config | None = None
+) -> IngestaPagos:
+    """La ingesta de pagos del CLI: el archivo al almacen y, en una transaccion, su artefacto, la
+    ingesta y su trabajo, ya tomado por este proceso; despues, la ingesta en primer plano, con su
+    latido. Si el proceso muere, cualquier worker la termina cuando vence el lease. Propaga
+    PagosDuplicados, ValueError si el archivo esta vacio, y FormatoNoSoportado o
+    FormatoNoCorresponde si no es lo que dice su extension."""
+    config = config or config_del_entorno
+    ruta = Path(ruta)
+    if ruta.stat().st_size == 0:
+        raise ValueError(f"{ruta.name!r} esta vacio: no hay nada que ingerir.")
+    with ruta.open("rb") as archivo:
+        guardado = guardar_artefacto(almacen_de(config), archivo, ruta.name)
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ingesta, trabajo = flujo.encolar_ingesta_pagos(
+            s,
+            origen=ruta.name,
+            guardado=guardado,
+            tolerancia=tolerancia,
+            config=config,
+            tomado_por=worker_id,
+        )
+        reclamo = cola.reclamo_de(trabajo)
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(IngestaPagos, ingesta.id)
 
 
 def _cerrar(

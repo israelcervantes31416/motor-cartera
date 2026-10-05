@@ -41,6 +41,10 @@ class ErrorRespuesta(BaseModel):
     run_id: UUID | None = Field(
         default=None, description="La corrida con la que tiene que ver el error, si hay una."
     )
+    pagos_run_id: UUID | None = Field(
+        default=None,
+        description="La ingesta de pagos con la que tiene que ver el error, si hay una.",
+    )
 
 
 class ErrorDeApi(Exception):
@@ -53,11 +57,14 @@ class ErrorDeApi(Exception):
         mensaje: str,
         *,
         run_id: UUID | None = None,
+        pagos_run_id: UUID | None = None,
         encabezados: dict[str, str] | None = None,
     ) -> None:
         super().__init__(mensaje)
         self.estado = estado
-        self.respuesta = ErrorRespuesta(codigo=codigo, mensaje=mensaje, run_id=run_id)
+        self.respuesta = ErrorRespuesta(
+            codigo=codigo, mensaje=mensaje, run_id=run_id, pagos_run_id=pagos_run_id
+        )
         self.encabezados = encabezados
 
 

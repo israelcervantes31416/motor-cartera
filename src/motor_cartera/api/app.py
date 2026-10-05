@@ -18,6 +18,7 @@ from motor_cartera.api import (
     corridas,
     decisiones,
     orquestacion,
+    pagos,
     ruteo,
     salud,
     territorial,
@@ -114,6 +115,12 @@ ETIQUETAS = [
         "registro y, si pasa, publicado. Todo lo que se escribe cuelga de una.",
     },
     {
+        "name": "pagos",
+        "description": "Una ingesta de pagos es un archivo de movimientos economicos (pagos/v1), "
+        "guardado tal como llego, juzgado movimiento por movimiento y, si pasa, aceptado sin "
+        "deduplicar nada. No es una corrida: no publica cuentas.",
+    },
+    {
         "name": "orquestacion",
         "description": "El flujo automatico de cada corrida, de la ingesta al ruteo, y los "
         "trabajos de la cola durable que lo ejecutan. La API los registra; un worker los ejecuta.",
@@ -161,6 +168,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     registrar_manejadores(app)
     protegidas = [Depends(exigir_api_key)]
     app.include_router(corridas.router, dependencies=protegidas)
+    app.include_router(pagos.router, dependencies=protegidas)
     app.include_router(orquestacion.router, dependencies=protegidas)
     app.include_router(cartera.router, dependencies=protegidas)
     app.include_router(decisiones.router, dependencies=protegidas)

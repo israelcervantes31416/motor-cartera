@@ -38,6 +38,13 @@ class Config(BaseSettings):
     fijarla, la barrera seria opcional. 0 es todo o nada. 1 no se admite: publicaria
     aunque no pasara ningun registro.
     """
+    tolerancia_rechazo_pagos: float = Field(default=0.0, ge=0, lt=1)
+    """Fraccion maxima de movimientos rechazados con la que una ingesta de pagos todavia se acepta.
+
+    Por omision 0: un solo movimiento invalido rechaza el archivo entero. Un archivo de dinero
+    aceptado a medias subestimaria la recuperacion sin que nadie lo notara. Como la de cartera, vive
+    en el servidor y cada ingesta guarda con cual se juzgo.
+    """
     api_key: SecretStr | None = None
     """Clave que la API exige en la cabecera X-API-Key. Sin ella la API no arranca.
 

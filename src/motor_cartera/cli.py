@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -63,16 +63,28 @@ def generar_oficial(
     carrier: Annotated[
         bool, typer.Option(help="Con la hoja companera CARRIER, en xlsx y zip.")
     ] = True,
+    pagos: Annotated[
+        bool,
+        typer.Option(help="Tambien los pagos (pagos/v1) de la semana que termina en el corte."),
+    ] = True,
 ) -> None:
     """Genera la cartera oficial sintetica (cartera/v2, 93 columnas) en un archivo: en xlsx, las
-    hojas CARTERA y CARRIER; en zip, CARTERA.csv y CARRIER.csv; en csv, solo CARTERA.
+    hojas CARTERA y CARRIER; en zip, CARTERA.csv y CARRIER.csv; en csv, solo CARTERA. Y, aparte,
+    los pagos de esas cuentas en los siete dias que terminan en el corte (pagos/v1, 23 columnas),
+    en el mismo formato.
 
     Por omision es pequena (XS): una cartera grande se pide con su perfil, nunca por accidente. Se
     arma y se escribe por bloques, asi que XL y XXL no se cargan enteras en memoria; para ellas
     conviene csv o zip, porque escribir un xlsx de ese tamano es lento por el formato.
     """
     from motor_cartera.config import config
-    from motor_cartera.generador.oficial import PERFILES, escribir_cartera, estado_inicial
+    from motor_cartera.generador.oficial import (
+        PERFILES,
+        escribir_cartera,
+        escribir_pagos,
+        estado_inicial,
+        tabla_pagos,
+    )
 
     if n is None and perfil.upper() not in PERFILES:
         typer.echo(f"Perfil desconocido: {perfil}. Usa {', '.join(PERFILES)}.", err=True)
@@ -90,6 +102,12 @@ def generar_oficial(
         + (f", {escrito.filas_carrier:,} filas de CARRIER" if escrito.filas_carrier else "")
         + f"; fecha de corte {corte.isoformat()}, que se declara al cargarla)"
     )
+    if pagos:
+        desde = corte - timedelta(days=6)
+        movimientos = tabla_pagos(estado, semilla=semilla, desde=desde, hasta=corte)
+        nombre = f"pagos_oficial_{desde.isoformat()}_{corte.isoformat()}.{ruta.suffix[1:]}"
+        escritos = escribir_pagos(movimientos, Path(destino) / nombre)
+        typer.echo(f"Escrito: {escritos.ruta} ({escritos.filas:,} movimientos)")
 
 
 @app.command()
@@ -136,6 +154,45 @@ def cargar(
     )
     typer.echo(f"  {corrida.detalle}")
     if corrida.estado != EstadoCorrida.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("cargar-pagos")
+def cargar_pagos(
+    ruta: str,
+    tolerancia: Annotated[
+        float | None,
+        typer.Option(
+            min=0.0,
+            max=0.999,
+            help="Fraccion maxima de movimientos rechazados. Por omision, "
+            "MC_TOLERANCIA_RECHAZO_PAGOS, que es 0: un movimiento invalido rechaza el archivo.",
+        ),
+    ] = None,
+) -> None:
+    """Lee un archivo de pagos, lo juzga contra pagos/v1 y, si pasa, acepta sus movimientos, sin
+    deduplicar ninguno.
+
+    Como cargar: pasa por la cola durable, en primer plano, con el archivo en el almacen de
+    artefactos y su trabajo ya de este proceso. Termina con codigo 1 si la ingesta no se acepto.
+    """
+    from motor_cartera.db.modelos import EstadoIngestaPagos
+    from motor_cartera.ingesta.pagos import PagosDuplicados
+    from motor_cartera.orquestacion.worker import ingerir_pagos_en_primer_plano
+
+    try:
+        ingesta = ingerir_pagos_en_primer_plano(ruta, tolerancia=tolerancia)
+    except (PagosDuplicados, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Ingesta de pagos {ingesta.pagos_run_id}: {ingesta.estado}")
+    typer.echo(
+        f"  leidas {ingesta.filas_leidas}, validas {ingesta.filas_validas}, "
+        f"rechazadas {ingesta.filas_rechazadas}"
+    )
+    typer.echo(f"  {ingesta.detalle}")
+    if ingesta.estado != EstadoIngestaPagos.EXITOSA:
         raise typer.Exit(code=1)
 
 

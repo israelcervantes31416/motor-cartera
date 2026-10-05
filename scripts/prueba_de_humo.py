@@ -11,11 +11,16 @@ version y documenta la orquestacion. Verifica los codigos HTTP de cada paso.
 Con --oficial, hace lo mismo con una cartera oficial (cartera/v2, 93 columnas) y su fecha de
 corte declarada: el flujo la lleva de la ingesta al ruteo, y la evidencia de la corrida trae el
 archivo original (con el mismo SHA-256 que se calcula aqui sobre el archivo subido), el dataset
-conformado y su hoja CARRIER. Solo usa la biblioteca estandar, para correr igual en el CI, dentro
-del contenedor o en una laptop:
+conformado y su hoja CARRIER.
+
+Con --pagos, sube un archivo de pagos (pagos/v1, 23 columnas): su ingesta pasa por la cola durable
+como un trabajo INGESTA_PAGOS, termina EXITOSA sin deduplicar nada y su evidencia trae el archivo
+original y el dataset conformado. Solo usa la biblioteca estandar, para correr igual en el CI,
+dentro del contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
+    python scripts/prueba_de_humo.py datos/humo.xlsx --pagos datos/pagos.zip
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -182,7 +187,81 @@ def la_cartera_oficial(archivo: Path, corte: str) -> None:
     )
 
 
-def main(archivo: Path, oficial: Path | None = None, corte: str | None = None) -> None:
+def seguir_los_pagos(pagos_run_id: str) -> dict:
+    """Consulta la ingesta de pagos mientras siga EN_PROCESO, hasta ESPERA_MAXIMA."""
+    limite = time.monotonic() + ESPERA_MAXIMA
+    while True:
+        estado, _, ingesta = pedir("GET", f"/pagos/{pagos_run_id}")
+        if estado != 200 or ingesta["estado"] != "EN_PROCESO" or time.monotonic() > limite:
+            return ingesta
+        time.sleep(0.5)
+
+
+def los_pagos(archivo: Path) -> None:
+    """pagos/v1 de punta a punta: la ingesta y su trabajo en la cola, el juicio sin deduplicar y la
+    evidencia, con su linaje. No es una corrida: no publica cuentas ni encadena nada."""
+    print(f"Pagos (pagos/v1) con {archivo}")
+    sha256 = hashlib.sha256(archivo.read_bytes()).hexdigest()
+
+    estado, encabezados, ingesta = subir(archivo, ruta="/pagos")
+    pagos_run_id = ingesta.get("pagos_run_id")
+    esperar(
+        estado == 201
+        and ingesta["estado"] == "EN_PROCESO"
+        and ingesta["version_contrato"] == "pagos/v1"
+        and ubicacion_de(encabezados) == f"/pagos/{pagos_run_id}",
+        f"POST /pagos: {estado} {ingesta.get('estado')}, Location {ubicacion_de(encabezados)}",
+    )
+    estado, _, error = subir(archivo, ruta="/pagos")
+    esperar(
+        estado == 409
+        and error["codigo"] in {"PAGOS_EN_PROCESO", "PAGOS_YA_ACEPTADOS"}
+        and error["pagos_run_id"] == pagos_run_id,
+        f"el mismo archivo otra vez: 409 {error.get('codigo')}, con la ingesta que lo tiene",
+    )
+    ingesta = seguir_los_pagos(pagos_run_id)
+    esperar(
+        ingesta.get("estado") == "EXITOSA"
+        and ingesta["filas_validas"] == ingesta["filas_leidas"] > 0
+        and ingesta["filas_rechazadas"] == 0
+        and ingesta["firma"] == sha256
+        and len(ingesta["firma_contenido"] or "") == 64,
+        f"la ingesta termino {ingesta.get('estado')}: {str(ingesta.get('detalle'))[:120]}",
+    )
+    estado, _, trabajo = pedir("GET", f"/trabajos/{ingesta['trabajo_id']}")
+    esperar(
+        estado == 200
+        and (trabajo["tipo"], trabajo["estado"]) == ("INGESTA_PAGOS", "COMPLETADO")
+        and trabajo["objetivo_run_id"] == pagos_run_id
+        and trabajo["flujo_id"] is None,
+        f"su trabajo: {trabajo.get('tipo')} {trabajo.get('estado')} ({trabajo.get('intentos')}), "
+        "sin flujo",
+    )
+    estado, _, fuente = pedir("GET", f"/pagos/{pagos_run_id}/fuente")
+    conformado = fuente.get("conformado") or {}
+    esperar(
+        estado == 200
+        and (fuente.get("artefacto") or {}).get("sha256") == sha256
+        and conformado.get("filas") == ingesta["filas_validas"]
+        and conformado.get("columnas") == 23
+        and conformado.get("firma_contenido") == ingesta["firma_contenido"]
+        and (conformado.get("artefacto") or {}).get("formato") == "parquet",
+        f"GET /pagos/{{pagos_run_id}}/fuente: el original ({sha256[:12]}...) y "
+        f"{conformado.get('filas')} movimientos conformados en Parquet",
+    )
+    estado, _, rechazos = pedir("GET", f"/pagos/{pagos_run_id}/rechazos")
+    esperar(
+        estado == 200 and rechazos["total"] == 0,
+        f"GET /pagos/{{pagos_run_id}}/rechazos: {estado}, {rechazos.get('total')} rechazos",
+    )
+
+
+def main(
+    archivo: Path,
+    oficial: Path | None = None,
+    corte: str | None = None,
+    pagos: Path | None = None,
+) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
     estado, salud = esperar_a_la_api()
@@ -516,16 +595,22 @@ def main(archivo: Path, oficial: Path | None = None, corte: str | None = None) -
         "/territoriales/{territorial_run_id}/municipios",
         "/ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas",
         "/corridas/{run_id}/fuente",
+        "/pagos",
+        "/pagos/{pagos_run_id}",
+        "/pagos/{pagos_run_id}/rechazos",
+        "/pagos/{pagos_run_id}/fuente",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
-        f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores y "
-        "la evidencia de las fuentes",
+        f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
+        "la evidencia de las fuentes y los pagos",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
+    if pagos is not None:
+        los_pagos(pagos)
     print("Todo en orden.")
 
 
@@ -534,7 +619,8 @@ if __name__ == "__main__":
     argumentos.add_argument("archivo", type=Path, help="Una cartera de cartera/v1.")
     argumentos.add_argument("--oficial", type=Path, help="Una cartera oficial de cartera/v2.")
     argumentos.add_argument("--corte", help="La fecha de corte de la cartera oficial, AAAA-MM-DD.")
+    argumentos.add_argument("--pagos", type=Path, help="Un archivo de pagos de pagos/v1.")
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
-    main(leidos.archivo, leidos.oficial, leidos.corte)
+    main(leidos.archivo, leidos.oficial, leidos.corte, leidos.pagos)

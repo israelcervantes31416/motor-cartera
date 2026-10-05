@@ -19,6 +19,7 @@ from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
     EstadoFlujo,
+    EstadoIngestaPagos,
     EstadoRuteo,
     EstadoTerritorial,
     EstadoTrabajo,
@@ -256,6 +257,103 @@ class FuenteCorridaRespuesta(BaseModel):
         f"{VERSION_CONTRATO_V2}. Null en {VERSION_CONTRATO}, y en una corrida que no publico."
     )
     hojas_companeras: list[CompaneraRespuesta]
+
+
+# --- las ingestas de pagos ------------------------------------------------------------------------
+
+EJEMPLO_PAGOS = {
+    "pagos_run_id": "9c1d3e5f-7a9b-4c2d-8e4f-6a8b0c2d4e6f",
+    "estado": "EXITOSA",
+    "origen": "pagos_oficial_2026-09-24_2026-09-30.zip",
+    "firma": "1f3e5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+    "firma_contenido": "7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c",
+    "version_contrato": "pagos/v1",
+    "tolerancia_rechazo": 0.0,
+    "filas_leidas": 4210,
+    "filas_validas": 4210,
+    "filas_rechazadas": 0,
+    "despacho_id": "DSP_001",
+    "cartera_id": "CARTERA_PRINCIPAL",
+    "trabajo_id": "4e6a8c0e-2b4d-4f6a-8c0e-2b4d6f8a0c2e",
+    "iniciada_en": "2026-09-30T18:00:00.120000Z",
+    "terminada_en": "2026-09-30T18:00:01.940000Z",
+    "duracion_segundos": 1.82,
+    "detalle": "Se aceptaron 4,210 movimientos. Origen: 'pagos.csv', dentro de 'pagos.zip'.",
+}
+
+EJEMPLO_PAGOS_EN_PROCESO = {
+    **EJEMPLO_PAGOS,
+    "estado": "EN_PROCESO",
+    "firma_contenido": None,
+    "filas_leidas": 0,
+    "filas_validas": 0,
+    "filas_rechazadas": 0,
+    "terminada_en": None,
+    "duracion_segundos": None,
+    "detalle": None,
+}
+
+
+class IngestaPagosRespuesta(BaseModel):
+    """Una ingesta de pagos: que archivo, como va o como termino, y cuantos movimientos acepto."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={"examples": [EJEMPLO_PAGOS, EJEMPLO_PAGOS_EN_PROCESO]},
+    )
+
+    pagos_run_id: UUID = Field(description="Identificador publico de la ingesta de pagos.")
+    estado: EstadoIngestaPagos = Field(
+        description="EN_PROCESO hasta que el worker la termina. Al terminar: EXITOSA (acepto sus "
+        "movimientos), RECHAZADA (mas rechazos que la tolerancia; no acepto nada) o FALLIDA (no "
+        "se pudo juzgar: archivo ilegible o estructura distinta de pagos/v1)."
+    )
+    origen: str = Field(description="Nombre del archivo recibido.")
+    firma: str = Field(description="SHA-256 del archivo: misma firma, mismo archivo.")
+    firma_contenido: str | None = Field(
+        description="SHA-256 de sus movimientos validos en forma canonica. Cuenta los repetidos."
+    )
+    version_contrato: str = Field(description="pagos/v1.")
+    tolerancia_rechazo: float = Field(
+        description="Fraccion maxima de movimientos rechazados con que se juzgo; por omision 0."
+    )
+    filas_leidas: int
+    filas_validas: int = Field(description="Movimientos que cumplen el contrato.")
+    filas_rechazadas: int = Field(description="No cumplen el contrato; ver /rechazos.")
+    despacho_id: str
+    cartera_id: str
+    trabajo_id: UUID | None = Field(
+        default=None, description="Su trabajo en la cola durable: GET /trabajos/{trabajo_id}."
+    )
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    detalle: str | None = Field(description="Que paso, en palabras, y de donde se leyo.")
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class PaginaRechazosPagos(Pagina[RechazoRespuesta]):
+    pagos_run_id: UUID
+    estado: EstadoIngestaPagos
+
+
+class FuentePagosRespuesta(BaseModel):
+    """La evidencia de una ingesta de pagos: su archivo original y su dataset conformado."""
+
+    pagos_run_id: UUID
+    version_contrato: str
+    despacho_id: str
+    cartera_id: str
+    artefacto: ArtefactoRespuesta = Field(description="El archivo tal como llego.")
+    conformado: ConformadoRespuesta | None = Field(
+        description="Todos sus movimientos validos, sin deduplicar, en Parquet. Null si la "
+        "ingesta no se acepto."
+    )
 
 
 class ParametrosResumen(Paginacion):
@@ -910,7 +1008,8 @@ class TrabajoRespuesta(BaseModel):
         description="El flujo del que es; null si su etapa se pidio a mano."
     )
     tipo: TipoTrabajo = Field(
-        description="Que motor ejecuta: INGESTA, DECISION, TERRITORIAL o RUTEO."
+        description="Que motor ejecuta: INGESTA, DECISION, TERRITORIAL o RUTEO, o INGESTA_PAGOS, "
+        "que no es de ningun flujo."
     )
     estado: EstadoTrabajo = Field(
         description="PENDIENTE (en la cola), EJECUTANDO (lo tiene un worker), COMPLETADO (su "
@@ -919,7 +1018,7 @@ class TrabajoRespuesta(BaseModel):
     )
     objetivo_run_id: UUID = Field(
         description="El identificador publico de su recurso, segun el tipo: run_id, "
-        "decision_run_id, territorial_run_id o ruteo_run_id."
+        "decision_run_id, territorial_run_id, ruteo_run_id o pagos_run_id."
     )
     intentos: int = Field(description="Cuantas veces lo ha tomado un worker para ejecutarlo.")
     max_intentos: int = Field(description="Cuantas veces se puede tomar, desde que nacio.")

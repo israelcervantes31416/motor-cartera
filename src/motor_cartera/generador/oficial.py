@@ -24,11 +24,10 @@ estan enteras en memoria como texto.
 from __future__ import annotations
 
 import hashlib
-import io
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -44,7 +43,8 @@ from motor_cartera.contratos.cartera_v2 import (
     HOJA_CARRIER,
     HOJA_CARTERA,
 )
-from motor_cartera.contratos.fuente import Tipo
+from motor_cartera.contratos.fuente import ContratoFuente, Tipo
+from motor_cartera.contratos.pagos import CONTRATO_PAGOS
 from motor_cartera.fuentes.geografia import catalogo, normalizar_nombre
 from motor_cartera.segmentacion import TRAMOS_ATRASO
 
@@ -736,7 +736,7 @@ def _escribir_csv(sink, bloques: Iterator[pa.Table]) -> int:
     return filas
 
 
-TIPADAS_EN_XLSX = {Tipo.ENTERO, Tipo.IMPORTE, Tipo.FECHA}
+TIPADAS_EN_XLSX = {Tipo.ENTERO, Tipo.IMPORTE, Tipo.DECIMAL, Tipo.FECHA, Tipo.FECHA_HORA}
 """En un xlsx, estas columnas van como numeros y fechas de Excel, como las escribe un sistema que
 exporta a Excel; las demas, como texto, para no perder los ceros a la izquierda."""
 
@@ -756,8 +756,13 @@ def _escribir_xlsx(ruta: Path, carteras: Iterator[pa.Table], carriers) -> Escrit
     return Escrito(ruta, filas, filas_carrier)
 
 
-def _hoja_xlsx(hoja, bloques: Iterator[pa.Table], encabezado: tuple[str, ...]) -> int:
-    tipos = {c.nombre: c.tipo for c in CONTRATO_V2.columnas}
+def _hoja_xlsx(
+    hoja,
+    bloques: Iterator[pa.Table],
+    encabezado: tuple[str, ...],
+    contrato: ContratoFuente = CONTRATO_V2,
+) -> int:
+    tipos = {c.nombre: c.tipo for c in contrato.columnas}
     hoja.append(list(encabezado))
     filas = 0
     for bloque in bloques:
@@ -782,18 +787,162 @@ def _celda(valor: str | None, tipo: Tipo):
     try:
         if tipo == Tipo.ENTERO:
             return int(valor)
-        if tipo == Tipo.IMPORTE:
+        if tipo in (Tipo.IMPORTE, Tipo.DECIMAL):
             return float(valor)
+        if tipo == Tipo.FECHA_HORA:
+            return datetime.fromisoformat(valor.replace(" ", "T"))
         return date.fromisoformat(valor)
     except ValueError:
         return valor
 
 
-def escribir_tabla_xlsx(destino: Path, hojas: dict[str, pd.DataFrame]) -> Path:
-    """Un xlsx con esas hojas, tal cual, todo como texto. Para pruebas de estructura."""
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as escritor:
-        for nombre, datos in hojas.items():
-            datos.to_excel(escritor, sheet_name=nombre, index=False)
-    destino.write_bytes(buf.getvalue())
-    return destino
+# --- PAGOS: los movimientos economicos de un periodo ----------------------------------------------
+
+CONCEPTOS = ("PAGO NORMAL", "ABONO", "LIQUIDACION")
+# Comisiones genericas (5%, 8% y 10%), en puntos base: no son las de ningun contrato.
+COMISIONES_PUNTOS_BASE = (500, 800, 1000)
+
+
+def tabla_pagos(
+    estado: EstadoCartera,
+    *,
+    semilla: int,
+    desde: date,
+    hasta: date,
+    fraccion: float = 0.35,
+    repetidos: float = 0.005,
+    ajustes: float = 0.003,
+) -> pa.Table:
+    """Los movimientos de un periodo, de `desde` a `hasta` inclusive, de las cuentas de `estado`.
+
+    Paga una fraccion de las cuentas, de una a cuatro veces cada una, siempre dentro del periodo, y
+    con lo que el acreedor sabia de la cuenta (su territorio, su gestor, su atraso). Una fraccion
+    pequena de movimientos se repite exacta, con el mismo cliente, el mismo segundo y el mismo
+    importe (la llave historica de deduplicacion), y otra es un ajuste negativo: v0.6 no deduplica
+    ni interpreta signos, y las pruebas lo verifican. Las 23 columnas, como texto y en el orden del
+    contrato, ordenadas por Fecha_Recepción.
+    """
+    if hasta < desde:
+        raise ValueError(f"El periodo termina antes de empezar: {desde} a {hasta}.")
+    rng = np.random.default_rng([semilla, desde.toordinal(), hasta.toordinal(), 3])
+    pagan = np.flatnonzero(rng.random(len(estado)) < fraccion)
+    veces = 1 + np.minimum(rng.poisson(0.6, size=len(pagan)), 3)
+    cuentas = estado.tomar(np.repeat(pagan, veces))
+    m = len(cuentas)
+    c = cuentas.cliente
+    azar = _Azar(c, semilla)
+    geo = _geografia()
+    cve_ent = geo.cve_entidad[_elegir(azar("municipio"), list(geo.peso))]
+
+    segundos = ((hasta - desde).days + 1) * 86_400
+    inicio = np.datetime64(desde, "s")
+    recepcion = inicio + rng.integers(0, segundos, size=m).astype("timedelta64[s]")
+    gestion = recepcion - rng.integers(0, 10 * 86_400, size=m).astype("timedelta64[s]")
+    con_gestion = rng.random(m) < 0.8
+    dias = cuentas.dias_atraso
+    etiquetas = [e for e, _, _ in TRAMOS_ATRASO]
+    tramo = np.zeros(m, dtype=np.int64)
+    for j, (_, desde_tramo, hasta_tramo) in enumerate(TRAMOS_ATRASO):
+        tramo[(dias >= desde_tramo) & (dias <= (10**9 if hasta_tramo is None else hasta_tramo))] = j
+
+    pago_normal = np.maximum(cuentas.saldo_centavos // 52, 5000)
+    recuperado = np.maximum((pago_normal * (0.5 + 2.5 * rng.random(m))).astype(np.int64), 5000)
+    concepto = rng.choice(len(CONCEPTOS), size=m, p=[0.7, 0.2, 0.1])
+    ajuste = rng.random(m) < ajustes
+    recuperado = np.where(ajuste, -np.minimum(recuperado, 50_000), recuperado)
+    cargos = np.where(rng.random(m) < 0.05, rng.integers(1_000, 5_001, size=m), 0)
+    cobranza = recuperado + cargos
+    plan_comision = azar.indice("comision", len(COMISIONES_PUNTOS_BASE))
+    puntos = np.array(COMISIONES_PUNTOS_BASE)[plan_comision]
+    comision = np.round(cobranza * puntos / 10_000).astype(np.int64)
+
+    iso = pd.DatetimeIndex(recepcion).isocalendar()
+    columnas = {
+        "Año": _numero(iso["year"].to_numpy()),
+        "Semana": _numero(iso["week"].to_numpy()),
+        "Territorio": pc.binary_join_element_wise("TERRITORIO", _texto(list(cve_ent)), " "),
+        "Zona": pc.binary_join_element_wise("ZONA", _digitos(azar.entero("zona", 1, 12), 2), " "),
+        "Cliente_Unico": pc.binary_join_element_wise("CU", _digitos(c, 10), ""),
+        "Fecha_Recepción": _instantes(recepcion),
+        "Segmento": _de_lista(tuple(etiquetas), tramo),
+        "Gerencia": pc.binary_join_element_wise(
+            "GERENCIA", _digitos(azar.entero("gerencia", 1, 6), 2), " "
+        ),
+        "Tipo_Cartera": _de_lista(
+            ("TRADICIONAL", "ESPECIAL"), (azar("tipo_cartera") >= 0.9).astype(np.int64)
+        ),
+        "Producto": _de_lista(PRODUCTOS, _producto(c, semilla)),
+        "Campaña": pc.binary_join_element_wise(
+            "CAMP", _digitos(azar.entero("campania", 1, 6), 2), "-"
+        ),
+        "Gestor": pc.binary_join_element_wise(
+            "GESTOR", _digitos(azar.entero("gestor", 1, 80), 3), " "
+        ),
+        "Días_de_Atraso": _numero(dias),
+        "Semanas_de_Atraso": _numero(-(-dias // 7)),
+        "Plan_de_Pago": _de_lista(("N", "S"), (azar("plan") < 0.15).astype(np.int64)),
+        "Fecha_de_Gestion": _o_nulo(_instantes(gestion), con_gestion),
+        "Recuperación_por_Gestión": _pesos(recuperado),
+        "Concepto_Cálculo": pc.if_else(pa.array(ajuste), "AJUSTE", _de_lista(CONCEPTOS, concepto)),
+        "Cargos_Automáticos": _pesos(cargos),
+        "Captación": _pesos(recuperado),
+        "Cobranza_Total": _pesos(cobranza),
+        "Porcentaje_Comision": _de_lista(
+            tuple(str(p / 10_000) for p in COMISIONES_PUNTOS_BASE), plan_comision
+        ),
+        "Monto_Comision": _pesos(comision),
+    }
+    tabla = pa.table({nombre: columnas[nombre] for nombre in CONTRATO_PAGOS.nombres})
+    # Repetidos exactos: mismo cliente, mismo segundo, mismo importe. Se conservan los dos.
+    copias = rng.choice(m, size=round(m * repetidos), replace=False) if m else np.array([], int)
+    tabla = pa.concat_tables([tabla, tabla.take(pa.array(np.sort(copias), type=pa.int64()))])
+    orden = pc.sort_indices(tabla, sort_keys=[("Fecha_Recepción", "ascending")])
+    return tabla.take(orden)
+
+
+def _instantes(segundos: np.ndarray) -> pa.Array:
+    """AAAA-MM-DD HH:MM:SS, como lo exporta un sistema de pagos."""
+    texto = pc.cast(pa.array(segundos.astype("datetime64[s]")), pa.string())
+    return pc.replace_substring(texto, "T", " ")
+
+
+HOJA_PAGOS = "PAGOS"
+
+
+@dataclass(frozen=True)
+class EscritoPagos:
+    """Un archivo de pagos generado."""
+
+    ruta: Path
+    filas: int
+
+
+def escribir_pagos(tabla: pa.Table | pd.DataFrame, destino: str | Path) -> EscritoPagos:
+    """Escribe los movimientos en un archivo; el formato sale de la extension: csv, zip (con
+    PAGOS.csv) o xlsx (hoja PAGOS, con numeros y fechas de Excel donde el contrato los tipa). Con un
+    DataFrame, escribe esas filas tal cual, para defectos a proposito."""
+    if isinstance(tabla, pd.DataFrame):
+        tabla = pa.Table.from_pandas(tabla.astype("string"), preserve_index=False)
+    ruta = Path(destino)
+    formato = ruta.suffix.lower()
+    if formato not in (".xlsx", ".csv", ".zip"):
+        raise ValueError(f"Formato no soportado: {ruta.name!r}. Usa .xlsx, .csv o .zip.")
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    if formato == ".csv":
+        return EscritoPagos(ruta, _escribir_csv(ruta.open("wb"), iter([tabla])))
+    if formato == ".zip":
+        with zipfile.ZipFile(
+            ruta, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+        ) as paquete:
+            paquete.writestr("LEEME.txt", LEEME)
+            with paquete.open(f"{HOJA_PAGOS}.csv", "w", force_zip64=True) as miembro:
+                filas = _escribir_csv(miembro, iter([tabla]))
+        return EscritoPagos(ruta, filas)
+    import openpyxl
+
+    libro = openpyxl.Workbook(write_only=True)
+    filas = _hoja_xlsx(
+        libro.create_sheet(HOJA_PAGOS), iter([tabla]), CONTRATO_PAGOS.nombres, CONTRATO_PAGOS
+    )
+    libro.save(ruta)
+    return EscritoPagos(ruta, filas)

@@ -60,7 +60,7 @@ en_la_base = pytest.mark.usefixtures("bd")
 
 CORTE = date(2026, 9, 30)
 
-CAMPOS_DE_ERROR = {"codigo", "mensaje", "detalles", "run_id"}
+CAMPOS_DE_ERROR = {"codigo", "mensaje", "detalles", "run_id", "pagos_run_id"}
 CAMPOS_DE_EJECUCION = {
     "decision_run_id",
     "run_id",
