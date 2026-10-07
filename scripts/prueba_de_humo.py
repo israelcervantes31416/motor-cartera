@@ -15,12 +15,19 @@ conformado y su hoja CARRIER.
 
 Con --pagos, sube un archivo de pagos (pagos/v1, 23 columnas): su ingesta pasa por la cola durable
 como un trabajo INGESTA_PAGOS, termina EXITOSA sin deduplicar nada y su evidencia trae el archivo
-original y el dataset conformado. Solo usa la biblioteca estandar, para correr igual en el CI,
-dentro del contenedor o en una laptop:
+original y el dataset conformado.
+
+Con --escenario, sube los cortes de un escenario longitudinal (generar-escenario) del mas
+reciente al mas antiguo, y sus pagos, y sigue la historia de cada uno: cada corte se materializa en
+el modelo historico en paralelo a su flujo, y la Cuenta 360 de cuentas elegidas en los archivos (una
+que esta en todos los cortes, una que sale, una que llega despues y una que paga varias veces) dice
+lo que paso con cada una. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
+contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
     python scripts/prueba_de_humo.py datos/humo.xlsx --pagos datos/pagos.zip
+    python scripts/prueba_de_humo.py datos/humo.xlsx --escenario datos/escenario
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -29,7 +36,9 @@ cuanto algo no sale como debe.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -38,6 +47,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from pathlib import Path
 
 BASE = os.environ.get("MC_URL_API", "http://localhost:8000").rstrip("/")
@@ -256,11 +266,203 @@ def los_pagos(archivo: Path) -> None:
     )
 
 
+# --- el modelo historico y la Cuenta 360 ---------------------------------------------------------
+
+ESPERA_HISTORIA = 600  # segundos: la historia va despues de las etapas operacionales de cada corte
+
+
+def _clientes(archivo: Path) -> list[str]:
+    """Los CLIENTE_UNICO de un corte del escenario, leidos con la biblioteca estandar."""
+    if archivo.suffix == ".zip":
+        with zipfile.ZipFile(archivo) as paquete:
+            (miembro,) = [n for n in paquete.namelist() if n.upper().startswith("CARTERA")]
+            texto = io.TextIOWrapper(paquete.open(miembro), encoding="utf-8")
+            return [fila["CLIENTE_UNICO"] for fila in csv.DictReader(texto)]
+    with archivo.open(encoding="utf-8", newline="") as texto:
+        return [fila["CLIENTE_UNICO"] for fila in csv.DictReader(texto)]
+
+
+def _movimientos(archivo: Path) -> list[str]:
+    """El Cliente_Unico de cada movimiento de un archivo de pagos del escenario."""
+    if archivo.suffix == ".zip":
+        with zipfile.ZipFile(archivo) as paquete:
+            (miembro,) = [n for n in paquete.namelist() if n.upper().startswith("PAGOS")]
+            texto = io.TextIOWrapper(paquete.open(miembro), encoding="utf-8")
+            return [fila["Cliente_Unico"] for fila in csv.DictReader(texto)]
+    with archivo.open(encoding="utf-8", newline="") as texto:
+        return [fila["Cliente_Unico"] for fila in csv.DictReader(texto)]
+
+
+def seguir_la_historia(ruta: str) -> dict:
+    """La ultima ejecucion historica de una corrida o de una ingesta de pagos, cuando termina.
+    Mientras la ingesta sigue en proceso la API responde 409; despues, la ejecucion EN_PROCESO hasta
+    que un worker la materializa."""
+    limite = time.monotonic() + ESPERA_HISTORIA
+    while True:
+        estado, _, pagina = pedir("GET", ruta)
+        ejecuciones = pagina.get("elementos") or [{}]
+        if estado == 200 and ejecuciones[0].get("estado") not in (None, "EN_PROCESO"):
+            return {**ejecuciones[0], "pagina": pagina}
+        if estado not in (200, 409) or time.monotonic() > limite:
+            return {"estado": f"HTTP {estado}", "pagina": pagina}
+        time.sleep(1)
+
+
+def el_modelo_historico(directorio: Path) -> None:
+    """Un escenario longitudinal de punta a punta: sus cortes llegan fuera de orden, la historia de
+    cada uno se materializa en paralelo a su flujo, y la Cuenta 360 de cuentas elegidas en los
+    archivos dice lo que paso con cada una."""
+    manifiesto = json.loads((directorio / "escenario.json").read_text(encoding="utf-8"))
+    cortes = manifiesto["cortes"]
+    print(f"Modelo historico con el escenario de {directorio}: {len(cortes)} cortes")
+
+    # Los cortes llegan del mas reciente al mas antiguo: la historia se ordena por fecha de corte,
+    # no por orden de llegada.
+    corridas = {}
+    for corte in reversed(cortes):
+        estado, _, corrida = subir(
+            directorio / corte["archivo"], contrato="cartera/v2", fecha_corte=corte["fecha_corte"]
+        )
+        esperar(estado == 201, f"POST /corridas del corte {corte['fecha_corte']}: {estado}")
+        corridas[corte["fecha_corte"]] = corrida["run_id"]
+    ingestas = {}
+    for periodo in manifiesto["periodos"]:
+        estado, _, ingesta = subir(directorio / periodo["archivo"], ruta="/pagos")
+        esperar(
+            estado == 201, f"POST /pagos del periodo que cierra el {periodo['hasta']}: {estado}"
+        )
+        ingestas[periodo["archivo"]] = ingesta["pagos_run_id"]
+
+    for fecha, run_id in sorted(corridas.items()):
+        historia = seguir_la_historia(f"/corridas/{run_id}/historia")
+        esperar(
+            (historia.get("estado"), historia.get("resultado")) == ("EXITOSA", "CORTE_PUBLICADO")
+            and historia["registros_publicados"] == historia["registros_leidos"] > 0,
+            f"historia del corte {fecha}: {historia.get('estado')} {historia.get('resultado')}, "
+            f"{historia.get('registros_publicados')} snapshots",
+        )
+        flujo = seguir_el_flujo(run_id)
+        estado, _, trabajos = pedir("GET", f"/flujos/{flujo['flujo_id']}/trabajos")
+        esperar(
+            flujo.get("estado") == "COMPLETADO"
+            and [t["tipo"] for t in trabajos.get("elementos", [])] == ETAPAS,
+            f"su flujo {flujo.get('estado')}, con sus cuatro etapas y sin la historia, que va "
+            "en paralelo",
+        )
+    ultima = None
+    for archivo, pagos_run_id in ingestas.items():
+        historia = seguir_la_historia(f"/pagos/{pagos_run_id}/historia")
+        relacion = historia["pagina"].get("relacion") or {}
+        movimientos = len(_movimientos(directorio / archivo))
+        esperar(
+            (historia.get("estado"), historia.get("resultado")) == ("EXITOSA", "PAGOS_PUBLICADOS")
+            and historia["registros_publicados"] == movimientos
+            and relacion.get("pagos_con_cuenta_observada", 0)
+            + relacion.get("pagos_sin_cuenta_observada", 0)
+            == movimientos,
+            f"historia de {archivo}: {historia.get('registros_publicados')} pagos observados de "
+            f"{movimientos} movimientos, sin deduplicar; "
+            f"{relacion.get('pagos_sin_cuenta_observada')} sin cuenta observada",
+        )
+        ultima = historia
+    estado, _, por_id = pedir("GET", f"/historias/{ultima['historia_run_id']}")
+    estado_t, _, trabajo = pedir("GET", f"/trabajos/{ultima['trabajo_id']}")
+    esperar(
+        estado == estado_t == 200
+        and por_id["historia_run_id"] == ultima["historia_run_id"]
+        and (trabajo["tipo"], trabajo["estado"], trabajo["flujo_id"])
+        == ("HISTORIA", "COMPLETADO", None)
+        and trabajo["objetivo_run_id"] == ultima["historia_run_id"],
+        "GET /historias/{historia_run_id} y su trabajo HISTORIA en la cola, COMPLETADO y sin flujo",
+    )
+
+    # Los cortes canonicos: uno por fecha, con las cuentas del manifiesto, y el ultimo.
+    estado, _, pagina = pedir("GET", "/cartera/cortes?por_pagina=500")
+    canonicos = {c["fecha_corte"]: c for c in pagina.get("elementos", [])}
+    esperar(
+        estado == 200
+        and all(canonicos[c["fecha_corte"]]["cuentas"] == c["cuentas"] for c in cortes)
+        and pagina["ultimo_corte"]["fecha_corte"] == cortes[-1]["fecha_corte"],
+        f"GET /cartera/cortes: {len(cortes)} cortes del escenario con sus cuentas; el ultimo, "
+        f"{pagina.get('ultimo_corte', {}).get('fecha_corte')}",
+    )
+
+    # Cuentas elegidas en los archivos: una que esta en todos los cortes, una que sale y una que
+    # llega despues del primero.
+    presentes = [set(_clientes(directorio / c["archivo"])) for c in cortes]
+    fechas = [c["fecha_corte"] for c in cortes]
+    siempre = sorted(set.intersection(*presentes))[0]
+    sale = sorted(presentes[0] - presentes[1])[0]
+    llega = sorted(presentes[1] - presentes[0])[0]
+
+    def cuenta_360(cliente: str) -> tuple[str, dict, list]:
+        estado, _, encontrada = pedir("GET", f"/cuentas?cliente_unico={cliente}")
+        esperar(estado == 200, f"GET /cuentas?cliente_unico={cliente}: {estado}")
+        cuenta_id = encontrada["cuenta_id"]
+        _, _, resumen = pedir("GET", f"/cuentas/{cuenta_id}")
+        _, _, eventos = pedir("GET", f"/cuentas/{cuenta_id}/eventos")
+        return cuenta_id, resumen, [(e["tipo"], e["fecha_corte"]) for e in eventos["elementos"]]
+
+    cuenta_id, resumen, eventos = cuenta_360(siempre)
+    esperar(
+        resumen["estado_presencia"] == "EN_CARTERA"
+        and resumen["cortes_observados"] == len(cortes)
+        and resumen["cortes_ausentes_desde_primera_observacion"] == 0
+        and eventos == [("PRIMERA_OBSERVACION", fechas[0])]
+        and resumen["snapshot_actual"]["fecha_corte"] == fechas[-1],
+        f"{siempre}, en todos los cortes: EN_CARTERA, {resumen['cortes_observados']} cortes, "
+        "solo su primera observacion",
+    )
+    estado, _, historia = pedir("GET", f"/cuentas/{cuenta_id}/historia?orden=asc")
+    continuidad = [h["continuo_desde_anterior"] for h in historia.get("elementos", [])]
+    esperar(
+        estado == 200
+        and historia["total"] == len(cortes)
+        and continuidad == [None] + [True] * (len(cortes) - 1)
+        and all(h["dataset_id"] and h["source_row"] >= 2 for h in historia["elementos"]),
+        f"su historia: {historia.get('total')} snapshots continuos, cada uno con su dataset y su "
+        "fila",
+    )
+    _, resumen, eventos = cuenta_360(sale)
+    esperar(
+        resumen["estado_presencia"] == "NO_OBSERVADA_EN_ULTIMO_CORTE"
+        and resumen["snapshot_actual"] is None
+        and resumen["ultimo_snapshot_observado"]["fecha_corte"] == fechas[0]
+        and eventos == [("PRIMERA_OBSERVACION", fechas[0]), ("SALIDA_OBSERVADA", fechas[1])],
+        f"{sale}, que sale en el segundo corte: SALIDA_OBSERVADA y NO_OBSERVADA_EN_ULTIMO_CORTE",
+    )
+    _, resumen, eventos = cuenta_360(llega)
+    esperar(
+        eventos[0] == ("PRIMERA_OBSERVACION", fechas[1])
+        and resumen["primera_observacion"] == fechas[1],
+        f"{llega}, que llega en el segundo corte: su primera observacion es ahi, no un alta",
+    )
+
+    # Los pagos observados de una cuenta con varios movimientos: tantos como filas en los archivos.
+    filas: dict[str, int] = {}
+    for periodo in manifiesto["periodos"]:
+        for cliente in _movimientos(directorio / periodo["archivo"]):
+            filas[cliente] = filas.get(cliente, 0) + 1
+    pagador = sorted(c for c, n in filas.items() if n >= 2)[0]
+    cuenta_id, _, _ = cuenta_360(pagador)
+    estado, _, pagos = pedir("GET", f"/cuentas/{cuenta_id}/pagos-observados")
+    recepciones = [p["fecha_recepcion"] for p in pagos.get("elementos", [])]
+    esperar(
+        estado == 200
+        and pagos["total"] == filas[pagador]
+        and recepciones == sorted(recepciones, reverse=True)
+        and "No estan deduplicados" in pagos["aviso"],
+        f"{pagador}: {pagos.get('total')} pagos observados, del mas reciente al mas antiguo, con "
+        "su aviso",
+    )
+
+
 def main(
     archivo: Path,
     oficial: Path | None = None,
     corte: str | None = None,
     pagos: Path | None = None,
+    escenario: Path | None = None,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
@@ -599,18 +801,30 @@ def main(
         "/pagos/{pagos_run_id}",
         "/pagos/{pagos_run_id}/rechazos",
         "/pagos/{pagos_run_id}/fuente",
+        "/cuentas",
+        "/cuentas/{cuenta_id}",
+        "/cuentas/{cuenta_id}/historia",
+        "/cuentas/{cuenta_id}/eventos",
+        "/cuentas/{cuenta_id}/pagos-observados",
+        "/cartera/cortes",
+        "/cartera/cortes/{corte_id}",
+        "/historias/{historia_run_id}",
+        "/corridas/{run_id}/historia",
+        "/pagos/{pagos_run_id}/historia",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
-        "la evidencia de las fuentes y los pagos",
+        "la evidencia de las fuentes, los pagos y la Cuenta 360",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
     if pagos is not None:
         los_pagos(pagos)
+    if escenario is not None:
+        el_modelo_historico(escenario)
     print("Todo en orden.")
 
 
@@ -620,7 +834,10 @@ if __name__ == "__main__":
     argumentos.add_argument("--oficial", type=Path, help="Una cartera oficial de cartera/v2.")
     argumentos.add_argument("--corte", help="La fecha de corte de la cartera oficial, AAAA-MM-DD.")
     argumentos.add_argument("--pagos", type=Path, help="Un archivo de pagos de pagos/v1.")
+    argumentos.add_argument(
+        "--escenario", type=Path, help="El directorio de un escenario de generar-escenario."
+    )
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
-    main(leidos.archivo, leidos.oficial, leidos.corte, leidos.pagos)
+    main(leidos.archivo, leidos.oficial, leidos.corte, leidos.pagos, leidos.escenario)

@@ -79,7 +79,8 @@ jobs:
 
   # La definicion de terminado, en una maquina limpia: un solo comando levanta todo
   # (PostgreSQL, migraciones, API y worker), se genera una cartera sintetica y su flujo
-  # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta.
+  # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta. Y un
+  # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360.
   compose:
     runs-on: ubuntu-latest
 
@@ -103,11 +104,27 @@ jobs:
           docker compose exec -T api motor-cartera generar-oficial --destino datos --perfil XS
           --formato zip --fecha-corte 2026-09-30
 
+      # Cuatro cortes semanales de una misma cartera y los pagos entre ellos, con otra semilla: sus
+      # cuentas no son las de la cartera oficial, y sus cortes son posteriores al de ella.
+      - name: Generar un escenario longitudinal
+        run: >-
+          docker compose exec -T api motor-cartera generar-escenario --destino datos/escenario
+          --perfil XS --cortes 4 --primer-corte 2026-10-07 --semilla 7 --formato zip
+
       - name: Prueba de humo por la API
         run: >-
           python3 scripts/prueba_de_humo.py datos/humo.xlsx
           --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30
           --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip
+          --escenario datos/escenario
+
+      # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
+      # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.
+      - name: Backfill de la historia
+        run: |
+          docker compose exec -T worker motor-cartera backfill-historia --dry-run | tee backfill.txt
+          grep -q "sin historia: 0" backfill.txt
+          grep -q "solo con ejecuciones FALLIDA: 0" backfill.txt
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
