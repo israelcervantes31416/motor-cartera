@@ -78,6 +78,10 @@ reproducible: el mismo archivo con la misma versión del contrato produce el mis
 byte, y una prueba lo regenera desde el original y compara los bytes. En pagos/v1 trae **todos** los
 movimientos válidos, sin deduplicar ninguno.
 
+**Desde v0.7.0**, el conformado es también la única entrada del modelo histórico: cada dataset de
+cartera/v2 se materializa en un corte canónico con un snapshot por cuenta, y cada uno de pagos/v1,
+en un pago observado por fila, sin volver a leer el original ([historia.md](historia.md)).
+
 ## El almacén de artefactos
 
 Cada archivo que llega se copia, por bloques y antes de tocar la base, a un almacén **por
@@ -269,7 +273,10 @@ invariantes que el escenario cumple, que las pruebas verifican sobre los archivo
 - CARRIER no introduce clientes ni teléfonos que su corte no traiga, y hay un solo despacho.
 
 No es un modelo financiero: es coherencia básica y determinismo, para que v0.7 tenga historia con
-que construir el modelo canónico.
+que construir el modelo canónico. Desde v0.7.0 es su banco de pruebas: una prueba materializa la
+historia de un escenario y la cruza con su manifiesto (cada alta es una primera observación en su
+corte; cada cuenta liquidada o retirada, una salida observada en el siguiente), y la prueba de humo
+del CI lleva un escenario de cuatro cortes hasta la Cuenta 360.
 
 ## Benchmark de escala
 
