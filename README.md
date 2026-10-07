@@ -46,6 +46,16 @@ sus 23 columnas, un movimiento por fila). Cada archivo se guarda entero y para s
 **dataset conformado** en Parquet, cada uno atado a su fila de origen. La cartera mínima de
 siempre, `cartera/v1`, sigue igual. Todo está en [docs/fuentes.md](docs/fuentes.md).
 
+Desde v0.7.0, el sistema entiende además **el tiempo**. Cada dataset conformado se materializa, en
+paralelo al flujo operacional y sin volver a leer el archivo original, en un **modelo histórico**:
+una **cuenta canónica** por `CLIENTE_UNICO` de la cartera, un **corte canónico** por fecha, un
+**snapshot** de cada cuenta en cada corte y cada movimiento de pagos como un **pago observado**. La
+**Cuenta 360** responde qué le pasó a una cuenta a través de sus cortes: cuándo se observó por
+primera vez, si salió o reingresó, cómo cambiaron su saldo y su atraso, qué pagos se observaron y de
+qué archivo y de qué fila salió cada dato. No pretende saber todavía por qué pasó, ni qué pago es
+económicamente válido. Todo está en [docs/historia.md](docs/historia.md) y
+[docs/cuenta_360.md](docs/cuenta_360.md).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -68,7 +78,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay seis versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay siete versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -85,6 +95,11 @@ punta:
   93 columnas) y los pagos (`pagos/v1`, 23 columnas) entran con estructura exacta; cada archivo
   original se conserva en un almacén por contenido, con su dataset conformado y su linaje; y la
   ingesta procesa 500,000 cuentas (el escenario empresarial objetivo) con memoria acotada.
+- **v0.7.0 ✅ Modelo Histórico y Cuenta 360**: cada cartera oficial y cada archivo de pagos se
+  materializan, en paralelo al flujo y desde su dataset conformado, en una historia longitudinal:
+  una identidad canónica por cuenta, un corte por fecha, snapshots inmutables y pagos observados
+  sin deduplicar. La Cuenta 360 la consulta por la API, y un backfill construye la de lo publicado
+  antes.
 
 Lo que ya hace:
 
@@ -131,22 +146,47 @@ Lo que ya hace:
 - [x] Generador de CARTERA, CARRIER y PAGOS; perfiles de escala de XS a XXL; escenario
   longitudinal de varios cortes, determinista por semilla
 - [x] Benchmark de escala fuera del CI: XL (500,000 cuentas) medido de punta a punta, sin OOM
+- [x] Modelo histórico (`historia/v1`): `CuentaCanonica` por despacho, cartera y `CLIENTE_UNICO`,
+  sin persona ni crédito inventados; un `CorteCanonico` por fecha, donde una fuente equivalente no
+  duplica nada y una conflictiva no sobrescribe la historia; `SnapshotCuenta` estrecho, inmutable y
+  con su fila de origen; un `PagoObservado` por fila de pagos/v1, sin deduplicar
+- [x] Materialización durable y paralela al flujo (trabajo `HISTORIA`), abierta en la misma
+  transacción que el dataset, solo desde el Parquet conformado, todo o nada, por lotes con `COPY`,
+  con identificadores públicos deterministas e independiente del orden de llegada de los cortes
+- [x] Cuenta 360 por la API: búsqueda por `CLIENTE_UNICO`, resumen (también como se veía en una
+  fecha), historia con continuidad y deltas, eventos de presencia y pagos observados, paginados; y
+  los cortes canónicos y las ejecuciones históricas, con su evidencia
+- [x] `motor-cartera backfill-historia`, idempotente, para lo publicado antes de v0.7.0, y un
+  benchmark histórico fuera del CI: 12 cortes XL medidos, con el plan de cada consulta
 
-Lo que sigue, en este orden, sin adelantar ninguna:
+La ruta completa, versión por versión (➡️ marca la versión actual, ya publicada):
 
-- [ ] **v0.7** Modelo canónico/histórico + Cuenta 360
-- [ ] **v0.8** Motor de pagos: dedup, conciliación, reversos, atribución
-- [ ] **v0.9** Lifecycle: gestión, contacto, promesa, convenio, visita, resultado
-- [ ] **v0.10** Decision Engine v2
-- [ ] **v0.11** Geografía real + Territorial v2 + bases
-- [ ] **v0.12** Campo v2: zonas, subzonas, tramos, capacidad, jornadas
-- [ ] **v0.13** Ruteo vial v2: OSRM, matrices, restricciones, heurísticas
-- [ ] **v0.14** Collection Analytics
-- [ ] **v0.15** Predictive Intelligence
-- [ ] **v0.16** Optimización Matemática
-- [ ] **v0.17** App operativa + dashboards
-- [ ] **v0.18** Cloud + observabilidad + hardening
-- [ ] **v1.0** Collection Intelligence Platform
+```text
+✅ v0.1 Ingesta + contratos
+✅ v0.2 Decision Engine v1
+✅ v0.3 Territorial v1
+✅ v0.4 Ruteo sintético v1
+✅ v0.5 Orquestación durable
+✅ v0.6 Fuentes oficiales + evidencia + escala
+➡️ v0.7 Modelo histórico + Cuenta 360
+
+v0.8 Motor de pagos
+v0.9 Lifecycle de cobranza
+v0.10 Decision Engine v2
+v0.11 Geografía real + Territorial v2
+v0.12 Campo v2
+v0.13 Ruteo vial v2
+v0.14 Collection Analytics
+v0.15 Predictive Intelligence
+v0.16 Optimización Matemática
+v0.17 Aplicación + dashboards
+v0.18 Cloud + observabilidad + hardening
+
+v1.0 Collection Intelligence Platform
+```
+
+Lo que sigue es **v0.8, el motor de pagos**: deduplicación, conciliación, reversos y atribución,
+sobre los pagos observados de v0.7. Sin adelantar ninguna.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -538,6 +578,17 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
   --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip
 ```
 
+Con `--escenario <directorio>` prueba el modelo histórico de punta a punta: sube los cortes de un
+escenario de `generar-escenario` del más reciente al más antiguo, y sus pagos, espera la historia de
+cada uno y revisa la Cuenta 360 de cuentas elegidas en los archivos: una que está en todos los
+cortes, una que sale, una que llega después y una que paga varias veces.
+
+```bash
+docker compose exec api motor-cartera generar-escenario --destino datos/escenario --perfil XS \
+  --cortes 4 --primer-corte 2026-10-07 --semilla 7
+python scripts/prueba_de_humo.py datos/humo.xlsx --escenario datos/escenario
+```
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -588,6 +639,54 @@ cortes, determinista por semilla. `scripts/benchmark_escala.py` mide cada fase f
 máquina de desarrollo, una cartera XL en zip se ingiere en 149 s (3,355 filas por segundo) con 930
 MiB de memoria pico. El detalle, las invariantes del escenario y los resultados completos están en
 [docs/fuentes.md](docs/fuentes.md).
+
+## El modelo histórico y la Cuenta 360
+
+Cuando una cartera `cartera/v2` o un archivo de pagos se publican, en la misma transacción que su
+dataset conformado queda en la cola un trabajo `HISTORIA`. El worker lo ejecuta en paralelo al
+flujo, después de las etapas operacionales: ni la decisión, ni la organización territorial ni el
+ruteo lo esperan. Lee solo el Parquet conformado, nunca el archivo original, y publica todo o nada:
+
+- una **cuenta canónica** por despacho, cartera y `CLIENTE_UNICO` (no una persona ni un crédito);
+- un **corte canónico** por fecha. Otra fuente de la misma fecha con la misma cartera (el xlsx y el
+  zip del mismo día) es una **fuente equivalente**: no duplica nada. Una con otro contenido es un
+  **conflicto**: su ejecución queda `FALLIDA` con `CORTE_CANONICO_CONFLICTIVO`, y el corte publicado
+  no cambia;
+- un **snapshot** de cada cuenta en cada corte, con sus variables históricas (saldos, atraso,
+  producto, estrategia, canal, último pago, geografía, plan y promesa) y su fila de origen, sin las
+  93 columnas ni la PII, que siguen en el Parquet. Un snapshot nunca se actualiza;
+- un **pago observado** por cada fila de pagos/v1, con sus 23 campos, sin deduplicar, conciliar ni
+  atribuir. Un pago de un cliente que ningún corte trae se conserva, `SIN_CUENTA_OBSERVADA`, y no
+  crea una cuenta.
+
+La historia se ordena por fecha de corte, no por orden de llegada: un corte que llega tarde deja
+la misma historia que si hubiera llegado a tiempo. Los eventos (`PRIMERA_OBSERVACION`,
+`SALIDA_OBSERVADA`, `REINGRESO_OBSERVADO`), la continuidad entre cortes y los deltas se calculan al
+consultar.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+curl -s -H "$K" "http://localhost:8000/cuentas?cliente_unico=CU0000004521"     # su cuenta_id
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>                      # Cuenta 360
+curl -s -H "$K" "http://localhost:8000/cuentas/<cuenta_id>?al=2026-09-16"      # como se veía ese día
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/historia             # snapshots y deltas
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/eventos              # presencia
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/pagos-observados     # pagos tal como llegaron
+curl -s -H "$K" http://localhost:8000/cartera/cortes                           # cortes y el último
+curl -s -H "$K" http://localhost:8000/corridas/<run_id>/historia               # su materialización
+```
+
+Lo publicado antes de v0.7.0 no tiene historia: la migración `0008` solo crea las tablas, y
+`motor-cartera backfill-historia` encola la de cada dataset que no la tiene (con `--dry-run` dice
+cuánto falta sin encolar nada). La materialización, los índices, el volumen y el benchmark están en
+[docs/historia.md](docs/historia.md); la API, con ejemplos, en [docs/cuenta_360.md](docs/cuenta_360.md).
+
+**Medido.** En la máquina de desarrollo, la historia de 12 cortes XL (5,795,700 snapshots de
+606,858 cuentas canónicas) y de sus 11 semanas de pagos (2,995,846 pagos observados) se materializó
+en 815 s: una mediana de 28.5 s por corte de unas 500,000 cuentas y de 21.0 s por archivo de pagos,
+con menos de 400 MiB de memoria pico. Con todo eso publicado, cada sentencia de una consulta de
+cuenta se resuelve por sus índices en menos de 0.14 ms dentro de PostgreSQL, y la Cuenta 360
+completa responde en 5 a 8 ms (mediana) desde el servicio.
 
 ## El Decision Engine
 
@@ -891,6 +990,16 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /ruteos/{ruteo_run_id}` | Una ejecución de ruteo: versión de las reglas, estado, tiempos y conteos | 200, 401, 404, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas` | La ruta de cada municipio con sus distancias, en orden de prioridad territorial y paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas` | Las paradas de un municipio en orden de visita, con su punto sintético y su distancia, paginadas; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
+| `GET /cuentas?cliente_unico=…` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados y snapshot actual; con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/historia` | Sus snapshots con continuidad, deltas y evidencia (`corte_id`, `dataset_id`, `source_row`, `source_sheet`), paginados; `orden=desc` por omisión | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, sin deduplicar ni conciliar, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
+| `GET /cartera/cortes` | Los cortes canónicos de la cartera, por fecha, y el último | 200, 401, 422 |
+| `GET /cartera/cortes/{corte_id}` | Un corte con su evidencia: el Parquet, el original y sus fuentes equivalentes | 200, 401, 404, 422 |
+| `GET /historias/{historia_run_id}` | Una ejecución histórica: estado, resultado, conteos, corte y trabajo | 200, 401, 404, 422 |
+| `GET /corridas/{run_id}/historia` | Las ejecuciones que materializaron el dataset de la corrida | 200, 401, 404, 409, 422 |
+| `GET /pagos/{pagos_run_id}/historia` | Las de una ingesta de pagos, y cuántos de sus pagos tienen hoy una cuenta observada | 200, 401, 404, 409, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -938,6 +1047,14 @@ Las reglas que un cliente tiene que conocer:
   los de su extensión da `415 FORMATO_NO_CORRESPONDE`.
 - **Un archivo de pagos se acepta una vez.** Si otra ingesta ya lo aceptó o lo está procesando,
   `POST /pagos` responde `409 PAGOS_YA_ACEPTADOS` o `PAGOS_EN_PROCESO`, con su `pagos_run_id`.
+- **Una cuenta canónica nace con un corte, no con un pago.** `GET /cuentas?cliente_unico=…`
+  responde `404 CUENTA_NO_ENCONTRADA` si nada trae ese cliente, y `404 SIN_CUENTA_OBSERVADA` si solo
+  hay pagos suyos.
+- **Los pagos observados no son recuperación.** Son movimientos tal como llegaron: no están
+  deduplicados, conciliados, interpretados como reversos ni atribuidos, y la API no los suma.
+- **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
+  proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
+  cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
 
 Por qué cada código es el que es (201 y no 202, 422 y no 400, cuándo 409, por qué un
 archivo con registros inválidos no es un error HTTP, por qué una ejecución que termina `FALLIDA`
@@ -968,6 +1085,8 @@ motor-cartera cargar datos/oficial/cartera_oficial_2026-09-30.xlsx --contrato ca
 motor-cartera cargar-pagos datos/oficial/pagos_oficial_2026-09-24_2026-09-30.xlsx
 motor-cartera generar-escenario --destino datos/escenario --cortes 4 --primer-corte 2026-09-02
 motor-cartera verificar-fuentes                      # vuelve a firmar cada artefacto del almacén
+motor-cartera backfill-historia --dry-run            # cuánta historia falta, sin encolar nada
+motor-cartera backfill-historia                      # encola la historia de lo publicado antes de v0.7.0
 ```
 
 El almacén de artefactos es el directorio de `MC_SOURCE_STORE_ROOT` (`datos/fuentes` en el
@@ -1023,16 +1142,30 @@ INEGI, CARRIER, los pagos sin deduplicar con su barrera y su trabajo durable (le
 reintentos, dos workers), la migración 0007 de ida y de vuelta, y las invariantes del escenario
 longitudinal sobre los archivos que escribe. El benchmark de escala no corre en el CI.
 
+El modelo histórico también, contra PostgreSQL y con fuentes sintéticas que se ingieren como
+cualquier otra: la identidad (el mismo `CLIENTE_UNICO` en diez cortes es una cuenta con diez
+snapshots; en otra cartera, otra cuenta), las fuentes equivalentes y los cortes conflictivos, el
+snapshot estrecho con su fila de origen, la historia que no vuelve a leer el original (se borra del
+almacén antes de materializar), los pagos sin deduplicar y sin cuenta, fallas inyectadas en cinco
+puntos de la transacción y la muerte del proceso a la mitad, dos workers sobre el mismo dataset,
+dos cortes con cuentas nuevas en común, dos fuentes del mismo corte a la vez y un worker que pierde
+el lease después de calcular. Un escenario golden de seis cortes fija cada evento, cada continuidad
+y cada delta; el escenario del generador se cruza con su manifiesto; un corte que llega tarde deja
+la misma historia que en orden, y reconstruir toda la capa en un orden al azar da exactamente las
+mismas filas, con los mismos identificadores públicos. La semántica de presencia (`presencia.py`) se
+prueba sin base. El benchmark histórico no corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
 la agregación en la base, la transacción todo o nada, la concurrencia entre ejecuciones, la
 idempotencia y la API del historial, incluidos resultados de otras versiones de las reglas; y el
 `docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
-prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo y una ingesta
-de pagos; después baja los contenedores sin borrar los volúmenes, los vuelve a levantar y verifica
-que cada artefacto siga en el almacén con sus mismos bytes. El benchmark de escala es un workflow
-aparte, que solo corre a mano.
+prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
+de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360; comprueba que el backfill
+no encuentra nada pendiente, baja los contenedores sin borrar los volúmenes, los vuelve a levantar
+y verifica que cada artefacto siga en el almacén con sus mismos bytes. Los benchmarks de escala y
+del modelo histórico son un workflow aparte, que solo corre a mano.
 
 ## Arquitectura
 
@@ -1066,6 +1199,14 @@ src/motor_cartera/
 ├── ruteo/
 │   ├── reglas.py      ruteo/v1: coordenadas sintéticas, distancia, vecino más cercano y 2-opt
 │   └── ejecuciones.py Lee las cuentas CAMPO, aplica el núcleo y publica rutas y paradas: todo o nada
+├── historia/
+│   ├── identidad.py   Los identificadores públicos deterministas (UUID versión 5)
+│   ├── carga.py       Del Parquet conformado a PostgreSQL: lotes, CSV de Arrow y COPY
+│   ├── ejecuciones.py historia/v1: abrir con su dataset, materializar todo o nada, equivalencia
+│   │                  y conflicto de cortes
+│   ├── presencia.py   Primera observación, salida, reingreso y continuidad: el núcleo puro
+│   ├── backfill.py    La historia de los datasets que todavía no la tienen
+│   └── cuenta360.py   Lo que se consulta de una cuenta: resumen, historia, eventos y pagos
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1073,19 +1214,23 @@ src/motor_cartera/
 │   └── objetivos.py   El recurso de cada tipo de trabajo y sus estados terminales
 ├── db/                Modelo: la corrida, sus cuentas y rechazos, las ejecuciones con lo que
 │                      publican (decisiones por cuenta, resultados por municipio, rutas y paradas),
-│                      la orquestación (flujos y trabajos) y la evidencia (artefactos, datasets
-│                      conformados, hojas compañeras e ingestas de pagos con sus rechazos)
+│                      la orquestación (flujos y trabajos), la evidencia (artefactos, datasets
+│                      conformados, hojas compañeras e ingestas de pagos con sus rechazos) y el
+│                      modelo histórico (cuentas canónicas, cortes, snapshots, pagos observados
+│                      y sus ejecuciones)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py)
 │                      y las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py)
-├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial y
-│                      ruteo; subidas, esquemas, errores y autenticación
+├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
+│                      ruteo, cuentas (Cuenta 360) e historia; subidas, esquemas, errores y
+│                      autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
-                       verificar-fuentes y worker
+                       verificar-fuentes, backfill-historia y worker
 migraciones/           Versiones de Alembic
-scripts/               Prueba de humo, control de archivos trackeados, benchmark de escala y
-                       actualización del catálogo del INEGI
+scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala y del
+                       modelo histórico, y actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
-                       los diccionarios de CARTERA y PAGOS, y carrier.md
+                       historia.md (el modelo histórico), cuenta_360.md (su API), los diccionarios
+                       de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -1132,6 +1277,14 @@ que v0.5 dejó en la cola.
 `orquestacion/` no sabe qué calcula cada motor: llama a su servicio y lee el estado de su recurso.
 Por eso v0.5.0 no cambió `cartera/v1`, `decision/v1`, `territorial/v1` ni `ruteo/v1`.
 
+El modelo histórico cuelga de los datasets conformados, no de las corridas: cada
+**EjecucionHistoria** materializa un dataset, y un **CorteCanonico** dice de qué dataset salió.
+`CuentaCanonica → SnapshotCuenta → CorteCanonico → EjecucionHistoria → DatasetConformado →
+ArtefactoFuente (Parquet) → ArtefactoFuente (original)`: cada snapshot guarda su `source_row` y su
+`source_sheet`, y cada **PagoObservado**, su dataset y su fila. `CuentaCanonica` no es `Cuenta`: esta
+sigue siendo la foto operacional de una corrida, la única que leen los motores v1. `historia/`
+tampoco sabe de la cola: `orquestacion/` ejecuta su trabajo `HISTORIA` como el de cualquier motor.
+
 ## Limitaciones conocidas
 
 **De las fuentes oficiales (v0.6.0).** Lo que v0.6.0 deja a propósito para después:
@@ -1153,9 +1306,36 @@ Por eso v0.5.0 no cambió `cartera/v1`, `decision/v1`, `territorial/v1` ni `rute
   municipales del INEGI; localidades, colonias, códigos postales y coordenadas son de v0.11. El
   catálogo es una foto (consultada el 2026-10-05) que se actualiza con su script.
 - **El escenario longitudinal no es un modelo financiero**: es coherencia básica y determinismo.
-- **La escala medida es la de la ingesta.** El benchmark mide la ingesta de cartera/v2 y de pagos/v1
-  hasta 1,000,000 de cuentas. Los motores (decisión, territorial y ruteo) no están medidos a esa
-  escala, y cartera/v1 todavía lee su archivo entero en memoria.
+- **La escala medida es la de la ingesta y la historia.** Un benchmark mide la ingesta de
+  cartera/v2 y de pagos/v1 hasta 1,000,000 de cuentas, y otro, la historia de 12 cortes XL con sus
+  pagos. Los motores (decisión, territorial y ruteo) no están medidos a esa escala, y cartera/v1
+  todavía lee su archivo entero en memoria.
+
+**Del modelo histórico (v0.7.0).** Lo que `historia/v1` deja a propósito para después:
+
+- **Un conflicto de corte no se corrige.** Si llega otra cartera de un corte que ya tiene historia,
+  con otro contenido, su historia falla con `CORTE_CANONICO_CONFLICTIVO` y el corte publicado no
+  cambia. No hay todavía una corrección explícita (reemplazar un corte, con su motivo y su
+  auditoría); mientras tanto, el conflicto queda registrado con las dos firmas.
+- **Solo la cartera oficial tiene historia.** Las corridas de `cartera/v1` no publican un dataset
+  conformado, así que no tienen cortes canónicos ni snapshots.
+- **La geografía de un snapshot es la del catálogo de su versión.** Las claves del INEGI se
+  resuelven al materializar, con el catálogo del código; si el catálogo cambia, tiene que cambiar
+  también la versión del modelo, como la de la proyección.
+- **Los pagos observados no son recuperación.** No se deduplican, no se concilian, no se interpretan
+  como reversos ni se atribuyen, y la API no los suma: eso es de v0.8.
+- **Los eventos se calculan al consultar.** Con unos cientos de cortes por cartera es inmediato; con
+  miles, habría que medir otra vez antes de guardarlos.
+- **Una sola búsqueda.** Una cuenta se busca por su `CLIENTE_UNICO` exacto en la cartera del
+  sistema; no hay listados ni filtros de cuentas, ni consultas de varias carteras.
+- **Sin particionado.** Las tablas que crecen con cada corte (`snapshot_cuenta`, `pago_observado`)
+  no están particionadas: con sus índices, ninguna consulta de una cuenta las recorre enteras, y el
+  benchmark lo mide. El mantenimiento de tablas de decenas de millones de filas (VACUUM, respaldos)
+  es de la operación y de v0.18.
+- **Medido en una sola máquina, que no era dedicada.** Con el mismo tamaño, la escritura de un corte
+  varió de 12 a 70 s, y la de un archivo de pagos, de 10 a 97 s; dos de las más lentas coinciden
+  con checkpoints de PostgreSQL, y las demás con ningún evento de la base. La historia tiene que
+  medirse otra vez en el servidor de producción, con su configuración (v0.18).
 
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
@@ -1165,7 +1345,9 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Sin prioridades en la cola.** Los trabajos se toman en el orden en que se crearon.
+- **Dos niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+  los operacionales y al final los `HISTORIA`; dentro de cada nivel, en el orden en que se crearon.
+  No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
 - **Sin métricas, alertas ni trazas distribuidas productivas.** Hay bitácora de la API y del
@@ -1194,8 +1376,9 @@ Y dos que son del diseño, no pendientes:
   las rutas toma alrededor de un segundo, pero cada pasada del 2-opt es `O(n²)` en las paradas de
   un municipio, y un municipio con miles de cuentas de campo no está medido.
 - **Una cartera se publica una vez por archivo, no por contenido.** La misma cartera en
-  xlsx y en csv tiene dos firmas de archivo y se publica dos veces. Su firma de contenido,
-  que es la misma, lo deja a la vista, pero todavía no lo impide.
+  xlsx y en csv tiene dos firmas de archivo y se publica dos veces en la capa operacional. Su firma
+  de contenido, que es la misma, lo deja a la vista; desde v0.7.0 el modelo histórico la reconoce
+  como una fuente equivalente y no duplica su corte, pero la operación todavía no lo impide.
 - **El control de archivos revisa lo trackeado, no la historia.** Un archivo que se subió y
   después se borró sigue en la historia, y en un repositorio público ya salió. Un csv o un
   volcado en SQL plano con otro nombre no se reconocen por sus bytes, y el control confía en el

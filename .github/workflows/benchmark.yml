@@ -1,11 +1,22 @@
 name: Benchmark de escala
 
 # Solo a mano, desde la pestana Actions: no corre en ningun push ni en ningun pull request. Mide
-# un perfil grande de punta a punta contra PostgreSQL (generacion, almacen, validacion, dataset
-# conformado, proyeccion y persistencia) y deja la tabla en el resumen del run.
+# un perfil grande de punta a punta contra PostgreSQL y deja la tabla en el resumen del run. Con
+# tipo=escala, la ingesta de un corte (generacion, almacen, validacion, dataset conformado,
+# proyeccion y persistencia); con tipo=historia, la materializacion del modelo historico de varios
+# cortes y las consultas de una cuenta, con su plan.
 on:
   workflow_dispatch:
     inputs:
+      tipo:
+        description: "Que se mide"
+        type: choice
+        options: [escala, historia]
+        default: escala
+      cortes:
+        description: "Cuantos cortes (solo con tipo=historia)"
+        type: string
+        default: "12"
       perfil:
         description: "Perfil de escala"
         type: choice
@@ -20,7 +31,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300
 
     services:
       postgres:
@@ -40,6 +51,7 @@ jobs:
       MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_bench
       PERFIL: ${{ inputs.perfil }}
       FORMATO: ${{ inputs.formato }}
+      CORTES: ${{ inputs.cortes }}
 
     steps:
       - uses: actions/checkout@v7
@@ -56,6 +68,7 @@ jobs:
 
       # Los archivos y el almacen, en el disco temporal del runner: nada de esto se sube.
       - name: Benchmark
+        if: inputs.tipo == 'escala'
         run: |
           python scripts/benchmark_escala.py --perfil "$PERFIL" --formato "$FORMATO" \
             --destino "$RUNNER_TEMP/benchmark" --salida "$RUNNER_TEMP/benchmark.json" \
@@ -68,6 +81,28 @@ jobs:
             echo '```json'
             cat "$RUNNER_TEMP/benchmark.json"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+
+      - name: Benchmark del modelo historico
+        if: inputs.tipo == 'historia'
+        run: |
+          python scripts/benchmark_historia.py --perfil "$PERFIL" --cortes "$CORTES" \
+            --formato "$FORMATO" --destino "$RUNNER_TEMP/historia" \
+            --salida "$RUNNER_TEMP/historia/benchmark_historia.json" \
+            | tee "$RUNNER_TEMP/benchmark_historia.log"
+          {
+            echo "## Benchmark del modelo historico: $CORTES cortes del perfil $PERFIL en $FORMATO"
+            echo
+            cat "$RUNNER_TEMP/historia/benchmark_historia.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/historia/planes.txt"
+            echo '```'
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen

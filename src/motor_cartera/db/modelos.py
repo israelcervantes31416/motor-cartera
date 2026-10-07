@@ -850,6 +850,356 @@ class RechazoPago(SQLModel, table=True):
     motivos: list[dict[str, str]] = Field(sa_type=JSONB)
 
 
+# --- el modelo historico --------------------------------------------------------------------------
+#
+# Desde la 0008. Es una proyeccion de los datasets conformados, paralela a la operacional: no la
+# reemplaza, y ninguno de los motores v1 la lee. Guarda poco, a proposito: la identidad de cada
+# cuenta a traves del tiempo, una fila por corte de la cartera, las variables historicas de cada
+# cuenta en cada corte y cada movimiento de pagos/v1 tal como llego. Las 93 columnas de cada corte
+# siguen en su Parquet, y cada fila de aqui dice de que fila de el salio.
+#
+# Las tablas que crecen con cada corte (snapshot_cuenta y pago_observado) no tienen un id propio:
+# su llave primaria es su llave natural, que es igual de corta. Sus columnas van ordenadas por
+# alineacion, las de 8 bytes primero, para que PostgreSQL no rellene bytes en cada fila.
+
+
+class TipoFuenteHistoria(StrEnum):
+    """De que fuente oficial es el dataset conformado que materializa una ejecucion historica."""
+
+    CARTERA = "CARTERA"  # cartera/v2: un corte, con un snapshot por cuenta
+    PAGOS = "PAGOS"  # pagos/v1: movimientos observados, uno por fila de la fuente
+
+
+class EstadoHistoria(StrEnum):
+    """En que quedo una ejecucion historica. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"  # registrada; se esta materializando su dataset
+    EXITOSA = "EXITOSA"  # publico su corte o sus pagos, o reconocio una fuente equivalente
+    FALLIDA = "FALLIDA"  # no publico nada: un conflicto de corte, datos que no cuadran o un error
+
+
+class ResultadoHistoria(StrEnum):
+    """Como termino una ejecucion historica, en el vocabulario de historia/v1. Se guarda como texto
+    y sin CHECK, como el vocabulario de las reglas de los motores: otra version puede traer otro."""
+
+    CORTE_PUBLICADO = "CORTE_PUBLICADO"
+    """EXITOSA: publico un corte canonico nuevo, con sus snapshots."""
+    FUENTE_EQUIVALENTE = "FUENTE_EQUIVALENTE"
+    """EXITOSA: el corte ya existia con la misma firma de contenido; no se duplico nada."""
+    PAGOS_PUBLICADOS = "PAGOS_PUBLICADOS"
+    """EXITOSA: publico un pago observado por cada fila del dataset de pagos."""
+    CORTE_CANONICO_CONFLICTIVO = "CORTE_CANONICO_CONFLICTIVO"
+    """FALLIDA: ya hay un corte de esa fecha con otra firma de contenido. El corte no cambia."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    """FALLIDA: el Parquet no es lo que su dataset dice, o los conteos no cuadran."""
+    ARTEFACTO_CORRUPTO = "ARTEFACTO_CORRUPTO"
+    """FALLIDA: los bytes del Parquet ya no son los de su SHA-256."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    """FALLIDA: la ejecucion pide una version del modelo que este servicio no sabe materializar."""
+    YA_MATERIALIZADA = "YA_MATERIALIZADA"
+    """FALLIDA: otra ejecucion del mismo dataset y version publico primero."""
+    ERROR_INTERNO = "ERROR_INTERNO"
+    """FALLIDA: un error inesperado; el detalle esta en la bitacora."""
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+    """FALLIDA: su trabajo agoto los intentos de la cola sin que terminara."""
+
+
+class CuentaCanonica(SQLModel, table=True):
+    """La identidad longitudinal de una cuenta: un CLIENTE_UNICO de una cartera, a traves de todos
+    sus cortes.
+
+    No es `Cuenta`, que es la foto operacional de una sola corrida y la que leen los motores v1. Ni
+    es una persona ni un credito: CLIENTE_UNICO es el identificador fuente de la cuenta, y ninguna
+    fuente dice todavia que dos cuentas sean de la misma persona. Nace la primera vez que un corte
+    canonico trae su CLIENTE_UNICO; un pago, por si solo, no la crea. Sus cortes son sus snapshots.
+    """
+
+    __tablename__ = "cuenta_canonica"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "despacho_id", "cartera_id", "cliente_unico", name="uq_cuenta_canonica_clave"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    cuenta_id: UUID = Field(unique=True)
+    """Identificador publico. Es determinista: sale de despacho, cartera y CLIENTE_UNICO (ver
+    `historia.identidad`), asi que reconstruir la historia da el mismo, en cualquier orden."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    cliente_unico: str = Field(max_length=20)
+    """El identificador fuente de la cuenta, con la forma de cartera/v2."""
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    """Cuando se registro en la base. No es su primera observacion, que es la fecha de su primer
+    corte, ni su originacion, que ninguna fuente dice."""
+
+
+class CorteCanonico(SQLModel, table=True):
+    """La fotografia canonica de una cartera en una fecha: una sola por despacho, cartera y fecha de
+    corte.
+
+    La produce el primer dataset conformado de cartera/v2 de esa fecha que se materializa, y sus
+    snapshots salen de el. Otro dataset de la misma fecha con la misma firma de contenido (la misma
+    cartera en otro formato) es una fuente equivalente: no crea otro corte ni duplica nada. Uno con
+    otra firma es un conflicto: este corte no cambia, porque la historia no se sobrescribe.
+    """
+
+    __tablename__ = "corte_canonico"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["dataset_conformado_id"], ["dataset_conformado.id"], name="fk_corte_dataset"
+        ),
+        sa.UniqueConstraint(
+            "despacho_id", "cartera_id", "fecha_corte", name="uq_corte_canonico_fecha"
+        ),
+        # Un dataset produce a lo mas un corte.
+        sa.UniqueConstraint("dataset_conformado_id", name="uq_corte_canonico_dataset"),
+        # Lo que referencia cada snapshot: el corte junto con su fecha. Asi la base garantiza que la
+        # fecha que el snapshot repite, para su indice, es la de su corte.
+        sa.UniqueConstraint("id", "fecha_corte", name="uq_corte_canonico_id_fecha"),
+        sa.CheckConstraint("firma_contenido ~ '^[0-9a-f]{64}$'", name=conv("ck_corte_firma")),
+        sa.CheckConstraint("cuentas > 0", name=conv("ck_corte_cuentas")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    corte_id: UUID = Field(unique=True)
+    """Identificador publico, determinista: sale de despacho, cartera y fecha de corte."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    fecha_corte: date
+    firma_contenido: str = Field(max_length=64)
+    """La firma del contenido del dataset que lo produjo: la de la cartera, no la del archivo."""
+    version_modelo: str = Field(max_length=32)
+    """Con que version del modelo historico se materializo: historia/v1."""
+    cuentas: int = Field(sa_type=sa.BigInteger)
+    """Cuantos snapshots tiene: uno por cuenta del corte."""
+    dataset_conformado_id: int
+    """El dataset conformado que lo produjo: la evidencia de cada uno de sus snapshots. Su llave
+    foranea y su unicidad estan en __table_args__."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class EjecucionHistoria(SQLModel, table=True):
+    """Una materializacion versionada de un dataset conformado en el modelo historico.
+
+    Es una entidad, como las ejecuciones de los motores, porque tiene que existir aunque no publique
+    nada: un conflicto de corte o una fuente equivalente se auditan aqui. Nace EN_PROCESO, junto con
+    su trabajo HISTORIA, en la misma transaccion que publica el dataset conformado.
+    """
+
+    __tablename__ = "ejecucion_historia"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["dataset_conformado_id"], ["dataset_conformado.id"], name="fk_historia_dataset"
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id"], ["corte_canonico.id"], name="fk_historia_corte"
+        ),
+        # Un dataset se materializa con exito una sola vez por version del modelo, y a lo mas un
+        # intento activo a la vez. Lo garantiza la base y no solo el codigo.
+        sa.Index(
+            "ux_ejecucion_historia_exitosa",
+            "dataset_conformado_id",
+            "version_modelo",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_ejecucion_historia_en_proceso",
+            "dataset_conformado_id",
+            "version_modelo",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint(
+            "registros_leidos >= 0 AND registros_publicados >= 0 "
+            "AND registros_publicados <= registros_leidos",
+            name=conv("ck_historia_conteos"),
+        ),
+        # Solo una ejecucion de cartera que termino EXITOSA tiene corte: el que publico, o el que ya
+        # existia con la misma firma. Una de pagos nunca tiene.
+        sa.CheckConstraint(
+            "(corte_canonico_id IS NOT NULL) = (tipo_fuente = 'CARTERA' AND estado = 'EXITOSA')",
+            name=conv("ck_historia_corte"),
+        ),
+        # Una ejecucion terminada dice como termino, con un codigo estable; una EN_PROCESO, todavia
+        # no.
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_historia_resultado")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    historia_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    dataset_conformado_id: int = Field(index=True)
+    """El dataset que se materializa. Su llave foranea esta en __table_args__. Lleva su propio
+    indice para encontrar todas las ejecuciones de un dataset, en cualquier estado."""
+    tipo_fuente: TipoFuenteHistoria = Field(
+        sa_type=sa.Enum(
+            TipoFuenteHistoria,
+            name="tipo_fuente_historia",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    version_modelo: str = Field(max_length=32)
+    """Con que version del modelo historico se materializa: historia/v1."""
+    estado: EstadoHistoria = Field(
+        default=EstadoHistoria.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoHistoria,
+            name="estado_historia",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    """Como termino, con un codigo estable: CORTE_PUBLICADO, FUENTE_EQUIVALENTE, PAGOS_PUBLICADOS,
+    CORTE_CANONICO_CONFLICTIVO... Es el vocabulario de la version del modelo, sin CHECK, como el de
+    las reglas de los motores."""
+    corte_canonico_id: int | None = None
+    """El corte que publico o al que es equivalente, en una de cartera EXITOSA."""
+    registros_leidos: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantos registros del dataset leyo. Cero si no hizo falta leerlo."""
+    registros_publicados: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantos snapshots o pagos observados publico. Cero si no publico nada."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+    """Que paso, para una persona."""
+
+
+class SnapshotCuenta(SQLModel, table=True):
+    """Una cuenta canonica observada en un corte canonico, con sus variables historicas.
+
+    Guarda solo las variables con significado claro y uso transversal: saldos, atraso, producto,
+    estrategia, canal, ultimo pago, geografia, plan y promesa. Ninguna PII: el nombre, el domicilio,
+    los telefonos, el aval y las referencias siguen en el dataset conformado, y `source_row` lleva a
+    la fila. Cada valor tiene el tipo que tiene en el Parquet conformado.
+
+    Un snapshot no se actualiza nunca: un corte nuevo es otra fila. La historia de una cuenta se
+    lee por (cuenta_canonica_id, fecha_corte), y por eso el snapshot repite la fecha de su corte; la
+    llave foranea compuesta garantiza que es la misma.
+    """
+
+    __tablename__ = "snapshot_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "fecha_corte"],
+            ["corte_canonico.id", "corte_canonico.fecha_corte"],
+            name="fk_snapshot_corte",
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_snapshot_cuenta"
+        ),
+        # La historia de una cuenta, en orden de corte. PostgreSQL recorre un btree en los dos
+        # sentidos: con la cuenta fija, este indice sirve igual a ORDER BY fecha_corte DESC.
+        sa.Index("ix_snapshot_cuenta_historia", "cuenta_canonica_id", "fecha_corte"),
+    )
+
+    # La llave primaria es la natural: una cuenta, a lo mas una vez por corte.
+    corte_canonico_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    dias_atraso: int = Field(sa_type=sa.BigInteger)
+    atraso_maximo: int | None = Field(default=None, sa_type=sa.BigInteger)
+    semanas_atraso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    pagos_recibidos: int | None = Field(default=None, sa_type=sa.BigInteger)
+    fecha_corte: date
+    fecha_ultimo_pago: date | None = None
+    source_row: int
+    """La fila del archivo original de la que salio, como `_source_row` en el Parquet."""
+    saldo_total: Decimal = Field(max_digits=14, decimal_places=2)
+    saldo: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    moratorios: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    saldo_atrasado: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    saldo_requerido: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    pago_normal: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    imp_ultimo_pago: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    monto_plan: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    monto_promesa_pago: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    producto: str = Field(max_length=20)
+    canal: str = Field(max_length=20)
+    cve_entidad: str = Field(max_length=2)
+    cve_municipio: str = Field(max_length=3)
+    estrategia: str | None = None
+    estatus_plan: str | None = None
+    estatus_promesa_pago: str | None = None
+    source_sheet: str | None = Field(default=None, max_length=255)
+    """Su hoja o su miembro del zip, como `_source_sheet`; vacia en un csv suelto."""
+
+
+class PagoObservado(SQLModel, table=True):
+    """Una fila aceptada de pagos/v1, tal como llego: un movimiento observado.
+
+    Una fila de la fuente es un pago observado, y ninguno se deduplica: dos filas identicas son dos
+    observaciones, y el mismo movimiento en dos archivos tambien. No es un pago conciliado, aplicado
+    ni atribuido; eso es del motor de pagos. Conserva sus 23 campos con el tipo que tienen en el
+    Parquet conformado, y de que dataset y de que fila salio.
+
+    No apunta a ninguna CuentaCanonica. Se relaciona con ella por despacho, cartera y CLIENTE_UNICO
+    al consultar: asi un pago anterior a la primera cartera que trae a su cliente, o de un cliente
+    que nunca aparece (SIN_CUENTA_OBSERVADA), se conserva igual y no hay que volver a enlazar nada.
+    """
+
+    __tablename__ = "pago_observado"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["dataset_conformado_id"], ["dataset_conformado.id"], name="fk_pago_observado_dataset"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ingesta_pagos_id"], ["ingesta_pagos.id"], name="fk_pago_observado_ingesta"
+        ),
+        # Los pagos de una cuenta, en orden de recepcion; el btree se recorre en los dos sentidos.
+        sa.Index(
+            "ix_pago_observado_cuenta",
+            "despacho_id",
+            "cartera_id",
+            "cliente_unico",
+            "fecha_recepcion",
+        ),
+    )
+
+    # La llave primaria es la natural: una fila del dataset, una observacion.
+    dataset_conformado_id: int = Field(primary_key=True)
+    source_row: int = Field(primary_key=True)
+    """La fila del archivo original, como `_source_row` en el Parquet."""
+    anio: int | None = Field(default=None, sa_type=sa.BigInteger)
+    semana: int | None = Field(default=None, sa_type=sa.BigInteger)
+    dias_de_atraso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    semanas_de_atraso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    fecha_recepcion: datetime = Field(sa_type=sa.DateTime(timezone=False))
+    """Hora local de la fuente, sin zona horaria, como en pagos/v1."""
+    fecha_de_gestion: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=False))
+    porcentaje_comision: float | None = None
+    ingesta_pagos_id: int
+    """La ingesta que lo acepto; su llave foranea esta en __table_args__."""
+    pago_observado_id: UUID
+    """Identificador publico, determinista: sale del dataset y la fila, que ya son unicos. No lleva
+    indice propio: ninguna consulta de v0.7 lo busca."""
+    recuperacion_por_gestion: Decimal = Field(max_digits=14, decimal_places=2)
+    cargos_automaticos: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    captacion: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    cobranza_total: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    monto_comision: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    cliente_unico: str = Field(max_length=20)
+    territorio: str | None = None
+    zona: str | None = None
+    segmento: str | None = None
+    gerencia: str | None = None
+    tipo_cartera: str | None = None
+    producto: str | None = None
+    campania: str | None = None
+    gestor: str | None = None
+    plan_de_pago: str | None = None
+    concepto_calculo: str | None = None
+    source_sheet: str | None = Field(default=None, max_length=255)
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -875,7 +1225,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'DECISION') = (ejecucion_decision_id IS NOT NULL) "
     "AND (tipo = 'TERRITORIAL') = (ejecucion_territorial_id IS NOT NULL) "
     "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL) "
-    "AND (tipo = 'INGESTA_PAGOS') = (ingesta_pagos_id IS NOT NULL)"
+    "AND (tipo = 'INGESTA_PAGOS') = (ingesta_pagos_id IS NOT NULL) "
+    "AND (tipo = 'HISTORIA') = (ejecucion_historia_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -1017,6 +1368,9 @@ class TipoTrabajo(StrEnum):
     RUTEO = "RUTEO"
     INGESTA_PAGOS = "INGESTA_PAGOS"
     """Desde la 0007: juzgar un archivo de pagos/v1. No es de ningun flujo: no encadena nada."""
+    HISTORIA = "HISTORIA"
+    """Desde la 0008: materializar un dataset conformado, de cartera o de pagos, en el modelo
+    historico. No es de ningun flujo, y ninguna etapa operacional lo espera."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -1037,8 +1391,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     lease vence. Lo que hace segura la repeticion no es la cola sino los motores: sus bloqueos, sus
     estados terminales y sus transacciones todo o nada.
 
-    Cada recurso tiene un solo trabajo: las restricciones unicas de sus cuatro objetivos lo
-    garantizan, y una nueva entrega reusa la misma fila.
+    Cada recurso tiene un solo trabajo: las restricciones unicas de sus objetivos lo garantizan, y
+    una nueva entrega reusa la misma fila.
     """
 
     __tablename__ = "trabajo_orquestacion"
@@ -1059,11 +1413,15 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ingesta_pagos_id"], ["ingesta_pagos.id"], name="fk_trabajo_pagos"
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_historia_id"], ["ejecucion_historia.id"], name="fk_trabajo_historia"
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
         sa.UniqueConstraint("ejecucion_ruteo_id", name="uq_trabajo_ruteo"),
         sa.UniqueConstraint("ingesta_pagos_id", name="uq_trabajo_pagos"),
+        sa.UniqueConstraint("ejecucion_historia_id", name="uq_trabajo_historia"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -1107,12 +1465,14 @@ class TrabajoOrquestacion(SQLModel, table=True):
         ),
     )
     corrida_id: int | None = None
-    """El objetivo de una INGESTA. Existe exactamente uno de los cuatro: el de su tipo."""
+    """El objetivo de una INGESTA. Existe exactamente uno de sus objetivos: el de su tipo."""
     ejecucion_decision_id: int | None = None
     ejecucion_territorial_id: int | None = None
     ejecucion_ruteo_id: int | None = None
     ingesta_pagos_id: int | None = None
     """El objetivo de un trabajo INGESTA_PAGOS, desde la 0007."""
+    ejecucion_historia_id: int | None = None
+    """El objetivo de un trabajo HISTORIA, desde la 0008."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

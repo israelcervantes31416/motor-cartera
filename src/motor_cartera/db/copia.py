@@ -8,12 +8,12 @@ corrida sigue publicando todo o nada.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from psycopg.types.json import Jsonb
 from sqlmodel import Session
 
-__all__ = ["Jsonb", "copiar"]
+__all__ = ["Jsonb", "copiar", "copiar_csv"]
 
 
 def copiar(s: Session, tabla: str, columnas: tuple[str, ...], filas: Iterable[tuple]) -> int:
@@ -29,3 +29,15 @@ def copiar(s: Session, tabla: str, columnas: tuple[str, ...], filas: Iterable[tu
                 copia.write_row(fila)
                 copiadas += 1
     return copiadas
+
+
+def copiar_csv(s: Session, tabla: str, columnas: Sequence[str], bloques: Iterable[bytes]) -> None:
+    """Copia a `tabla`, en la transaccion de `s`, bloques de CSV ya escritos: cada fila con las
+    `columnas` en su orden, un texto entre comillas y un vacio sin comillas como NULL. Es el COPY de
+    la historia, cuyo CSV escribe Arrow por lotes, sin pasar fila por fila por Python."""
+    conexion = s.connection().connection.driver_connection
+    with conexion.cursor() as cursor:
+        instruccion = f"COPY {tabla} ({', '.join(columnas)}) FROM STDIN (FORMAT csv)"
+        with cursor.copy(instruccion) as copia:
+            for bloque in bloques:
+                copia.write(bloque)

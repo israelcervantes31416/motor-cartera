@@ -1,4 +1,5 @@
-"""Lo que varias rutas necesitan: una sesion por peticion y buscar una corrida."""
+"""Lo que varias rutas necesitan: una sesion por peticion, una de solo lectura con una sola foto
+de la base, y buscar una corrida."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from sqlmodel import Session, select
 
 from motor_cartera.api.errores import ErrorDeApi
 from motor_cartera.db.modelos import Corrida
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import sesion, sesion_de_lectura
 
 
 def obtener_sesion() -> Iterator[Session]:
@@ -20,6 +21,16 @@ def obtener_sesion() -> Iterator[Session]:
 
 
 Sesion = Annotated[Session, Depends(obtener_sesion)]
+
+
+def obtener_sesion_de_lectura() -> Iterator[Session]:
+    with sesion_de_lectura() as s:
+        yield s
+
+
+SesionDeLectura = Annotated[Session, Depends(obtener_sesion_de_lectura)]
+"""Para las rutas que solo leen y componen varias consultas, como la Cuenta 360: todas ven la misma
+foto de la base, asi que un corte que se publica mientras responden no aparece a medias."""
 
 
 def buscar_corrida(s: Session, run_id: UUID) -> Corrida:

@@ -30,6 +30,7 @@ from motor_cartera.api.esquemas import (
 from motor_cartera.db.modelos import (
     Corrida,
     EjecucionDecision,
+    EjecucionHistoria,
     EjecucionRuteo,
     EjecucionTerritorial,
     FlujoOrquestacion,
@@ -313,6 +314,7 @@ def _trabajos(condicion: ColumnElement) -> Select[Any]:
                 EjecucionTerritorial.territorial_run_id,
                 EjecucionRuteo.ruteo_run_id,
                 IngestaPagos.pagos_run_id,
+                EjecucionHistoria.historia_run_id,
             ),
         )
         .select_from(TrabajoOrquestacion)
@@ -327,6 +329,9 @@ def _trabajos(condicion: ColumnElement) -> Select[Any]:
         )
         .outerjoin(EjecucionRuteo, TrabajoOrquestacion.ejecucion_ruteo_id == EjecucionRuteo.id)
         .outerjoin(IngestaPagos, TrabajoOrquestacion.ingesta_pagos_id == IngestaPagos.id)
+        .outerjoin(
+            EjecucionHistoria, TrabajoOrquestacion.ejecucion_historia_id == EjecucionHistoria.id
+        )
         .where(condicion)
     )
 

@@ -330,13 +330,20 @@ def test_cargar_pagos_acepta_por_la_cola_y_dice_como_quedo(tmp_path):
     assert resultado.exit_code == 0, resultado.output
     assert "EXITOSA" in resultado.output
     assert re.search(r"leidas (\d+), validas \1, rechazadas 0", resultado.output)
-    (trabajo,) = _trabajos()
+    trabajo, historia = _trabajos()
     assert (trabajo.tipo, trabajo.estado, trabajo.intentos, trabajo.flujo_id) == (
         TipoTrabajo.INGESTA_PAGOS,
         EstadoTrabajo.COMPLETADO,
         1,
         None,
     )
+    # La historia de sus pagos queda en la cola, en paralelo: la materializa un worker.
+    assert (historia.tipo, historia.estado, historia.flujo_id) == (
+        TipoTrabajo.HISTORIA,
+        EstadoTrabajo.PENDIENTE,
+        None,
+    )
+    assert "historia/v1" in resultado.output
     assert _cuantos(Corrida) == 0
 
 

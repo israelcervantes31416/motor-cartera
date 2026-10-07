@@ -1,15 +1,17 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable y Fuentes Oficiales
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales y Modelo Histórico
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
-de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0) y las Fuentes Oficiales, Evidencia Inmutable y
-Escala (v0.6.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión. El
-uso está en el [README](../README.md) y en [fuentes.md](fuentes.md); aquí va el porqué.
+de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
+Escala (v0.6.0) y el Modelo Histórico y Cuenta 360 (v0.7.0) están hechos como están, y qué haría
+distinto o cuándo cambiaría cada decisión. El uso está en el [README](../README.md), en
+[fuentes.md](fuentes.md), en [historia.md](historia.md) y en [cuenta_360.md](cuenta_360.md); aquí
+va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
-Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable, y las 54 a
-70, de las Fuentes Oficiales. Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es
-la orquestación durable de v0.5.0. Las secciones que v0.5.0 o v0.6.0 cambiaron lo dicen al final,
-en un párrafo *Desde v0.5.0* o *Desde v0.6.0*.
+Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
+de las Fuentes Oficiales, y las 71 a 84, del Modelo Histórico. Donde las de la fase 1 hablan de la
+orquestación de la fase 3, hoy es la orquestación durable de v0.5.0. Las secciones que una versión
+posterior cambió lo dicen al final, en un párrafo *Desde v0.5.0*, *Desde v0.6.0* o *Desde v0.7.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -81,6 +83,20 @@ en un párrafo *Desde v0.5.0* o *Desde v0.6.0*.
 68. [Detección de formato por contenido](#68-detección-de-formato-por-contenido)
 69. [Escala: perfiles, escenario longitudinal y benchmark fuera del CI](#69-escala-perfiles-escenario-longitudinal-y-benchmark-fuera-del-ci)
 70. [Qué no resuelve v0.6.0, y qué queda para v0.7](#70-qué-no-resuelve-v060-y-qué-queda-para-v07)
+71. [Tres capas: el histórico no reemplaza al conformado ni a la operacional](#71-tres-capas-el-histórico-no-reemplaza-al-conformado-ni-a-la-operacional)
+72. [La identidad: despacho + cartera + CLIENTE_UNICO, sin persona ni crédito](#72-la-identidad-despacho--cartera--cliente_unico-sin-persona-ni-crédito)
+73. [Identificadores públicos deterministas](#73-identificadores-públicos-deterministas)
+74. [Un corte canónico por fecha: fuentes equivalentes y cortes conflictivos](#74-un-corte-canónico-por-fecha-fuentes-equivalentes-y-cortes-conflictivos)
+75. [Un snapshot estrecho, inmutable y con su linaje](#75-un-snapshot-estrecho-inmutable-y-con-su-linaje)
+76. [La fecha en el snapshot, garantizada por una llave compuesta](#76-la-fecha-en-el-snapshot-garantizada-por-una-llave-compuesta)
+77. [Pagos observados: una fila, una observación, sin llave hacia la cuenta](#77-pagos-observados-una-fila-una-observación-sin-llave-hacia-la-cuenta)
+78. [Eventos y continuidad al consultar; el vocabulario de lo observado](#78-eventos-y-continuidad-al-consultar-el-vocabulario-de-lo-observado)
+79. [historia/v1: una ejecución versionada, abierta con su dataset, paralela al flujo](#79-historiav1-una-ejecución-versionada-abierta-con-su-dataset-paralela-al-flujo)
+80. [La cola toma lo operacional antes que la historia](#80-la-cola-toma-lo-operacional-antes-que-la-historia)
+81. [Carga masiva todo o nada: Parquet, CSV de Arrow, COPY e INSERT ... SELECT](#81-carga-masiva-todo-o-nada-parquet-csv-de-arrow-copy-e-insert--select)
+82. [Concurrencia sin bloqueos mutuos](#82-concurrencia-sin-bloqueos-mutuos)
+83. [Backfill fuera de Alembic, idempotente](#83-backfill-fuera-de-alembic-idempotente)
+84. [Índices medidos, sin particionado; y qué no resuelve v0.7.0](#84-índices-medidos-sin-particionado-y-qué-no-resuelve-v070)
 
 ---
 
@@ -357,6 +373,11 @@ vigente.
 publica (ver 2), así que el corte de una corrida publicada es el de todos sus registros.
 Antes la corrida tomaba el más reciente, y un archivo con dos cortes quedaba vigente con la
 fecha de uno solo.
+
+**Desde v0.7.0.** La cartera vigente de la operación sigue siendo esta, y "vale la última" del
+mismo corte. El modelo histórico no hace lo mismo: guarda un solo corte canónico por fecha, una
+segunda cartera del mismo día con otra firma de contenido es un conflicto que no lo cambia, y su
+último corte (`GET /cartera/cortes`) es el de fecha más reciente (ver 74).
 
 ## 11. Procesar en segundo plano, dentro de la API
 
@@ -1411,6 +1432,9 @@ esperar, y dos workers soltados a la vez por una barrera toman cada uno un traba
 solo si hay uno solo. Otra pone a dos workers de verdad sobre dos flujos y exige que ningún trabajo
 se ejecute dos veces.
 
+**Desde v0.7.0.** El orden ya no es solo por id: entre los que se pueden tomar, primero los
+operacionales y al final los `HISTORIA` (ver 80).
+
 ## 46. Lease y heartbeat
 
 **Decisión.** Un trabajo tomado es de su worker mientras dure su lease, `MC_WORKER_LEASE_SEGUNDOS`
@@ -1613,6 +1637,10 @@ administrada cuesta poco operar (ver 53).
   API;
 - no hay *object storage*: el archivo vive en PostgreSQL mientras la ingesta lo necesita (ver 43);
 - no hay autoscaling ni trazas distribuidas entre la API y el worker.
+
+*Desde v0.7.0* la cola tiene dos niveles: entre los trabajos que se pueden tomar, primero los
+operacionales y al final los `HISTORIA` (ver 80). Sigue sin haber prioridades por despacho, por
+cartera ni por urgencia.
 
 **Lo que sigue, v0.6.0 — Cloud + observabilidad.** El despliegue en la nube, el archivo en un
 *object storage*, las métricas de la cola (cuántos trabajos esperan, cuánto tardan, cuántos se
@@ -1913,3 +1941,266 @@ conformados de cartera/v2 y de pagos/v1, el modelo canónico e histórico: una c
 cortes (cuándo entró, cómo cambió su saldo y su atraso, cuándo salió), con sus pagos y su evidencia,
 sin volver a interpretar un solo archivo. Los escenarios longitudinales del generador son su banco
 de pruebas.
+
+## 71. Tres capas: el histórico no reemplaza al conformado ni a la operacional
+
+**Decisión.** El modelo histórico es una capa nueva entre el dataset conformado (el Parquet de cada
+fuente, completo y tipado) y la proyección operacional (`Cuenta`, que leen los motores v1). No
+reemplaza a ninguna: el Parquet sigue siendo la fuente completa, y `Cuenta` sigue siendo lo que
+leen decision/v1, territorial/v1 y ruteo/v1, que no leen la historia ni la esperan.
+
+**Por qué.** Cada capa contesta otra pregunta. El conformado dice qué llegó, columna por columna;
+la operacional, qué se hace hoy con cada cuenta; la histórica, qué le pasó a cada cuenta a través
+del tiempo. Fusionarlas obligaría a copiar 93 columnas por corte (26 millones de filas anchas al
+año con la cartera objetivo) o a que los motores dependieran de una proyección que todavía no
+necesitan. Que decision/v1 consuma la historia es de v0.10.
+
+**Cuenta y CuentaCanonica.** `Cuenta` no se renombra ni cambia: es la foto operacional de una
+corrida. `CuentaCanonica` es la identidad longitudinal; sus valores en cada corte son sus snapshots.
+
+## 72. La identidad: despacho + cartera + CLIENTE_UNICO, sin persona ni crédito
+
+**Decisión.** La cuenta canónica es `(despacho_id, cartera_id, cliente_unico)`, con su restricción
+única. No hay `persona_id`, `credito_id` ni `cliente_persona`.
+
+**Por qué.** Ninguna fuente dice que dos cuentas sean de la misma persona, ni trae un identificador
+de crédito: inventarlos sería afirmar algo que los datos no sostienen, y cada número que saliera de
+ahí heredaría ese supuesto. `CLIENTE_UNICO` es el identificador fuente de la cuenta y así se trata.
+Que la llave incluya despacho y cartera cuesta dos columnas y evita rediseñar cuando haya más de
+una: el mismo `CLIENTE_UNICO` en otra cartera ya es otra cuenta, aunque hoy opere una sola.
+
+**Cuándo cambiaría.** Cuando una fuente traiga una identidad de persona o de crédito con evidencia
+suficiente: entonces sería una capa encima de esta, no un reemplazo.
+
+## 73. Identificadores públicos deterministas
+
+**Decisión.** `cuenta_id`, `corte_id` y `pago_observado_id` son UUID versión 5 de su llave natural
+(despacho, cartera y `CLIENTE_UNICO`; despacho, cartera y fecha; dataset y fila), en un espacio de
+nombres fijo del proyecto. `historia_run_id`, que identifica un intento y no un hecho, sigue siendo
+aleatorio, como los demás `*_run_id`.
+
+**Por qué.** La historia se puede reconstruir (un backfill, una migración que baja y vuelve a
+subir): con identificadores sorteados, cada reconstrucción cambiaría los identificadores públicos y
+rompería cualquier referencia guardada fuera del sistema. Con UUID v5, reconstruir en cualquier
+orden y en cualquier máquina da los mismos, y la prueba de reconstrucción los compara. El id
+interno sigue siendo el que usan las llaves foráneas, y nunca sale por la API.
+
+**Qué no esconden.** Quien conoce la llave puede calcular el identificador, igual que con la API key
+puede buscar la cuenta por su `CLIENTE_UNICO`. Lo que no revelan, a diferencia de un consecutivo, es
+el volumen ni el orden en que se crearon.
+
+## 74. Un corte canónico por fecha: fuentes equivalentes y cortes conflictivos
+
+**Decisión.** Hay un solo `CorteCanonico` por `(despacho_id, cartera_id, fecha_corte)`, atado al
+dataset conformado que lo produjo. Un segundo dataset de la misma fecha con la **misma** firma de
+contenido es una fuente equivalente: su ejecución termina `EXITOSA` con `FUENTE_EQUIVALENTE`,
+apuntando al mismo corte, sin leer ni duplicar nada. Con **otra** firma es un conflicto: su
+ejecución termina `FALLIDA` con `CORTE_CANONICO_CONFLICTIVO` y el corte publicado no cambia.
+
+**Por qué.** v0.6.0 deja publicar la misma cartera en dos formatos, y eso no debe duplicar la
+historia; pero dos carteras distintas del mismo día son una contradicción que el sistema no puede
+resolver solo. Elegir "la última" sería sobrescribir la historia en silencio y hacer que su
+contenido dependiera del orden de llegada. Es la diferencia con la capa operacional, donde "vale la
+última" del mismo corte (decisión 10): la operación necesita una cartera para trabajar hoy, y la
+historia necesita no mentir sobre ayer.
+
+**Lo que queda pendiente.** Una corrección explícita (reemplazar un corte con otro, con su motivo y
+su auditoría, sin borrar el anterior) es una operación que v0.7 no tiene. El conflicto queda
+auditado mientras tanto, con las dos firmas y el dataset de cada una.
+
+## 75. Un snapshot estrecho, inmutable y con su linaje
+
+**Decisión.** `SnapshotCuenta` guarda una cuenta en un corte con solo las variables históricas de
+uso transversal (saldos, atraso, producto, estrategia, canal, último pago, geografía, plan y
+promesa), cada una con el tipo que tiene en el Parquet, y su `source_row` y `source_sheet`. Su llave
+primaria es `(corte_canonico_id, cuenta_canonica_id)`, sin id propio. No guarda PII ni un hash del
+registro, y un snapshot nunca se actualiza.
+
+**Por qué estrecho.** Las 93 columnas ya están en el Parquet, y `source_row` lleva a la fila exacta.
+Copiarlas haría la tabla grande varias veces más ancha por columnas que la historia no consulta,
+empezando por el nombre, el domicilio y los teléfonos, que no deben multiplicarse en una tabla de
+decenas de millones de filas. Lo que v0.14 necesite de más se agrega con evidencia de que se usa.
+
+**Por qué sin id ni hash.** Nadie referencia un snapshot por un id, y su llave natural es igual de
+corta: un id serial habría sido una columna y un índice de más por fila. El hash del registro
+costaría 32 bytes por fila y no explicaría nada que el dataset y la fila no expliquen ya; detectar
+que una cuenta cambió en algo de sus 93 columnas, si se necesita, se calcula sobre el Parquet.
+
+**Por qué inmutable.** Un corte nuevo es otra fila. Sin `UPDATE`, la historia no depende del orden
+en que llegaron los cortes, y un corte atrasado no puede reescribir los demás.
+
+## 76. La fecha en el snapshot, garantizada por una llave compuesta
+
+**Decisión.** El snapshot repite la `fecha_corte` de su corte, y su llave foránea es compuesta:
+`(corte_canonico_id, fecha_corte)` hacia `corte_canonico (id, fecha_corte)`, que tiene su propia
+restricción única.
+
+**Por qué.** Las consultas principales son de una cuenta: su historia en orden de fecha, su último
+snapshot, su snapshot en una fecha. Con la fecha en el snapshot, el índice `(cuenta_canonica_id,
+fecha_corte)` las resuelve solo, con un `LIMIT` que se detiene en cuanto tiene lo que pide; sin
+ella, cada una tendría que leer todos los snapshots de la cuenta, cruzarlos con sus cortes y
+ordenar. La redundancia no puede mentir: la base rechaza un snapshot cuya fecha no es la de su
+corte. Cuesta cuatro bytes por fila.
+
+## 77. Pagos observados: una fila, una observación, sin llave hacia la cuenta
+
+**Decisión.** Cada fila aceptada de pagos/v1 es exactamente un `PagoObservado`, con sus 23 campos
+tipados como en el Parquet, su dataset, su ingesta, su fila, su hoja, su despacho y su cartera. La
+llave primaria es `(dataset_conformado_id, source_row)`. No hay deduplicación y no hay llave foránea
+hacia `CuentaCanonica`: la relación se hace al consultar, por despacho, cartera y `CLIENTE_UNICO`,
+con su índice.
+
+**Por qué materializarlos.** La Cuenta 360 necesita los pagos de una cuenta sin leer Parquet en cada
+petición, y el motor de pagos de v0.8 los va a analizar con los 23 campos. No son verdad económica:
+no hay pago conciliado, aplicado ni atribuido, y la API no presenta ninguna suma como recuperación.
+
+**Por qué sin llave hacia la cuenta.** Una asociación guardada sería mutable: un pago que llega
+antes que el primer corte de su cliente tendría que enlazarse después, y un backfill de cortes
+obligaría a volver a enlazar. Sin ella, un pago de un cliente que ningún corte trae se conserva
+como `SIN_CUENTA_OBSERVADA` y **no crea una cuenta**; cuando el corte llega, el pago se relaciona
+solo, sin que se toque. Las relaciones económicas explícitas son del motor de pagos.
+
+**Por qué su id no tiene índice.** `pago_observado_id` sale del dataset y la fila, que ya son la
+llave primaria, así que su unicidad está implicada; ninguna consulta de v0.7 lo busca, y un índice
+sobre quince millones de UUID al año sería costo sin uso.
+
+## 78. Eventos y continuidad al consultar; el vocabulario de lo observado
+
+**Decisión.** No hay tabla de eventos ni de deltas. `PRIMERA_OBSERVACION`, `SALIDA_OBSERVADA`,
+`REINGRESO_OBSERVADO`, la continuidad y los deltas se calculan al consultar, en un núcleo puro
+(`historia/presencia.py`), a partir de los cortes de la cartera y de los cortes en que la cuenta
+tiene snapshot. El estado de presencia es `EN_CARTERA` o `NO_OBSERVADA_EN_ULTIMO_CORTE`.
+
+**Por qué al consultar.** Todo eso ya está implícito en los snapshots; guardarlo duplicaría datos y,
+peor, los haría depender del orden de llegada: un corte atrasado obligaría a reescribir eventos y
+deltas ya guardados. Calcularlos cuesta leer los cortes de una cartera (cientos) y los de una cuenta
+(un índice). El benchmark lo mide con la cartera objetivo ([historia.md](historia.md)): con 12
+cortes XL publicados, los eventos de una cuenta salen en unos 2.4 ms desde el servicio. No hace
+falta persistir nada.
+
+**Por qué ese vocabulario.** La primera vez que se observa una cuenta no es su originación, y que
+deje de aparecer no demuestra que se liquidó, se canceló, se castigó o se vendió. Los nombres dicen
+lo que el sistema sabe. Dos snapshots son continuos solo si sus cortes son consecutivos en la
+cartera; si la cuenta faltó en medio, la diferencia se muestra pero no se etiqueta como la evolución
+de un periodo.
+
+## 79. historia/v1: una ejecución versionada, abierta con su dataset, paralela al flujo
+
+**Decisión.** Cada materialización es una `EjecucionHistoria` versionada (`historia/v1`), con su
+resultado estable, sus conteos y su detalle; a lo más una `EXITOSA` y una `EN_PROCESO` por dataset y
+versión, con índices únicos parciales. Se abre, con su trabajo `HISTORIA`, en la misma transacción
+que publica el dataset conformado de cartera/v2 o de pagos/v1. Es un solo tipo de trabajo nuevo,
+`HISTORIA`, sin flujo: `tipo_fuente` ya dice si es de cartera o de pagos.
+
+**Por qué en la misma transacción.** Si la historia se abriera después, habría un instante en que el
+dataset existe sin su historia pendiente, y una caída en ese instante la perdería sin que nadie lo
+supiera. Abierta con el dataset, cualquier worker la termina.
+
+**Por qué paralela.** La historia es una proyección, no una etapa: decision/v1 no la necesita, y una
+historia que falla (un conflicto de corte, por ejemplo) no debe detener la operación del día. Por
+eso no es parte del flujo, no tiene `flujo_id` y ninguna etapa la espera.
+
+**Por qué un resultado además del estado.** `EXITOSA` no basta para distinguir un corte publicado de
+una fuente equivalente, ni `FALLIDA` un conflicto de un error. El resultado es el código estable que
+un cliente compara; su vocabulario, como el de las reglas de los motores, es de su versión y no
+lleva `CHECK`.
+
+## 80. La cola toma lo operacional antes que la historia
+
+**Decisión.** Entre los trabajos que ya se pueden tomar, el worker toma primero los operacionales
+(ingestas, decisiones, organizaciones territoriales, ruteos e ingestas de pagos) y al final los
+`HISTORIA`: `ORDER BY (tipo = 'HISTORIA'), id`. No cambia el lease, el latido, los reintentos, la
+entrega al menos una vez ni los cierres condicionados a su dueño.
+
+**Por qué.** La historia de una cartera se abre al terminar su ingesta, antes de que su decisión
+entre a la cola: con un orden estrictamente por id, un solo worker haría esperar a la decisión del
+día detrás de la historia, y un backfill de cientos de cortes la haría esperar horas. Con dos
+niveles, la historia no retrasa la operación, y sigue siendo justa entre sí. El conjunto de trabajos
+que se pueden tomar es pequeño (el índice parcial solo cubre los pendientes y los vencidos), así que
+ordenarlo no cuesta.
+
+**El riesgo.** Con un flujo constante de trabajo operacional, la historia podría esperar; con la
+operación de un despacho (unas pocas subidas al día) no pasa, y más workers lo resuelven.
+
+## 81. Carga masiva todo o nada: Parquet, CSV de Arrow, COPY e INSERT ... SELECT
+
+**Decisión.** La materialización de un corte lee el Parquet por lotes, solo con las columnas que
+necesita, convierte cada lote a CSV con el escritor de Arrow y lo copia con `COPY` a una tabla
+temporal (`ON COMMIT DROP`); después inserta las cuentas canónicas nuevas y los snapshots con
+`INSERT ... SELECT`, resolviendo las cuentas por `JOIN`, cuenta y cierra, todo en una transacción.
+Un dataset de pagos se copia con `COPY` directo a `pago_observado`. Antes de leer, el Parquet se
+comprueba contra su SHA-256 y contra su registro. Nunca se lee el archivo original.
+
+**Por qué así.** Un objeto ORM por fila no escala a 500,000 filas por corte. El CSV de Arrow se
+escribe en C++ y es exactamente el que PostgreSQL lee (un texto entre comillas, un vacío sin ellas es
+`NULL`), así que ningún valor pasa fila por fila por Python. La tabla temporal permite resolver las
+cuentas con operaciones de conjunto, que el planificador hace con un *hash join*, después de un
+`ANALYZE` de la tabla temporal. Todo en una transacción hace que una falla en cualquier punto no deje
+nada a medias; las pruebas inyectan fallas en cinco puntos distintos.
+
+**Por qué solo el conformado.** Volver a leer el original repetiría el juicio del contrato con otra
+implementación, y podría no dar lo mismo. El Parquet ya es la fuente validada y tipada; el original
+queda como evidencia. Una prueba borra el original del almacén y la historia se materializa igual.
+
+## 82. Concurrencia sin bloqueos mutuos
+
+**Decisión.** La ejecución se toma con su fila bloqueada; el corte se publica con
+`INSERT ... ON CONFLICT DO NOTHING` sobre su fecha; las cuentas nuevas se insertan en orden de
+`CLIENTE_UNICO` con `ON CONFLICT DO NOTHING`.
+
+**Por qué.** Dos workers con el mismo dataset: el segundo espera la fila y la encuentra terminada.
+Dos fuentes del mismo corte: el segundo `INSERT` espera a que el primero confirme y entonces se juzga
+la equivalencia o el conflicto contra el corte ya publicado. Dos cortes distintos con cuentas nuevas
+en común: como los dos las insertan en el mismo orden, el que llega segundo espera en la primera
+común, y no puede haber un ciclo de esperas. Un worker que pierde su lease después de calcular sigue
+teniendo la ejecución bloqueada: publica una vez, y el trabajo lo cierra su dueño vigente. Las
+pruebas fuerzan cada caso con dos hilos y PostgreSQL real.
+
+**El costo.** Mientras un corte publica sus cuentas nuevas, otro que comparte algunas espera a que
+termine. Con cortes de una misma cartera que llegan uno por semana, es raro y breve.
+
+**Y las lecturas.** Cada respuesta de la Cuenta 360 y de la historia compone varias consultas: los
+cortes de la cuenta, los de la cartera, sus snapshots, sus pagos. Se leen en una transacción de solo
+lectura `REPEATABLE READ`, así que todas ven la misma foto de la base, y un corte que se publica
+mientras se responde no aparece en una consulta y falta en la siguiente. Con `READ COMMITTED`, una
+cuenta que sí está en el corte nuevo se vería, en esa respuesta, como una salida. En PostgreSQL, una
+transacción que solo lee no falla por serialización, así que esto no agrega reintentos. Una prueba
+publica un corte entre dos consultas de una misma respuesta.
+
+## 83. Backfill fuera de Alembic, idempotente
+
+**Decisión.** La migración `0008` solo crea las tablas y extiende la cola; no materializa ningún
+dataset. `motor-cartera backfill-historia` encola un trabajo `HISTORIA` por cada dataset sin historia
+`EXITOSA` (los de cartera en orden de fecha de corte), con `--dry-run` y `--reintentar-fallidas`.
+Bajar la `0008` cierra primero la historia en curso (sus ejecuciones `FALLIDA`, sus trabajos
+`FALLIDO`, con el motivo), quita los trabajos `HISTORIA` y las tablas, y no toca los datasets, sus
+artefactos, las corridas ni las ingestas.
+
+**Por qué.** Procesar millones de filas dentro de una migración la haría lenta, imposible de
+reintentar a medias y bloquearía el despliegue. El backfill es un proceso de la aplicación, con su
+cola, sus reintentos y su auditoría, y es idempotente: correrlo dos veces no encola nada dos veces.
+Las ejecuciones que solo fallaron no se reintentan sin pedirlo, porque un conflicto de corte
+volvería a fallar igual. Como la historia es una proyección del conformado, bajar la migración no
+pierde evidencia: al volver a subir, el backfill la reconstruye, con los mismos identificadores.
+
+## 84. Índices medidos, sin particionado; y qué no resuelve v0.7.0
+
+**Decisión.** Cada índice responde a una consulta que existe (la tabla está en
+[historia.md](historia.md)), y ninguno es "por si acaso": no hay índice sobre
+`pago_observado_id`, ni sobre la fecha sola de `corte_canonico`, y el de la historia de una cuenta
+se declaró sin `DESC`, porque el btree se recorre hacia atrás con el mismo plan. No hay particionado.
+
+**Por qué sin particionado.** Con esos índices, ninguna consulta de una cuenta recorre una tabla
+grande, y el benchmark lo comprueba con el plan de cada sentencia: con 12 cortes XL publicados (5.8
+millones de snapshots y 3 millones de pagos observados), la sentencia más cara de una cuenta lee 30
+páginas y se ejecuta en 0.14 ms dentro de PostgreSQL. El particionado agrega
+complejidad (llaves primarias que incluyan la llave de partición, mantenimiento de particiones,
+planes que dependen de la poda) y se justifica con evidencia: cuando el mantenimiento de
+`snapshot_cuenta` o `pago_observado` cueste, o cuando la analítica de v0.14 necesite podar por fecha.
+
+**Lo que v0.7.0 no hace**, a propósito: analytics (roll rates, vintages, cure rates, cohortes,
+matrices de transición, pronósticos), que es de v0.14; el motor de pagos (deduplicación,
+conciliación, reversos, aplicación, atribución, recuperación neta, la llave económica), que es de
+v0.8; el lifecycle de cobranza, de v0.9; variables históricas, scores o modelos en las decisiones,
+de v0.10; persona, crédito, correcciones explícitas de un corte y multitenancy, sin evidencia
+todavía. La historia está hecha para que todo eso se calcule encima sin rediseñarla.

@@ -13,7 +13,9 @@ En la transaccion que tiene la corrida bloqueada:
      CLIENTE_UNICO repetido, se decide si se publica;
   6. segunda pasada: se firman los validos y, si se publica, se escribe el dataset conformado y se
      proyecta cada cuenta a Cuenta, con COPY;
-  7. si se publico, el Parquet se guarda en el almacen y se registra con su linaje.
+  7. si se publico, el Parquet se guarda en el almacen y se registra con su linaje, junto con su
+     ejecucion historica EN_PROCESO y su trabajo HISTORIA: la historia es paralela al flujo, y no
+     hay un instante en que el dataset exista sin ella pendiente.
 
 Nada se confirma aqui: quien llama confirma todo junto, o revierte todo. Una corrida publica todas
 sus cuentas o ninguna, igual que en cartera/v1, aunque se haya leido de a 50,000 filas.
@@ -58,6 +60,7 @@ from motor_cartera.fuentes.proyeccion import (
     filas_cuenta,
     rechazos_geograficos,
 )
+from motor_cartera.historia.ejecuciones import abrir_historia
 from motor_cartera.ingesta.fuente_oficial import DUPLICADO, Cronometro, JuicioDeFuente, Rechazado
 from motor_cartera.ingesta.lectores import ErrorDeLectura
 
@@ -154,7 +157,15 @@ def juzgar_y_publicar(
         if escritor is not None:
             escritor.cerrar()
             with cronometro.fase("almacen_conformado"):
-                _publicar_conformado(s, corrida, artefacto, escritor, firma_contenido, almacen)
+                _publicar_conformado(
+                    s,
+                    corrida,
+                    artefacto,
+                    escritor,
+                    firma_contenido,
+                    almacen,
+                    max_intentos=config.worker_max_intentos,
+                )
 
     if companera is not None:
         s.add(_hoja(corrida.id, companera))
@@ -211,23 +222,27 @@ def _publicar_conformado(
     escritor: EscritorConformado,
     firma_contenido: str,
     almacen,
+    *,
+    max_intentos: int,
 ) -> None:
-    """El Parquet al almacen (primero el objeto durable) y su registro con su linaje."""
+    """El Parquet al almacen (primero el objeto durable), su registro con su linaje y su historia
+    pendiente: la ejecucion historica y su trabajo, en la misma transaccion."""
     with escritor.ruta.open("rb") as archivo:
         objeto = almacen.guardar(archivo)
     nombre = f"cartera_v2_{corrida.run_id}.parquet"
     conformado = registrar_artefacto(s, ArtefactoGuardado(objeto, Formato.PARQUET, nombre))
-    s.add(
-        DatasetConformado(
-            contrato=CONTRATO_V2.version,
-            corrida_id=corrida.id,
-            artefacto_original_id=original.id,
-            artefacto_conformado_id=conformado.id,
-            firma_contenido=firma_contenido,
-            filas=escritor.filas,
-            columnas=len(CONTRATO_V2.columnas),
-        )
+    dataset = DatasetConformado(
+        contrato=CONTRATO_V2.version,
+        corrida_id=corrida.id,
+        artefacto_original_id=original.id,
+        artefacto_conformado_id=conformado.id,
+        firma_contenido=firma_contenido,
+        filas=escritor.filas,
+        columnas=len(CONTRATO_V2.columnas),
     )
+    s.add(dataset)
+    s.flush()
+    abrir_historia(s, dataset, max_intentos=max_intentos)
 
 
 def _hoja(corrida_id: int, companera: CompaneraAuditada) -> HojaCompanera:

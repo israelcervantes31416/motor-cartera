@@ -35,6 +35,20 @@ def sesion() -> Iterator[Session]:
         yield s
 
 
+@contextmanager
+def sesion_de_lectura() -> Iterator[Session]:
+    """Una sesion de solo lectura en la que todas las consultas ven la misma foto de la base
+    (REPEATABLE READ): una respuesta que compone varias consultas no mezcla dos estados, aunque otra
+    transaccion publique un corte entre una consulta y la siguiente. En PostgreSQL, una transaccion
+    que solo lee nunca falla por serializacion en REPEATABLE READ. La conexion vuelve al pool con su
+    nivel de aislamiento de siempre."""
+    with Session(crear_motor()) as s:
+        s.connection(
+            execution_options={"isolation_level": "REPEATABLE READ", "postgresql_readonly": True}
+        )
+        yield s
+
+
 def insertar_en_savepoint(s: Session, objeto: SQLModel) -> IntegrityError | None:
     """Inserta `objeto` dentro de un SAVEPOINT de la transaccion de `s`, sin confirmarla.
 

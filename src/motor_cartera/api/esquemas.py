@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
@@ -19,15 +20,18 @@ from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
     EstadoFlujo,
+    EstadoHistoria,
     EstadoIngestaPagos,
     EstadoRuteo,
     EstadoTerritorial,
     EstadoTrabajo,
     EtapaFlujo,
+    TipoFuenteHistoria,
     TipoTrabajo,
 )
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.fuentes.proyeccion import VERSION_PROYECCION
+from motor_cartera.historia.presencia import Presencia, TipoEvento
 from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 from motor_cartera.segmentacion import Dimension
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
@@ -1008,8 +1012,9 @@ class TrabajoRespuesta(BaseModel):
         description="El flujo del que es; null si su etapa se pidio a mano."
     )
     tipo: TipoTrabajo = Field(
-        description="Que motor ejecuta: INGESTA, DECISION, TERRITORIAL o RUTEO, o INGESTA_PAGOS, "
-        "que no es de ningun flujo."
+        description="Que motor ejecuta: INGESTA, DECISION, TERRITORIAL o RUTEO; o INGESTA_PAGOS o "
+        "HISTORIA, que no son de ningun flujo. Un HISTORIA materializa un dataset conformado en el "
+        "modelo historico, en paralelo al flujo operacional."
     )
     estado: EstadoTrabajo = Field(
         description="PENDIENTE (en la cola), EJECUTANDO (lo tiene un worker), COMPLETADO (su "
@@ -1018,7 +1023,7 @@ class TrabajoRespuesta(BaseModel):
     )
     objetivo_run_id: UUID = Field(
         description="El identificador publico de su recurso, segun el tipo: run_id, "
-        "decision_run_id, territorial_run_id, ruteo_run_id o pagos_run_id."
+        "decision_run_id, territorial_run_id, ruteo_run_id, pagos_run_id o historia_run_id."
     )
     intentos: int = Field(description="Cuantas veces lo ha tomado un worker para ejecutarlo.")
     max_intentos: int = Field(description="Cuantas veces se puede tomar, desde que nacio.")
@@ -1041,3 +1046,395 @@ class TrabajoRespuesta(BaseModel):
 class PaginaTrabajos(Pagina[TrabajoRespuesta]):
     flujo_id: UUID
     run_id: UUID = Field(description="La corrida del flujo.")
+
+
+# --- el modelo historico y la Cuenta 360 ---------------------------------------------------------
+#
+# Lo que la API deja ver de la historia: siempre por identificadores publicos (cuenta_id, corte_id,
+# historia_run_id, dataset_id), nunca por un id interno. Los importes viajan como texto, como en el
+# resto de la API, para no perder centavos.
+
+AVISO_PAGOS_OBSERVADOS = (
+    "Estos son movimientos observados de la fuente pagos/v1. No estan deduplicados, conciliados, "
+    "interpretados como reversos ni atribuidos. Ese procesamiento corresponde al Motor de Pagos."
+)
+"""Lo que dice cada respuesta de pagos observados, y su documentacion, de forma visible."""
+
+EJEMPLO_SNAPSHOT = {
+    "fecha_corte": "2026-09-30",
+    "corte_id": "0b87ab2f-e6eb-54a6-b1b4-2826722801db",
+    "saldo_total": "62450.00",
+    "saldo": "60000.00",
+    "moratorios": "2450.00",
+    "saldo_atrasado": "9200.00",
+    "saldo_requerido": "9200.00",
+    "pago_normal": "1153.00",
+    "dias_atraso": 65,
+    "atraso_maximo": 90,
+    "semanas_atraso": 10,
+    "producto": "CONSUMO",
+    "estrategia": "TARDIA",
+    "canal": "CAMPO",
+    "fecha_ultimo_pago": "2026-07-14",
+    "imp_ultimo_pago": "1500.00",
+    "cve_entidad": "21",
+    "cve_municipio": "114",
+    "estatus_plan": None,
+    "monto_plan": None,
+    "pagos_recibidos": None,
+    "estatus_promesa_pago": "VIGENTE",
+    "monto_promesa_pago": "4600.00",
+    "dataset_id": "5f1c2e3d-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+    "source_row": 4523,
+    "source_sheet": "CARTERA.csv",
+}
+
+
+class SnapshotRespuesta(BaseModel):
+    """Una cuenta en un corte canonico: sus variables historicas y de que fila de que dataset
+    salieron. Las demas columnas de la fuente (nombre, domicilio, telefonos...) siguen en el dataset
+    conformado: `dataset_id` y `source_row` llevan a la fila exacta."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_SNAPSHOT]})
+
+    fecha_corte: date
+    corte_id: UUID = Field(description="El corte canonico: GET /cartera/cortes/{corte_id}.")
+    saldo_total: Decimal
+    saldo: Decimal | None
+    moratorios: Decimal | None
+    saldo_atrasado: Decimal | None
+    saldo_requerido: Decimal | None
+    pago_normal: Decimal | None
+    dias_atraso: int
+    atraso_maximo: int | None
+    semanas_atraso: int | None
+    producto: str
+    estrategia: str | None
+    canal: str = Field(description="El canal de la cartera: un dato de la fuente, no una decision.")
+    fecha_ultimo_pago: date | None
+    imp_ultimo_pago: Decimal | None
+    cve_entidad: str = Field(
+        description="Resuelta con el catalogo del INEGI, como en la proyeccion."
+    )
+    cve_municipio: str
+    estatus_plan: str | None
+    monto_plan: Decimal | None
+    pagos_recibidos: int | None
+    estatus_promesa_pago: str | None
+    monto_promesa_pago: Decimal | None
+    dataset_id: UUID = Field(
+        description="El dataset conformado del que salio; GET /corridas/{run_id}/fuente lo "
+        "describe."
+    )
+    source_row: int = Field(description="La fila del archivo original; el encabezado es la fila 1.")
+    source_sheet: str | None = Field(
+        description="La hoja del xlsx o el miembro del zip; null en un csv suelto."
+    )
+
+
+class SnapshotEnHistoriaRespuesta(SnapshotRespuesta):
+    """Un snapshot en la historia de su cuenta, unido al anterior."""
+
+    continuo_desde_anterior: bool | None = Field(
+        description="true si el snapshot anterior de la cuenta es del corte anterior de su "
+        "cartera. false si la cuenta falto en medio: la diferencia no es la de un periodo "
+        "continuo. null en la primera observacion."
+    )
+    cortes_ausentes_desde_anterior: int | None = Field(
+        description="Cuantos cortes de la cartera falto la cuenta desde su snapshot anterior. null "
+        "en la primera observacion."
+    )
+    delta_saldo_total: Decimal | None = Field(
+        description="saldo_total menos el del snapshot anterior de la cuenta, continuo o no. null "
+        "en la primera observacion."
+    )
+    delta_dias_atraso: int | None = Field(
+        description="dias_atraso menos los del snapshot anterior, continuo o no."
+    )
+
+
+EJEMPLO_CUENTA_360 = {
+    "cuenta_id": "7b1d2c3e-4f5a-5b6c-8d7e-9f0a1b2c3d4e",
+    "cliente_unico": "CU0000004521",
+    "despacho_id": "DSP_001",
+    "cartera_id": "CARTERA_PRINCIPAL",
+    "al": None,
+    "primera_observacion": "2026-09-02",
+    "ultima_observacion": "2026-09-30",
+    "ultimo_corte_cartera": "2026-09-30",
+    "estado_presencia": "EN_CARTERA",
+    "cortes_observados": 4,
+    "cortes_ausentes_desde_primera_observacion": 1,
+    "salidas_observadas": 1,
+    "reingresos_observados": 1,
+    "pagos_observados": 3,
+    "snapshot_actual": EJEMPLO_SNAPSHOT,
+    "ultimo_snapshot_observado": EJEMPLO_SNAPSHOT,
+}
+
+
+class CuentaEncontradaRespuesta(BaseModel):
+    """La cuenta canonica de un CLIENTE_UNICO en la cartera del sistema."""
+
+    cuenta_id: UUID = Field(description="Su identificador publico: GET /cuentas/{cuenta_id}.")
+    cliente_unico: str
+    despacho_id: str
+    cartera_id: str
+
+
+class Cuenta360Respuesta(BaseModel):
+    """El resumen de una cuenta a traves de sus cortes. La historia, los eventos y los pagos son
+    subrecursos paginados: esta respuesta no los trae."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_CUENTA_360]})
+
+    cuenta_id: UUID
+    cliente_unico: str = Field(
+        description="El identificador fuente de la cuenta. No es una persona."
+    )
+    despacho_id: str
+    cartera_id: str
+    al: date | None = Field(
+        description="Si se pidio la cuenta como se veia en una fecha: solo cuentan los cortes de "
+        "fecha hasta ese dia, y los pagos recibidos hasta el final de ese dia."
+    )
+    primera_observacion: date | None = Field(
+        description="El primer corte en que aparece. No es su originacion ni un alta: la cartera "
+        "pudo tenerla desde antes del primer corte que se observo."
+    )
+    ultima_observacion: date | None = Field(description="El ultimo corte en que aparece.")
+    ultimo_corte_cartera: date | None = Field(
+        description="El ultimo corte canonico de su cartera, este o no la cuenta en el."
+    )
+    estado_presencia: Presencia = Field(
+        description="EN_CARTERA si aparece en el ultimo corte de su cartera; si no, "
+        "NO_OBSERVADA_EN_ULTIMO_CORTE. No es un estado crediticio: que no aparezca no dice si se "
+        "liquido, se cancelo o se castigo."
+    )
+    cortes_observados: int
+    cortes_ausentes_desde_primera_observacion: int
+    salidas_observadas: int
+    reingresos_observados: int
+    pagos_observados: int = Field(
+        description="Cuantos movimientos de pagos/v1 hay con su CLIENTE_UNICO. Es un conteo de "
+        "observaciones, no una recuperacion: ver /pagos-observados."
+    )
+    snapshot_actual: SnapshotRespuesta | None = Field(
+        description="El snapshot del ultimo corte de la cartera, si la cuenta esta en el; si no, "
+        "null."
+    )
+    ultimo_snapshot_observado: SnapshotRespuesta | None = Field(
+        description="El snapshot del ultimo corte en que se observo, aunque ya no este en el "
+        "vigente."
+    )
+
+
+class ParametrosHistoria(Paginacion):
+    orden: Literal["desc", "asc"] = Field(
+        default="desc", description="Por fecha de corte: desc (por omision) o asc."
+    )
+
+
+class PaginaHistoria(Pagina[SnapshotEnHistoriaRespuesta]):
+    cuenta_id: UUID
+    cliente_unico: str
+    orden: Literal["desc", "asc"]
+
+
+class EventoRespuesta(BaseModel):
+    """Un cambio de presencia de la cuenta, en el corte en que se observo."""
+
+    tipo: TipoEvento = Field(
+        description="PRIMERA_OBSERVACION, SALIDA_OBSERVADA (aparecia y en este corte ya no) o "
+        "REINGRESO_OBSERVADO (vuelve despues de faltar al menos un corte). Una salida no dice por "
+        "que salio."
+    )
+    fecha_corte: date
+    corte_id: UUID
+    ultima_observacion: date | None = Field(
+        description="En una salida o un reingreso, el ultimo corte en que se habia observado."
+    )
+    cortes_ausente: int = Field(description="En un reingreso, cuantos cortes falto; si no, 0.")
+
+
+class PaginaEventos(Pagina[EventoRespuesta]):
+    cuenta_id: UUID
+    cliente_unico: str
+
+
+class PagoObservadoRespuesta(BaseModel):
+    """Un movimiento de pagos/v1 tal como llego: una fila, una observacion."""
+
+    pago_observado_id: UUID
+    fecha_recepcion: datetime = Field(
+        description="Hora local de la fuente, sin zona horaria, como la trae pagos/v1."
+    )
+    recuperacion_por_gestion: Decimal = Field(
+        description="El importe del movimiento, como llego. Puede ser negativo, como un ajuste: "
+        "interpretarlo es del Motor de Pagos."
+    )
+    concepto_calculo: str | None
+    anio: int | None
+    semana: int | None
+    territorio: str | None
+    zona: str | None
+    segmento: str | None
+    gerencia: str | None
+    tipo_cartera: str | None
+    producto: str | None
+    campania: str | None
+    gestor: str | None
+    dias_de_atraso: int | None
+    semanas_de_atraso: int | None
+    plan_de_pago: str | None
+    fecha_de_gestion: datetime | None
+    cargos_automaticos: Decimal | None
+    captacion: Decimal | None
+    cobranza_total: Decimal | None
+    porcentaje_comision: float | None
+    monto_comision: Decimal | None
+    cliente_unico: str
+    pagos_run_id: UUID = Field(description="La ingesta de pagos que lo acepto.")
+    dataset_id: UUID = Field(description="El dataset conformado del que salio.")
+    source_row: int
+    source_sheet: str | None
+
+
+class PaginaPagosObservados(Pagina[PagoObservadoRespuesta]):
+    cuenta_id: UUID
+    cliente_unico: str
+    aviso: str = Field(default=AVISO_PAGOS_OBSERVADOS, description="Que son y que no son.")
+
+
+class CorteRespuesta(BaseModel):
+    """Un corte canonico: la fotografia de la cartera en una fecha."""
+
+    corte_id: UUID
+    fecha_corte: date
+    cuentas: int = Field(description="Cuantos snapshots tiene: uno por cuenta del corte.")
+    firma_contenido: str = Field(
+        description="La firma de la cartera, no del archivo: la misma en xlsx, csv o zip."
+    )
+    version_modelo: str
+    dataset_id: UUID = Field(description="El dataset conformado que lo produjo.")
+    run_id: UUID = Field(description="La corrida que publico ese dataset.")
+    creado_en: datetime
+
+
+class PaginaCortes(Pagina[CorteRespuesta]):
+    despacho_id: str
+    cartera_id: str
+    ultimo_corte: CorteRespuesta | None = Field(
+        description="El de fecha mas reciente, este o no en esta pagina. null si no hay ninguno."
+    )
+
+
+class FuenteDelCorteRespuesta(BaseModel):
+    """Una ejecucion historica que publico el corte (CORTE_PUBLICADO) o lo reconocio como fuente
+    equivalente (FUENTE_EQUIVALENTE): la misma cartera, llegada en otro archivo."""
+
+    historia_run_id: UUID
+    resultado: str
+    dataset_id: UUID
+    run_id: UUID
+    artefacto_original: ArtefactoRespuesta
+
+
+class CorteDetalleRespuesta(CorteRespuesta):
+    """Un corte con su evidencia, de punta a punta."""
+
+    artefacto_conformado: ArtefactoRespuesta = Field(
+        description="El Parquet de su dataset: de ahi salieron sus snapshots."
+    )
+    artefacto_original: ArtefactoRespuesta = Field(
+        description="El archivo tal como llego, con su SHA-256."
+    )
+    fuentes: list[FuenteDelCorteRespuesta]
+
+
+EJEMPLO_HISTORIA = {
+    "historia_run_id": "1d3f5a7c-9e1b-4d3f-8a7c-9e1b3d5f7a9c",
+    "tipo_fuente": "CARTERA",
+    "version_modelo": "historia/v1",
+    "estado": "EXITOSA",
+    "resultado": "CORTE_PUBLICADO",
+    "dataset_id": EJEMPLO_SNAPSHOT["dataset_id"],
+    "run_id": EJEMPLO_CORRIDA["run_id"],
+    "pagos_run_id": None,
+    "corte_id": EJEMPLO_SNAPSHOT["corte_id"],
+    "fecha_corte": "2026-09-30",
+    "registros_leidos": 500000,
+    "registros_publicados": 500000,
+    "trabajo_id": "6a8c0e2b-4d6f-4a8c-8e2b-4d6f8a0c2e4b",
+    "iniciada_en": "2026-09-30T15:05:00.000000Z",
+    "terminada_en": "2026-09-30T15:05:41.200000Z",
+    "duracion_segundos": 41.2,
+    "detalle": "Se publico el corte canonico 0b87ab2f-e6eb-54a6-b1b4-2826722801db del 2026-09-30 "
+    "con 500,000 snapshots; 10,212 cuentas canonicas nuevas. historia/v1.",
+}
+
+
+class EjecucionHistoriaRespuesta(BaseModel):
+    """Una materializacion de un dataset conformado en el modelo historico."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_HISTORIA]})
+
+    historia_run_id: UUID
+    tipo_fuente: TipoFuenteHistoria = Field(description="CARTERA (un corte) o PAGOS.")
+    version_modelo: str
+    estado: EstadoHistoria = Field(
+        description="EN_PROCESO hasta que un worker la termina. EXITOSA: publico o reconocio algo, "
+        "segun su resultado. FALLIDA: no publico nada."
+    )
+    resultado: str | None = Field(
+        description="Como termino: CORTE_PUBLICADO, FUENTE_EQUIVALENTE, PAGOS_PUBLICADOS, "
+        "CORTE_CANONICO_CONFLICTIVO, DATOS_INCONSISTENTES... null mientras esta EN_PROCESO."
+    )
+    dataset_id: UUID
+    run_id: UUID | None = Field(description="La corrida del dataset, si es de cartera.")
+    pagos_run_id: UUID | None = Field(description="La ingesta del dataset, si es de pagos.")
+    corte_id: UUID | None = Field(
+        description="El corte que publico o al que es equivalente; null en las demas."
+    )
+    fecha_corte: date | None = Field(description="La del dataset, si es de cartera.")
+    registros_leidos: int
+    registros_publicados: int = Field(
+        description="Snapshots o pagos observados que publico. 0 en una fuente equivalente: no "
+        "duplica nada."
+    )
+    trabajo_id: UUID | None = Field(description="Su trabajo HISTORIA: GET /trabajos/{trabajo_id}.")
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    detalle: str | None
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class RelacionPagosRespuesta(BaseModel):
+    """Como se relacionan hoy los pagos observados de una ingesta con las cuentas canonicas. Se
+    calcula al consultar: un corte que llega despues relaciona sus pagos sin tocarlos."""
+
+    pagos_con_cuenta_observada: int
+    pagos_sin_cuenta_observada: int = Field(
+        description="SIN_CUENTA_OBSERVADA: pagos de un CLIENTE_UNICO que ningun corte de la "
+        "cartera ha traido. Se conservan igual; ningun pago crea una cuenta."
+    )
+    clientes_sin_cuenta_observada: int
+
+
+class PaginaHistoriasDeCorrida(Pagina[EjecucionHistoriaRespuesta]):
+    run_id: UUID
+    dataset_id: UUID
+
+
+class PaginaHistoriasDePagos(Pagina[EjecucionHistoriaRespuesta]):
+    pagos_run_id: UUID
+    dataset_id: UUID
+    relacion: RelacionPagosRespuesta | None = Field(
+        description="Solo si sus pagos ya se publicaron (una ejecucion EXITOSA)."
+    )

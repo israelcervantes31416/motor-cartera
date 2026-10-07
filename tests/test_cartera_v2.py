@@ -467,7 +467,15 @@ def test_una_cartera_oficial_llega_por_el_flujo_hasta_el_ruteo(tmp_path, trabaja
 
     procesados = trabajar()
 
-    assert [p.tipo for p in procesados] == ["INGESTA", "DECISION", "TERRITORIAL", "RUTEO"]
+    # La historia de su dataset va en paralelo: no es una etapa del flujo, y con un solo worker se
+    # ejecuta despues de las etapas operacionales, sin retrasarlas.
+    assert [p.tipo for p in procesados] == [
+        "INGESTA",
+        "DECISION",
+        "TERRITORIAL",
+        "RUTEO",
+        "HISTORIA",
+    ]
     with sesion() as s:
         from motor_cartera.db.modelos import FlujoOrquestacion
 
