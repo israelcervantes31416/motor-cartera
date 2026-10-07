@@ -16,7 +16,9 @@ from motor_cartera import __version__
 from motor_cartera.api import (
     cartera,
     corridas,
+    cuentas,
     decisiones,
+    historia,
     orquestacion,
     pagos,
     ruteo,
@@ -100,6 +102,23 @@ sinteticos. No son latitud ni longitud, domicilios, calles, trafico ni tiempos:
 17. `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas`: las paradas de un municipio, en
     el orden de visita.
 
+**El modelo historico y la Cuenta 360.** Cada dataset conformado que se publica (una cartera
+`cartera/v2` o un archivo de pagos) se materializa tambien en el modelo historico, en paralelo al
+flujo operacional, con un trabajo `HISTORIA` de la misma cola: una cuenta canonica por
+CLIENTE_UNICO, un corte canonico por fecha, un snapshot por cuenta y corte, y un pago observado por
+fila de pagos/v1. Ningun motor de v1 lo espera ni lo lee.
+
+18. `GET /cuentas?cliente_unico=...`: el `cuenta_id` de una cuenta de la cartera del sistema.
+19. `GET /cuentas/{cuenta_id}`: su resumen a traves de sus cortes (`?al=AAAA-MM-DD`, como se veia
+    en esa fecha). `/historia`, `/eventos` y `/pagos-observados` son sus subrecursos paginados.
+20. `GET /cartera/cortes` y `GET /cartera/cortes/{corte_id}`: los cortes canonicos, el ultimo, y la
+    evidencia de cada uno.
+21. `GET /historias/{historia_run_id}`, `GET /corridas/{run_id}/historia` y
+    `GET /pagos/{pagos_run_id}/historia`: como va o como termino cada materializacion.
+
+Los pagos observados son movimientos tal como llegaron: no estan deduplicados, conciliados ni
+atribuidos.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -153,6 +172,16 @@ ETIQUETAS = [
         "paradas en orden de visita. Coordenadas y distancias sinteticas: metros de un plano "
         "local por municipio, no geografia real.",
     },
+    {
+        "name": "cuentas",
+        "description": "Cuenta 360: una cuenta canonica (un CLIENTE_UNICO de la cartera) a traves "
+        "de sus cortes, con su historia, sus eventos de presencia y sus pagos observados.",
+    },
+    {
+        "name": "historia",
+        "description": "El modelo historico: los cortes canonicos de la cartera y las ejecuciones "
+        "que materializan cada dataset conformado, en paralelo al flujo operacional.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -182,5 +211,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(decisiones.router, dependencies=protegidas)
     app.include_router(territorial.router, dependencies=protegidas)
     app.include_router(ruteo.router, dependencies=protegidas)
+    app.include_router(cuentas.router, dependencies=protegidas)
+    app.include_router(historia.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app
