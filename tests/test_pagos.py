@@ -748,5 +748,11 @@ def test_dos_workers_nunca_procesan_la_misma_ingesta(tmp_path, monkeypatch):
     assert [_ingesta(i).estado for i in ingestas] == [EXITOSA, EXITOSA]
     assert sorted(i for _, i in ejecutados) == sorted(ingestas)
     assert {nombre for nombre, _ in ejecutados} == {"worker-a", "worker-b"}
-    assert {(t.estado, t.intentos) for t in _trabajos()} == {(EstadoTrabajo.COMPLETADO, 1)}
+    de_ingesta = [t for t in _trabajos() if t.tipo == TipoTrabajo.INGESTA_PAGOS]
+    assert len(de_ingesta) == 2
+    assert {(t.estado, t.intentos) for t in de_ingesta} == {(EstadoTrabajo.COMPLETADO, 1)}
     assert _cuantos(DatasetConformado) == 2
+    # Cada dataset abrio su historia, con su trabajo HISTORIA: los workers se detienen en cuanto
+    # terminan las dos ingestas, asi que pueden haberlo tomado o no.
+    historias = [t for t in _trabajos() if t.tipo == TipoTrabajo.HISTORIA]
+    assert len(historias) == len(_trabajos()) - 2 == 2
