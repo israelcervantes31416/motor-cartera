@@ -8,7 +8,8 @@ cola durable, y no encadena nada: la conciliacion y la atribucion son de un moto
 En la transaccion que tiene la ingesta bloqueada: se vuelve a firmar el artefacto, se revisa la
 estructura (las 23 columnas exactas), se juzga cada movimiento por lotes, se decide con la barrera
 de pagos y, si se acepta, se escribe el dataset conformado con TODOS los movimientos validos, tal
-como llegaron: no se deduplica ninguno.
+como llegaron: no se deduplica ninguno. Con el dataset se abren, en la misma transaccion, su
+ejecucion historica y su trabajo HISTORIA, que materializa cada movimiento como un pago observado.
 
 La barrera de pagos es conservadora: por omision la tolerancia es 0
 (MC_TOLERANCIA_RECHAZO_PAGOS), asi que un solo movimiento invalido rechaza el archivo entero. Un
@@ -51,6 +52,7 @@ from motor_cartera.fuentes.artefactos import (
 from motor_cartera.fuentes.conformado import EscritorConformado
 from motor_cartera.fuentes.formatos import Formato
 from motor_cartera.fuentes.lotes import abrir_fuente
+from motor_cartera.historia.ejecuciones import abrir_historia
 from motor_cartera.ingesta.fuente_oficial import Cronometro, JuicioDeFuente, Rechazado
 from motor_cartera.ingesta.lectores import ErrorDeLectura
 
@@ -230,17 +232,18 @@ def juzgar_y_aceptar(
                     objeto = almacen.guardar(archivo)
                 nombre = f"pagos_v1_{ingesta.pagos_run_id}.parquet"
                 parquet = registrar_artefacto(s, ArtefactoGuardado(objeto, Formato.PARQUET, nombre))
-                s.add(
-                    DatasetConformado(
-                        contrato=CONTRATO_PAGOS.version,
-                        ingesta_pagos_id=ingesta.id,
-                        artefacto_original_id=artefacto.id,
-                        artefacto_conformado_id=parquet.id,
-                        firma_contenido=firma_contenido,
-                        filas=escritor.filas,
-                        columnas=len(CONTRATO_PAGOS.columnas),
-                    )
+                dataset = DatasetConformado(
+                    contrato=CONTRATO_PAGOS.version,
+                    ingesta_pagos_id=ingesta.id,
+                    artefacto_original_id=artefacto.id,
+                    artefacto_conformado_id=parquet.id,
+                    firma_contenido=firma_contenido,
+                    filas=escritor.filas,
+                    columnas=len(CONTRATO_PAGOS.columnas),
                 )
+                s.add(dataset)
+                s.flush()
+                abrir_historia(s, dataset, max_intentos=config.worker_max_intentos)
 
     ingesta.estado = estado
     ingesta.filas_leidas = juicio.leidas

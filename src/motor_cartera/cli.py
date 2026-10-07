@@ -227,6 +227,7 @@ def cargar(
         f"rechazadas {corrida.filas_rechazadas}"
     )
     typer.echo(f"  {corrida.detalle}")
+    _avisar_historia(corrida_id=corrida.id)
     if corrida.estado != EstadoCorrida.EXITOSA:
         raise typer.Exit(code=1)
 
@@ -266,6 +267,7 @@ def cargar_pagos(
         f"rechazadas {ingesta.filas_rechazadas}"
     )
     typer.echo(f"  {ingesta.detalle}")
+    _avisar_historia(ingesta_pagos_id=ingesta.id)
     if ingesta.estado != EstadoIngestaPagos.EXITOSA:
         raise typer.Exit(code=1)
 
@@ -295,6 +297,101 @@ def verificar_fuentes(
     typer.echo(f"{len(revisados) - len(problemas)} de {len(revisados)} artefactos intactos.")
     if problemas or len(revisados) < minimo:
         raise typer.Exit(code=1)
+
+
+@app.command("backfill-historia")
+def backfill_historia(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice cuanto falta y que encolaria.")
+    ] = False,
+    reintentar_fallidas: Annotated[
+        bool,
+        typer.Option(
+            "--reintentar-fallidas",
+            help="Tambien encola los datasets cuya historia solo tiene ejecuciones FALLIDA.",
+        ),
+    ] = False,
+) -> None:
+    """Encola la historia (historia/v1) de los datasets conformados que todavia no la tienen: los
+    publicados antes de v0.7.0, o cuya historia fallo.
+
+    La migracion 0008 solo crea las tablas del modelo historico; este proceso encola un trabajo
+    HISTORIA por cada dataset de cartera/v2 y de pagos/v1 sin historia EXITOSA, los de cartera en
+    orden de fecha de corte. Los ejecuta un worker, que materializa cada uno desde su Parquet
+    conformado, nunca desde el archivo original. El resultado no depende del orden.
+
+    Es idempotente: un dataset ya materializado o ya en la cola no se encola otra vez. Los que solo
+    tienen ejecuciones FALLIDA se reportan, y se reintentan solo con --reintentar-fallidas: un
+    conflicto de corte volveria a fallar.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.historia.backfill import diagnosticar, encolar
+
+    with sesion() as s:
+        diagnostico = diagnosticar(s)
+    fallidas = diagnostico.solo_fallidas
+    typer.echo(f"Datasets conformados de cartera/v2 y pagos/v1: {diagnostico.datasets:,}")
+    typer.echo(f"  con historia/v1 EXITOSA: {diagnostico.materializados:,}")
+    typer.echo(f"  en la cola (EN_PROCESO): {diagnostico.en_cola:,}")
+    typer.echo(f"  sin historia: {len(diagnostico.sin_historia):,}")
+    nota = (
+        "" if reintentar_fallidas or not fallidas else "; se reintentan con --reintentar-fallidas"
+    )
+    typer.echo(f"  solo con ejecuciones FALLIDA: {len(fallidas):,}{nota}")
+    for pendiente in fallidas:
+        typer.echo(f"    {_pendiente(pendiente)}: {pendiente.ultimo_resultado}")
+    pendientes = diagnostico.sin_historia + (fallidas if reintentar_fallidas else [])
+    if dry_run:
+        lista = "; se encolarian:" if pendientes else "."
+        typer.echo(f"Faltan {len(pendientes):,}. Con --dry-run no se encolo nada{lista}")
+        for pendiente in pendientes:
+            typer.echo(f"  {_pendiente(pendiente)}")
+        return
+    encolados = encolar(pendientes, config=config)
+    abiertos = sum(1 for e in encolados if e.historia_run_id is not None)
+    typer.echo(f"Se encolaron {abiertos:,} trabajos HISTORIA; los ejecuta un worker.")
+    for encolado in encolados:
+        typer.echo(
+            f"  {_pendiente(encolado.pendiente)}: {encolado.historia_run_id or encolado.nota}"
+        )
+
+
+def _pendiente(pendiente) -> str:
+    """Un dataset pendiente, como lo lee una persona."""
+    if pendiente.fecha_corte is not None:
+        return (
+            f"{pendiente.contrato} del {pendiente.fecha_corte.isoformat()} ({pendiente.dataset_id})"
+        )
+    return f"{pendiente.contrato} ({pendiente.dataset_id})"
+
+
+def _avisar_historia(*, corrida_id: int | None = None, ingesta_pagos_id: int | None = None) -> None:
+    """Si la ingesta publico un dataset conformado, su historia queda en la cola: lo dice."""
+    from sqlmodel import select
+
+    from motor_cartera.db.modelos import DatasetConformado, EjecucionHistoria
+    from motor_cartera.db.sesion import sesion
+
+    condicion = (
+        DatasetConformado.corrida_id == corrida_id
+        if corrida_id is not None
+        else DatasetConformado.ingesta_pagos_id == ingesta_pagos_id
+    )
+    with sesion() as s:
+        fila = s.exec(
+            select(EjecucionHistoria.historia_run_id, EjecucionHistoria.estado)
+            .join(
+                DatasetConformado, DatasetConformado.id == EjecucionHistoria.dataset_conformado_id
+            )
+            .where(condicion)
+            .order_by(EjecucionHistoria.id.desc())
+        ).first()
+    if fila is not None:
+        typer.echo(
+            f"  historia/v1 {fila[0]}: {fila[1]}; la materializa un worker, en paralelo y sin "
+            "volver a leer el archivo."
+        )
 
 
 @app.command()

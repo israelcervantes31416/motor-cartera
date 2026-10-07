@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, update
+from sqlalchemy import and_, case, func, or_, update
 from sqlmodel import Session, select
 
 from motor_cartera.db.modelos import EstadoTrabajo, TipoTrabajo, TrabajoOrquestacion
@@ -126,9 +126,11 @@ def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
     """Toma un trabajo para `worker_id`, o None si no hay ninguno que tomar.
 
     Se puede tomar un trabajo PENDIENTE que ya este disponible, o uno EJECUTANDO cuyo lease vencio:
-    su worker dejo de latir. De los que se pueden tomar, el de menor id, y uno a la vez. FOR UPDATE
-    SKIP LOCKED: si otro worker esta tomando o cerrando una fila en este momento, la consulta la
-    salta en lugar de esperarla, asi que dos workers nunca toman la misma y ninguno espera al otro.
+    su worker dejo de latir. De los que se pueden tomar, primero los del flujo operacional y las
+    ingestas, y al final los HISTORIA (ver `_prioridad`); entre iguales, el de menor id. Uno a la
+    vez. FOR UPDATE SKIP LOCKED: si otro worker esta tomando o cerrando una fila en este momento, la
+    consulta la salta en lugar de esperarla, asi que dos workers nunca toman la misma y ninguno
+    espera al otro.
 
     Tomarlo cuenta un intento, salvo que el lease vencido fuera el del ultimo: ese trabajo no se
     vuelve a ejecutar, y quien lo toma solo lo cierra. Se confirma antes de ejecutar nada: si el
@@ -138,7 +140,7 @@ def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
         trabajo = s.exec(
             select(TrabajoOrquestacion)
             .where(_reclamable())
-            .order_by(TrabajoOrquestacion.id)
+            .order_by(_prioridad(), TrabajoOrquestacion.id)
             .limit(1)
             .with_for_update(skip_locked=True)
         ).first()
@@ -299,6 +301,14 @@ def _reclamable():
             TrabajoOrquestacion.lease_hasta < func.now(),
         ),
     )
+
+
+def _prioridad():
+    """0 para lo operacional, 1 para la historia. La historia es una proyeccion paralela: ninguna
+    etapa del flujo la espera, y con un solo worker tampoco espera detras de ella. Un backfill de
+    cientos de trabajos HISTORIA no retrasa la decision de la cartera de hoy. No cambia que se
+    ejecuta ni como: solo cual de los que ya se pueden tomar va primero."""
+    return case((TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1), else_=0)
 
 
 def _lease(segundos: float):
