@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -15,6 +16,7 @@ from historia_escenarios import (
     Cuenta,
     cliente,
     cuenta,
+    escribir_corte,
     foto,
     historia_de,
     ingerir_corte,
@@ -994,3 +996,56 @@ def test_la_sesion_de_lectura_no_cambia_las_conexiones_que_vuelven_al_pool():
     with ExitStack() as pila:
         sesiones = [pila.enter_context(sesion()) for _ in range(crear_motor().pool.checkedin() + 1)]
         assert {_aislamiento(s) for s in sesiones} == {("read committed", "off")}
+
+
+def test_la_historia_de_una_corrida_en_proceso_o_sin_dataset(tmp_path, api):
+    from motor_cartera.generador.sintetico import generar_archivo
+    from motor_cartera.ingesta.corridas import ingerir_archivo
+
+    archivo = escribir_corte(tmp_path, CORTES[0], _todas(3))
+    subida = api.post(
+        "/corridas",
+        files={"archivo": (archivo.name, archivo.read_bytes(), "application/octet-stream")},
+        data={"contrato": "cartera/v2", "fecha_corte": CORTES[0].isoformat()},
+    )
+    assert subida.status_code == 201
+    # Sin un worker, la corrida sigue EN_PROCESO: su dataset y su historia todavia no existen.
+    en_proceso = api.get(f"/corridas/{subida.json()['run_id']}/historia")
+    assert (en_proceso.status_code, en_proceso.json()["codigo"]) == (409, "CORRIDA_EN_PROCESO")
+
+    # Una corrida de cartera/v1 termina sin dataset conformado, y por lo tanto sin historia.
+    v1 = ingerir_archivo(generar_archivo(tmp_path / "v1.csv", n=30, semilla=1))
+    sin_dataset = api.get(f"/corridas/{v1.run_id}/historia")
+    assert (sin_dataset.status_code, sin_dataset.json()["codigo"]) == (
+        404,
+        "SIN_DATASET_CONFORMADO",
+    )
+
+
+def test_la_historia_de_una_ingesta_de_pagos_en_proceso_o_sin_dataset(tmp_path, api):
+    import pandas as pd
+
+    from motor_cartera.contratos.pagos import CONTRATO_PAGOS
+    from motor_cartera.generador.oficial import escribir_pagos
+    from motor_cartera.ingesta.pagos import ingerir_pagos
+
+    def archivo(nombre: str, fila: dict) -> Path:
+        tabla = pd.DataFrame([fila], columns=list(CONTRATO_PAGOS.nombres))
+        return escribir_pagos(tabla, tmp_path / nombre).ruta
+
+    bueno = archivo("pagos.csv", pago(1, "2026-09-03 10:00:00", "500.00"))
+    subida = api.post(
+        "/pagos", files={"archivo": (bueno.name, bueno.read_bytes(), "application/octet-stream")}
+    )
+    assert subida.status_code == 201
+    en_proceso = api.get(f"/pagos/{subida.json()['pagos_run_id']}/historia")
+    assert (en_proceso.status_code, en_proceso.json()["codigo"]) == (409, "PAGOS_EN_PROCESO")
+
+    # Un movimiento invalido rechaza el archivo: no se publica dataset, y no hay historia.
+    rechazada = ingerir_pagos(archivo("malos.csv", pago(2, "2026-09-03 10:00:00", "quinientos")))
+    assert rechazada.estado != "EXITOSA"
+    sin_dataset = api.get(f"/pagos/{rechazada.pagos_run_id}/historia")
+    assert (sin_dataset.status_code, sin_dataset.json()["codigo"]) == (
+        404,
+        "SIN_DATASET_CONFORMADO",
+    )
