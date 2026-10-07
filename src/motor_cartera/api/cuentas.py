@@ -14,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query, Request
 from sqlmodel import Session
 
-from motor_cartera.api.dependencias import Sesion
+from motor_cartera.api.dependencias import SesionDeLectura
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     AVISO_PAGOS_OBSERVADOS,
@@ -72,7 +72,7 @@ NO_EXISTE = (404, "CUENTA_NO_ENCONTRADA", "No existe una cuenta canonica con ese
 )
 def buscar_cuenta(
     request: Request,
-    s: Sesion,
+    s: SesionDeLectura,
     cliente_unico: Annotated[
         str,
         Query(
@@ -127,7 +127,7 @@ def buscar_cuenta(
 )
 def obtener_cuenta(
     cuenta_id: UUID,
-    s: Sesion,
+    s: SesionDeLectura,
     al: Annotated[
         date | None,
         Query(
@@ -182,7 +182,7 @@ def obtener_cuenta(
     ),
 )
 def historia(
-    cuenta_id: UUID, parametros: Annotated[ParametrosHistoria, Query()], s: Sesion
+    cuenta_id: UUID, parametros: Annotated[ParametrosHistoria, Query()], s: SesionDeLectura
 ) -> PaginaHistoria:
     """Un snapshot por cada corte en que se observo la cuenta, del mas reciente al mas antiguo
     (`orden=asc` para el otro sentido), con su evidencia: `corte_id`, `dataset_id`, `source_row` y
@@ -223,7 +223,7 @@ def historia(
     ),
 )
 def eventos(
-    cuenta_id: UUID, paginacion: Annotated[Paginacion, Query()], s: Sesion
+    cuenta_id: UUID, paginacion: Annotated[Paginacion, Query()], s: SesionDeLectura
 ) -> PaginaEventos:
     """En orden de corte. Se calculan al consultar, a partir de sus snapshots y de los cortes de su
     cartera: no se guardan. Un corte atrasado que llega despues cambia la respuesta exactamente como
@@ -274,7 +274,7 @@ def eventos(
     ),
 )
 def pagos_observados(
-    cuenta_id: UUID, paginacion: Annotated[Paginacion, Query()], s: Sesion
+    cuenta_id: UUID, paginacion: Annotated[Paginacion, Query()], s: SesionDeLectura
 ) -> PaginaPagosObservados:
     cuenta = _cuenta(s, cuenta_id)
     total, pagina = cuenta360.pagos_observados(

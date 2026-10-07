@@ -15,7 +15,7 @@ from sqlalchemy import ColumnElement
 from sqlmodel import Session, func, select
 from sqlmodel.sql.expression import Select
 
-from motor_cartera.api.dependencias import Sesion, buscar_corrida
+from motor_cartera.api.dependencias import SesionDeLectura, buscar_corrida
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     ArtefactoRespuesta,
@@ -69,7 +69,7 @@ class ParametrosCortes(Paginacion):
     responses=errores(*SIN_CLAVE, (422, "ENTRADA_INVALIDA", "La paginacion no es valida.")),
 )
 def listar_cortes(
-    request: Request, parametros: Annotated[ParametrosCortes, Query()], s: Sesion
+    request: Request, parametros: Annotated[ParametrosCortes, Query()], s: SesionDeLectura
 ) -> PaginaCortes:
     """Una fotografia canonica por fecha de corte, la mas reciente primero (`orden=asc` para el otro
     sentido). `ultimo_corte` es el de fecha mas reciente, este o no en la pagina: el corte vigente
@@ -109,7 +109,7 @@ def listar_cortes(
         (422, "ENTRADA_INVALIDA", "El corte_id no es un UUID."),
     ),
 )
-def obtener_corte(corte_id: UUID, s: Sesion) -> CorteDetalleRespuesta:
+def obtener_corte(corte_id: UUID, s: SesionDeLectura) -> CorteDetalleRespuesta:
     """El linaje del corte, de punta a punta: el Parquet del dataset del que salieron sus snapshots,
     el archivo original con su SHA-256, y cada ejecucion historica que lo publico
     (`CORTE_PUBLICADO`) o que llego con la misma cartera en otro archivo (`FUENTE_EQUIVALENTE`), con
@@ -147,7 +147,7 @@ def obtener_corte(corte_id: UUID, s: Sesion) -> CorteDetalleRespuesta:
         (422, "ENTRADA_INVALIDA", "El historia_run_id no es un UUID."),
     ),
 )
-def obtener_historia(historia_run_id: UUID, s: Sesion) -> EjecucionHistoriaRespuesta:
+def obtener_historia(historia_run_id: UUID, s: SesionDeLectura) -> EjecucionHistoriaRespuesta:
     """Mientras el estado sea `EN_PROCESO`, un worker no la ha terminado. `resultado` dice como
     termino: `CORTE_PUBLICADO`, `FUENTE_EQUIVALENTE` (la cartera de esa fecha ya existia con la
     misma firma: no se duplico nada), `PAGOS_PUBLICADOS`, o, si fallo,
@@ -176,7 +176,7 @@ def obtener_historia(historia_run_id: UUID, s: Sesion) -> EjecucionHistoriaRespu
     ),
 )
 def historia_de_corrida(
-    run_id: UUID, paginacion: Annotated[Paginacion, Query()], s: Sesion
+    run_id: UUID, paginacion: Annotated[Paginacion, Query()], s: SesionDeLectura
 ) -> PaginaHistoriasDeCorrida:
     """La materializacion historica del dataset conformado que publico la corrida, en paralelo a su
     flujo operacional: ni la decision, ni la organizacion territorial ni el ruteo la esperan. Una
@@ -219,7 +219,7 @@ def historia_de_corrida(
     ),
 )
 def historia_de_pagos(
-    pagos_run_id: UUID, paginacion: Annotated[Paginacion, Query()], s: Sesion
+    pagos_run_id: UUID, paginacion: Annotated[Paginacion, Query()], s: SesionDeLectura
 ) -> PaginaHistoriasDePagos:
     """Cada ejecucion que materializo sus movimientos como pagos observados, uno por fila. Si ya se
     publicaron, `relacion` dice cuantos tienen hoy una cuenta canonica con su CLIENTE_UNICO y

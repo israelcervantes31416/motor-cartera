@@ -13,6 +13,11 @@ traducen a HTTP.
 Todas las rutas exigen la cabecera `X-API-Key`, como el resto de la API, y responden los errores
 con la misma forma (`codigo`, `mensaje`, `detalles`).
 
+Cada respuesta se arma con **una sola foto de la base**: sus consultas corren en una transacción de
+solo lectura `REPEATABLE READ`. Si un corte se publica mientras se responde, la respuesta es entera
+la de antes o la de después, nunca una mezcla: una cuenta que está en el corte nuevo no aparece, en
+esa respuesta, como una salida que no ocurrió.
+
 ## Las rutas
 
 | Método y ruta | Qué devuelve | Respuestas |

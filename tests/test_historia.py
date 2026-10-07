@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import stat
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -39,7 +39,7 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     TrabajoOrquestacion,
 )
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import crear_motor, sesion, sesion_de_lectura
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.conformado import COLUMNA_FILA, COLUMNA_HOJA
 from motor_cartera.historia import carga, cuenta360, ejecuciones
@@ -933,3 +933,64 @@ def test_un_dataset_que_no_es_lo_que_dice_su_registro_no_se_materializa(tmp_path
     assert (ejecucion.estado, ejecucion.resultado) == ("FALLIDA", "DATOS_INCONSISTENTES")
     assert "5 filas y su dataset dice 6" in ejecucion.detalle
     assert _cuantas(CorteCanonico) == _cuantas(CuentaCanonica) == 0
+
+
+# --- una respuesta de la API ve una sola foto de la base ------------------------------------------
+
+
+@pytest.fixture
+def api(cliente):
+    """El cliente de la API: en este modulo, `cliente` es el CLIENTE_UNICO de un numero."""
+    return cliente
+
+
+def test_la_cuenta_360_no_mezcla_dos_estados_si_se_publica_un_corte_mientras_responde(
+    tmp_path, api, monkeypatch
+):
+    _materializar(ingerir_corte(tmp_path, CORTES[0], _todas(3)))
+    pendiente = historia_de(corrida=ingerir_corte(tmp_path, CORTES[1], _todas(3, saldo=9_000)))
+    cuenta_id = cuenta(1).cuenta_id
+    cortes_de_la_cartera = cuenta360.cortes_de_la_cartera
+
+    def publicar_en_medio(*args, **kwargs):
+        # Otra transaccion publica el segundo corte, con la cuenta, justo despues de que la
+        # respuesta leyo en que cortes esta la cuenta y antes de que lea los de la cartera.
+        materializar(pendiente.id)
+        return cortes_de_la_cartera(*args, **kwargs)
+
+    monkeypatch.setattr(cuenta360, "cortes_de_la_cartera", publicar_en_medio)
+    durante = api.get(f"/cuentas/{cuenta_id}").json()
+    monkeypatch.undo()
+    despues = api.get(f"/cuentas/{cuenta_id}").json()
+
+    # La respuesta es entera la de antes del segundo corte: la cuenta sigue en la cartera, y no
+    # aparece una salida que no ocurrio.
+    assert (durante["ultimo_corte_cartera"], durante["estado_presencia"]) == (
+        CORTES[0].isoformat(),
+        "EN_CARTERA",
+    )
+    assert (durante["cortes_observados"], durante["salidas_observadas"]) == (1, 0)
+    # El corte si se publico, y la siguiente respuesta ya lo trae.
+    assert (despues["ultimo_corte_cartera"], despues["estado_presencia"]) == (
+        CORTES[1].isoformat(),
+        "EN_CARTERA",
+    )
+    assert (despues["cortes_observados"], despues["salidas_observadas"]) == (2, 0)
+
+
+def _aislamiento(s) -> tuple[str, str]:
+    return (
+        s.execute(text("SHOW transaction_isolation")).scalar_one(),
+        s.execute(text("SHOW transaction_read_only")).scalar_one(),
+    )
+
+
+def test_la_sesion_de_lectura_no_cambia_las_conexiones_que_vuelven_al_pool():
+    with sesion_de_lectura() as s:
+        assert _aislamiento(s) == ("repeatable read", "on")
+
+    # Todas las conexiones del pool a la vez, incluida la que uso la sesion de lectura: cada una
+    # volvio con READ COMMITTED y puede escribir.
+    with ExitStack() as pila:
+        sesiones = [pila.enter_context(sesion()) for _ in range(crear_motor().pool.checkedin() + 1)]
+        assert {_aislamiento(s) for s in sesiones} == {("read committed", "off")}

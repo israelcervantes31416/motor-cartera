@@ -12,6 +12,10 @@ ninguna depende del tamano de la cartera: todas son de una sola cuenta y entran 
   una llave que los ate a la cuenta, asi que un pago que llego antes que su cuenta tambien se ve.
 
 Los eventos, la continuidad y los deltas se calculan aqui, al consultar, con `presencia`.
+
+Cada funcion compone varias consultas. La API las llama con una sesion de lectura
+(`db.sesion.sesion_de_lectura`), en la que todas ven la misma foto de la base: un corte que se
+publica mientras se responde no aparece en una consulta y falta en la siguiente.
 """
 
 from __future__ import annotations
@@ -153,8 +157,9 @@ def obtener(s: Session, cuenta_id: UUID) -> CuentaCanonica:
 def resumen(s: Session, cuenta: CuentaCanonica, al: date | None = None) -> Resumen360:
     """La Cuenta 360: su presencia en los cortes de su cartera y su ultimo snapshot. Con `al`, como
     se veia con los cortes de fecha hasta ese dia: el ultimo corte es el ultimo hasta esa fecha."""
-    # Primero sus cortes y despues los de la cartera: un corte que se publica entre las dos
-    # consultas aparece, a lo mas, en la segunda, y la cuenta nunca trae uno que la cartera no.
+    # Primero sus cortes y despues los de la cartera. Con una sola foto de la base (la sesion de
+    # lectura) el orden da igual; con READ COMMITTED, al menos la cuenta nunca trae un corte que la
+    # cartera no.
     fechas = fechas_observadas(s, cuenta.id, al)
     cortes = cortes_de_la_cartera(s, cuenta.despacho_id, cuenta.cartera_id, al)
     vista = presencia.resumir(cortes, fechas)
@@ -200,8 +205,8 @@ def historia(
     ).all()
     vistos = [SnapshotVisto(*fila) for fila in filas]
     cronologicos = vistos[::-1] if descendente else vistos
-    # Los cortes de la cartera, despues de los snapshots: si entre las dos consultas se publica un
-    # corte, los cortes lo traen y los snapshots no, y cada snapshot sigue teniendo su lugar.
+    # Los cortes de la cartera, despues de los snapshots: aun con READ COMMITTED, cada snapshot
+    # encuentra su lugar entre los cortes.
     lugares = presencia.posiciones(cortes_de_la_cartera(s, cuenta.despacho_id, cuenta.cartera_id))
     enlazados = []
     anteriores = [None, *cronologicos][: len(cronologicos)]

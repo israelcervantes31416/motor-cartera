@@ -2159,6 +2159,14 @@ pruebas fuerzan cada caso con dos hilos y PostgreSQL real.
 **El costo.** Mientras un corte publica sus cuentas nuevas, otro que comparte algunas espera a que
 termine. Con cortes de una misma cartera que llegan uno por semana, es raro y breve.
 
+**Y las lecturas.** Cada respuesta de la Cuenta 360 y de la historia compone varias consultas: los
+cortes de la cuenta, los de la cartera, sus snapshots, sus pagos. Se leen en una transacción de solo
+lectura `REPEATABLE READ`, así que todas ven la misma foto de la base, y un corte que se publica
+mientras se responde no aparece en una consulta y falta en la siguiente. Con `READ COMMITTED`, una
+cuenta que sí está en el corte nuevo se vería, en esa respuesta, como una salida. En PostgreSQL, una
+transacción que solo lee no falla por serialización, así que esto no agrega reintentos. Una prueba
+publica un corte entre dos consultas de una misma respuesta.
+
 ## 83. Backfill fuera de Alembic, idempotente
 
 **Decisión.** La migración `0008` solo crea las tablas y extiende la cola; no materializa ningún
