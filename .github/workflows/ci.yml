@@ -80,7 +80,8 @@ jobs:
   # La definicion de terminado, en una maquina limpia: un solo comando levanta todo
   # (PostgreSQL, migraciones, API y worker), se genera una cartera sintetica y su flujo
   # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta. Y un
-  # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360.
+  # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360, con sus pagos
+  # interpretados por el motor de pagos.
   compose:
     runs-on: ubuntu-latest
 
@@ -125,6 +126,15 @@ jobs:
           docker compose exec -T worker motor-cartera backfill-historia --dry-run | tee backfill.txt
           grep -q "sin historia: 0" backfill.txt
           grep -q "solo con ejecuciones FALLIDA: 0" backfill.txt
+
+      # Y la interpretacion de cada ventana de pagos se abrio con la historia que publico sus pagos
+      # observados: el backfill del motor no encuentra ninguno sin interpretacion vigente, ni ninguna
+      # ventana que solo haya fallado.
+      - name: Backfill del motor de pagos
+        run: |
+          docker compose exec -T worker motor-cartera backfill-motor-pagos --dry-run | tee motor.txt
+          grep -q "Pagos observados sin interpretacion vigente: 0" motor.txt
+          grep -q "solo con ejecuciones FALLIDA: 0" motor.txt
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
