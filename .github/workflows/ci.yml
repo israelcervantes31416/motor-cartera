@@ -129,12 +129,13 @@ jobs:
 
       # Y la interpretacion de cada ventana de pagos se abrio con la historia que publico sus pagos
       # observados: el backfill del motor no encuentra ninguno sin interpretacion vigente, ni ninguna
-      # ventana que solo haya fallado.
+      # ventana cuya interpretacion haya fallado.
       - name: Backfill del motor de pagos
         run: |
           docker compose exec -T worker motor-cartera backfill-motor-pagos --dry-run | tee motor.txt
           grep -q "Pagos observados sin interpretacion vigente: 0" motor.txt
           grep -q "solo con ejecuciones FALLIDA: 0" motor.txt
+          grep -q "con una reinterpretacion FALLIDA despues de su vigente: 0" motor.txt
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la

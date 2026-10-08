@@ -9,12 +9,14 @@ backfill-motor-pagos`, por ventanas, que es como trabaja el motor:
    cada una con su interpretacion vigente con motor-pagos/v1 (su EXITOSA mas reciente);
 2. las separa: al dia (su vigente leyo todos sus pagos; un pago observado no se borra, asi que
    contar basta), en la cola (tiene una EN_PROCESO), sin interpretacion, desactualizadas (llegaron
-   pagos que su vigente no ve), solo con ejecuciones FALLIDA, y por conciliar (al dia, pero con
-   movimientos SIN_CUENTA_OBSERVADA cuyo cliente ya tiene cuenta canonica);
+   pagos que su vigente no ve), solo con ejecuciones FALLIDA, con una reinterpretacion FALLIDA
+   despues de su vigente (algo cambio su contexto o su conciliacion, se abrio otra ejecucion y
+   fallo: la vigente puede no ver ese cambio), y por conciliar (al dia, pero con movimientos
+   SIN_CUENTA_OBSERVADA cuyo cliente ya tiene cuenta canonica);
 3. encola una ejecucion por ventana pendiente, cada una en su propia transaccion: las sin
-   interpretacion y las desactualizadas siempre; las que solo fallaron, con
-   `--reintentar-fallidas`; y las por conciliar, con `--reconciliar`, que es una interpretacion
-   nueva y no una correccion de la anterior.
+   interpretacion y las desactualizadas siempre; las que fallaron (solo con FALLIDA, o con una
+   reinterpretacion FALLIDA), con `--reintentar-fallidas`; y las por conciliar, con
+   `--reconciliar`, que es una interpretacion nueva y no una correccion de la anterior.
 
 Es idempotente: una ventana con una ejecucion EN_PROCESO no se encola otra vez (la reusa
 `abrir_ventana`, con su indice unico), y una que ya esta al dia no se toca. Los movimientos no se
@@ -33,7 +35,11 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from motor_cartera.config import Config
-from motor_cartera.db.modelos import EjecucionMotorPagos, EstadoMotorPagos
+from motor_cartera.db.modelos import (
+    EjecucionMotorPagos,
+    EstadoMotorPagos,
+    ResultadoMotorPagos,
+)
 from motor_cartera.db.sesion import sesion
 from motor_cartera.motor_pagos.ejecuciones import Ventana, abrir_ventana
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, siguiente_periodo
@@ -79,6 +85,10 @@ class Diagnostico:
     sin_interpretacion: list[EstadoDeVentana] = field(default_factory=list)
     desactualizadas: list[EstadoDeVentana] = field(default_factory=list)
     solo_fallidas: list[EstadoDeVentana] = field(default_factory=list)
+    reinterpretacion_fallida: list[EstadoDeVentana] = field(default_factory=list)
+    """Con vigente, pero su ultima ejecucion es FALLIDA (y no YA_INTERPRETADA): la vigente
+    puede no ver lo que la hizo abrir, un cambio de su contexto o de su conciliacion, que no se
+    nota contando sus pagos."""
     por_conciliar: list[EstadoDeVentana] = field(default_factory=list)
 
     @property
@@ -140,6 +150,8 @@ def diagnosticar(s: Session) -> Diagnostico:
         )
         if any(e.estado == EstadoMotorPagos.EN_PROCESO for e in todas):
             en_cola += 1
+        elif vigente is not None and estado.pendientes == 0 and _fallo_despues(todas[-1]):
+            listas["reinterpretacion_fallida"].append(estado)
         elif vigente is not None and estado.pendientes == 0:
             al_dia += 1
             if estado.por_conciliar:
@@ -156,6 +168,16 @@ def diagnosticar(s: Session) -> Diagnostico:
         al_dia=al_dia,
         en_cola=en_cola,
         **listas,
+    )
+
+
+def _fallo_despues(ultima: EjecucionMotorPagos) -> bool:
+    """Si la ultima ejecucion de una ventana con vigente fallo sin ver que su firma ya estaba
+    publicada: se abrio porque algo cambio, y la vigente no lo ve. Con YA_INTERPRETADA no cambio
+    nada."""
+    return (
+        ultima.estado == EstadoMotorPagos.FALLIDA
+        and ultima.resultado != ResultadoMotorPagos.YA_INTERPRETADA
     )
 
 

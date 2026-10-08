@@ -35,7 +35,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -322,14 +322,19 @@ def ejecutar_motor_pagos(ejecucion_id: int) -> None:
 def interpretar(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> None:
     """Interpreta la ventana de la ejecucion y la deja en un estado terminal.
 
-    La ejecucion se toma con su fila bloqueada hasta el commit o el rollback, y todo va en una sola
-    transaccion: los movimientos, los resultados y el cierre. Si algo falla, se revierte todo y, en
-    otra transaccion, la ejecucion queda FALLIDA si sigue EN_PROCESO: ningun camino de error degrada
-    un estado terminal. Si la ejecuta un worker que perdio su trabajo, no publica ni la falla: la
-    termina el dueno vigente.
+    La ejecucion se toma con su fila bloqueada hasta el commit, y todo va en una sola transaccion:
+    los movimientos, los resultados y el cierre. La interpretacion corre en un savepoint: si falla,
+    se revierte solo lo de este intento y la ejecucion queda FALLIDA en la misma transaccion, sin
+    soltar su fila. Asi nadie la ve EN_PROCESO entre el fallo y su cierre: una historia que abre la
+    ventana en ese momento espera, la encuentra FALLIDA y abre otra, en lugar de dejarle sus pagos a
+    una ejecucion que ya no los va a leer. Ningun camino de error degrada un estado terminal. Si la
+    ejecuta un worker que perdio su trabajo, no publica ni la falla: la termina el dueno vigente.
 
-    No levanta excepciones, salvo dos: MotorPagosYaInterpretado, si otra ejecucion de la ventana
-    publico primero las mismas entradas (esta ya quedo FALLIDA), y TrabajoAjeno.
+    No levanta excepciones, salvo tres: MotorPagosYaInterpretado, si otra ejecucion de la ventana
+    publico primero las mismas entradas (esta ya quedo FALLIDA); TrabajoAjeno; y los errores
+    transitorios de la base (OperationalError: la conexion, un interbloqueo, una cancelacion), que
+    no son una conclusion del motor: se revierte todo, la ejecucion sigue EN_PROCESO y la cola
+    reintenta su trabajo con su espera, como cualquier error del worker.
     """
     cronometro = cronometro or Cronometro()
     with sesion() as s:
@@ -345,56 +350,45 @@ def interpretar(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> N
                 ejecucion.estado,
             )
             return
-        # Se leen ahora: despues de un rollback la ejecucion en memoria caduca.
+        # Se leen ahora: despues de revertir el savepoint la ejecucion en memoria caduca.
         etiqueta, ventana = ejecucion.motor_pagos_run_id, Ventana.de(ejecucion)
         avance = _Avance()
         try:
-            _interpretar(s, ejecucion, avance, cronometro)
-            cola.confirmar_dueno(s)
-            with cronometro.fase("commit"):
-                s.commit()  # el unico commit que publica una interpretacion
-        except cola.TrabajoAjeno:
-            s.rollback()
-            raise
+            with s.begin_nested():
+                _interpretar(s, ejecucion, avance, cronometro)
         except _NoSePublica as exc:
-            s.rollback()
-            _fallar(s, ejecucion_id, etiqueta, exc.resultado, str(exc), avance)
-            if exc.resultado == ResultadoMotorPagos.YA_INTERPRETADA:
-                raise MotorPagosYaInterpretado(_exitosa_con_la_firma(s, ejecucion_id)) from exc
+            resultado, motivo = exc.resultado, str(exc)
         except IntegrityError as exc:
-            s.rollback()
             if restriccion(exc) == INDICE_EXITOSA:
-                _fallar(
-                    s,
-                    ejecucion_id,
-                    etiqueta,
+                resultado, motivo = (
                     ResultadoMotorPagos.YA_INTERPRETADA,
                     f"Otra ejecucion interpreto la ventana {ventana.desde.isoformat()} con las "
                     f"mismas entradas y {VERSION_MOTOR_PAGOS} mientras esta se procesaba; no se "
                     "publica dos veces.",
-                    avance,
                 )
-                raise MotorPagosYaInterpretado(_exitosa_con_la_firma(s, ejecucion_id)) from exc
-            log.exception("motor de pagos %s: violacion de integridad inesperada", etiqueta)
-            _fallar(
-                s,
-                ejecucion_id,
-                etiqueta,
-                ResultadoMotorPagos.ERROR_INTERNO,
-                "Error interno al publicar; ver la bitacora del servicio.",
-                avance,
-            )
+            else:
+                log.exception("motor de pagos %s: violacion de integridad inesperada", etiqueta)
+                resultado, motivo = (
+                    ResultadoMotorPagos.ERROR_INTERNO,
+                    "Error interno al publicar; ver la bitacora del servicio.",
+                )
+        except OperationalError:
+            log.warning("motor de pagos %s: error transitorio; sigue EN_PROCESO", etiqueta)
+            raise
         except Exception as exc:
-            s.rollback()
             log.exception("motor de pagos %s: error inesperado", etiqueta)
-            _fallar(
-                s,
-                ejecucion_id,
-                etiqueta,
+            resultado, motivo = (
                 ResultadoMotorPagos.ERROR_INTERNO,
                 f"Error interno ({type(exc).__name__}); ver la bitacora.",
-                avance,
             )
+        else:
+            cola.confirmar_dueno(s)
+            with cronometro.fase("commit"):
+                s.commit()  # el unico commit que publica una interpretacion
+            return
+        _fallar(s, ejecucion_id, etiqueta, resultado, motivo, avance)
+        if resultado == ResultadoMotorPagos.YA_INTERPRETADA:
+            raise MotorPagosYaInterpretado(_exitosa_con_la_firma(s, ejecucion_id))
 
 
 def _interpretar(
@@ -867,15 +861,16 @@ def _fallar(
     motivo: str,
     avance: _Avance,
 ) -> None:
-    """FALLIDA, solo si sigue EN_PROCESO y solo si quien la ejecuta sigue siendo el dueno de su
-    trabajo: un fallo que llega tarde, o de un worker que ya perdio su lease, no cambia nada. No
-    borra nada: lo de este intento ya lo quito el rollback."""
+    """FALLIDA, en la transaccion que tomo la ejecucion y con su fila todavia bloqueada, solo si
+    quien la ejecuta sigue siendo el dueno de su trabajo: si no, levanta TrabajoAjeno sin cambiar
+    nada, y la termina el dueno vigente. No borra nada: lo de este intento ya lo revirtio su
+    savepoint."""
     try:
         cola.confirmar_dueno(s)
     except cola.TrabajoAjeno:
         s.rollback()
         log.warning("motor de pagos %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
-        return
+        raise
     registrado = s.execute(
         update(EjecucionMotorPagos)
         .where(

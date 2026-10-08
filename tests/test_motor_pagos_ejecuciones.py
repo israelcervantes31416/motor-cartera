@@ -19,6 +19,7 @@ from motor_pagos_escenarios import (
     vigente,
 )
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlmodel import select
 
 from motor_cartera.config import Config
@@ -116,6 +117,67 @@ def test_una_falla_en_cualquier_punto_no_publica_nada(tmp_path, monkeypatch, don
     assert terminada.observaciones_clasificadas == cuantos(ResultadoPagoObservado) == 30
 
 
+def test_una_interpretacion_que_falla_no_suelta_su_ejecucion_hasta_dejarla_fallida(
+    tmp_path, monkeypatch
+):
+    # Mientras registra el fallo, la ejecucion sigue bloqueada: una historia que abriera la ventana
+    # en ese momento no podria encontrarla EN_PROCESO y dejarle sus pagos.
+    _pagos_de_septiembre(tmp_path)
+    historiar_todo()
+    (abierta,) = ejecuciones()
+    monkeypatch.setattr(motor, "_clasificar", _lanzar)
+    confirmar, bloqueada = motor.cola.confirmar_dueno, []
+
+    def mirar_la_fila(s):
+        with sesion() as otra:
+            try:
+                otra.execute(
+                    text("SELECT 1 FROM ejecucion_motor_pagos WHERE id = :id FOR UPDATE NOWAIT"),
+                    {"id": abierta.id},
+                )
+                bloqueada.append(False)
+            except OperationalError:
+                bloqueada.append(True)
+        confirmar(s)
+
+    monkeypatch.setattr(motor.cola, "confirmar_dueno", mirar_la_fila)
+
+    interpretar(abierta.id)
+
+    assert bloqueada == [True]
+    (fallida,) = ejecuciones()
+    assert (fallida.estado, fallida.resultado) == ("FALLIDA", "ERROR_INTERNO")
+    # Quien abre la ventana despues la encuentra FALLIDA y abre otra.
+    assert _abrir().id != abierta.id
+
+
+def test_un_error_transitorio_de_la_base_deja_la_ventana_en_proceso_y_la_cola_la_reintenta(
+    tmp_path, monkeypatch
+):
+    from motor_cartera.orquestacion import worker
+
+    _pagos_de_septiembre(tmp_path)
+    worker_id = worker.identificador_worker()
+    assert worker.procesar_un_trabajo(worker_id, Config()).tipo == TipoTrabajo.HISTORIA
+
+    def interbloqueo(*_args, **_kwargs):
+        raise OperationalError("INSERT ...", {}, Exception("deadlock detected"))
+
+    monkeypatch.setattr(motor, "_crear_movimientos", interbloqueo)
+
+    procesado = worker.procesar_un_trabajo(worker_id, Config())
+
+    # No es una conclusion del motor: nada publicado, la ejecucion sigue EN_PROCESO y su trabajo
+    # vuelve a la cola con su espera, como cualquier error del worker.
+    assert (procesado.tipo, procesado.estado) == (TipoTrabajo.MOTOR_PAGOS, "PENDIENTE")
+    (sigue,) = ejecuciones()
+    assert (sigue.estado, sigue.resultado) == ("EN_PROCESO", None)
+    assert cuantos(MovimientoEconomicoCanonico) == cuantos(ResultadoPagoObservado) == 0
+    monkeypatch.undo()
+    interpretar(sigue.id)
+    assert vigente(SEPTIEMBRE).observaciones_clasificadas == 30
+
+
 class Muerte(BaseException):  # noqa: N818
     """La muerte del proceso: ningun `except Exception` la atrapa."""
 
@@ -170,6 +232,24 @@ def test_las_mismas_entradas_no_se_publican_dos_veces(tmp_path):
     assert perdedora.firma_entrada == primera.firma_entrada
     assert str(primera.motor_pagos_run_id) in perdedora.detalle
     assert cuantos(ResultadoPagoObservado) == 30
+
+
+def test_un_worker_que_perdio_su_trabajo_no_cierra_una_interpretacion_repetida(
+    tmp_path, monkeypatch
+):
+    publicar(_pagos_de_septiembre(tmp_path))
+    segunda = _abrir()
+
+    def ajeno(_s):
+        raise motor.cola.TrabajoAjeno("el trabajo ya es de otro worker")
+
+    monkeypatch.setattr(motor.cola, "confirmar_dueno", ajeno)
+
+    with pytest.raises(motor.cola.TrabajoAjeno):
+        interpretar(segunda.id)
+
+    # Ni la falla ni la cierra: la termina el dueno vigente de su trabajo.
+    assert ejecuciones()[-1].estado == EstadoMotorPagos.EN_PROCESO
 
 
 def test_la_base_no_deja_dos_exitosas_con_la_misma_firma(tmp_path, monkeypatch):

@@ -73,6 +73,7 @@ def listar(
     (`desde` y `hasta`, inclusive), por `tipo` y por `estado_conciliacion`. Con un cliente, la
     consulta entra por el indice de los movimientos de una cuenta."""
     config: Config = request.app.state.config
+    despacho, cartera = config.despacho_id, config.cartera_id
     cliente = parametros.cliente_unico
     if parametros.cuenta_id is not None:
         cuenta = _cuenta(s, parametros.cuenta_id)
@@ -82,11 +83,12 @@ def listar(
                 "ENTRADA_INVALIDA",
                 f"La cuenta {parametros.cuenta_id} es de {cuenta.cliente_unico}, no de {cliente}.",
             )
-        cliente = cuenta.cliente_unico
+        # Los de su cliente en su cartera, aunque no sea la del sistema.
+        despacho, cartera, cliente = cuenta.despacho_id, cuenta.cartera_id, cuenta.cliente_unico
     total, pagina = consultas.listar_movimientos(
         s,
-        despacho_id=config.despacho_id,
-        cartera_id=config.cartera_id,
+        despacho_id=despacho,
+        cartera_id=cartera,
         version=parametros.version,
         cliente_unico=cliente,
         desde=parametros.desde,

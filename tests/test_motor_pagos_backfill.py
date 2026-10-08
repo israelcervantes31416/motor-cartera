@@ -32,7 +32,7 @@ from motor_cartera.motor_pagos.backfill import diagnosticar
 pytestmark = pytest.mark.usefixtures("bd")
 
 cli = CliRunner()
-AGOSTO, SEPTIEMBRE = date(2026, 8, 1), date(2026, 9, 1)
+AGOSTO, SEPTIEMBRE, OCTUBRE = date(2026, 8, 1), date(2026, 9, 1), date(2026, 10, 1)
 
 
 def _sin_motor() -> None:
@@ -158,6 +158,56 @@ def test_una_ventana_que_solo_fallo_se_reintenta_solo_si_se_pide(tmp_path):
 
     assert "Se encolaron 2 trabajos MOTOR_PAGOS" in con_bandera.output
     assert {e.estado for e in interpretar_todo()} == {"EXITOSA"}
+
+
+def test_una_reinterpretacion_fallida_por_un_cambio_de_contexto_se_encuentra_y_se_repara(
+    tmp_path,
+):
+    # Septiembre tiene su vigente. En octubre llega el reverso de su pago: la historia abre octubre
+    # y vuelve a abrir septiembre, cuyo contexto cambio. Octubre se interpreta, pero la de
+    # septiembre falla: su vigente no ve el reverso, y contar sus pagos no lo nota.
+    publicar(ingerir_pagos_de(tmp_path, "uno.csv", [pago(1, "2026-09-25 10:00:00", "500.00")]))
+    ingerir_pagos_de(tmp_path, "dos.csv", [pago(1, "2026-10-03 10:00:00", "-500.00")])
+    historiar_todo()
+    _, reabierta = ejecuciones(SEPTIEMBRE)
+    with sesion() as s:
+        s.execute(
+            text(
+                "UPDATE ejecucion_motor_pagos SET estado = 'FALLIDA', resultado = 'ERROR_INTERNO', "
+                "terminada_en = now() WHERE id = :id"
+            ),
+            {"id": reabierta.id},
+        )
+        s.commit()
+    interpretar_todo()
+    assert (vigente(OCTUBRE).reversos, vigente(SEPTIEMBRE).pagos_anulados) == (1, 0)
+
+    with sesion() as s:
+        diagnostico = diagnosticar(s)
+    (fallida,) = diagnostico.reinterpretacion_fallida
+    assert (fallida.desde, fallida.pendientes, fallida.ultimo_resultado) == (
+        SEPTIEMBRE,
+        0,
+        "ERROR_INTERNO",
+    )
+    assert (diagnostico.al_dia, diagnostico.observaciones_sin_interpretacion) == (1, 0)
+
+    sin_bandera = cli.invoke(app, ["backfill-motor-pagos"])
+
+    assert (
+        "con una reinterpretacion FALLIDA despues de su vigente: 1; se reintentan con "
+        "--reintentar-fallidas" in sin_bandera.output
+    )
+    assert "Se encolaron 0 trabajos MOTOR_PAGOS" in sin_bandera.output
+
+    con_bandera = cli.invoke(app, ["backfill-motor-pagos", "--reintentar-fallidas"])
+
+    assert "Se encolaron 1 trabajos MOTOR_PAGOS" in con_bandera.output
+    interpretar_todo()
+    assert vigente(SEPTIEMBRE).pagos_anulados == 1
+    final = cli.invoke(app, ["backfill-motor-pagos", "--dry-run"])
+    assert "con una reinterpretacion FALLIDA despues de su vigente: 0" in final.output
+    assert "al dia con motor-pagos/v1: 2" in final.output
 
 
 def test_reconciliar_reinterpreta_los_pagos_sin_cuenta_que_ya_la_tienen(tmp_path):

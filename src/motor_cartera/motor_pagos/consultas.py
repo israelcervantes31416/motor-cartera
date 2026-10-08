@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, and_, func, text
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import Select
 
@@ -505,7 +506,8 @@ def resumen_de_cuenta(
 ) -> ResumenPagos:
     """Cuantas observaciones tiene la cuenta, cuantas tienen una interpretacion vigente y como quedo
     cada una, y su recuperacion interpretada. Con `al`, solo los pagos recibidos hasta el final de
-    ese dia, con la interpretacion vigente hoy."""
+    ese dia, con la interpretacion vigente hoy; y un pago cuenta como anulado solo si su reverso
+    tambien habia llegado ese dia: si no, ese dia era un pago."""
     limite = None if al is None else _instante(al + timedelta(1))
     parametros = {
         "despacho": cuenta.despacho_id,
@@ -543,33 +545,46 @@ def resumen_de_cuenta(
         ),
         parametros,
     ).one()
+    actuales = vigentes(s, version)
     condiciones: list[ColumnElement] = [
-        MovimientoEconomicoCanonico.ejecucion_motor_pagos_id.in_(vigentes(s, version)),
+        MovimientoEconomicoCanonico.ejecucion_motor_pagos_id.in_(actuales),
         MovimientoEconomicoCanonico.despacho_id == cuenta.despacho_id,
         MovimientoEconomicoCanonico.cartera_id == cuenta.cartera_id,
         MovimientoEconomicoCanonico.cliente_unico == cuenta.cliente_unico,
     ]
-    if limite is not None:
+    reverso = aliased(MovimientoEconomicoCanonico)
+    if limite is None:
+        anulado = MovimientoEconomicoCanonico.anulado_por_movimiento_id.is_not(None)
+    else:
         condiciones.append(MovimientoEconomicoCanonico.fecha_recepcion < limite)
-    movimientos, anulados, bruta, posibles = s.exec(
-        select(
-            func.count(),
-            func.count().filter(MovimientoEconomicoCanonico.anulado_por_movimiento_id.is_not(None)),
-            func.coalesce(
-                func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
-                    MovimientoEconomicoCanonico.tipo_movimiento == "PAGO",
-                    MovimientoEconomicoCanonico.anulado_por_movimiento_id.is_(None),
-                ),
-                0,
+        anulado = reverso.id.is_not(None)
+    consulta = select(
+        func.count(),
+        func.count().filter(anulado),
+        func.coalesce(
+            func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
+                MovimientoEconomicoCanonico.tipo_movimiento == "PAGO", ~anulado
             ),
-            func.coalesce(
-                func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
-                    MovimientoEconomicoCanonico.tipo_movimiento == "POSIBLE_REVERSO"
-                ),
-                0,
+            0,
+        ),
+        func.coalesce(
+            func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
+                MovimientoEconomicoCanonico.tipo_movimiento == "POSIBLE_REVERSO"
             ),
-        ).where(*condiciones)
-    ).one()
+            0,
+        ),
+    ).select_from(MovimientoEconomicoCanonico)
+    if limite is not None:
+        # El reverso que anula un pago esta en la vigente de su propia ventana: una sola fila.
+        consulta = consulta.outerjoin(
+            reverso,
+            and_(
+                reverso.movimiento_id == MovimientoEconomicoCanonico.anulado_por_movimiento_id,
+                reverso.ejecucion_motor_pagos_id.in_(actuales),
+                reverso.fecha_recepcion < limite,
+            ),
+        )
+    movimientos, anulados, bruta, posibles = s.exec(consulta.where(*condiciones)).one()
     observaciones, interpretadas, primarios, duplicados, ambiguas, reversos, posibles_, no_c = (
         clases
     )

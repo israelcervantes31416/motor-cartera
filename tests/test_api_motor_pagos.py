@@ -417,9 +417,15 @@ def test_el_resumen_de_pagos_en_una_fecha_y_de_una_cuenta_sin_pagos(tmp_path, ap
     al = api.get(f"/cuentas/{cuenta(8).cuenta_id}", params={"al": "2026-09-04"}).json()
     sin_pagos = api.get(f"/cuentas/{cuenta(4).cuenta_id}", params={"al": "2026-09-01"}).json()
 
-    # El 4 solo habia llegado el pago: su reverso es del 5. La interpretacion es la de hoy.
+    # El 4 solo habia llegado el pago: su reverso es del 5, asi que ese dia no estaba anulado.
+    # Las clases son las de la interpretacion de hoy.
     assert al["resumen_pagos"]["observaciones"] == 1
-    assert al["resumen_pagos"]["recuperacion_bruta_interpretada"] == "0.00"
+    assert (al["resumen_pagos"]["reversos"], al["resumen_pagos"]["pagos_anulados"]) == (0, 0)
+    assert al["resumen_pagos"]["recuperacion_bruta_interpretada"] == "400.00"
+    assert al["resumen_pagos"]["recuperacion_neta_interpretada"] == "400.00"
+    hoy = api.get(f"/cuentas/{cuenta(8).cuenta_id}").json()["resumen_pagos"]
+    assert (hoy["reversos"], hoy["pagos_anulados"]) == (1, 1)
+    assert hoy["recuperacion_bruta_interpretada"] == hoy["recuperacion_neta_interpretada"] == "0.00"
     assert sin_pagos["resumen_pagos"]["observaciones"] == 0
     assert sin_pagos["resumen_pagos"]["movimientos_canonicos"] == 0
 

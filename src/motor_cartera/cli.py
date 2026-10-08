@@ -366,7 +366,9 @@ def backfill_motor_pagos(
         bool,
         typer.Option(
             "--reintentar-fallidas",
-            help="Tambien encola las ventanas cuya interpretacion solo tiene ejecuciones FALLIDA.",
+            help="Tambien encola las ventanas cuya interpretacion fallo: las que solo tienen "
+            "ejecuciones FALLIDA y las que tienen una reinterpretacion FALLIDA despues de su "
+            "vigente.",
         ),
     ] = False,
     reconciliar: Annotated[
@@ -387,9 +389,11 @@ def backfill_motor_pagos(
     ejecuta un worker, en PostgreSQL y sin volver a leer ningun archivo.
 
     Es idempotente: una ventana ya en la cola no se encola otra vez, y una al dia no se toca. Las
-    que solo tienen ejecuciones FALLIDA se reintentan con --reintentar-fallidas. Las que estan al
-    dia pero tienen movimientos sin cuenta cuyo cliente ya llego en un corte se reinterpretan con
-    --reconciliar: es una interpretacion nueva, y la anterior queda en el historial.
+    que solo tienen ejecuciones FALLIDA, y las que tienen una reinterpretacion FALLIDA despues de
+    su vigente (que puede no ver un cambio de su contexto), se reintentan con
+    --reintentar-fallidas. Las que estan al dia pero tienen movimientos sin cuenta cuyo cliente ya
+    llego en un corte se reinterpretan con --reconciliar: es una interpretacion nueva, y la
+    anterior queda en el historial.
     """
     from motor_cartera.config import config
     from motor_cartera.db.sesion import sesion
@@ -398,6 +402,7 @@ def backfill_motor_pagos(
     with sesion() as s:
         diagnostico = diagnosticar(s)
     fallidas, por_conciliar = diagnostico.solo_fallidas, diagnostico.por_conciliar
+    reinterpretaciones = diagnostico.reinterpretacion_fallida
     typer.echo(
         f"Ventanas con pagos observados: {diagnostico.ventanas:,}, con "
         f"{diagnostico.observaciones:,} pagos observados"
@@ -415,6 +420,17 @@ def backfill_motor_pagos(
     typer.echo(f"  solo con ejecuciones FALLIDA: {len(fallidas):,}{nota}")
     for ventana in fallidas:
         typer.echo(f"    {_ventana(ventana)}: {ventana.ultimo_resultado}")
+    nota = (
+        ""
+        if reintentar_fallidas or not reinterpretaciones
+        else "; se reintentan con --reintentar-fallidas"
+    )
+    typer.echo(
+        "  con una reinterpretacion FALLIDA despues de su vigente: "
+        f"{len(reinterpretaciones):,}{nota}"
+    )
+    for ventana in reinterpretaciones:
+        typer.echo(f"    {_ventana(ventana)}: {ventana.ultimo_resultado}")
     nota = "" if reconciliar or not por_conciliar else "; se reinterpretan con --reconciliar"
     typer.echo(
         "  por conciliar (movimientos sin cuenta cuyo cliente ya tiene una): "
@@ -427,7 +443,7 @@ def backfill_motor_pagos(
     pendientes = (
         diagnostico.sin_interpretacion
         + diagnostico.desactualizadas
-        + (fallidas if reintentar_fallidas else [])
+        + (fallidas + reinterpretaciones if reintentar_fallidas else [])
         + (por_conciliar if reconciliar else [])
     )
     if dry_run:
