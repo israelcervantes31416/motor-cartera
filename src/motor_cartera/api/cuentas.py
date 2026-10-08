@@ -1,8 +1,14 @@
-"""Cuenta 360 por HTTP: una cuenta canonica, su historia, sus eventos y sus pagos observados.
+"""Cuenta 360 por HTTP: una cuenta canonica, su historia, sus eventos, sus pagos observados y sus
+movimientos.
 
-La logica vive en `historia.cuenta360`; aqui solo se buscan los recursos por sus identificadores
-publicos y se arman las respuestas. `GET /cuentas/{cuenta_id}` es un resumen: la historia, los
-eventos y los pagos son subrecursos paginados, para que ninguna respuesta crezca sin control.
+La logica vive en `historia.cuenta360` y en `motor_pagos.consultas`; aqui solo se buscan los
+recursos por sus identificadores publicos y se arman las respuestas. `GET /cuentas/{cuenta_id}` es
+un resumen: la historia, los eventos, los pagos observados y los movimientos son subrecursos
+paginados, para que ninguna respuesta crezca sin control.
+
+`/pagos-observados` y `/movimientos` no son lo mismo, y por eso son dos rutas: la primera es lo que
+la fuente reporto, fila por fila, sin tocar; la segunda, lo que el motor de pagos interpreta de
+ello. Dos filas identicas son dos pagos observados y un solo movimiento.
 """
 
 from __future__ import annotations
@@ -17,19 +23,25 @@ from sqlmodel import Session
 from motor_cartera.api.dependencias import SesionDeLectura
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
+    AVISO_MOVIMIENTOS,
     AVISO_PAGOS_OBSERVADOS,
     Cuenta360Respuesta,
     CuentaEncontradaRespuesta,
     EventoRespuesta,
+    MovimientoDeCuentaRespuesta,
     Paginacion,
     PaginaEventos,
     PaginaHistoria,
+    PaginaMovimientosDeCuenta,
     PaginaPagosObservados,
     PagoObservadoRespuesta,
     ParametrosHistoria,
+    ParametrosMovimientosDeCuenta,
+    ResumenPagosRespuesta,
     SnapshotEnHistoriaRespuesta,
     SnapshotRespuesta,
 )
+from motor_cartera.api.motor_pagos import contexto_respuesta, movimiento_respuesta
 from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
 from motor_cartera.db.modelos import CuentaCanonica
@@ -41,6 +53,8 @@ from motor_cartera.historia.cuenta360 import (
     SnapshotEnHistoria,
     SnapshotVisto,
 )
+from motor_cartera.motor_pagos import consultas
+from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
 
 router = APIRouter(prefix="/cuentas", tags=["cuentas"])
 
@@ -145,11 +159,15 @@ def obtener_cuenta(
     estados es crediticio**: que una cuenta no aparezca no dice si se liquido, se cancelo, se
     castigo o se vendio.
 
-    La historia, los eventos y los pagos son subrecursos paginados: `/historia`, `/eventos` y
-    `/pagos-observados`.
+    `resumen_pagos` es lo que la interpretacion vigente del motor de pagos dice de sus pagos, en
+    numeros: no es contabilidad del acreedor.
+
+    La historia, los eventos, los pagos observados y los movimientos son subrecursos paginados:
+    `/historia`, `/eventos`, `/pagos-observados` y `/movimientos`.
     """
     cuenta = _cuenta(s, cuenta_id)
     vista = cuenta360.resumen(s, cuenta, al)
+    pagos = consultas.resumen_de_cuenta(s, cuenta, version=VERSION_MOTOR_PAGOS, al=al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -168,6 +186,20 @@ def obtener_cuenta(
         pagos_observados=vista.pagos_observados,
         snapshot_actual=_snapshot(vista.snapshot_actual),
         ultimo_snapshot_observado=_snapshot(vista.ultimo_snapshot_observado),
+        resumen_pagos=ResumenPagosRespuesta(
+            version_motor=VERSION_MOTOR_PAGOS,
+            observaciones=pagos.observaciones,
+            observaciones_interpretadas=pagos.observaciones_interpretadas,
+            movimientos_canonicos=pagos.movimientos_canonicos,
+            duplicados_exactos=pagos.duplicados_exactos,
+            coincidencias_ambiguas=pagos.coincidencias_ambiguas,
+            reversos=pagos.reversos,
+            posibles_reversos=pagos.posibles_reversos,
+            no_conciliados=pagos.no_conciliados,
+            pagos_anulados=pagos.pagos_anulados,
+            recuperacion_bruta_interpretada=pagos.recuperacion_bruta_interpretada,
+            recuperacion_neta_interpretada=pagos.recuperacion_neta_interpretada,
+        ),
     )
 
 
@@ -286,7 +318,60 @@ def pagos_observados(
         total=total,
         pagina=paginacion.pagina,
         por_pagina=paginacion.por_pagina,
-        elementos=[_pago(visto) for visto in pagina],
+        elementos=[pago_respuesta(visto) for visto in pagina],
+    )
+
+
+@router.get(
+    "/{cuenta_id}/movimientos",
+    response_model=PaginaMovimientosDeCuenta,
+    summary="Los movimientos economicos que el motor de pagos interpreta para la cuenta",
+    description=(
+        f"**{AVISO_MOVIMIENTOS}**\n\n"
+        "Los movimientos de la interpretacion vigente de cada ventana con el CLIENTE_UNICO de la "
+        "cuenta, del mas reciente al mas antiguo, filtrables por dias de recepcion (`desde` y "
+        "`hasta`, inclusive). Un movimiento cuenta una vez aunque la fuente lo haya reportado "
+        "varias: `/movimientos/{movimiento_id}/observaciones` muestra cada fila que lo sustenta. "
+        "Cada uno trae su `contexto_temporal`: el snapshot anterior y el siguiente de la cuenta, y "
+        "si llego antes de su primera observacion, despues de la ultima o mientras faltaba de la "
+        "cartera. Es informacion, no un error, y la diferencia de saldo entre los dos snapshots no "
+        "se atribuye al pago."
+    ),
+    responses=errores(
+        *SIN_CLAVE,
+        NO_EXISTE,
+        (422, "ENTRADA_INVALIDA", "El cuenta_id no es un UUID, o la paginacion no es valida."),
+    ),
+)
+def movimientos(
+    cuenta_id: UUID,
+    parametros: Annotated[ParametrosMovimientosDeCuenta, Query()],
+    s: SesionDeLectura,
+) -> PaginaMovimientosDeCuenta:
+    cuenta = _cuenta(s, cuenta_id)
+    total, pagina = consultas.movimientos_de_cuenta(
+        s,
+        cuenta,
+        version=VERSION_MOTOR_PAGOS,
+        desde=parametros.desde,
+        hasta=parametros.hasta,
+        desplazamiento=parametros.desplazamiento,
+        limite=parametros.por_pagina,
+    )
+    return PaginaMovimientosDeCuenta(
+        cuenta_id=cuenta.cuenta_id,
+        cliente_unico=cuenta.cliente_unico,
+        version_motor=VERSION_MOTOR_PAGOS,
+        total=total,
+        pagina=parametros.pagina,
+        por_pagina=parametros.por_pagina,
+        elementos=[
+            MovimientoDeCuentaRespuesta(
+                **movimiento_respuesta(m.visto).model_dump(),
+                contexto_temporal=contexto_respuesta(m.contexto, m.snapshots),
+            )
+            for m in pagina
+        ],
     )
 
 
@@ -345,7 +430,7 @@ def _en_historia(elemento: SnapshotEnHistoria) -> SnapshotEnHistoriaRespuesta:
     )
 
 
-def _pago(visto: PagoVisto) -> PagoObservadoRespuesta:
+def pago_respuesta(visto: PagoVisto) -> PagoObservadoRespuesta:
     p = visto.pago
     return PagoObservadoRespuesta(
         pago_observado_id=p.pago_observado_id,
