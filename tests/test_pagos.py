@@ -591,7 +591,7 @@ def test_el_worker_toma_la_ingesta_de_pagos_y_no_encadena_nada(tmp_path, trabaja
     assert trabajo.flujo_id is None and trabajo.corrida_id is None
     assert _ingesta(ingesta_id).estado == EstadoIngestaPagos.EN_PROCESO
 
-    procesado, historia = trabajar()
+    procesado, historia, interpretacion = trabajar()
 
     assert (procesado.tipo, procesado.intentos, procesado.estado) == (
         TipoTrabajo.INGESTA_PAGOS,
@@ -599,11 +599,20 @@ def test_el_worker_toma_la_ingesta_de_pagos_y_no_encadena_nada(tmp_path, trabaja
         EstadoTrabajo.COMPLETADO,
     )
     assert _ingesta(ingesta_id).estado == EXITOSA
-    # El suyo y el de la historia de sus pagos, que se abre con su dataset: ninguna decision,
-    # ningun flujo, ninguna corrida.
+    # El suyo, el de la historia de sus pagos, que se abre con su dataset, y el del motor de pagos,
+    # que abre la historia al publicarlos: ninguna decision, ningun flujo, ninguna corrida.
     assert (historia.tipo, historia.estado) == (TipoTrabajo.HISTORIA, EstadoTrabajo.COMPLETADO)
+    assert (interpretacion.tipo, interpretacion.estado) == (
+        TipoTrabajo.MOTOR_PAGOS,
+        EstadoTrabajo.COMPLETADO,
+    )
     assert [t.id for t in _trabajos()][0] == trabajo_id
-    assert [t.tipo for t in _trabajos()] == [TipoTrabajo.INGESTA_PAGOS, TipoTrabajo.HISTORIA]
+    assert [t.tipo for t in _trabajos()] == [
+        TipoTrabajo.INGESTA_PAGOS,
+        TipoTrabajo.HISTORIA,
+        TipoTrabajo.MOTOR_PAGOS,
+    ]
+    assert {t.flujo_id for t in _trabajos()} == {None}
     assert _cuantos(FlujoOrquestacion) == _cuantos(Corrida) == 0
 
 
@@ -753,6 +762,9 @@ def test_dos_workers_nunca_procesan_la_misma_ingesta(tmp_path, monkeypatch):
     assert {(t.estado, t.intentos) for t in de_ingesta} == {(EstadoTrabajo.COMPLETADO, 1)}
     assert _cuantos(DatasetConformado) == 2
     # Cada dataset abrio su historia, con su trabajo HISTORIA: los workers se detienen en cuanto
-    # terminan las dos ingestas, asi que pueden haberlo tomado o no.
+    # terminan las dos ingestas, asi que pueden haberlo tomado o no. Una historia que alcanzo a
+    # publicar abrio la interpretacion de sus pagos.
     historias = [t for t in _trabajos() if t.tipo == TipoTrabajo.HISTORIA]
-    assert len(historias) == len(_trabajos()) - 2 == 2
+    interpretaciones = [t for t in _trabajos() if t.tipo == TipoTrabajo.MOTOR_PAGOS]
+    assert len(historias) == 2
+    assert len(_trabajos()) == len(de_ingesta) + len(historias) + len(interpretaciones)

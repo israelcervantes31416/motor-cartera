@@ -1,7 +1,7 @@
 """Lo que la cola necesita saber de cada recurso que ejecuta un trabajo.
 
-Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos
-o a una ejecucion historica. Para cerrarlo, el worker
+Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos,
+a una ejecucion historica o a una ejecucion del motor de pagos. Para cerrarlo, el worker
 necesita saber en que tabla vive ese recurso, cuales de sus estados son terminales, como se llama su
 identificador publico y como se deja FALLIDO cuando la cola agota sus intentos sin que el motor lo
 terminara. Los motores no saben de la cola y la cola no sabe de sus reglas: este modulo es lo unico
@@ -21,16 +21,19 @@ from motor_cartera.db.modelos import (
     Corrida,
     EjecucionDecision,
     EjecucionHistoria,
+    EjecucionMotorPagos,
     EjecucionRuteo,
     EjecucionTerritorial,
     EstadoCorrida,
     EstadoDecision,
     EstadoHistoria,
     EstadoIngestaPagos,
+    EstadoMotorPagos,
     EstadoRuteo,
     EstadoTerritorial,
     IngestaPagos,
     ResultadoHistoria,
+    ResultadoMotorPagos,
     TipoTrabajo,
     ahora,
 )
@@ -88,6 +91,13 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         "ejecucion_historia_id",
         "historia_run_id",
         {"registros_publicados": 0, "resultado": ResultadoHistoria.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.MOTOR_PAGOS: Objetivo(
+        EjecucionMotorPagos,
+        EstadoMotorPagos,
+        "ejecucion_motor_pagos_id",
+        "motor_pagos_run_id",
+        {"resultado": ResultadoMotorPagos.INTENTOS_AGOTADOS.value},
     ),
 }
 

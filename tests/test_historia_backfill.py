@@ -34,9 +34,13 @@ cli = CliRunner()
 
 def _sin_historia() -> None:
     """La base como la deja v0.6 despues de subir a la 0008: datasets conformados, ninguna
-    historia."""
+    historia (ni interpretacion de pagos, que la cita)."""
     with sesion() as s:
         for tabla in (
+            "trabajo_orquestacion WHERE tipo = 'MOTOR_PAGOS'",
+            "resultado_pago_observado",
+            "movimiento_economico_canonico",
+            "ejecucion_motor_pagos",
             "trabajo_orquestacion WHERE tipo = 'HISTORIA'",
             "snapshot_cuenta",
             "pago_observado",

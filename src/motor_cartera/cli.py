@@ -357,6 +357,104 @@ def backfill_historia(
         )
 
 
+@app.command("backfill-motor-pagos")
+def backfill_motor_pagos(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice cuanto falta y que encolaria.")
+    ] = False,
+    reintentar_fallidas: Annotated[
+        bool,
+        typer.Option(
+            "--reintentar-fallidas",
+            help="Tambien encola las ventanas cuya interpretacion solo tiene ejecuciones FALLIDA.",
+        ),
+    ] = False,
+    reconciliar: Annotated[
+        bool,
+        typer.Option(
+            "--reconciliar",
+            help="Tambien reinterpreta las ventanas al dia con movimientos SIN_CUENTA_OBSERVADA "
+            "cuyo cliente ya tiene cuenta canonica.",
+        ),
+    ] = False,
+) -> None:
+    """Encola la interpretacion (motor-pagos/v1) de los pagos observados que todavia no la tienen:
+    los publicados antes de v0.8.0, o cuya interpretacion fallo.
+
+    Trabaja por ventanas, como el motor: un despacho, una cartera y un mes de recepcion. Una
+    ventana esta al dia si su interpretacion vigente (su EXITOSA mas reciente) leyo todos sus pagos
+    observados. Encola una ejecucion por cada ventana sin interpretacion o desactualizada; la
+    ejecuta un worker, en PostgreSQL y sin volver a leer ningun archivo.
+
+    Es idempotente: una ventana ya en la cola no se encola otra vez, y una al dia no se toca. Las
+    que solo tienen ejecuciones FALLIDA se reintentan con --reintentar-fallidas. Las que estan al
+    dia pero tienen movimientos sin cuenta cuyo cliente ya llego en un corte se reinterpretan con
+    --reconciliar: es una interpretacion nueva, y la anterior queda en el historial.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.motor_pagos.backfill import diagnosticar, encolar
+
+    with sesion() as s:
+        diagnostico = diagnosticar(s)
+    fallidas, por_conciliar = diagnostico.solo_fallidas, diagnostico.por_conciliar
+    typer.echo(
+        f"Ventanas con pagos observados: {diagnostico.ventanas:,}, con "
+        f"{diagnostico.observaciones:,} pagos observados"
+    )
+    typer.echo(f"  al dia con motor-pagos/v1: {diagnostico.al_dia:,}")
+    typer.echo(f"  en la cola (EN_PROCESO): {diagnostico.en_cola:,}")
+    typer.echo(f"  sin interpretacion: {len(diagnostico.sin_interpretacion):,}")
+    typer.echo(
+        "  desactualizadas (con pagos que su interpretacion vigente no ve): "
+        f"{len(diagnostico.desactualizadas):,}"
+    )
+    nota = (
+        "" if reintentar_fallidas or not fallidas else "; se reintentan con --reintentar-fallidas"
+    )
+    typer.echo(f"  solo con ejecuciones FALLIDA: {len(fallidas):,}{nota}")
+    for ventana in fallidas:
+        typer.echo(f"    {_ventana(ventana)}: {ventana.ultimo_resultado}")
+    nota = "" if reconciliar or not por_conciliar else "; se reinterpretan con --reconciliar"
+    typer.echo(
+        "  por conciliar (movimientos sin cuenta cuyo cliente ya tiene una): "
+        f"{len(por_conciliar):,}{nota}"
+    )
+    typer.echo(
+        "Pagos observados sin interpretacion vigente: "
+        f"{diagnostico.observaciones_sin_interpretacion:,}"
+    )
+    pendientes = (
+        diagnostico.sin_interpretacion
+        + diagnostico.desactualizadas
+        + (fallidas if reintentar_fallidas else [])
+        + (por_conciliar if reconciliar else [])
+    )
+    if dry_run:
+        lista = "; se encolarian:" if pendientes else "."
+        typer.echo(f"Faltan {len(pendientes):,} ventanas. Con --dry-run no se encolo nada{lista}")
+        for ventana in pendientes:
+            typer.echo(f"  {_ventana(ventana)}")
+        return
+    encoladas = encolar(pendientes, config=config)
+    nuevas = sum(1 for e in encoladas if e.nueva)
+    typer.echo(f"Se encolaron {nuevas:,} trabajos MOTOR_PAGOS; los ejecuta un worker.")
+    for encolada in encoladas:
+        nota = "" if encolada.nueva else " (ya estaba en la cola)"
+        typer.echo(f"  {_ventana(encolada.ventana)}: {encolada.motor_pagos_run_id}{nota}")
+
+
+def _ventana(ventana) -> str:
+    """Una ventana del motor de pagos, como la lee una persona."""
+    texto = (
+        f"{ventana.despacho_id}/{ventana.cartera_id} {ventana.desde:%Y-%m}: "
+        f"{ventana.observaciones:,} pagos observados, {ventana.pendientes:,} sin interpretar"
+    )
+    if ventana.por_conciliar:
+        texto += f", {ventana.por_conciliar:,} movimientos por conciliar"
+    return texto
+
+
 def _pendiente(pendiente) -> str:
     """Un dataset pendiente, como lo lee una persona."""
     if pendiente.fecha_corte is not None:

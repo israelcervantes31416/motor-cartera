@@ -18,6 +18,9 @@ con el reloj de PostgreSQL. Asi un worker con el reloj adelantado no le acorta e
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
@@ -39,6 +42,10 @@ LEASE_VENCIDO = (
 
 class TrabajoAjeno(Exception):
     """El trabajo ya no es de este worker: su lease vencio y otro lo tomo. No le toca cerrarlo."""
+
+
+_EN_CURSO: ContextVar[tuple[int, str] | None] = ContextVar("trabajo_en_curso", default=None)
+"""El trabajo que ejecuta este hilo y su worker, mientras el worker ejecuta su motor."""
 
 
 @dataclass(frozen=True)
@@ -127,7 +134,8 @@ def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
 
     Se puede tomar un trabajo PENDIENTE que ya este disponible, o uno EJECUTANDO cuyo lease vencio:
     su worker dejo de latir. De los que se pueden tomar, primero los del flujo operacional y las
-    ingestas, y al final los HISTORIA (ver `_prioridad`); entre iguales, el de menor id. Uno a la
+    ingestas, despues los HISTORIA y al final los MOTOR_PAGOS (ver `_prioridad`); entre iguales, el
+    de menor id. Uno a la
     vez. FOR UPDATE SKIP LOCKED: si otro worker esta tomando o cerrando una fila en este momento, la
     consulta la salta en lugar de esperarla, asi que dos workers nunca toman la misma y ninguno
     espera al otro.
@@ -205,6 +213,36 @@ def renovar(trabajo_id: int, worker_id: str, lease_segundos: float) -> bool:
         ).rowcount
         s.commit()
     return renovados == 1
+
+
+@contextmanager
+def en_curso(trabajo_id: int, worker_id: str) -> Iterator[None]:
+    """Marca, mientras dura, que este hilo ejecuta el trabajo `trabajo_id` para `worker_id`: un
+    motor que publica con `confirmar_dueno` sabe asi de quien es la publicacion. Fuera de un
+    worker (una prueba, un proceso en primer plano sin trabajo) no hay marca."""
+    marca = _EN_CURSO.set((trabajo_id, worker_id))
+    try:
+        yield
+    finally:
+        _EN_CURSO.reset(marca)
+
+
+def confirmar_dueno(s: Session) -> None:
+    """La ultima palabra antes de publicar: si este hilo ejecuta un trabajo, ese trabajo tiene que
+    seguir EJECUTANDO y ser de su worker. Lo bloquea, en la transaccion de quien llama, hasta su
+    commit: mientras tanto ningun otro worker lo puede tomar (su SKIP LOCKED lo salta), asi que el
+    lease no puede cambiar de dueno entre esta revision y la publicacion. Si ya no es suyo, levanta
+    TrabajoAjeno y quien llama no publica: lo hara el dueno vigente, que lo esta esperando.
+
+    Sin un trabajo en curso no revisa nada."""
+    actual = _EN_CURSO.get()
+    if actual is None:
+        return
+    trabajo_id, worker_id = actual
+    if tomar_para_cerrar(s, trabajo_id, worker_id) is None:
+        raise TrabajoAjeno(
+            f"El trabajo {trabajo_id} ya no es de {worker_id}: perdio su lease y no publica."
+        )
 
 
 def tomar_para_cerrar(s: Session, trabajo_id: int, worker_id: str) -> TrabajoOrquestacion | None:
@@ -304,11 +342,18 @@ def _reclamable():
 
 
 def _prioridad():
-    """0 para lo operacional, 1 para la historia. La historia es una proyeccion paralela: ninguna
-    etapa del flujo la espera, y con un solo worker tampoco espera detras de ella. Un backfill de
-    cientos de trabajos HISTORIA no retrasa la decision de la cartera de hoy. No cambia que se
-    ejecuta ni como: solo cual de los que ya se pueden tomar va primero."""
-    return case((TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1), else_=0)
+    """0 para lo operacional, 1 para la historia y 2 para el motor de pagos. La historia y la
+    interpretacion de los pagos son proyecciones paralelas: ninguna etapa del flujo las espera, y
+    con un solo worker tampoco espera detras de ellas. Un backfill de cientos de trabajos HISTORIA
+    no retrasa la decision de la cartera de hoy. El motor de pagos va al final porque interpreta lo
+    que la historia publica: con los HISTORIA pendientes primero, una ventana se interpreta una vez
+    con todos sus archivos, y no una vez por archivo. No cambia que se ejecuta ni como: solo cual
+    de los que ya se pueden tomar va primero."""
+    return case(
+        (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
+        else_=0,
+    )
 
 
 def _lease(segundos: float):
