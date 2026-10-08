@@ -1136,8 +1136,9 @@ class PagoObservado(SQLModel, table=True):
 
     Una fila de la fuente es un pago observado, y ninguno se deduplica: dos filas identicas son dos
     observaciones, y el mismo movimiento en dos archivos tambien. No es un pago conciliado, aplicado
-    ni atribuido; eso es del motor de pagos. Conserva sus 23 campos con el tipo que tienen en el
-    Parquet conformado, y de que dataset y de que fila salio.
+    ni atribuido; lo que el motor de pagos concluye de el vive en ResultadoPagoObservado, y el pago
+    no se toca nunca. Conserva sus 23 campos con el tipo que tienen en el Parquet conformado, y de
+    que dataset y de que fila salio.
 
     No apunta a ninguna CuentaCanonica. Se relaciona con ella por despacho, cartera y CLIENTE_UNICO
     al consultar: asi un pago anterior a la primera cartera que trae a su cliente, o de un cliente
@@ -1159,6 +1160,17 @@ class PagoObservado(SQLModel, table=True):
             "cartera_id",
             "cliente_unico",
             "fecha_recepcion",
+        ),
+        # Desde la 0009, los pagos de una ventana del motor de pagos: un mes de recepcion, sin
+        # recorrer los pagos de toda la historia.
+        sa.Index("ix_pago_observado_recepcion", "despacho_id", "cartera_id", "fecha_recepcion"),
+        # Y solo los negativos, que son pocos: de ellos sale el contexto de los reversos.
+        sa.Index(
+            "ix_pago_observado_negativo",
+            "despacho_id",
+            "cartera_id",
+            "fecha_recepcion",
+            postgresql_where=sa.text("recuperacion_por_gestion < 0"),
         ),
     )
 
@@ -1200,6 +1212,310 @@ class PagoObservado(SQLModel, table=True):
     source_sheet: str | None = Field(default=None, max_length=255)
 
 
+# --- el motor de pagos ----------------------------------------------------------------------------
+#
+# Desde la 0009. Interpreta los pagos observados sin tocarlos: cada ejecucion lee los de una ventana
+# (un mes de recepcion de un despacho y una cartera), y publica, todo o nada, que concluyo de
+# cada uno (ResultadoPagoObservado) y los movimientos economicos que considera distintos
+# (MovimientoEconomicoCanonico). Una ejecucion nueva de la misma ventana no reescribe la anterior:
+# la interpretacion vigente es la de la EXITOSA mas reciente, y las demas quedan como historia. El
+# vocabulario (clasificaciones, tipos, signos y estados de conciliacion) es el de la version del
+# motor y se guarda como texto sin CHECK, como el de las reglas de los demas motores.
+
+
+class EstadoMotorPagos(StrEnum):
+    """En que quedo una ejecucion del motor de pagos. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"  # registrada; se esta interpretando su ventana
+    EXITOSA = "EXITOSA"  # publico un resultado por observacion y sus movimientos canonicos
+    FALLIDA = "FALLIDA"  # no publico nada
+
+
+class ResultadoMotorPagos(StrEnum):
+    """Como termino una ejecucion del motor de pagos, en el vocabulario de motor-pagos/v1."""
+
+    INTERPRETACION_PUBLICADA = "INTERPRETACION_PUBLICADA"
+    """EXITOSA: publico la interpretacion de su ventana."""
+    YA_INTERPRETADA = "YA_INTERPRETADA"
+    """FALLIDA: otra ejecucion ya interpreto exactamente las mismas entradas con esta version."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    """FALLIDA: la ejecucion pide una version del motor que este servicio no sabe ejecutar."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    """FALLIDA: lo publicado no cuadra con lo leido; no se publico nada."""
+    ERROR_INTERNO = "ERROR_INTERNO"
+    """FALLIDA: un error inesperado; el detalle esta en la bitacora."""
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+    """FALLIDA: su trabajo agoto los intentos de la cola sin que terminara."""
+
+
+CLASIFICADAS_EN_SUS_CLASES = (
+    "observaciones_clasificadas = primarios + duplicados_exactos + coincidencias_ambiguas "
+    "+ reversos + posibles_reversos + no_conciliados"
+)
+"""Cada observacion clasificada tiene exactamente una clasificacion."""
+
+CONTEOS_DEL_MOTOR = (
+    "observaciones_leidas >= 0 AND observaciones_contexto >= 0 AND primarios >= 0 "
+    "AND duplicados_exactos >= 0 AND coincidencias_ambiguas >= 0 AND reversos >= 0 "
+    "AND posibles_reversos >= 0 AND no_conciliados >= 0 AND sin_cuenta_observada >= 0 "
+    "AND grupos_exactos >= 0 AND grupos_legacy >= 0 AND grupos_ambiguos >= 0 "
+    "AND observaciones_en_grupos_legacy >= 0 AND pagos_anulados >= 0 "
+    "AND sin_cuenta_observada <= observaciones_clasificadas AND pagos_anulados <= primarios"
+)
+
+
+class EjecucionMotorPagos(SQLModel, table=True):
+    """Una interpretacion versionada de los pagos observados de una ventana: un despacho, una
+    cartera y un mes de recepcion, [periodo_desde, periodo_hasta).
+
+    Es una entidad, como las ejecuciones de los demas motores, porque tiene que existir aunque no
+    publique nada. Su firma de entrada resume exactamente que leyo: las observaciones de la ventana,
+    las de su contexto y cuales tenian cuenta canonica. La base garantiza a lo mas una EXITOSA por
+    ventana, version y firma de entrada, y a lo mas una EN_PROCESO por ventana y version: la misma
+    interpretacion no se publica dos veces, y una ventana no se interpreta dos veces a la vez.
+    Cuando llegan pagos nuevos, otra ejecucion de la misma ventana, con otra firma, publica la
+    interpretacion nueva; la anterior no se toca.
+    """
+
+    __tablename__ = "ejecucion_motor_pagos"
+    __table_args__ = (
+        sa.Index(
+            "ux_ejecucion_motor_pagos_exitosa",
+            "despacho_id",
+            "cartera_id",
+            "version_motor",
+            "periodo_desde",
+            "firma_entrada",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_ejecucion_motor_pagos_en_proceso",
+            "despacho_id",
+            "cartera_id",
+            "version_motor",
+            "periodo_desde",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint("periodo_desde < periodo_hasta", name=conv("ck_motor_pagos_periodo")),
+        # La ventana de motor-pagos/v1 es un mes calendario. Otra version puede usar otra.
+        sa.CheckConstraint(
+            "version_motor <> 'motor-pagos/v1' OR (extract(day FROM periodo_desde) = 1 "
+            "AND periodo_hasta = (periodo_desde + interval '1 month')::date)",
+            name=conv("ck_motor_pagos_mes"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_motor_pagos_resultado")
+        ),
+        sa.CheckConstraint(
+            "(firma_entrada IS NULL OR firma_entrada ~ '^[0-9a-f]{64}$') "
+            "AND (estado <> 'EXITOSA' OR firma_entrada IS NOT NULL)",
+            name=conv("ck_motor_pagos_firma"),
+        ),
+        sa.CheckConstraint(CONTEOS_DEL_MOTOR, name=conv("ck_motor_pagos_conteos")),
+        sa.CheckConstraint(CLASIFICADAS_EN_SUS_CLASES, name=conv("ck_motor_pagos_clases")),
+        # Cada movimiento lo funda exactamente una observacion: su representante.
+        sa.CheckConstraint(
+            "movimientos_canonicos = primarios + reversos + posibles_reversos",
+            name=conv("ck_motor_pagos_movimientos"),
+        ),
+        # Una EXITOSA clasifico cada observacion que leyo; las demas no publicaron nada.
+        sa.CheckConstraint(
+            "(estado = 'EXITOSA' AND observaciones_clasificadas = observaciones_leidas) "
+            "OR (estado <> 'EXITOSA' AND observaciones_clasificadas = 0 "
+            "AND movimientos_canonicos = 0)",
+            name=conv("ck_motor_pagos_publicacion"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    motor_pagos_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. Identifica un intento, como los demas *_run_id, y por eso es
+    aleatorio; los movimientos, que identifican hechos, tienen identificadores deterministas."""
+    version_motor: str = Field(max_length=32)
+    """Con que version del motor se interpreto: motor-pagos/v1. Sin valor por omision en la base."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    periodo_desde: date
+    """El primer dia de la ventana, inclusive: recibidos desde periodo_desde."""
+    periodo_hasta: date
+    """El dia despues del ultimo, exclusive: recibidos antes de periodo_hasta."""
+    estado: EstadoMotorPagos = Field(
+        default=EstadoMotorPagos.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoMotorPagos,
+            name="estado_motor_pagos",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    """Como termino: INTERPRETACION_PUBLICADA, YA_INTERPRETADA, ERROR_INTERNO..."""
+    firma_entrada: str | None = Field(default=None, max_length=64)
+    """SHA-256 de lo que leyo, en forma canonica; vacia hasta que lo lee."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    observaciones_leidas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Los pagos observados de la ventana: los que reciben un resultado."""
+    observaciones_contexto: int = Field(default=0, sa_type=sa.BigInteger)
+    """Los de fuera de la ventana que leyo para decidir sus reversos; no reciben resultado aqui."""
+    observaciones_clasificadas: int = Field(default=0, sa_type=sa.BigInteger)
+    movimientos_canonicos: int = Field(default=0, sa_type=sa.BigInteger)
+    primarios: int = Field(default=0, sa_type=sa.BigInteger)
+    duplicados_exactos: int = Field(default=0, sa_type=sa.BigInteger)
+    coincidencias_ambiguas: int = Field(default=0, sa_type=sa.BigInteger)
+    reversos: int = Field(default=0, sa_type=sa.BigInteger)
+    posibles_reversos: int = Field(default=0, sa_type=sa.BigInteger)
+    no_conciliados: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_cuenta_observada: int = Field(default=0, sa_type=sa.BigInteger)
+    """Observaciones de un CLIENTE_UNICO sin cuenta canonica cuando se interpretaron."""
+    grupos_exactos: int = Field(default=0, sa_type=sa.BigInteger)
+    """Grupos de dos o mas observaciones identicas."""
+    grupos_legacy: int = Field(default=0, sa_type=sa.BigInteger)
+    """Grupos de dos o mas observaciones con la misma llave historica."""
+    grupos_ambiguos: int = Field(default=0, sa_type=sa.BigInteger)
+    """De esos, los que juntan observaciones que no son identicas."""
+    observaciones_en_grupos_legacy: int = Field(default=0, sa_type=sa.BigInteger)
+    pagos_anulados: int = Field(default=0, sa_type=sa.BigInteger)
+    """Pagos de la ventana que anulo un reverso, de esta ventana o de la siguiente."""
+    recuperacion_bruta_interpretada: Decimal = Field(
+        default=Decimal("0.00"), max_digits=24, decimal_places=2
+    )
+    recuperacion_neta_interpretada: Decimal = Field(
+        default=Decimal("0.00"), max_digits=24, decimal_places=2
+    )
+    importe_ambiguo_observado: Decimal = Field(
+        default=Decimal("0.00"), max_digits=24, decimal_places=2
+    )
+    """Lo que reportan las observaciones ambiguas, sumado tal como llego: puede contar dos veces el
+    mismo pago, y por eso no entra en ninguna recuperacion."""
+    detalle: str | None = None
+
+
+class MovimientoEconomicoCanonico(SQLModel, table=True):
+    """Un movimiento economico distinto, como lo interpreta una ejecucion del motor de pagos.
+
+    No viene del acreedor: lo funda un grupo de observaciones identicas, y su `movimiento_id` sale
+    de la version del motor y de la firma exacta del grupo, asi que reconstruir da el mismo y la
+    misma ventana interpretada otra vez tambien. Por eso es unico por ejecucion y no en toda la
+    tabla: cada interpretacion de una ventana tiene sus propios movimientos, y la vigente es la de
+    su ejecucion EXITOSA mas reciente. Sus observaciones son los ResultadoPagoObservado que apuntan
+    a el.
+
+    Un reverso apunta a su original, y un pago anulado a su reverso, por su `movimiento_id`: pueden
+    estar en otra ventana, y el identificador es el mismo en cualquier interpretacion.
+    """
+
+    __tablename__ = "movimiento_economico_canonico"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_movimiento_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_movimiento_cuenta"
+        ),
+        # Un movimiento a lo mas una vez por ejecucion; tambien es el indice de sus movimientos.
+        sa.UniqueConstraint(
+            "ejecucion_motor_pagos_id", "movimiento_id", name="uq_movimiento_ejecucion"
+        ),
+        # GET /movimientos/{movimiento_id}: el mismo movimiento en cada interpretacion de su
+        # ventana.
+        sa.Index("ix_movimiento_movimiento_id", "movimiento_id"),
+        # Los movimientos de una cuenta, en orden de recepcion, en los dos sentidos.
+        sa.Index(
+            "ix_movimiento_cuenta", "despacho_id", "cartera_id", "cliente_unico", "fecha_recepcion"
+        ),
+        sa.CheckConstraint("observaciones >= 1", name=conv("ck_movimiento_observaciones")),
+        sa.CheckConstraint("monto_reportado <> 0", name=conv("ck_movimiento_monto")),
+        sa.CheckConstraint("octet_length(firma_exacta) = 32", name=conv("ck_movimiento_firma")),
+    )
+
+    # Las columnas de 8 bytes primero, para que PostgreSQL no rellene bytes en cada fila.
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    observaciones: int = Field(sa_type=sa.BigInteger)
+    """Cuantas observaciones identicas lo sustentan: su representante y sus duplicados exactos."""
+    fecha_recepcion: datetime = Field(sa_type=sa.DateTime(timezone=False))
+    """Hora local de la fuente, sin zona horaria, como en pagos/v1."""
+    creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    ejecucion_motor_pagos_id: int
+    """La ejecucion que lo publico; su llave foranea esta en __table_args__."""
+    cuenta_canonica_id: int | None = None
+    """La cuenta con la que se concilio, si habia una cuando se interpreto."""
+    movimiento_id: UUID
+    """Identificador publico, determinista. No es un identificador del acreedor."""
+    movimiento_original_id: UUID | None = None
+    """En un REVERSO, el movimiento que revierte."""
+    anulado_por_movimiento_id: UUID | None = None
+    """En un PAGO anulado, el REVERSO que lo anula."""
+    monto_reportado: Decimal = Field(max_digits=14, decimal_places=2)
+    """El importe recuperado de sus observaciones, con su signo, tal como llego."""
+    version_motor: str = Field(max_length=32)
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    cliente_unico: str = Field(max_length=20)
+    signo_economico: str = Field(max_length=8)
+    """SUMA o RESTA: lo que hace con la recuperacion."""
+    tipo_movimiento: str = Field(max_length=24)
+    """PAGO, REVERSO o POSIBLE_REVERSO."""
+    estado_conciliacion: str = Field(max_length=24)
+    """CONCILIADO_CUENTA o SIN_CUENTA_OBSERVADA, cuando se interpreto."""
+    firma_exacta: bytes = Field(sa_type=sa.LargeBinary)
+    """La firma exacta de sus observaciones: de ella sale su movimiento_id."""
+
+
+class ResultadoPagoObservado(SQLModel, table=True):
+    """Lo que una ejecucion del motor de pagos concluyo de un pago observado, y por que.
+
+    Cada observacion de la ventana tiene exactamente uno por ejecucion: su llave primaria es la
+    ejecucion y la llave de la observacion. El pago observado no cambia nunca; esto es lo que el
+    motor dice de el. `motivos` explica la clasificacion: no sustituye ninguna columna.
+    """
+
+    __tablename__ = "resultado_pago_observado"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_resultado_pago_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["dataset_conformado_id", "source_row"],
+            ["pago_observado.dataset_conformado_id", "pago_observado.source_row"],
+            name="fk_resultado_pago_observado",
+        ),
+        sa.ForeignKeyConstraint(
+            ["movimiento_economico_canonico_id"],
+            ["movimiento_economico_canonico.id"],
+            name="fk_resultado_pago_movimiento",
+        ),
+        # Las observaciones de un movimiento.
+        sa.Index("ix_resultado_pago_movimiento", "movimiento_economico_canonico_id"),
+        sa.CheckConstraint(
+            "octet_length(firma_exacta) = 32 AND octet_length(firma_legacy) = 32",
+            name=conv("ck_resultado_pago_firmas"),
+        ),
+    )
+
+    # La llave primaria es la natural: una observacion, una vez por ejecucion.
+    ejecucion_motor_pagos_id: int = Field(primary_key=True)
+    dataset_conformado_id: int = Field(primary_key=True)
+    source_row: int = Field(primary_key=True)
+    movimiento_economico_canonico_id: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """El movimiento que funda o del que es copia; vacio si no funda ninguno."""
+    movimiento_relacionado_id: UUID | None = None
+    """En un REVERSO, su original; en un pago anulado, su reverso. Por movimiento_id."""
+    clasificacion: str = Field(max_length=24)
+    estado_conciliacion: str = Field(max_length=24)
+    firma_exacta: bytes = Field(sa_type=sa.LargeBinary)
+    firma_legacy: bytes = Field(sa_type=sa.LargeBinary)
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que: [{"codigo": ..., ...}], con los datos que lo explican."""
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -1226,7 +1542,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'TERRITORIAL') = (ejecucion_territorial_id IS NOT NULL) "
     "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL) "
     "AND (tipo = 'INGESTA_PAGOS') = (ingesta_pagos_id IS NOT NULL) "
-    "AND (tipo = 'HISTORIA') = (ejecucion_historia_id IS NOT NULL)"
+    "AND (tipo = 'HISTORIA') = (ejecucion_historia_id IS NOT NULL) "
+    "AND (tipo = 'MOTOR_PAGOS') = (ejecucion_motor_pagos_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -1371,6 +1688,10 @@ class TipoTrabajo(StrEnum):
     HISTORIA = "HISTORIA"
     """Desde la 0008: materializar un dataset conformado, de cartera o de pagos, en el modelo
     historico. No es de ningun flujo, y ninguna etapa operacional lo espera."""
+    MOTOR_PAGOS = "MOTOR_PAGOS"
+    """Desde la 0009: interpretar los pagos observados de una ventana con el motor de pagos. Lo
+    abre la historia de un archivo de pagos al publicar sus pagos observados, o el backfill. No
+    es de ningun flujo, y ninguna etapa operacional lo espera."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -1416,12 +1737,18 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ejecucion_historia_id"], ["ejecucion_historia.id"], name="fk_trabajo_historia"
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_trabajo_motor_pagos",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
         sa.UniqueConstraint("ejecucion_ruteo_id", name="uq_trabajo_ruteo"),
         sa.UniqueConstraint("ingesta_pagos_id", name="uq_trabajo_pagos"),
         sa.UniqueConstraint("ejecucion_historia_id", name="uq_trabajo_historia"),
+        sa.UniqueConstraint("ejecucion_motor_pagos_id", name="uq_trabajo_motor_pagos"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -1473,6 +1800,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo INGESTA_PAGOS, desde la 0007."""
     ejecucion_historia_id: int | None = None
     """El objetivo de un trabajo HISTORIA, desde la 0008."""
+    ejecucion_motor_pagos_id: int | None = None
+    """El objetivo de un trabajo MOTOR_PAGOS, desde la 0009."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int
