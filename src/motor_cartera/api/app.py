@@ -19,6 +19,8 @@ from motor_cartera.api import (
     cuentas,
     decisiones,
     historia,
+    motor_pagos,
+    movimientos,
     orquestacion,
     pagos,
     ruteo,
@@ -119,6 +121,23 @@ fila de pagos/v1. Ningun motor de v1 lo espera ni lo lee.
 Los pagos observados son movimientos tal como llegaron: no estan deduplicados, conciliados ni
 atribuidos.
 
+**El Motor de Pagos** interpreta los pagos observados sin tocarlos (`motor-pagos/v1`): por ventana
+(un mes de recepcion), decide que observaciones son el mismo hecho economico, cuales son ambiguas,
+cuales son reversos de cuales, y con que cuenta se concilia cada movimiento. Se abre solo, con un
+trabajo `MOTOR_PAGOS`, cuando la historia publica los pagos observados de un archivo.
+
+22. `GET /motor-pagos` y `GET /motor-pagos/{motor_pagos_run_id}`: cada interpretacion, cual es la
+    vigente de su ventana, su calidad (duplicados, ambiguos, reversos, sin cuenta) y su recuperacion
+    interpretada. `/resultados`: que concluyo de cada observacion, y por que.
+23. `GET /movimientos`: los movimientos economicos vigentes, filtrables por cliente, cuenta, fechas,
+    tipo y conciliacion. `GET /movimientos/{movimiento_id}`: uno, con su por que, la observacion que
+    lo funda y su archivo original; `/observaciones`: cada fila que lo sustenta.
+24. `GET /cuentas/{cuenta_id}/movimientos`: los movimientos de una cuenta con su contexto entre sus
+    snapshots; `GET /cuentas/{cuenta_id}` trae el resumen de sus pagos.
+
+La recuperacion interpretada es del motor sobre las fuentes disponibles: no es el libro contable del
+acreedor.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -182,6 +201,18 @@ ETIQUETAS = [
         "description": "El modelo historico: los cortes canonicos de la cartera y las ejecuciones "
         "que materializan cada dataset conformado, en paralelo al flujo operacional.",
     },
+    {
+        "name": "motor-pagos",
+        "description": "Las interpretaciones versionadas de los pagos observados, una por ventana "
+        "(un mes de recepcion), con su calidad, su recuperacion interpretada y lo que concluyeron "
+        "de cada observacion.",
+    },
+    {
+        "name": "movimientos",
+        "description": "Los movimientos economicos canonicos que interpreta el motor de pagos: "
+        "cada uno con su por que, sus observaciones y su archivo original. No son el libro "
+        "contable del acreedor.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -213,5 +244,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(ruteo.router, dependencies=protegidas)
     app.include_router(cuentas.router, dependencies=protegidas)
     app.include_router(historia.router, dependencies=protegidas)
+    app.include_router(motor_pagos.router, dependencies=protegidas)
+    app.include_router(movimientos.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

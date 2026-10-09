@@ -65,6 +65,7 @@ from motor_cartera.fuentes.almacen import ArtefactoCorrupto, ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de
 from motor_cartera.historia import carga, identidad
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.motor_pagos.ejecuciones import abrir_por_dataset
 from motor_cartera.orquestacion import cola
 
 log = logging.getLogger(__name__)
@@ -530,6 +531,10 @@ def _pagos(
             f"Se leyeron {avance.leidos:,} movimientos y quedaron {publicados:,} pagos observados; "
             "no se publico nada.",
         )
+    # Su interpretacion queda pendiente en la misma transaccion: no hay un instante en que existan
+    # pagos observados sin una ejecucion del motor de pagos que los vaya a leer.
+    with cronometro.fase("motor_de_pagos"):
+        ventanas = abrir_por_dataset(s, dataset, max_intentos=config.worker_max_intentos)
     _cerrar(
         s,
         ejecucion,
@@ -540,7 +545,8 @@ def _pagos(
         detalle=(
             f"Se publicaron {publicados:,} pagos observados de la ingesta {ingesta.pagos_run_id}, "
             "uno por fila, tal como llegaron: sin deduplicar, conciliar ni atribuir. "
-            f"{VERSION_MODELO_HISTORIA}."
+            f"{VERSION_MODELO_HISTORIA}. Su interpretacion quedo en la cola: "
+            f"{len(ventanas)} ventana(s) del motor de pagos."
         ),
     )
 

@@ -242,11 +242,33 @@ GOLDEN_PAGOS = {
         pago(7, "2026-08-07 11:30:00", "200.00"),
         pago(6, "2026-08-08 09:15:00", "300.00"),
         pago(6, "2026-08-08 09:15:00", "300.00"),
+        # Antes de la primera observacion de la cuenta 4, que aparece en el corte 3.
+        pago(4, "2026-08-11 10:00:00", "80.00"),
     ],
-    2: [pago(5, "2026-08-13 10:00:00", "600.00"), pago(1, "2026-08-14 16:45:00", "1000.00")],
-    3: [pago(5, "2026-08-20 10:00:00", "700.00"), pago(3, "2026-08-21 12:00:00", "50.00")],
-    4: [pago(2, "2026-08-28 08:00:00", "100.00")],
-    5: [pago(4, "2026-09-03 13:00:00", "250.00")],
+    2: [
+        pago(5, "2026-08-13 10:00:00", "600.00"),
+        # El mismo importe, el mismo dia, a otra hora: otro pago legitimo.
+        pago(5, "2026-08-13 18:20:00", "600.00"),
+        pago(1, "2026-08-14 16:45:00", "1000.00"),
+    ],
+    3: [
+        pago(5, "2026-08-20 10:00:00", "700.00"),
+        pago(3, "2026-08-21 12:00:00", "50.00"),
+        # La misma llave historica con otro gestor: ambiguos.
+        pago(1, "2026-08-22 09:00:00", "150.00", Gestor="GESTOR 007"),
+        pago(1, "2026-08-22 09:00:00", "150.00", Gestor="GESTOR 012"),
+    ],
+    4: [
+        pago(2, "2026-08-28 08:00:00", "100.00"),
+        # Un negativo con dos originales posibles (los dos de 600.00): un posible reverso.
+        pago(5, "2026-08-27 11:00:00", "-600.00"),
+        pago(8, "2026-08-29 10:00:00", "400.00"),
+    ],
+    5: [
+        pago(4, "2026-09-03 13:00:00", "250.00"),
+        # El reverso del pago de la cuenta 8: otro archivo y otra ventana. Una pareja aislada.
+        pago(8, "2026-09-04 09:00:00", "-400.00"),
+    ],
 }
 """Los pagos de cada periodo: del dia siguiente a un corte hasta el siguiente corte."""
 

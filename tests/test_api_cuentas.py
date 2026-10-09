@@ -259,9 +259,12 @@ def test_los_pagos_observados_de_una_cuenta_del_mas_reciente_al_mas_antiguo(esce
     cuerpo = cliente.get(f"/cuentas/{_cuenta_id(cliente, 5)}/pagos-observados").json()
 
     assert cuerpo["aviso"] == AVISO_PAGOS_OBSERVADOS
-    assert cuerpo["total"] == 3
+    # Tal como llegaron: los dos de 600.00 del mismo dia y el negativo, sin interpretar.
+    assert cuerpo["total"] == 5
     assert [p["recuperacion_por_gestion"] for p in cuerpo["elementos"]] == [
+        "-600.00",
         "700.00",
+        "600.00",
         "600.00",
         "500.00",
     ]
@@ -378,9 +381,10 @@ def test_la_historia_de_una_ingesta_de_pagos_y_su_relacion_con_las_cuentas(escen
     assert (ejecucion["tipo_fuente"], ejecucion["resultado"]) == ("PAGOS", "PAGOS_PUBLICADOS")
     assert ejecucion["pagos_run_id"] == str(primera.pagos_run_id)
     assert ejecucion["corte_id"] is None and ejecucion["run_id"] is None
-    # Tres pagos de cuentas observadas (5 y los dos identicos de 6), y uno del cliente 7.
+    # Cuatro pagos de cuentas observadas (5, los dos identicos de 6 y el de 4, cuya cuenta aparece
+    # en un corte posterior), y uno del cliente 7.
     assert cuerpo["relacion"] == {
-        "pagos_con_cuenta_observada": 3,
+        "pagos_con_cuenta_observada": 4,
         "pagos_sin_cuenta_observada": 1,
         "clientes_sin_cuenta_observada": 1,
     }

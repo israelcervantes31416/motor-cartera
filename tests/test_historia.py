@@ -543,10 +543,14 @@ def test_los_cuatro_casos_de_presencia_con_sus_deltas_y_su_continuidad(tmp_path)
 
 def _borrar_la_historia_y_reabrir(corridas=(), ingestas=()) -> None:
     """Borra solo la capa historica: sus trabajos, sus ejecuciones, sus snapshots, sus pagos, sus
-    cortes y sus cuentas. Los datasets conformados y todo lo demas se quedan. Despues abre otra vez
-    la historia de cada dataset."""
+    cortes y sus cuentas, y antes la interpretacion de los pagos, que la cita. Los datasets
+    conformados y todo lo demas se quedan. Despues abre otra vez la historia de cada dataset."""
     with sesion() as s:
         for tabla in (
+            "trabajo_orquestacion WHERE tipo = 'MOTOR_PAGOS'",
+            "resultado_pago_observado",
+            "movimiento_economico_canonico",
+            "ejecucion_motor_pagos",
             "trabajo_orquestacion WHERE tipo = 'HISTORIA'",
             "snapshot_cuenta",
             "pago_observado",
@@ -865,9 +869,11 @@ def test_el_worker_materializa_la_historia_desde_la_cola(tmp_path, trabajar):
 
     procesados = trabajar()
 
+    # Las dos historias, y despues la interpretacion de los pagos que publico la segunda.
     assert [(p.tipo, p.estado) for p in procesados] == [
         (TipoTrabajo.HISTORIA, "COMPLETADO"),
         (TipoTrabajo.HISTORIA, "COMPLETADO"),
+        (TipoTrabajo.MOTOR_PAGOS, "COMPLETADO"),
     ]
     assert historia_de(corrida=corrida).resultado == ResultadoHistoria.CORTE_PUBLICADO
     assert historia_de(ingesta=ingesta).resultado == ResultadoHistoria.PAGOS_PUBLICADOS

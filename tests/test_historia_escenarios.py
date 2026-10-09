@@ -58,10 +58,12 @@ def test_el_escenario_golden_de_seis_cortes(tmp_path, trabajar):
 
     procesados = trabajar()
 
-    # Once historias: seis cortes y cinco archivos de pagos, todas EXITOSA y a la primera.
+    # Once historias: seis cortes y cinco archivos de pagos, todas EXITOSA y a la primera. Y al
+    # final, porque la cola las toma despues de la historia, la interpretacion de las dos ventanas
+    # de pagos: agosto y septiembre, una vez cada una.
     assert [(p.tipo, p.estado, p.intentos) for p in procesados] == [
         ("HISTORIA", "COMPLETADO", 1)
-    ] * 11
+    ] * 11 + [("MOTOR_PAGOS", "COMPLETADO", 1)] * 2
     for corrida in escenario.corridas:
         assert historia_de(corrida=corrida).resultado == "CORTE_PUBLICADO"
     for ingesta in escenario.ingestas:
@@ -82,7 +84,7 @@ def test_el_escenario_golden_de_seis_cortes(tmp_path, trabajar):
             for c in s.exec(select(CorteCanonico).order_by(CorteCanonico.fecha_corte)).all()
         ]
     assert cuentas_por_corte == por_corte
-    assert _cuantas(PagoObservado) == 10
+    assert _cuantas(PagoObservado) == 17
 
     with sesion() as s:
         vistas = {n: cuenta(n) for n in GOLDEN_PRESENCIA}
@@ -150,9 +152,11 @@ def test_el_escenario_golden_de_seis_cortes(tmp_path, trabajar):
     # Los pagos: varios de una cuenta, dos identicos, uno que llego mientras la cuenta faltaba y
     # otro despues de que salio. Todos observados tal como llegaron.
     total_5, pagos_5 = pagos[5]
-    assert total_5 == 3
+    assert total_5 == 5
     assert [p.pago.recuperacion_por_gestion for p in pagos_5] == [
+        Decimal("-600.00"),
         Decimal("700.00"),
+        Decimal("600.00"),
         Decimal("600.00"),
         Decimal("500.00"),
     ]
@@ -228,12 +232,17 @@ def test_reconstruir_la_historia_en_orden_aleatorio_da_exactamente_la_misma(tmp_
     escenario = golden(tmp_path)
     trabajar()
     en_orden = foto()
-    assert len(en_orden["snapshots"]) == 153 and len(en_orden["pagos"]) == 10
+    assert len(en_orden["snapshots"]) == 153 and len(en_orden["pagos"]) == 17
 
-    # Se borra solo la capa historica y se vuelve a abrir la historia de cada dataset, en un orden
-    # al azar (fijo, para que la prueba se repita igual): cortes y pagos mezclados.
+    # Se borra solo la capa historica (y antes la interpretacion de los pagos, que la cita) y se
+    # vuelve a abrir la historia de cada dataset, en un orden al azar (fijo, para que la prueba se
+    # repita igual): cortes y pagos mezclados.
     with sesion() as s:
         for tabla in (
+            "trabajo_orquestacion WHERE tipo = 'MOTOR_PAGOS'",
+            "resultado_pago_observado",
+            "movimiento_economico_canonico",
+            "ejecucion_motor_pagos",
             "trabajo_orquestacion WHERE tipo = 'HISTORIA'",
             "snapshot_cuenta",
             "pago_observado",

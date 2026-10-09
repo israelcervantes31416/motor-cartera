@@ -22,6 +22,7 @@ from motor_cartera.db.modelos import (
     EstadoFlujo,
     EstadoHistoria,
     EstadoIngestaPagos,
+    EstadoMotorPagos,
     EstadoRuteo,
     EstadoTerritorial,
     EstadoTrabajo,
@@ -32,6 +33,13 @@ from motor_cartera.db.modelos import (
 from motor_cartera.decision.reglas import VERSION_REGLAS_DECISION
 from motor_cartera.fuentes.proyeccion import VERSION_PROYECCION
 from motor_cartera.historia.presencia import Presencia, TipoEvento
+from motor_cartera.motor_pagos.reglas import (
+    VERSION_MOTOR_PAGOS,
+    Clasificacion,
+    EstadoConciliacion,
+    SignoEconomico,
+    TipoMovimiento,
+)
 from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 from motor_cartera.segmentacion import Dimension
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
@@ -1056,7 +1064,8 @@ class PaginaTrabajos(Pagina[TrabajoRespuesta]):
 
 AVISO_PAGOS_OBSERVADOS = (
     "Estos son movimientos observados de la fuente pagos/v1. No estan deduplicados, conciliados, "
-    "interpretados como reversos ni atribuidos. Ese procesamiento corresponde al Motor de Pagos."
+    "interpretados como reversos ni atribuidos. Ese procesamiento corresponde al Motor de Pagos: "
+    "su interpretacion esta en /movimientos."
 )
 """Lo que dice cada respuesta de pagos observados, y su documentacion, de forma visible."""
 
@@ -1226,6 +1235,12 @@ class Cuenta360Respuesta(BaseModel):
     ultimo_snapshot_observado: SnapshotRespuesta | None = Field(
         description="El snapshot del ultimo corte en que se observo, aunque ya no este en el "
         "vigente."
+    )
+    resumen_pagos: ResumenPagosRespuesta = Field(
+        description="Sus pagos en numeros, segun la interpretacion vigente del motor de pagos: "
+        "cuantas observaciones, cuantos movimientos, duplicados, ambiguos y reversos, y la "
+        "recuperacion interpretada. Los movimientos estan en /movimientos y las observaciones tal "
+        "como llegaron en /pagos-observados."
     )
 
 
@@ -1438,3 +1453,376 @@ class PaginaHistoriasDePagos(Pagina[EjecucionHistoriaRespuesta]):
     relacion: RelacionPagosRespuesta | None = Field(
         description="Solo si sus pagos ya se publicaron (una ejecucion EXITOSA)."
     )
+
+
+# --- el motor de pagos ----------------------------------------------------------------------------
+#
+# Lo que la API deja ver de la interpretacion de los pagos: siempre por identificadores publicos
+# (motor_pagos_run_id, movimiento_id, pago_observado_id, cuenta_id), nunca por un id interno. Las
+# huellas viajan en hexadecimal. Los importes, como texto, como en el resto de la API.
+
+AVISO_MOVIMIENTOS = (
+    "Estos son movimientos economicos interpretados por motor-pagos/v1 a partir de los pagos "
+    "observados de pagos/v1. No son el libro contable del acreedor: no hay intereses, cargos, "
+    "condonaciones ni ajustes que ninguna fuente trae, y la recuperacion interpretada no sustituye "
+    "a la contabilidad oficial. Las observaciones tal como llegaron estan en /pagos-observados."
+)
+"""Lo que dice cada respuesta de movimientos, y su documentacion, de forma visible."""
+
+AVISO_RECUPERACION = (
+    "Recuperacion interpretada por motor-pagos/v1 sobre las fuentes disponibles, no un saldo "
+    "contable. Bruta: los pagos que ningun reverso anulo. Neta: la bruta menos los negativos que "
+    "no se pudieron enlazar con su original. No cuenta duplicados exactos ni coincidencias "
+    "ambiguas."
+)
+
+EJEMPLO_MOTOR_PAGOS = {
+    "motor_pagos_run_id": "2b4d6f8a-0c2e-4a6c-8e0a-2c4e6a8c0e2a",
+    "version_motor": "motor-pagos/v1",
+    "estado": "EXITOSA",
+    "resultado": "INTERPRETACION_PUBLICADA",
+    "despacho_id": "DSP_001",
+    "cartera_id": "CARTERA_PRINCIPAL",
+    "periodo": "2026-09",
+    "periodo_desde": "2026-09-01",
+    "periodo_hasta": "2026-10-01",
+    "vigente": True,
+    "firma_entrada": "9c1e7b5d3f2a4c6e8a0b2d4f6a8c0e2b4d6f8a0c2e4a6c8e0a2c4e6a8c0e2b4d",
+    "calidad": {
+        "observaciones_leidas": 1103715,
+        "observaciones_contexto": 4127,
+        "observaciones_clasificadas": 1103715,
+        "movimientos_canonicos": 1098214,
+        "movimientos_primarios": 1094879,
+        "duplicados_exactos": 5501,
+        "coincidencias_ambiguas": 0,
+        "reversos": 12,
+        "posibles_reversos": 3323,
+        "no_conciliados": 0,
+        "sin_cuenta_observada": 0,
+        "grupos_exactos": 5501,
+        "grupos_legacy": 5501,
+        "grupos_ambiguos": 0,
+        "observaciones_en_grupos_legacy": 11002,
+        "pagos_anulados": 12,
+    },
+    "recuperacion": {
+        "bruta_interpretada": "2031874550.12",
+        "neta_interpretada": "2030512331.40",
+        "importe_ambiguo_observado": "0.00",
+        "aviso": AVISO_RECUPERACION,
+    },
+    "trabajo_id": "6a8c0e2b-4d6f-4a8c-8e2b-4d6f8a0c2e4b",
+    "iniciada_en": "2026-10-01T03:00:00.000000Z",
+    "terminada_en": "2026-10-01T03:01:12.500000Z",
+    "duracion_segundos": 72.5,
+    "detalle": "Se interpretaron 1,103,715 pagos observados recibidos desde el 2026-09-01 y antes "
+    "del 2026-10-01, con 4,127 de contexto: ... motor-pagos/v1.",
+}
+
+
+class CalidadMotorPagosRespuesta(BaseModel):
+    """Que encontro la ejecucion en su ventana: cuantas observaciones de cada clase, cuantos grupos
+    de copias y de la llave historica, y cuantos pagos sin cuenta."""
+
+    observaciones_leidas: int = Field(description="Los pagos observados de la ventana.")
+    observaciones_contexto: int = Field(
+        description="Los de fuera de la ventana que leyo para decidir sus reversos (hasta 30 dias "
+        "antes y despues); no reciben resultado aqui."
+    )
+    observaciones_clasificadas: int = Field(description="Una por observacion, en una EXITOSA.")
+    movimientos_canonicos: int
+    movimientos_primarios: int = Field(description="Observaciones MOVIMIENTO_PRIMARIO: los PAGO.")
+    duplicados_exactos: int
+    coincidencias_ambiguas: int
+    reversos: int
+    posibles_reversos: int
+    no_conciliados: int
+    sin_cuenta_observada: int = Field(
+        description="Observaciones de un CLIENTE_UNICO sin cuenta canonica cuando se interpretaron."
+    )
+    grupos_exactos: int = Field(description="Grupos de dos o mas observaciones identicas.")
+    grupos_legacy: int = Field(
+        description="Grupos de dos o mas observaciones con la misma llave historica (cliente, "
+        "segundo de recepcion e importe)."
+    )
+    grupos_ambiguos: int = Field(description="De esos, los que no son copias identicas.")
+    observaciones_en_grupos_legacy: int
+    pagos_anulados: int = Field(description="Pagos de la ventana que anulo un reverso.")
+
+
+class RecuperacionInterpretadaRespuesta(BaseModel):
+    bruta_interpretada: Decimal
+    neta_interpretada: Decimal
+    importe_ambiguo_observado: Decimal = Field(
+        description="Lo que reportan las observaciones ambiguas, sumado tal como llego: puede "
+        "contar dos veces el mismo pago, y por eso no entra en ninguna recuperacion."
+    )
+    aviso: str = Field(default=AVISO_RECUPERACION)
+
+
+class EjecucionMotorPagosRespuesta(BaseModel):
+    """Una interpretacion de una ventana de pagos observados: un despacho, una cartera y un mes de
+    recepcion."""
+
+    model_config = ConfigDict(json_schema_extra={"examples": [EJEMPLO_MOTOR_PAGOS]})
+
+    motor_pagos_run_id: UUID
+    version_motor: str
+    estado: EstadoMotorPagos = Field(
+        description="EN_PROCESO hasta que un worker la termina. EXITOSA: publico un resultado por "
+        "observacion y sus movimientos. FALLIDA: no publico nada."
+    )
+    resultado: str | None = Field(
+        description="Como termino: INTERPRETACION_PUBLICADA, YA_INTERPRETADA (otra ejecucion ya "
+        "interpreto exactamente las mismas entradas), ERROR_INTERNO... null mientras esta "
+        "EN_PROCESO."
+    )
+    despacho_id: str
+    cartera_id: str
+    periodo: str = Field(description="El mes de la ventana, AAAA-MM.")
+    periodo_desde: date = Field(description="Recibidos desde este dia, inclusive.")
+    periodo_hasta: date = Field(description="Hasta antes de este dia.")
+    vigente: bool = Field(
+        description="Si es la interpretacion vigente de su ventana: su EXITOSA mas reciente. Las "
+        "demas son historia y no cambian."
+    )
+    firma_entrada: str | None = Field(
+        description="SHA-256 de lo que leyo: dos ejecuciones con la misma firma leyeron lo mismo, "
+        "y la base no deja publicar la segunda."
+    )
+    calidad: CalidadMotorPagosRespuesta
+    recuperacion: RecuperacionInterpretadaRespuesta
+    trabajo_id: UUID | None = Field(description="Su trabajo MOTOR_PAGOS: GET /trabajos/{id}.")
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    detalle: str | None
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class PaginaEjecucionesMotorPagos(Pagina[EjecucionMotorPagosRespuesta]):
+    despacho_id: str
+    cartera_id: str
+    version_motor: str
+
+
+class ParametrosEjecucionesMotorPagos(Paginacion):
+    periodo: str | None = Field(
+        default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Solo las de un mes, AAAA-MM."
+    )
+    estado: EstadoMotorPagos | None = None
+    version: str = Field(
+        default=VERSION_MOTOR_PAGOS, max_length=32, description="Por omision, la del servicio."
+    )
+
+
+class MotivoMotorPagosRespuesta(BaseModel):
+    """Por que una observacion quedo como quedo, con los datos que lo explican."""
+
+    model_config = ConfigDict(extra="allow")
+
+    codigo: str = Field(
+        description="OBSERVACION_UNICA, REPRESENTANTE_DE_COPIAS, COPIA_EXACTA, "
+        "LLAVE_HISTORICA_COMPARTIDA, PAREJA_UNICA, ANULADO_POR_REVERSO, SIN_CANDIDATOS, "
+        "VARIOS_CANDIDATOS, CANDIDATO_AMBIGUO, ORIGINAL_DISPUTADO, IMPORTE_CERO o "
+        "FIRMA_SIN_VALIDAR. Los demas campos dependen del codigo."
+    )
+
+
+class ResultadoPagoRespuesta(BaseModel):
+    """Lo que una ejecucion concluyo de un pago observado."""
+
+    pago_observado_id: UUID
+    cliente_unico: str
+    fecha_recepcion: datetime
+    recuperacion_por_gestion: Decimal = Field(description="Como llego, con su signo.")
+    clasificacion: Clasificacion
+    estado_conciliacion: EstadoConciliacion
+    movimiento_id: UUID | None = Field(
+        description="El movimiento que funda o del que es copia; null si no funda ninguno."
+    )
+    movimiento_relacionado_id: UUID | None = Field(
+        description="En un REVERSO, su original; en un pago anulado, su reverso."
+    )
+    firma_exacta: str = Field(description="Su firma exacta, en hexadecimal.")
+    firma_legacy: str = Field(description="Su llave historica, en hexadecimal.")
+    motivos: list[MotivoMotorPagosRespuesta]
+    pagos_run_id: UUID
+    dataset_id: UUID
+    source_row: int
+    source_sheet: str | None
+
+
+class ParametrosResultados(Paginacion):
+    clasificacion: Clasificacion | None = None
+    cliente_unico: str | None = Field(default=None, pattern=r"^[A-Z0-9]{8,20}$")
+    firma_exacta: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Las observaciones con esta firma exacta, en hexadecimal: un grupo de copias.",
+    )
+    firma_legacy: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Las observaciones con esta llave historica, en hexadecimal: el grupo de una "
+        "coincidencia. Con cliente_unico se busca por el indice de los pagos de su cuenta.",
+    )
+
+
+class PaginaResultadosPago(Pagina[ResultadoPagoRespuesta]):
+    motor_pagos_run_id: UUID
+
+
+class SnapshotDelContextoRespuesta(BaseModel):
+    """El snapshot de la cuenta en un corte, en breve: para mirar saldo antes y despues de un pago,
+    sin afirmar que la diferencia la causo el pago."""
+
+    fecha_corte: date
+    corte_id: UUID
+    saldo_total: Decimal
+    dias_atraso: int
+
+
+class ContextoTemporalRespuesta(BaseModel):
+    """Donde cae el movimiento entre los snapshots de su cuenta. Se calcula al consultar: es
+    informacion, no un error."""
+
+    snapshot_anterior: SnapshotDelContextoRespuesta | None = Field(
+        description="El del ultimo corte en que se observo la cuenta, del dia del pago o de antes."
+    )
+    snapshot_siguiente: SnapshotDelContextoRespuesta | None = Field(
+        description="El del primer corte posterior al dia del pago en que se observo la cuenta."
+    )
+    antes_de_primera_observacion: bool
+    despues_de_ultima_observacion: bool
+    durante_ausencia_observada: bool = Field(
+        description="La cuenta ya se habia observado y el corte mas reciente de su cartera al dia "
+        "del pago no la traia."
+    )
+
+
+class MovimientoRespuesta(BaseModel):
+    """Un movimiento economico canonico: lo que motor-pagos/v1 considera un hecho distinto."""
+
+    movimiento_id: UUID = Field(
+        description="Identificador interno de Motor Cartera, determinista; no es del acreedor."
+    )
+    version_motor: str
+    motor_pagos_run_id: UUID = Field(description="La ejecucion que lo publico.")
+    periodo: str
+    vigente: bool = Field(
+        description="Si es de la interpretacion vigente de su ventana. Uno que dejo de estar en "
+        "ella se puede leer, como historia, con vigente=false."
+    )
+    tipo_movimiento: TipoMovimiento
+    signo_economico: SignoEconomico
+    monto_reportado: Decimal = Field(description="El importe recuperado, con su signo.")
+    fecha_recepcion: datetime
+    cliente_unico: str
+    cuenta_id: UUID | None = Field(description="Su cuenta canonica, si se concilio con una.")
+    estado_conciliacion: EstadoConciliacion
+    observaciones: int = Field(description="Cuantas observaciones identicas lo sustentan.")
+    movimiento_original_id: UUID | None = Field(description="En un REVERSO, el que revierte.")
+    anulado_por_movimiento_id: UUID | None = Field(description="En un PAGO, el que lo anula.")
+    firma_exacta: str
+
+
+class ParametrosMovimientos(Paginacion):
+    cliente_unico: str | None = Field(default=None, pattern=r"^[A-Z0-9]{8,20}$")
+    cuenta_id: UUID | None = None
+    desde: date | None = Field(default=None, description="Recibidos desde este dia, inclusive.")
+    hasta: date | None = Field(default=None, description="Recibidos hasta este dia, inclusive.")
+    tipo: TipoMovimiento | None = None
+    estado_conciliacion: EstadoConciliacion | None = None
+    version: str = Field(default=VERSION_MOTOR_PAGOS, max_length=32)
+
+
+class PaginaMovimientos(Pagina[MovimientoRespuesta]):
+    version_motor: str
+    aviso: str = Field(default=AVISO_MOVIMIENTOS)
+
+
+class ObservacionDeMovimientoRespuesta(BaseModel):
+    """Un pago observado que sustenta un movimiento, con su evidencia de punta a punta."""
+
+    clasificacion: Clasificacion = Field(
+        description="MOVIMIENTO_PRIMARIO, REVERSO o POSIBLE_REVERSO si lo funda; DUPLICADO_EXACTO "
+        "si es una copia."
+    )
+    motivos: list[MotivoMotorPagosRespuesta]
+    pago_observado: PagoObservadoRespuesta
+    artefacto_original: ArtefactoRespuesta = Field(
+        description="El archivo tal como llego, con su SHA-256: la fuente de esta fila."
+    )
+
+
+class MovimientoDetalleRespuesta(MovimientoRespuesta):
+    """Un movimiento con su por que y su evidencia."""
+
+    clasificacion: Clasificacion = Field(description="La de la observacion que lo funda.")
+    motivos: list[MotivoMotorPagosRespuesta]
+    representante: ObservacionDeMovimientoRespuesta = Field(
+        description="La observacion que lo funda: de menor (SHA-256 del archivo original, fila)."
+    )
+    contexto_temporal: ContextoTemporalRespuesta | None = Field(
+        description="Si se concilio con una cuenta, donde cae entre sus snapshots."
+    )
+    aviso: str = Field(default=AVISO_MOVIMIENTOS)
+
+
+class ParametrosObservacionesDeMovimiento(Paginacion):
+    version: str = Field(
+        default=VERSION_MOTOR_PAGOS, max_length=32, description="Por omision, la del servicio."
+    )
+
+
+class PaginaObservacionesDeMovimiento(Pagina[ObservacionDeMovimientoRespuesta]):
+    movimiento_id: UUID
+    motor_pagos_run_id: UUID
+
+
+class MovimientoDeCuentaRespuesta(MovimientoRespuesta):
+    contexto_temporal: ContextoTemporalRespuesta
+
+
+class ParametrosMovimientosDeCuenta(Paginacion):
+    desde: date | None = Field(default=None, description="Recibidos desde este dia, inclusive.")
+    hasta: date | None = Field(default=None, description="Recibidos hasta este dia, inclusive.")
+
+
+class PaginaMovimientosDeCuenta(Pagina[MovimientoDeCuentaRespuesta]):
+    cuenta_id: UUID
+    cliente_unico: str
+    version_motor: str
+    aviso: str = Field(default=AVISO_MOVIMIENTOS)
+
+
+class ResumenPagosRespuesta(BaseModel):
+    """Los pagos de la cuenta en numeros: las observaciones y lo que la interpretacion vigente dice
+    de ellas. Los movimientos y las observaciones son subrecursos: aqui no estan."""
+
+    version_motor: str
+    observaciones: int = Field(description="Pagos observados con su CLIENTE_UNICO.")
+    observaciones_interpretadas: int = Field(
+        description="Las que tienen un resultado en la interpretacion vigente de su ventana."
+    )
+    movimientos_canonicos: int
+    duplicados_exactos: int
+    coincidencias_ambiguas: int
+    reversos: int
+    posibles_reversos: int
+    no_conciliados: int
+    pagos_anulados: int
+    recuperacion_bruta_interpretada: Decimal
+    recuperacion_neta_interpretada: Decimal
+    aviso: str = Field(default=AVISO_RECUPERACION)
+
+
+# La Cuenta 360 trae el resumen de sus pagos, que se declara aqui abajo.
+Cuenta360Respuesta.model_rebuild()

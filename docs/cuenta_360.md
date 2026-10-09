@@ -3,12 +3,13 @@
 La Cuenta 360 responde, para una cuenta, **qué le pasó a través del tiempo**: cuándo se observó por
 primera vez, en qué cortes estuvo, cuál es su estado más reciente, cómo evolucionaron su saldo y su
 mora, si dejó de aparecer o reapareció, cuántos cortes faltó, qué pagos observados tiene, de qué
-archivo y de qué fila salió cada dato, y cuál era su estado en una fecha.
+archivo y de qué fila salió cada dato, cuál era su estado en una fecha y, desde v0.8, qué
+movimientos económicos interpreta de sus pagos el motor de pagos ([motor_pagos.md](motor_pagos.md)).
 
 La responde desde el modelo histórico ([historia.md](historia.md)): sin volver a leer ningún xlsx,
 csv, zip ni Parquet, y con consultas de una sola cuenta que entran por un índice. La lógica vive en
-el servicio `historia/cuenta360.py`; las rutas de `api/cuentas.py` y `api/historia.py` solo la
-traducen a HTTP.
+el servicio `historia/cuenta360.py`, y la de los movimientos en `motor_pagos/consultas.py`; las rutas
+de `api/cuentas.py` y `api/historia.py` solo la traducen a HTTP.
 
 Todas las rutas exigen la cabecera `X-API-Key`, como el resto de la API, y responden los errores
 con la misma forma (`codigo`, `mensaje`, `detalles`).
@@ -23,10 +24,11 @@ esa respuesta, como una salida que no ocurrió.
 | Método y ruta | Qué devuelve | Respuestas |
 |---|---|---|
 | `GET /cuentas?cliente_unico=...` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
-| `GET /cuentas/{cuenta_id}` | Su resumen a través de sus cortes; con `?al=AAAA-MM-DD`, como se veía en esa fecha | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | Su resumen a través de sus cortes, con `resumen_pagos`; con `?al=AAAA-MM-DD`, como se veía en esa fecha | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/historia` | Sus snapshots, con continuidad, deltas y evidencia, paginados (`orden=desc` por omisión, o `asc`) | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/movimientos` | Sus movimientos económicos interpretados por el motor de pagos, con su contexto temporal; `desde` y `hasta`, paginados | 200, 401, 404, 422 |
 | `GET /cartera/cortes` | Los cortes canónicos de la cartera, por fecha, y el último | 200, 401, 422 |
 | `GET /cartera/cortes/{corte_id}` | Un corte con su evidencia: el Parquet, el original y sus fuentes equivalentes | 200, 401, 404, 422 |
 | `GET /historias/{historia_run_id}` | Una ejecución histórica: cómo va o cómo terminó | 200, 401, 404, 422 |
@@ -35,8 +37,10 @@ esa respuesta, como una salida que no ocurrió.
 
 Las listas se paginan como en el resto de la API: `pagina` desde 1 y `por_pagina` hasta 500, con
 `total`, `pagina`, `por_pagina` y `elementos` en la respuesta. `GET /cuentas/{cuenta_id}` es un
-**resumen**: la historia, los eventos y los pagos son subrecursos, para que ninguna respuesta crezca
-sin control con los años.
+**resumen**: la historia, los eventos, los pagos observados y los movimientos son subrecursos, para
+que ninguna respuesta crezca sin control con los años. Los movimientos de toda la cartera, su
+evidencia y las interpretaciones del motor tienen además sus propias rutas (`/movimientos`,
+`/motor-pagos`): ver [motor_pagos.md](motor_pagos.md#la-api).
 
 ## Buscar una cuenta
 
@@ -83,6 +87,13 @@ curl -s -H "X-API-Key: clave-local-de-desarrollo" \
   "salidas_observadas": 1,
   "reingresos_observados": 1,
   "pagos_observados": 3,
+  "resumen_pagos": {
+    "version_motor": "motor-pagos/v1", "observaciones": 3, "observaciones_interpretadas": 3,
+    "movimientos_canonicos": 2, "duplicados_exactos": 1, "coincidencias_ambiguas": 0,
+    "reversos": 0, "posibles_reversos": 0, "no_conciliados": 0, "pagos_anulados": 0,
+    "recuperacion_bruta_interpretada": "2300.00", "recuperacion_neta_interpretada": "2300.00",
+    "aviso": "Recuperacion interpretada por motor-pagos/v1 sobre las fuentes disponibles, ..."
+  },
   "snapshot_actual": { "fecha_corte": "2026-09-30", "saldo_total": "62450.00", "...": "..." },
   "ultimo_snapshot_observado": { "fecha_corte": "2026-09-30", "...": "..." }
 }
@@ -100,10 +111,16 @@ curl -s -H "X-API-Key: clave-local-de-desarrollo" \
 - **`cortes_ausentes_desde_primera_observacion`** cuenta los cortes de la cartera, desde su primera
   observación, en que no aparece; los de antes no son ausencias.
 - **`pagos_observados`** es un conteo de observaciones, no una recuperación.
+- **`resumen_pagos`** es lo que la interpretación vigente del motor de pagos dice de esas
+  observaciones: cuántas tienen ya una interpretación, cuántos movimientos fundan, cuántas son
+  duplicados exactos, coincidencias ambiguas, reversos, posibles reversos o no conciliadas, cuántos
+  pagos anuló un reverso, y la recuperación bruta y neta interpretadas, con su aviso: no es un saldo
+  contable. No trae los movimientos, que son `/movimientos`.
 
 Con `?al=2026-09-16`, la misma cuenta se ve como se veía ese día: solo cuentan los cortes con fecha
 hasta el 16, el último corte es el último hasta esa fecha, y los pagos, los recibidos hasta el final
-de ese día. Antes de su primer corte, la cuenta no tiene observaciones.
+de ese día, también en `resumen_pagos` (con la interpretación vigente hoy). Antes de su primer
+corte, la cuenta no tiene observaciones.
 
 ## La historia
 
@@ -165,7 +182,8 @@ llegado a tiempo.
 ## Los pagos observados
 
 > Estos son movimientos observados de la fuente pagos/v1. No están deduplicados, conciliados,
-> interpretados como reversos ni atribuidos. Ese procesamiento corresponde al Motor de Pagos.
+> interpretados como reversos ni atribuidos. Ese procesamiento corresponde al Motor de Pagos: su
+> interpretación está en `/movimientos`.
 
 El aviso va en la documentación de la ruta y en cada respuesta (`aviso`). Cada elemento trae los
 campos de pagos/v1 con su nombre interno (`fecha_recepcion`, `recuperacion_por_gestion`,
@@ -179,6 +197,85 @@ incluyen los pagos que llegaron antes del primer corte que trajo a la cuenta: la
 despacho, cartera y `CLIENTE_UNICO`, no una llave que se fije al llegar. **No hay un total de
 dinero**: una suma de observaciones que pueden estar repetidas, o ser ajustes o reversos, no es una
 recuperación, y no se presenta como si lo fuera.
+
+## Lo observado y lo interpretado: `/pagos-observados` y `/movimientos`
+
+Desde v0.8 la Cuenta 360 tiene dos rutas de pagos, y **no son lo mismo**:
+
+| | `/cuentas/{cuenta_id}/pagos-observados` | `/cuentas/{cuenta_id}/movimientos` |
+|---|---|---|
+| Qué es | Lo que la fuente reportó: cada fila de pagos/v1, tal como llegó | Lo que `motor-pagos/v1` interpreta de esas filas: cada hecho económico distinto |
+| Una fila repetida en dos archivos | Dos observaciones | Un movimiento, con `observaciones: 2` |
+| Dos filas con la llave histórica y otro gestor | Dos observaciones | Ningún movimiento: quedan `COINCIDENCIA_AMBIGUA`, sin elegir |
+| Un negativo con su pago | Dos observaciones, una con importe negativo | Un `REVERSO` que anula a su `PAGO`, si son una pareja aislada; si no, un `POSIBLE_REVERSO` |
+| Cuenta en el total de dinero | No hay total: una suma de observaciones no es una recuperación | `resumen_pagos.recuperacion_*_interpretada`, que no es contabilidad |
+| Cambia si llega otro archivo | Agrega sus filas; ninguna cambia | La interpretación vigente de esa ventana es otra; la anterior queda como historia |
+
+`/pagos-observados` **sigue siendo la verdad observada**, sin deduplicar, conciliar ni interpretar, y
+no cambia en v0.8. `/movimientos` es la interpretación económica, versionada y explicada: cada
+movimiento dice qué observaciones lo sustentan (`/movimientos/{movimiento_id}/observaciones`) y por
+qué ([motor_pagos.md](motor_pagos.md)).
+
+```bash
+curl -s -H "X-API-Key: clave-local-de-desarrollo" \
+  "http://localhost:8000/cuentas/7b1d2c3e-4f5a-5b6c-8d7e-9f0a1b2c3d4e/movimientos?desde=2026-09-01"
+```
+
+```json
+{
+  "total": 2, "pagina": 1, "por_pagina": 50,
+  "cuenta_id": "7b1d2c3e-4f5a-5b6c-8d7e-9f0a1b2c3d4e", "cliente_unico": "CU0000004521",
+  "version_motor": "motor-pagos/v1",
+  "aviso": "Estos son movimientos economicos interpretados por motor-pagos/v1 ...",
+  "elementos": [
+    {
+      "movimiento_id": "1b9e0c5a-77d2-8f3e-a1c4-5d6e7f8a9b0c",
+      "version_motor": "motor-pagos/v1", "motor_pagos_run_id": "...", "periodo": "2026-09",
+      "vigente": true, "tipo_movimiento": "PAGO", "signo_economico": "SUMA",
+      "monto_reportado": "1500.00", "fecha_recepcion": "2026-09-24T10:15:00",
+      "cliente_unico": "CU0000004521", "cuenta_id": "7b1d2c3e-4f5a-5b6c-8d7e-9f0a1b2c3d4e",
+      "estado_conciliacion": "CONCILIADO_CUENTA", "observaciones": 2,
+      "movimiento_original_id": null, "anulado_por_movimiento_id": null, "firma_exacta": "...",
+      "contexto_temporal": {
+        "snapshot_anterior": {"fecha_corte": "2026-09-23", "corte_id": "...", "saldo_total": "63950.00", "dias_atraso": 58},
+        "snapshot_siguiente": {"fecha_corte": "2026-09-30", "corte_id": "...", "saldo_total": "62450.00", "dias_atraso": 65},
+        "antes_de_primera_observacion": false,
+        "despues_de_ultima_observacion": false,
+        "durante_ausencia_observada": false
+      }
+    },
+    {"movimiento_id": "...", "tipo_movimiento": "PAGO", "monto_reportado": "800.00", "observaciones": 1, "...": "..."}
+  ]
+}
+```
+
+Los movimientos son los de la interpretación vigente de cada ventana con el `CLIENTE_UNICO` de la
+cuenta, del más reciente al más antiguo; `desde` y `hasta` son días de recepción, inclusive, y se
+resuelven con el índice de los movimientos de una cuenta, sin traer los demás. Se incluyen los que se
+interpretaron antes de que la cuenta existiera (`SIN_CUENTA_OBSERVADA`): son de su cliente, y su
+contexto se calcula igual.
+
+El **contexto temporal** de cada movimiento se calcula al consultar: el snapshot del último corte en
+que se observó la cuenta, del día del pago o de antes, y el del primer corte posterior; si el pago
+llegó antes de su primera observación, después de la última o mientras faltaba de la cartera. **Nada
+de eso es un error**, y la diferencia de saldo entre los dos snapshots se muestra sin atribuírsela al
+pago: el acreedor carga intereses y ajustes que ninguna fuente trae.
+
+## Cómo explica un movimiento
+
+"¿Por qué este movimiento vale una sola vez si la fuente lo reportó dos veces?"
+
+1. `GET /cuentas/{cuenta_id}/movimientos`: el movimiento trae `observaciones: 2`, su
+   `motor_pagos_run_id` y su `firma_exacta`.
+2. `GET /movimientos/{movimiento_id}`: su clasificación y sus motivos (`REPRESENTANTE_DE_COPIAS`, con
+   `copias: 1`), su representante con su archivo original y su contexto temporal.
+3. `GET /movimientos/{movimiento_id}/observaciones`: las dos filas que lo sustentan, el representante
+   (`MOVIMIENTO_PRIMARIO`) y su copia (`DUPLICADO_EXACTO`, motivo `COPIA_EXACTA`), cada una con su
+   ingesta, su dataset, su fila y el SHA-256 de su archivo original.
+4. `GET /motor-pagos/{motor_pagos_run_id}`: la interpretación que lo publicó, su ventana, su firma de
+   entrada, sus conteos y si es la vigente.
+
+Las dos filas siguen en `/pagos-observados`, intactas: el motor no borró ni marcó ninguna.
 
 ## Los cortes y las ejecuciones
 

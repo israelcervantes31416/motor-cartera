@@ -14,10 +14,12 @@ este repositorio sale de un archivo real.**
 - **No deduplica.** Dos filas idénticas son dos movimientos, y las dos quedan en el dataset
   conformado. La regla histórica que trataba como el mismo pago dos filas con el mismo cliente, la
   misma fecha de recepción al segundo y el mismo importe a centavos
-  (`Cliente_Unico`, `Fecha_Recepción`, `Recuperación_por_Gestión`) queda documentada como referencia para el motor de pagos de
-  v0.8, pero no se aplica.
-- **No interpreta signos ni concilia.** Un importe negativo es válido; qué significa, y a qué
-  gestión se atribuye cada pago, es de v0.8.
+  (`Cliente_Unico`, `Fecha_Recepción`, `Recuperación_por_Gestión`) no se aplica: desde v0.8 es la
+  llave histórica del motor de pagos, que la usa solo como heurística y nunca fusiona por ella
+  ([motor_pagos.md](motor_pagos.md)).
+- **No interpreta signos ni concilia.** Un importe negativo es válido; qué significa lo interpreta,
+  desde v0.8, el motor de pagos (un negativo no es, por sí solo, un reverso), y a qué gestión se
+  atribuye cada pago queda para después del lifecycle de v0.9.
 - **No trae columnas técnicas.** Ni identificador de movimiento, ni de crédito, ni de lote, ni el
   nombre del archivo: un archivo que traiga una columna de más falla por estructura.
 - **No exige que el año y la semana correspondan a la fecha de recepción.** Se conservan como
@@ -45,7 +47,7 @@ movimiento inválido rechaza el archivo entero. Sus rechazos quedan a la vista e
 | 14 | `Semanas_de_Atraso` | entero | — | >= 0 | `int64` | Semanas de atraso de la cuenta al pagar. |
 | 15 | `Plan_de_Pago` | texto | — | — | `string` | Si la cuenta tenía un plan de pagos. |
 | 16 | `Fecha_de_Gestion` | fecha y hora | — | AAAA-MM-DD[ HH:MM:SS] | `timestamp[us]` | Cuándo fue la gestión asociada al pago, si la hay. |
-| 17 | `Recuperación_por_Gestión` | importe | sí | hasta 2 decimales | `decimal(14, 2)` | Importe del movimiento. Puede ser negativo, como un ajuste: interpretar el signo es del motor de pagos de v0.8. |
+| 17 | `Recuperación_por_Gestión` | importe | sí | hasta 2 decimales | `decimal(14, 2)` | Importe del movimiento. Puede ser negativo, como un ajuste: su signo económico lo interpreta el motor de pagos (v0.8). |
 | 18 | `Concepto_Cálculo` | texto | — | — | `string` | Concepto del movimiento. |
 | 19 | `Cargos_Automáticos` | importe | — | hasta 2 decimales | `decimal(14, 2)` | Cargos automáticos del movimiento. |
 | 20 | `Captación` | importe | — | hasta 2 decimales | `decimal(14, 2)` | Captación del movimiento. |

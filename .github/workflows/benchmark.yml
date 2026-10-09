@@ -4,17 +4,19 @@ name: Benchmark de escala
 # un perfil grande de punta a punta contra PostgreSQL y deja la tabla en el resumen del run. Con
 # tipo=escala, la ingesta de un corte (generacion, almacen, validacion, dataset conformado,
 # proyeccion y persistencia); con tipo=historia, la materializacion del modelo historico de varios
-# cortes y las consultas de una cuenta, con su plan.
+# cortes y las consultas de una cuenta, con su plan; con tipo=motor_pagos, la interpretacion de los
+# pagos observados de esos cortes, las llegadas tardias y las consultas de una cuenta y de un
+# movimiento, con su plan.
 on:
   workflow_dispatch:
     inputs:
       tipo:
         description: "Que se mide"
         type: choice
-        options: [escala, historia]
+        options: [escala, historia, motor_pagos]
         default: escala
       cortes:
-        description: "Cuantos cortes (solo con tipo=historia)"
+        description: "Cuantos cortes (con tipo=historia o tipo=motor_pagos)"
         type: string
         default: "12"
       perfil:
@@ -101,6 +103,28 @@ jobs:
             echo
             echo '```text'
             cat "$RUNNER_TEMP/historia/planes.txt"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+
+      - name: Benchmark del motor de pagos
+        if: inputs.tipo == 'motor_pagos'
+        run: |
+          python scripts/benchmark_motor_pagos.py --perfil "$PERFIL" --cortes "$CORTES" \
+            --formato "$FORMATO" --destino "$RUNNER_TEMP/motor_pagos" \
+            --salida "$RUNNER_TEMP/motor_pagos/benchmark_motor_pagos.json" \
+            | tee "$RUNNER_TEMP/benchmark_motor_pagos.log"
+          {
+            echo "## Benchmark del motor de pagos: $CORTES cortes del perfil $PERFIL en $FORMATO"
+            echo
+            cat "$RUNNER_TEMP/motor_pagos/benchmark_motor_pagos.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/motor_pagos/planes_motor_pagos.txt"
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"

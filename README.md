@@ -78,7 +78,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay siete versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay ocho versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -100,6 +100,12 @@ punta:
   una identidad canónica por cuenta, un corte por fecha, snapshots inmutables y pagos observados
   sin deduplicar. La Cuenta 360 la consulta por la API, y un backfill construye la de lo publicado
   antes.
+- **v0.8.0 ✅ Motor de Pagos Canónico y Conciliación**: los pagos observados se interpretan, sin
+  tocarlos, en movimientos económicos canónicos: un duplicado exacto cuenta una vez, una
+  coincidencia de la llave histórica queda a la vista sin fusionarse, un reverso solo anula a su
+  pago cuando la pareja es inequívoca, y cada movimiento se concilia con su cuenta, con su contexto
+  entre los snapshots y la recuperación bruta y neta interpretadas. Cada conclusión se explica
+  hasta el archivo y la fila que la justifican.
 
 Lo que ya hace:
 
@@ -158,8 +164,23 @@ Lo que ya hace:
   los cortes canónicos y las ejecuciones históricas, con su evidencia
 - [x] `motor-cartera backfill-historia`, idempotente, para lo publicado antes de v0.7.0, y un
   benchmark histórico fuera del CI: 12 cortes XL medidos, con el plan de cada consulta
+- [x] Motor de Pagos (`motor-pagos/v1`): una interpretación versionada por ventana (un mes de
+  recepción), con un resultado explicado por cada pago observado y un movimiento económico
+  canónico por cada hecho distinto, con identificador determinista, sin modificar ni borrar ningún
+  `PagoObservado`
+- [x] Firma exacta y llave histórica, con comparación campo por campo antes de contar copias:
+  duplicados exactos que cuentan una vez, coincidencias ambiguas que no se fusionan, reversos solo
+  como pareja aislada y posibles reversos sin forzar
+- [x] Conciliación con `CuentaCanonica` en otro eje y versionada, contexto temporal entre
+  snapshots, y recuperación bruta y neta interpretadas, que no pretenden ser un ledger
+- [x] Interpretación por conjuntos en PostgreSQL, todo o nada, verificada contra un núcleo puro;
+  trabajo durable `MOTOR_PAGOS` que abre la historia de los pagos y que solo publica el dueño
+  vigente de su trabajo; `motor-cartera backfill-motor-pagos`, idempotente, por ventanas
+- [x] API del motor: `/motor-pagos`, `/movimientos` con su evidencia y
+  `/cuentas/{cuenta_id}/movimientos`, que la Cuenta 360 distingue de `/pagos-observados`; y un
+  benchmark de 12 cortes XL fuera del CI, con el plan de cada consulta
 
-La ruta completa, versión por versión (➡️ marca la versión actual, ya publicada):
+La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
 ```text
 ✅ v0.1 Ingesta + contratos
@@ -168,10 +189,10 @@ La ruta completa, versión por versión (➡️ marca la versión actual, ya pub
 ✅ v0.4 Ruteo sintético v1
 ✅ v0.5 Orquestación durable
 ✅ v0.6 Fuentes oficiales + evidencia + escala
-➡️ v0.7 Modelo histórico + Cuenta 360
+✅ v0.7 Modelo histórico + Cuenta 360
+✅ v0.8.0 — Motor de Pagos Canónico y Conciliación
+➡️ v0.9 — Lifecycle de cobranza
 
-v0.8 Motor de pagos
-v0.9 Lifecycle de cobranza
 v0.10 Decision Engine v2
 v0.11 Geografía real + Territorial v2
 v0.12 Campo v2
@@ -185,8 +206,10 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.8, el motor de pagos**: deduplicación, conciliación, reversos y atribución,
-sobre los pagos observados de v0.7. Sin adelantar ninguna.
+Lo que sigue es **v0.9, el lifecycle de cobranza**: las gestiones, los intentos de contacto, los
+contactos efectivos, las promesas, los convenios y las visitas con su resultado. La atribución
+formal de cada pago a una gestión viene después, sobre los movimientos canónicos de v0.8. Sin
+adelantar ninguna.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -581,7 +604,11 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
 Con `--escenario <directorio>` prueba el modelo histórico de punta a punta: sube los cortes de un
 escenario de `generar-escenario` del más reciente al más antiguo, y sus pagos, espera la historia de
 cada uno y revisa la Cuenta 360 de cuentas elegidas en los archivos: una que está en todos los
-cortes, una que sale, una que llega después y una que paga varias veces.
+cortes, una que sale, una que llega después y una que paga varias veces. Y espera la
+interpretación del motor de pagos de cada ventana: que lea cada pago del escenario, que cuente
+como duplicados exactos los repetidos de su manifiesto, que una fila que llegó dos veces sea un
+movimiento con sus dos observaciones y su archivo original, y que la Cuenta 360 distinga los pagos
+observados de los movimientos.
 
 ```bash
 docker compose exec api motor-cartera generar-escenario --destino datos/escenario --perfil XS \
@@ -628,7 +655,8 @@ curl -i -H "X-API-Key: clave-local-de-desarrollo" \
   la evidencia, sin bloquear CARTERA ([docs/carrier.md](docs/carrier.md)).
 - **Los pagos no se deduplican.** Una fila es un movimiento: dos filas idénticas son dos
   movimientos. Un solo movimiento inválido rechaza el archivo (tolerancia 0 por omisión). Su
-  ingesta es un trabajo durable, `INGESTA_PAGOS`, y no encadena nada.
+  ingesta es un trabajo durable, `INGESTA_PAGOS`, y no encadena nada. Interpretarlos es del
+  [motor de pagos](#el-motor-de-pagos), aparte.
 - **Un despacho, una cartera.** `DSP_001` y `CARTERA_PRINCIPAL` (configurables con `MC_DESPACHO_ID`
   y `MC_CARTERA_ID`) quedan en cada corrida e ingesta: son metadata del sistema, no columnas.
 
@@ -657,7 +685,8 @@ ruteo lo esperan. Lee solo el Parquet conformado, nunca el archivo original, y p
   93 columnas ni la PII, que siguen en el Parquet. Un snapshot nunca se actualiza;
 - un **pago observado** por cada fila de pagos/v1, con sus 23 campos, sin deduplicar, conciliar ni
   atribuir. Un pago de un cliente que ningún corte trae se conserva, `SIN_CUENTA_OBSERVADA`, y no
-  crea una cuenta.
+  crea una cuenta. Desde v0.8, el [motor de pagos](#el-motor-de-pagos) los interpreta aparte, sin
+  tocarlos.
 
 La historia se ordena por fecha de corte, no por orden de llegada: un corte que llega tarde deja
 la misma historia que si hubiera llegado a tiempo. Los eventos (`PRIMERA_OBSERVACION`,
@@ -672,6 +701,7 @@ curl -s -H "$K" "http://localhost:8000/cuentas/<cuenta_id>?al=2026-09-16"      #
 curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/historia             # snapshots y deltas
 curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/eventos              # presencia
 curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/pagos-observados     # pagos tal como llegaron
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/movimientos          # lo que interpreta el motor
 curl -s -H "$K" http://localhost:8000/cartera/cortes                           # cortes y el último
 curl -s -H "$K" http://localhost:8000/corridas/<run_id>/historia               # su materialización
 ```
@@ -687,6 +717,70 @@ en 815 s: una mediana de 28.5 s por corte de unas 500,000 cuentas y de 21.0 s po
 con menos de 400 MiB de memoria pico. Con todo eso publicado, cada sentencia de una consulta de
 cuenta se resuelve por sus índices en menos de 0.14 ms dentro de PostgreSQL, y la Cuenta 360
 completa responde en 5 a 8 ms (mediana) desde el servicio.
+
+## El motor de pagos
+
+Un pago observado es una fila de pagos/v1 tal como llegó, y no cambia nunca. El motor de pagos
+(`motor-pagos/v1`) **interpreta** esas filas sin tocarlas: decide qué hechos económicos distintos
+representan, cuáles son copias de otro, cuáles no se pueden decidir, cuáles revierten a otro, a qué
+cuenta pertenecen y cuál es la recuperación que se interpreta de ellos. Lo que concluye vive en sus
+propias entidades, versionadas: una `EjecucionMotorPagos` por interpretación de una **ventana** (un
+despacho, una cartera y un mes de recepción), un `ResultadoPagoObservado` por cada observación, con
+su clasificación y sus motivos, y un `MovimientoEconomicoCanonico` por cada hecho distinto.
+
+```
+INGESTA_PAGOS ──▶ HISTORIA ──▶ MOTOR_PAGOS ──▶ Cuenta 360
+  (pagos/v1)    (pagos observados)  (una ventana)   /pagos-observados  ≠  /movimientos
+```
+
+- **Duplicado exacto**: las 23 columnas iguales, en la misma cartera, comprobado campo por campo
+  después de agrupar por su firma exacta. El grupo funda un solo movimiento; cada copia conserva su
+  resultado, `DUPLICADO_EXACTO`.
+- **Coincidencia ambigua**: el mismo cliente, el mismo segundo y el mismo importe (la llave del
+  sistema anterior) con otro gestor, otra campaña u otro campo. **No se fusiona** ni funda
+  movimiento: no se sabe si es uno o dos pagos, y su importe se informa aparte.
+- **Reverso**: un negativo que forma una pareja aislada con un pago del mismo cliente e importe,
+  hasta 30 días antes. Lo demás es **posible reverso**: resta de la neta, pero no anula nada. pagos/v1
+  no dice cuál es el original de un reverso, y el motor no elige.
+- **Conciliación**: con la `CuentaCanonica` de su cliente, si existe (`CONCILIADO_CUENTA`), o
+  `SIN_CUENTA_OBSERVADA`, que se conserva y no crea una cuenta. Su **contexto temporal** (el
+  snapshot anterior y el siguiente) se calcula al consultar.
+- **Recuperación bruta interpretada**: los pagos que ningún reverso anuló, contando una vez cada
+  hecho. **Neta**: la bruta menos los posibles reversos. **No es contabilidad**: el saldo oficial
+  sigue siendo el del snapshot.
+
+La interpretación de una ventana se abre en la misma transacción en que la historia publica sus
+pagos observados, y la ejecuta el worker al final de la cola, fuera del flujo operacional: la
+decisión, la organización territorial y el ruteo no la esperan. Corre en PostgreSQL por conjuntos,
+todo o nada, y solo la publica el dueño vigente de su trabajo. La misma ventana con las mismas
+entradas no se publica dos veces; con entradas nuevas, otra ejecución publica la interpretación
+nueva y la anterior queda como historia.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+curl -s -H "$K" http://localhost:8000/motor-pagos                                   # interpretaciones, y la vigente
+curl -s -H "$K" http://localhost:8000/motor-pagos/<motor_pagos_run_id>              # calidad y recuperación
+curl -s -H "$K" "http://localhost:8000/motor-pagos/<id>/resultados?clasificacion=COINCIDENCIA_AMBIGUA"
+curl -s -H "$K" "http://localhost:8000/movimientos?cliente_unico=CU0000004521"
+curl -s -H "$K" http://localhost:8000/movimientos/<movimiento_id>/observaciones      # por qué vale una vez
+curl -s -H "$K" http://localhost:8000/cuentas/<cuenta_id>/movimientos                # con su contexto temporal
+```
+
+Los pagos observados antes de v0.8.0 se interpretan con `motor-cartera backfill-motor-pagos`, por
+ventanas (`--dry-run` dice cuántos pagos observados no tienen interpretación vigente;
+`--reintentar-fallidas` y `--reconciliar`, para las que fallaron y para los pagos sin cuenta cuyo
+cliente ya la tiene). Las reglas, las huellas, los motivos, la orquestación, los índices y el
+benchmark están en [docs/motor_pagos.md](docs/motor_pagos.md); la Cuenta 360, en
+[docs/cuenta_360.md](docs/cuenta_360.md); el porqué, en las decisiones 85 a 98.
+
+**Medido.** En la máquina de desarrollo, sobre los 12 cortes XL de la historia, el motor interpretó
+los 2,995,846 pagos observados de sus tres meses en 869 s (3,448 por segundo) con 147 MiB de memoria
+pico: 2,980,942 movimientos canónicos, los 14,904 duplicados exactos del escenario y sus 9,100
+negativos (33 reversos y 9,067 posibles reversos), sin perder ni contar dos veces ninguna
+observación. Una llegada tardía reinterpreta entero cada mes que toca, de 5 a 7 minutos por mes XL;
+de 5,000 reversos tardíos, 4,941 se emparejaron con su pago. Con todo publicado, cada sentencia de
+una consulta de cuenta o de movimiento se resuelve por sus índices en menos de 0.25 ms dentro de
+PostgreSQL, y responde en 4 a 9 ms (mediana) desde el servicio.
 
 ## El Decision Engine
 
@@ -901,6 +995,12 @@ Cuando el trabajo de una etapa se cierra con su recurso `EXITOSA`, la misma tran
 siguiente; una etapa que no termina `EXITOSA` detiene el flujo. Todo se observa en
 `GET /corridas/{run_id}/flujo` y `GET /flujos/{flujo_id}/trabajos`.
 
+**Fuera del flujo, en la misma cola.** La historia de cada dataset (`HISTORIA`, v0.7) y la
+interpretación de cada ventana de pagos (`MOTOR_PAGOS`, v0.8) son trabajos durables como
+cualquier otro, pero ninguna etapa los espera y una falla suya no detiene nada. Entre los trabajos
+que se pueden tomar, el worker toma primero los operacionales, después los `HISTORIA` y al final
+los `MOTOR_PAGOS`.
+
 **Entrega al menos una vez.** La entrega de un trabajo es *at-least-once*, no *exactly-once*: si un
 worker muere después de que su motor confirmó y antes de cerrar el trabajo, otro worker lo vuelve a
 tomar y llama otra vez al motor. Lo que no se repite es la publicación. Los motores ya estaban
@@ -991,15 +1091,22 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /ruteos/{ruteo_run_id}/rutas` | La ruta de cada municipio con sus distancias, en orden de prioridad territorial y paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas` | Las paradas de un municipio en orden de visita, con su punto sintético y su distancia, paginadas; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /cuentas?cliente_unico=…` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
-| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados y snapshot actual; con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados, snapshot actual y `resumen_pagos` (lo que interpreta el motor de pagos); con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/historia` | Sus snapshots con continuidad, deltas y evidencia (`corte_id`, `dataset_id`, `source_row`, `source_sheet`), paginados; `orden=desc` por omisión | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, sin deduplicar ni conciliar, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/movimientos` | Sus movimientos económicos interpretados por el motor de pagos, con su contexto temporal entre sus snapshots; `desde` y `hasta`, paginados | 200, 401, 404, 422 |
 | `GET /cartera/cortes` | Los cortes canónicos de la cartera, por fecha, y el último | 200, 401, 422 |
 | `GET /cartera/cortes/{corte_id}` | Un corte con su evidencia: el Parquet, el original y sus fuentes equivalentes | 200, 401, 404, 422 |
 | `GET /historias/{historia_run_id}` | Una ejecución histórica: estado, resultado, conteos, corte y trabajo | 200, 401, 404, 422 |
 | `GET /corridas/{run_id}/historia` | Las ejecuciones que materializaron el dataset de la corrida | 200, 401, 404, 409, 422 |
 | `GET /pagos/{pagos_run_id}/historia` | Las de una ingesta de pagos, y cuántos de sus pagos tienen hoy una cuenta observada | 200, 401, 404, 409, 422 |
+| `GET /motor-pagos` | Las interpretaciones del motor de pagos, por ventana, con cuál es la vigente; filtros `periodo`, `estado` y `version`, paginadas | 200, 401, 422 |
+| `GET /motor-pagos/{motor_pagos_run_id}` | Una interpretación: versión, estado, ventana, firma de entrada, `calidad` (cuántas observaciones de cada clase), `recuperacion` interpretada, tiempos y detalle | 200, 401, 404, 422 |
+| `GET /motor-pagos/{motor_pagos_run_id}/resultados` | Lo que concluyó de cada pago observado de su ventana, y por qué; filtros `clasificacion`, `cliente_unico`, `firma_exacta` y `firma_legacy`, paginados | 200, 401, 404, 422 |
+| `GET /movimientos` | Los movimientos económicos vigentes, del más reciente al más antiguo; filtros `cliente_unico`, `cuenta_id`, `desde`, `hasta`, `tipo` y `estado_conciliacion`, paginados | 200, 401, 404, 422 |
+| `GET /movimientos/{movimiento_id}` | Un movimiento con su clasificación, sus motivos, su representante con su archivo original y su contexto temporal | 200, 401, 404, 422 |
+| `GET /movimientos/{movimiento_id}/observaciones` | Los pagos observados que lo sustentan, cada uno con su ingesta, su dataset, su fila y su archivo original, paginados | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -1052,6 +1159,11 @@ Las reglas que un cliente tiene que conocer:
   hay pagos suyos.
 - **Los pagos observados no son recuperación.** Son movimientos tal como llegaron: no están
   deduplicados, conciliados, interpretados como reversos ni atribuidos, y la API no los suma.
+- **Los movimientos son una interpretación.** `/movimientos`, `/cuentas/{cuenta_id}/movimientos` y
+  `resumen_pagos` dicen lo que `motor-pagos/v1` concluye de los pagos observados; no son el libro
+  contable del acreedor, y cada respuesta lo advierte en `aviso`. Un movimiento que la
+  interpretación vigente de su ventana ya no funda se sigue leyendo, con `vigente: false`.
+- **El motor de pagos tampoco se pide: se abre solo** con la historia de cada archivo de pagos.
 - **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
   proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
   cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
@@ -1087,6 +1199,8 @@ motor-cartera generar-escenario --destino datos/escenario --cortes 4 --primer-co
 motor-cartera verificar-fuentes                      # vuelve a firmar cada artefacto del almacén
 motor-cartera backfill-historia --dry-run            # cuánta historia falta, sin encolar nada
 motor-cartera backfill-historia                      # encola la historia de lo publicado antes de v0.7.0
+motor-cartera backfill-motor-pagos --dry-run         # cuántos pagos observados no tienen interpretación
+motor-cartera backfill-motor-pagos                   # encola la interpretación de cada ventana pendiente
 ```
 
 El almacén de artefactos es el directorio de `MC_SOURCE_STORE_ROOT` (`datos/fuentes` en el
@@ -1155,6 +1269,20 @@ la misma historia que en orden, y reconstruir toda la capa en un orden al azar d
 mismas filas, con los mismos identificadores públicos. La semántica de presencia (`presencia.py`) se
 prueba sin base. El benchmark histórico no corre en el CI.
 
+El motor de pagos también, contra PostgreSQL: las huellas en SQL y en Python con el mismo texto
+canónico, el duplicado exacto (dos y tres copias, en uno o en varios archivos), la coincidencia de
+la llave histórica que no se fusiona, dos pagos legítimos iguales, los reversos (la pareja aislada,
+sin candidatos, con varios, con uno ambiguo o disputado, entre dos ventanas), el pago sin cuenta
+que se concilia con otra interpretación cuando llega su corte, fallas inyectadas en cinco puntos y
+la muerte del proceso, dos workers sobre la misma ventana, un worker que pierde el lease y no
+publica, la firma de entrada que no deja publicar dos veces, el backfill idempotente, la
+reconstrucción idéntica y el orden de llegada. La prueba de equivalencia compara, sobre pagos al
+azar, lo que publica el SQL con lo que concluye el núcleo puro, observación por observación; el
+escenario golden fija cada clasificación, cada movimiento y la recuperación de cada ventana, y el
+del generador cuadra su `SALDO`, centavo por centavo, con los movimientos interpretados. Las reglas
+puras (`pytest tests/test_motor_pagos_reglas.py`) no necesitan base. El benchmark del motor no
+corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1162,10 +1290,11 @@ la agregación en la base, la transacción todo o nada, la concurrencia entre ej
 idempotencia y la API del historial, incluidos resultados de otras versiones de las reglas; y el
 `docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
 prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
-de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360; comprueba que el backfill
-no encuentra nada pendiente, baja los contenedores sin borrar los volúmenes, los vuelve a levantar
-y verifica que cada artefacto siga en el almacén con sus mismos bytes. Los benchmarks de escala y
-del modelo histórico son un workflow aparte, que solo corre a mano.
+de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos;
+comprueba que ni el backfill de la historia ni el del motor encuentran nada pendiente, baja los
+contenedores sin borrar los volúmenes, los vuelve a levantar
+y verifica que cada artefacto siga en el almacén con sus mismos bytes. Los benchmarks de escala,
+del modelo histórico y del motor de pagos son un workflow aparte, que solo corre a mano.
 
 ## Arquitectura
 
@@ -1207,6 +1336,15 @@ src/motor_cartera/
 │   ├── presencia.py   Primera observación, salida, reingreso y continuidad: el núcleo puro
 │   ├── backfill.py    La historia de los datasets que todavía no la tienen
 │   └── cuenta360.py   Lo que se consulta de una cuenta: resumen, historia, eventos y pagos
+├── motor_pagos/
+│   ├── reglas.py      motor-pagos/v1: el núcleo puro (grupos, clasificaciones, reversos, recuperación)
+│   ├── firmas.py      Las huellas (firma exacta y llave histórica) y el movimiento_id, en Python y SQL
+│   ├── ejecuciones.py Abrir las ventanas con la historia de sus pagos e interpretarlas en
+│   │                  PostgreSQL, por conjuntos y todo o nada
+│   ├── contexto.py    El contexto temporal de un movimiento entre los snapshots: el núcleo puro
+│   ├── backfill.py    Las ventanas sin interpretación vigente, desactualizadas o por conciliar
+│   └── consultas.py   Lo que se consulta: ejecuciones, resultados, movimientos, su evidencia y el
+│                      resumen de pagos de una cuenta
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1217,20 +1355,21 @@ src/motor_cartera/
 │                      la orquestación (flujos y trabajos), la evidencia (artefactos, datasets
 │                      conformados, hojas compañeras e ingestas de pagos con sus rechazos) y el
 │                      modelo histórico (cuentas canónicas, cortes, snapshots, pagos observados
-│                      y sus ejecuciones)
+│                      y sus ejecuciones) y el motor de pagos (sus ejecuciones, un resultado por
+│                      observación y los movimientos canónicos)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py)
 │                      y las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
-│                      ruteo, cuentas (Cuenta 360) e historia; subidas, esquemas, errores y
-│                      autenticación
+│                      ruteo, cuentas (Cuenta 360), historia, motor de pagos y movimientos;
+│                      subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
-                       verificar-fuentes, backfill-historia y worker
+                       verificar-fuentes, backfill-historia, backfill-motor-pagos y worker
 migraciones/           Versiones de Alembic
-scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala y del
-                       modelo histórico, y actualización del catálogo del INEGI
+scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
+                       modelo histórico y del motor de pagos, y actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
-                       historia.md (el modelo histórico), cuenta_360.md (su API), los diccionarios
-                       de CARTERA y PAGOS, y carrier.md
+                       historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
+                       (el motor de pagos), los diccionarios de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -1285,6 +1424,14 @@ ArtefactoFuente (Parquet) → ArtefactoFuente (original)`: cada snapshot guarda 
 sigue siendo la foto operacional de una corrida, la única que leen los motores v1. `historia/`
 tampoco sabe de la cola: `orquestacion/` ejecuta su trabajo `HISTORIA` como el de cualquier motor.
 
+El motor de pagos cuelga de los pagos observados, sin cambiarlos: cada **EjecucionMotorPagos**
+interpreta una ventana, y lo que concluye se explica hasta la fuente:
+`MovimientoEconomicoCanonico → ResultadoPagoObservado → PagoObservado → DatasetConformado →
+IngestaPagos → ArtefactoFuente (original)`, y del movimiento a su `CuentaCanonica` y a sus
+snapshots. `motor_pagos/reglas.py` es el núcleo puro, `motor_pagos/ejecuciones.py` aplica las
+mismas reglas en PostgreSQL por conjuntos, y `api/motor_pagos.py` y `api/movimientos.py` solo
+traducen a HTTP. Ningún motor v1 lee los movimientos.
+
 ## Limitaciones conocidas
 
 **De las fuentes oficiales (v0.6.0).** Lo que v0.6.0 deja a propósito para después:
@@ -1299,17 +1446,19 @@ tampoco sabe de la cola: `orquestacion/` ejecuta su trabajo `HISTORIA` como el d
   celdas por segundo: una cartera XL en xlsx tarda varios minutos solo en leerse. Para XL y XXL,
   csv o zip.
 - **CARRIER se audita, no se publica**, y sus advertencias no bloquean nada.
-- **Los pagos no se deduplican, no se concilian y no se atribuyen.** pagos/v1 acepta cada
-  movimiento tal como llega y no lo cruza con las cuentas de un corte. Deduplicar con la llave
-  histórica, interpretar reversos y atribuir cada pago a una gestión es de v0.8.
+- **La ingesta de pagos no deduplica, no concilia y no atribuye.** pagos/v1 acepta cada
+  movimiento tal como llega y no lo cruza con las cuentas de un corte. Desde v0.8, el motor de
+  pagos los interpreta aparte; atribuir cada pago a una gestión queda para después del lifecycle
+  de v0.9.
 - **La geografía es por municipio.** La proyección resuelve el estado y la población a claves
   municipales del INEGI; localidades, colonias, códigos postales y coordenadas son de v0.11. El
   catálogo es una foto (consultada el 2026-10-05) que se actualiza con su script.
 - **El escenario longitudinal no es un modelo financiero**: es coherencia básica y determinismo.
-- **La escala medida es la de la ingesta y la historia.** Un benchmark mide la ingesta de
-  cartera/v2 y de pagos/v1 hasta 1,000,000 de cuentas, y otro, la historia de 12 cortes XL con sus
-  pagos. Los motores (decisión, territorial y ruteo) no están medidos a esa escala, y cartera/v1
-  todavía lee su archivo entero en memoria.
+- **La escala medida es la de la ingesta, la historia y el motor de pagos.** Un benchmark mide la
+  ingesta de cartera/v2 y de pagos/v1 hasta 1,000,000 de cuentas; otro, la historia de 12 cortes XL
+  con sus pagos, y otro, el motor de pagos sobre esos mismos 12 cortes. Los motores operacionales
+  (decisión, territorial y ruteo) no están medidos a esa escala, y cartera/v1 todavía lee su
+  archivo entero en memoria.
 
 **Del modelo histórico (v0.7.0).** Lo que `historia/v1` deja a propósito para después:
 
@@ -1323,7 +1472,8 @@ tampoco sabe de la cola: `orquestacion/` ejecuta su trabajo `HISTORIA` como el d
   resuelven al materializar, con el catálogo del código; si el catálogo cambia, tiene que cambiar
   también la versión del modelo, como la de la proyección.
 - **Los pagos observados no son recuperación.** No se deduplican, no se concilian, no se interpretan
-  como reversos ni se atribuyen, y la API no los suma: eso es de v0.8.
+  como reversos ni se atribuyen, y la API no los suma. Desde v0.8 eso lo hace el motor de pagos,
+  en sus propias entidades.
 - **Los eventos se calculan al consultar.** Con unos cientos de cortes por cartera es inmediato; con
   miles, habría que medir otra vez antes de guardarlos.
 - **Una sola búsqueda.** Una cuenta se busca por su `CLIENTE_UNICO` exacto en la cartera del
@@ -1337,6 +1487,30 @@ tampoco sabe de la cola: `orquestacion/` ejecuta su trabajo `HISTORIA` como el d
   con checkpoints de PostgreSQL, y las demás con ningún evento de la base. La historia tiene que
   medirse otra vez en el servidor de producción, con su configuración (v0.18).
 
+**Del motor de pagos (v0.8.0).** Lo que `motor-pagos/v1` deja a propósito para después:
+
+- **Una coincidencia ambigua no se resuelve.** Dos observaciones con la misma llave histórica y otro
+  campo distinto no fundan movimiento ni suman: su importe se informa aparte. Resolverlas necesita
+  reglas con evidencia.
+- **Un reverso se empareja solo si la pareja es aislada.** Con varios candidatos, un candidato
+  ambiguo o un original disputado, queda como posible reverso: resta de la neta y no anula nada. La
+  ventana de 30 días es una regla de `v1`, sin evidencia empírica.
+- **No lee `Concepto_Cálculo`, `Captación` ni `Cobranza_Total`** para decidir signos ni tipos.
+- **No atribuye pagos a gestiones.** `Gestor`, `Fecha_de_Gestion` y `Campaña` quedan como atributos
+  observados; la atribución gestión → pago viene después del lifecycle de v0.9.
+- **Un pago sin cuenta no se concilia solo cuando llega su corte**: lo hace
+  `backfill-motor-pagos --reconciliar`, con una interpretación nueva.
+- **Cada interpretación es completa.** Una llegada tardía reinterpreta entero cada mes que toca, y
+  su vecina si cambia su contexto, aunque ninguna conclusión cambie: en el XL, de 5 a 7 minutos, de
+  1.8 a 2.2 GB de WAL y unos 0.6 GB más por mes. Las interpretaciones anteriores se conservan; su
+  retención es de la operación (v0.18).
+- **Las consultas de toda la cartera, o de una ventana sin el cliente, recorren lo que filtran**: en
+  el XL, de 1.6 a 4.9 s de mediana. Con un cliente o una cuenta, 4 a 9 ms. Un índice por fecha las
+  aceleraba, pero hacía de 2.3 a 2.9 veces más cara la escritura de cada interpretación (decisión 98).
+- **La recuperación interpretada no es contabilidad.** El saldo oficial sigue siendo el del snapshot.
+- **Medido en una sola máquina, que no era dedicada**, con poca memoria disponible: el tiempo de un
+  mismo mes varió de 230 a 422 s entre interpretaciones. Se mide otra vez en producción (v0.18).
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -1345,8 +1519,9 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Dos niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
-  los operacionales y al final los `HISTORIA`; dentro de cada nivel, en el orden en que se crearon.
+- **Tres niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+  los operacionales, después los `HISTORIA` y al final los `MOTOR_PAGOS`; dentro de cada nivel, en
+  el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.

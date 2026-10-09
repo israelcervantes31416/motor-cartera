@@ -21,7 +21,9 @@ Con --escenario, sube los cortes de un escenario longitudinal (generar-escenario
 reciente al mas antiguo, y sus pagos, y sigue la historia de cada uno: cada corte se materializa en
 el modelo historico en paralelo a su flujo, y la Cuenta 360 de cuentas elegidas en los archivos (una
 que esta en todos los cortes, una que sale, una que llega despues y una que paga varias veces) dice
-lo que paso con cada una. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
+lo que paso con cada una. Despues sigue al motor de pagos: cada ventana de pagos interpretada por
+su trabajo MOTOR_PAGOS, y una fila que un archivo trae dos veces, que es un solo movimiento con sus
+dos observaciones. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
 contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
@@ -457,6 +459,130 @@ def el_modelo_historico(directorio: Path) -> None:
     )
 
 
+# --- el motor de pagos ----------------------------------------------------------------------------
+
+ESPERA_MOTOR = 600  # segundos: el motor va al final de la cola, despues de la historia
+RECEPCION = "Fecha_Recepci\u00f3n"  # la columna de pagos/v1, sin un acento en el codigo
+
+
+def _filas_de_pagos(archivo: Path) -> list[dict]:
+    """Las filas de un archivo de pagos del escenario, con sus 23 columnas como texto."""
+    if archivo.suffix == ".zip":
+        with zipfile.ZipFile(archivo) as paquete:
+            (miembro,) = [n for n in paquete.namelist() if n.upper().startswith("PAGOS")]
+            texto = io.TextIOWrapper(paquete.open(miembro), encoding="utf-8")
+            return list(csv.DictReader(texto))
+    with archivo.open(encoding="utf-8", newline="") as texto:
+        return list(csv.DictReader(texto))
+
+
+def seguir_el_motor() -> list[dict]:
+    """Las interpretaciones de la cartera, cuando ya ninguna sigue EN_PROCESO."""
+    limite = time.monotonic() + ESPERA_MOTOR
+    while True:
+        estado, _, pagina = pedir("GET", "/motor-pagos?por_pagina=500")
+        elementos = pagina.get("elementos", [])
+        en_proceso = [e for e in elementos if e["estado"] == "EN_PROCESO"]
+        if estado == 200 and elementos and not en_proceso:
+            return elementos
+        if time.monotonic() > limite:
+            return elementos
+        time.sleep(1)
+
+
+def el_motor_de_pagos(directorio: Path) -> None:
+    """La interpretacion de los pagos del escenario: cada ventana la interpreta un trabajo
+    MOTOR_PAGOS que abrio su historia, cada observacion tiene un resultado, las copias exactas de un
+    archivo son un solo movimiento con sus dos observaciones y su archivo original, y la Cuenta 360
+    distingue los pagos observados de los movimientos."""
+    manifiesto = json.loads((directorio / "escenario.json").read_text(encoding="utf-8"))
+    print(f"Motor de pagos con los pagos del escenario de {directorio}")
+    filas = [f for p in manifiesto["periodos"] for f in _filas_de_pagos(directorio / p["archivo"])]
+    repetidos = sum(p["repetidos_exactos"] for p in manifiesto["periodos"])
+    meses = sorted({f[RECEPCION][:7] for f in filas})
+
+    todas = seguir_el_motor()
+    vigentes = {e["periodo"]: e for e in todas if e["vigente"]}
+    esperar(
+        all(m in vigentes for m in meses)
+        and not [e for e in todas if e["estado"] == "EN_PROCESO"]
+        and all(
+            (e["estado"], e["resultado"]) == ("EXITOSA", "INTERPRETACION_PUBLICADA")
+            and e["calidad"]["observaciones_clasificadas"] == e["calidad"]["observaciones_leidas"]
+            for e in vigentes.values()
+        ),
+        f"GET /motor-pagos: {len(todas)} interpretaciones, vigentes {', '.join(sorted(vigentes))}, "
+        "cada una EXITOSA y con un resultado por observacion",
+    )
+    # El escenario es la unica fuente de pagos de sus meses: cada una de sus filas, y cada repetido
+    # exacto, en la interpretacion de su ventana.
+    del_escenario = [vigentes[m] for m in meses]
+    leidas = sum(e["calidad"]["observaciones_leidas"] for e in del_escenario)
+    copias = sum(e["calidad"]["duplicados_exactos"] for e in del_escenario)
+    esperar(
+        leidas == len(filas) and copias == repetidos,
+        f"{leidas} pagos observados del escenario interpretados, con {copias} duplicados exactos "
+        f"(el manifiesto dice {repetidos})",
+    )
+    ejecucion = del_escenario[-1]
+    estado, _, por_id = pedir("GET", f"/motor-pagos/{ejecucion['motor_pagos_run_id']}")
+    estado_t, _, trabajo = pedir("GET", f"/trabajos/{ejecucion['trabajo_id']}")
+    esperar(
+        estado == estado_t == 200
+        and por_id["version_motor"] == "motor-pagos/v1"
+        and "no un saldo contable" in por_id["recuperacion"]["aviso"]
+        and (trabajo["tipo"], trabajo["estado"], trabajo["flujo_id"])
+        == ("MOTOR_PAGOS", "COMPLETADO", None)
+        and trabajo["objetivo_run_id"] == ejecucion["motor_pagos_run_id"],
+        "GET /motor-pagos/{motor_pagos_run_id} y su trabajo MOTOR_PAGOS, COMPLETADO y sin flujo",
+    )
+
+    # Una fila que el archivo trae dos veces: dos pagos observados, un solo movimiento.
+    vistas: dict[tuple, int] = {}
+    for fila in filas:
+        llave = tuple(sorted(fila.items()))
+        vistas[llave] = vistas.get(llave, 0) + 1
+    repetida = dict(next(llave for llave, veces in vistas.items() if veces == 2))
+    cliente = repetida["Cliente_Unico"]
+    estado, _, movimientos = pedir("GET", f"/movimientos?cliente_unico={cliente}&por_pagina=500")
+    (doble,) = [m for m in movimientos.get("elementos", []) if m["observaciones"] == 2]
+    estado_m, _, detalle = pedir("GET", f"/movimientos/{doble['movimiento_id']}")
+    estado_o, _, observaciones = pedir(
+        "GET", f"/movimientos/{doble['movimiento_id']}/observaciones"
+    )
+    originales = {
+        hashlib.sha256((directorio / p["archivo"]).read_bytes()).hexdigest()
+        for p in manifiesto["periodos"]
+    }
+    esperar(
+        estado == estado_m == estado_o == 200
+        and detalle["representante"]["artefacto_original"]["sha256"] in originales
+        and observaciones["total"] == 2
+        and [o["clasificacion"] for o in observaciones["elementos"]][1] == "DUPLICADO_EXACTO",
+        f"{cliente}: GET /movimientos/{{id}} y /observaciones: un movimiento que la fuente "
+        "reporto dos veces, con su archivo original y su fila",
+    )
+
+    # La Cuenta 360 del mismo cliente: lo observado y lo interpretado, por separado.
+    filas_del_cliente = [f for f in filas if f["Cliente_Unico"] == cliente]
+    distintas = len({tuple(sorted(f.items())) for f in filas_del_cliente})
+    estado, _, encontrada = pedir("GET", f"/cuentas?cliente_unico={cliente}")
+    cuenta_id = encontrada.get("cuenta_id")
+    _, _, resumen = pedir("GET", f"/cuentas/{cuenta_id}")
+    _, _, observados = pedir("GET", f"/cuentas/{cuenta_id}/pagos-observados?por_pagina=500")
+    _, _, interpretados = pedir("GET", f"/cuentas/{cuenta_id}/movimientos?por_pagina=500")
+    pagos = resumen.get("resumen_pagos", {})
+    esperar(
+        estado == 200
+        and observados["total"] == pagos["observaciones"] == len(filas_del_cliente)
+        and interpretados["total"] == pagos["movimientos_canonicos"] == distintas
+        and all(m["contexto_temporal"] is not None for m in interpretados["elementos"])
+        and "No son el libro contable" in interpretados["aviso"],
+        f"{cliente}: {observados['total']} pagos observados y {interpretados['total']} "
+        "movimientos en su Cuenta 360, con su contexto temporal",
+    )
+
+
 def main(
     archivo: Path,
     oficial: Path | None = None,
@@ -811,13 +937,20 @@ def main(
         "/historias/{historia_run_id}",
         "/corridas/{run_id}/historia",
         "/pagos/{pagos_run_id}/historia",
+        "/motor-pagos",
+        "/motor-pagos/{motor_pagos_run_id}",
+        "/motor-pagos/{motor_pagos_run_id}/resultados",
+        "/movimientos",
+        "/movimientos/{movimiento_id}",
+        "/movimientos/{movimiento_id}/observaciones",
+        "/cuentas/{cuenta_id}/movimientos",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
-        "la evidencia de las fuentes, los pagos y la Cuenta 360",
+        "la evidencia de las fuentes, los pagos, la Cuenta 360 y el motor de pagos",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -825,6 +958,7 @@ def main(
         los_pagos(pagos)
     if escenario is not None:
         el_modelo_historico(escenario)
+        el_motor_de_pagos(escenario)
     print("Todo en orden.")
 
 

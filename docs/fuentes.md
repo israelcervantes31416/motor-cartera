@@ -199,8 +199,9 @@ dos veces. No encadena nada.
 
 - **Una fila es un movimiento, y no se deduplica nada.** Varios pagos del mismo cliente son válidos;
   dos filas idénticas son dos movimientos y las dos quedan en el conformado. La llave histórica de
-  deduplicación (cliente, recepción al segundo e importe a centavos) queda documentada para el motor
-  de pagos de v0.8.
+  deduplicación (cliente, recepción al segundo e importe a centavos) es, desde v0.8, una de las dos
+  huellas del motor de pagos, que la usa solo como heurística y nunca fusiona por ella
+  ([motor_pagos.md](motor_pagos.md)).
 - **Barrera conservadora.** Con la tolerancia por omisión (`MC_TOLERANCIA_RECHAZO_PAGOS=0`), un
   solo movimiento inválido rechaza el archivo entero (`RECHAZADA`), y sus rechazos quedan a la
   vista, con su fila, sus 23 valores y su motivo. Un archivo de dinero aceptado a medias

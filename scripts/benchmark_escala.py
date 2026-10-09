@@ -246,8 +246,8 @@ def _preparar_base() -> None:
     with motor.begin() as conexion:
         conexion.execute(
             text(
-                "TRUNCATE corrida, cuenta, rechazo, artefacto_fuente, cuenta_canonica "
-                "RESTART IDENTITY CASCADE"
+                "TRUNCATE corrida, cuenta, rechazo, artefacto_fuente, cuenta_canonica, "
+                "ejecucion_motor_pagos RESTART IDENTITY CASCADE"
             )
         )
     motor.dispose()

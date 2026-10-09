@@ -53,6 +53,10 @@ from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
 from motor_cartera.historia.ejecuciones import HistoriaYaMaterializada, ejecutar_historia
 from motor_cartera.ingesta.corridas import procesar_corrida, verificar_declaracion
 from motor_cartera.ingesta.pagos import procesar_ingesta_pagos
+from motor_cartera.motor_pagos.ejecuciones import (
+    MotorPagosYaInterpretado,
+    ejecutar_motor_pagos,
+)
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
@@ -65,6 +69,7 @@ PERDIO_LA_CARRERA = (
     TerritorialYaGenerado,
     RuteoYaGenerado,
     HistoriaYaMaterializada,
+    MotorPagosYaInterpretado,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -124,6 +129,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.RUTEO: ejecutar_ruteo,
     TipoTrabajo.INGESTA_PAGOS: _ingerir_pagos,
     TipoTrabajo.HISTORIA: ejecutar_historia,
+    TipoTrabajo.MOTOR_PAGOS: ejecutar_motor_pagos,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -217,11 +223,15 @@ def procesar_reclamo(
         latido = _Latido(
             reclamo.id, worker_id, config.worker_lease_segundos, config.worker_heartbeat_segundos
         )
-        with latido:
+        with latido, cola.en_curso(reclamo.id, worker_id):
             try:
                 MANEJADORES[reclamo.tipo](reclamo.objetivo_id)
             except PERDIO_LA_CARRERA as exc:
                 log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+            except cola.TrabajoAjeno as exc:
+                # Su lease vencio y otro worker lo tomo: este no publica, y tampoco lo cierra.
+                log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+                return _procesado(reclamo, None)
             except Exception as exc:
                 log.exception(
                     "trabajo %s: error del worker en el intento %s de %s",
