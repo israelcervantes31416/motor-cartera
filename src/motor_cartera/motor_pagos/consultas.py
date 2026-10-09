@@ -187,39 +187,49 @@ def resultados_de(
     recepcion. Con `cliente_unico`, solo las de ese cliente: se buscan por el indice de los pagos de
     una cuenta, sin recorrer la ventana. Con `firma_exacta` o `firma_legacy`, solo las de esa
     huella: un grupo de copias o el grupo de una llave historica. Con el cliente, el grupo sale del
-    indice de sus pagos; sin el, se filtran los resultados de la ventana."""
-    condiciones: list[ColumnElement] = [
+    indice de sus pagos; sin el, se filtran los resultados de la ventana.
+
+    Cada resultado es de un pago de la ventana de la ejecucion, y la pagina lo dice tambien de los
+    pagos: asi se leen en orden de recepcion por el indice de la ventana y la lectura se detiene al
+    llenar la pagina, en lugar de ordenar todos los pagos observados de la cartera. El total cuenta
+    los resultados sin unirlos a sus pagos, salvo cuando hace falta su cliente."""
+    de_los_resultados: list[ColumnElement] = [
         ResultadoPagoObservado.ejecucion_motor_pagos_id == ejecucion.id
     ]
     if clasificacion is not None:
-        condiciones.append(ResultadoPagoObservado.clasificacion == clasificacion.value)
+        de_los_resultados.append(ResultadoPagoObservado.clasificacion == clasificacion.value)
     if firma_exacta is not None:
-        condiciones.append(ResultadoPagoObservado.firma_exacta == firma_exacta)
+        de_los_resultados.append(ResultadoPagoObservado.firma_exacta == firma_exacta)
     if firma_legacy is not None:
-        condiciones.append(ResultadoPagoObservado.firma_legacy == firma_legacy)
+        de_los_resultados.append(ResultadoPagoObservado.firma_legacy == firma_legacy)
+    de_la_ventana: list[ColumnElement] = [
+        PagoObservado.despacho_id == ejecucion.despacho_id,
+        PagoObservado.cartera_id == ejecucion.cartera_id,
+        PagoObservado.fecha_recepcion >= _instante(ejecucion.periodo_desde),
+        PagoObservado.fecha_recepcion < _instante(ejecucion.periodo_hasta),
+    ]
     if cliente_unico is not None:
-        condiciones += [
-            PagoObservado.despacho_id == ejecucion.despacho_id,
-            PagoObservado.cartera_id == ejecucion.cartera_id,
-            PagoObservado.cliente_unico == cliente_unico,
-            PagoObservado.fecha_recepcion >= _instante(ejecucion.periodo_desde),
-            PagoObservado.fecha_recepcion < _instante(ejecucion.periodo_hasta),
-        ]
-    total = s.exec(
-        select(func.count())
-        .select_from(ResultadoPagoObservado)
-        .join(
-            PagoObservado,
-            and_(
-                PagoObservado.dataset_conformado_id == ResultadoPagoObservado.dataset_conformado_id,
-                PagoObservado.source_row == ResultadoPagoObservado.source_row,
-            ),
-        )
-        .where(*condiciones)
-    ).one()
+        de_la_ventana.append(PagoObservado.cliente_unico == cliente_unico)
+        total = s.exec(
+            select(func.count())
+            .select_from(ResultadoPagoObservado)
+            .join(
+                PagoObservado,
+                and_(
+                    PagoObservado.dataset_conformado_id
+                    == ResultadoPagoObservado.dataset_conformado_id,
+                    PagoObservado.source_row == ResultadoPagoObservado.source_row,
+                ),
+            )
+            .where(*de_los_resultados, *de_la_ventana)
+        ).one()
+    else:
+        total = s.exec(
+            select(func.count()).select_from(ResultadoPagoObservado).where(*de_los_resultados)
+        ).one()
     filas = s.exec(
         _resultados_vistos()
-        .where(*condiciones)
+        .where(*de_los_resultados, *de_la_ventana)
         .order_by(
             PagoObservado.fecha_recepcion,
             ResultadoPagoObservado.dataset_conformado_id,
