@@ -134,11 +134,11 @@ def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
 
     Se puede tomar un trabajo PENDIENTE que ya este disponible, o uno EJECUTANDO cuyo lease vencio:
     su worker dejo de latir. De los que se pueden tomar, primero los del flujo operacional y las
-    ingestas, despues los HISTORIA y al final los MOTOR_PAGOS (ver `_prioridad`); entre iguales, el
-    de menor id. Uno a la
-    vez. FOR UPDATE SKIP LOCKED: si otro worker esta tomando o cerrando una fila en este momento, la
-    consulta la salta en lugar de esperarla, asi que dos workers nunca toman la misma y ninguno
-    espera al otro.
+    ingestas, despues los HISTORIA, despues los MOTOR_PAGOS y al final los que leen lo que estos
+    publican, la atribucion y la evaluacion de promesas (ver `_prioridad`); entre iguales, el de
+    menor id. Uno a la vez. FOR UPDATE SKIP LOCKED: si otro worker esta tomando o cerrando una fila
+    en este momento, la consulta la salta en lugar de esperarla, asi que dos workers nunca toman la
+    misma y ninguno espera al otro.
 
     Tomarlo cuenta un intento, salvo que el lease vencido fuera el del ultimo: ese trabajo no se
     vuelve a ejecutar, y quien lo toma solo lo cierra. Se confirma antes de ejecutar nada: si el
@@ -342,16 +342,20 @@ def _reclamable():
 
 
 def _prioridad():
-    """0 para lo operacional, 1 para la historia y 2 para el motor de pagos. La historia y la
-    interpretacion de los pagos son proyecciones paralelas: ninguna etapa del flujo las espera, y
-    con un solo worker tampoco espera detras de ellas. Un backfill de cientos de trabajos HISTORIA
-    no retrasa la decision de la cartera de hoy. El motor de pagos va al final porque interpreta lo
-    que la historia publica: con los HISTORIA pendientes primero, una ventana se interpreta una vez
-    con todos sus archivos, y no una vez por archivo. No cambia que se ejecuta ni como: solo cual
-    de los que ya se pueden tomar va primero."""
+    """0 para lo operacional, 1 para la historia, 2 para el motor de pagos y 3 para la atribucion y
+    la evaluacion de promesas. La historia y la interpretacion de los pagos son proyecciones
+    paralelas: ninguna etapa del flujo las espera, y con un solo worker tampoco espera detras de
+    ellas. Un backfill de cientos de trabajos HISTORIA no retrasa la decision de la cartera de hoy.
+    El motor de pagos va despues porque interpreta lo que la historia publica: con los HISTORIA
+    pendientes primero, una ventana se interpreta una vez con todos sus archivos, y no una vez por
+    archivo. La atribucion y la evaluacion van al final porque leen lo que el motor de pagos
+    publica. No cambia que se ejecuta ni como: solo cual de los que ya se pueden tomar va
+    primero."""
     return case(
         (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
         (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.ATRIBUCION, 3),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.EVALUACION_PROMESAS, 3),
         else_=0,
     )
 

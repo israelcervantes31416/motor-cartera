@@ -19,6 +19,7 @@ from motor_cartera.api import (
     corridas,
     cuentas,
     decisiones,
+    evaluaciones,
     gestiones,
     historia,
     lifecycle,
@@ -260,5 +261,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(gestiones.router, dependencies=protegidas)
     app.include_router(acuerdos.router, dependencies=protegidas)
     app.include_router(lifecycle.router, dependencies=protegidas)
+    app.include_router(evaluaciones.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

@@ -440,14 +440,17 @@ def test_el_reclamo_salta_las_filas_bloqueadas_y_toma_una_sola_en_orden():
     finally:
         event.remove(motor, "before_cursor_execute", anotar)
 
-    # Una consulta que toma una fila, lo operacional antes que la historia y la historia antes que
-    # el motor de pagos, y despues en orden de id, saltando las bloqueadas; y un UPDATE de esa.
+    # Una consulta que toma una fila, lo operacional antes que la historia, la historia antes que
+    # el motor de pagos y este antes que la atribucion y la evaluacion de promesas, y despues en
+    # orden de id, saltando las bloqueadas; y un UPDATE de esa.
     tomar, marcar = vistas
     assert tomar.startswith("SELECT ") and "FROM trabajo_orquestacion WHERE" in tomar
     assert tomar.endswith(
         "ORDER BY CASE WHEN (trabajo_orquestacion.tipo = %(tipo_1)s) THEN %(param_1)s::INTEGER "
         "WHEN (trabajo_orquestacion.tipo = %(tipo_2)s) THEN %(param_2)s::INTEGER "
-        "ELSE %(param_3)s::INTEGER END, trabajo_orquestacion.id "
-        "LIMIT %(param_4)s::INTEGER FOR UPDATE SKIP LOCKED"
+        "WHEN (trabajo_orquestacion.tipo = %(tipo_3)s) THEN %(param_3)s::INTEGER "
+        "WHEN (trabajo_orquestacion.tipo = %(tipo_4)s) THEN %(param_4)s::INTEGER "
+        "ELSE %(param_5)s::INTEGER END, trabajo_orquestacion.id "
+        "LIMIT %(param_6)s::INTEGER FOR UPDATE SKIP LOCKED"
     )
     assert marcar.startswith("UPDATE trabajo_orquestacion SET ")

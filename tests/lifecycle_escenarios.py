@@ -78,3 +78,61 @@ def cerrar(cliente_api, ruta: str, *, con_llave: str | None = None, **campos):
 def eventos() -> int:
     with sesion() as s:
         return s.exec(select(func.count()).select_from(EventoLifecycle)).one()
+
+
+# --- por el servicio, sin HTTP --------------------------------------------------------------------
+
+
+def instante(texto: str):
+    """Un instante del lifecycle, con su zona: '2026-09-05T10:00:00-06:00'."""
+    from datetime import datetime
+
+    return datetime.fromisoformat(texto)
+
+
+def gestion_de(cuenta_id, ocurrido_en: str, **campos):
+    """Registra una gestion por el servicio, como lo haria la API; por omision, una llamada con el
+    titular que termina en PROMESA. Devuelve su Registro."""
+    from motor_cartera.lifecycle import registro
+    from motor_cartera.lifecycle.reglas import Canal, Medio, NivelContacto, ResultadoGestion
+
+    datos = {
+        "canal": Canal.TELEFONICA,
+        "medio": Medio.LLAMADA,
+        "nivel_contacto": NivelContacto.CONTACTO_TITULAR,
+        "resultado": ResultadoGestion.PROMESA,
+        **campos,
+    }
+    return registro.registrar_gestion(
+        cuenta_id, llave(), registro.DatosGestion(ocurrido_en=instante(ocurrido_en), **datos)
+    )
+
+
+def promesa_de(gestion_id, monto: str = "1000.00", fecha_limite: str = "2026-09-15"):
+    from datetime import date
+    from decimal import Decimal
+
+    from motor_cartera.lifecycle import registro
+
+    return registro.crear_promesa(
+        gestion_id,
+        llave(),
+        registro.DatosPromesa(Decimal(monto), date.fromisoformat(fecha_limite)),
+        zona="America/Mexico_City",
+    )
+
+
+def cancelar_promesa(promesa_id, ocurrido_en: str):
+    from motor_cartera.lifecycle import registro
+
+    return registro.cancelar_promesa(
+        promesa_id, llave(), registro.DatosCierre(instante(ocurrido_en), "Ya no aplica.")
+    )
+
+
+def anular_gestion(gestion_id, ocurrido_en: str):
+    from motor_cartera.lifecycle import registro
+
+    return registro.anular_gestion(
+        gestion_id, llave(), registro.DatosCierre(instante(ocurrido_en), "Registrada por error.")
+    )

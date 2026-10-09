@@ -48,6 +48,7 @@ from motor_cartera.db.modelos import (
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.decision.ejecuciones import DecisionYaGenerada, ejecutar_decision
+from motor_cartera.evaluacion.ejecuciones import EvaluacionYaPublicada, ejecutar_evaluacion
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
 from motor_cartera.historia.ejecuciones import HistoriaYaMaterializada, ejecutar_historia
@@ -70,6 +71,7 @@ PERDIO_LA_CARRERA = (
     RuteoYaGenerado,
     HistoriaYaMaterializada,
     MotorPagosYaInterpretado,
+    EvaluacionYaPublicada,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -130,6 +132,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.INGESTA_PAGOS: _ingerir_pagos,
     TipoTrabajo.HISTORIA: ejecutar_historia,
     TipoTrabajo.MOTOR_PAGOS: ejecutar_motor_pagos,
+    TipoTrabajo.EVALUACION_PROMESAS: ejecutar_evaluacion,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""

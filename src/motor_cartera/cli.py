@@ -460,6 +460,76 @@ def backfill_motor_pagos(
         typer.echo(f"  {_ventana(encolada.ventana)}: {encolada.motor_pagos_run_id}{nota}")
 
 
+@app.command("backfill-lifecycle")
+def backfill_lifecycle(
+    as_of: Annotated[
+        datetime,
+        typer.Option(
+            "--as-of",
+            formats=["%Y-%m-%d"],
+            help="La fecha de corte de las evaluaciones, AAAA-MM-DD. Obligatoria: nunca sale del "
+            "reloj.",
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta y que encolaria.")
+    ] = False,
+    reevaluar: Annotated[
+        bool,
+        typer.Option(
+            "--reevaluar",
+            help="Tambien encola las carteras que ya tienen una evaluacion a esa fecha: solo "
+            "publica si sus entradas cambiaron.",
+        ),
+    ] = False,
+) -> None:
+    """Encola la evaluacion (evaluacion-promesa/v1) de las promesas de cada cartera a la fecha de
+    corte --as-of, si todavia no la tiene.
+
+    Lo unico que el lifecycle deriva en lote es la evaluacion de sus promesas: un trabajo
+    EVALUACION_PROMESAS por cartera y fecha, nunca uno por promesa, que ejecuta un worker en
+    PostgreSQL. Es idempotente: una cartera con una evaluacion EN_PROCESO a esa fecha no se encola
+    otra vez, y una que ya tiene una EXITOSA no se toca, salvo con --reevaluar.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.evaluacion.backfill import diagnosticar, encolar, pendientes
+
+    fecha = as_of.date()
+    with sesion() as s:
+        carteras = diagnosticar(s, fecha, zona=config.zona_horaria_fuente)
+    typer.echo(
+        f"Carteras con promesas acordadas hasta el {fecha.isoformat()} (fin del dia en "
+        f"{config.zona_horaria_fuente}): {len(carteras):,}"
+    )
+    for cartera in carteras:
+        estado = (
+            f"en la cola ({cartera.en_cola})"
+            if cartera.en_cola
+            else f"evaluada ({cartera.vigente})"
+            if cartera.vigente
+            else "sin evaluacion a esa fecha"
+        )
+        typer.echo(
+            f"  {cartera.despacho_id}/{cartera.cartera_id}: {cartera.promesas:,} promesas, "
+            f"{cartera.vencidas:,} vencidas: {estado}"
+        )
+    faltan = pendientes(carteras, reevaluar=reevaluar)
+    typer.echo(f"Evaluaciones pendientes: {len(faltan):,}")
+    if dry_run:
+        typer.echo("Con --dry-run no se encolo nada.")
+        return
+    encoladas = encolar(faltan, fecha, config=config)
+    nuevas = sum(1 for e in encoladas if e.nueva)
+    typer.echo(f"Se encolaron {nuevas:,} trabajos EVALUACION_PROMESAS; los ejecuta un worker.")
+    for encolada in encoladas:
+        nota = "" if encolada.nueva else " (ya estaba en la cola)"
+        typer.echo(
+            f"  {encolada.cartera.despacho_id}/{encolada.cartera.cartera_id}: "
+            f"{encolada.evaluacion_run_id}{nota}"
+        )
+
+
 def _ventana(ventana) -> str:
     """Una ventana del motor de pagos, como la lee una persona."""
     texto = (

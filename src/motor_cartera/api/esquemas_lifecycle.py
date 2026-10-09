@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field
 
 from motor_cartera.api.esquemas import (
     ArtefactoRespuesta,
@@ -452,3 +452,110 @@ class PaginaLifecycle(Pagina[ElementoLifecycleRespuesta]):
     orden: Literal["desc", "asc"]
     version_motor: str
     aviso: str = Field(default=AVISO_LIFECYCLE)
+
+
+# --- la evaluacion de las promesas ----------------------------------------------------------------
+
+
+class EvaluacionPromesasEntrada(BaseModel):
+    """La fecha de corte de una evaluacion. Es obligatoria: nunca sale del reloj."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"as_of": "2026-10-16"}]}
+    )
+
+    as_of: date = Field(
+        description="Se observa hasta el final de ese dia, en la zona horaria de la fuente. No "
+        "puede ser posterior a hoy."
+    )
+
+
+class ConteosEvaluacionRespuesta(BaseModel):
+    promesas_evaluadas: int
+    pendientes: int
+    cumplidas: int
+    parciales: int
+    incumplidas: int
+    canceladas: int
+    no_evaluables: int
+
+
+class EjecucionEvaluacionRespuesta(BaseModel):
+    """Una evaluacion de las promesas de una cartera a una fecha de corte."""
+
+    evaluacion_run_id: UUID
+    version_evaluacion: str
+    estado: str = Field(
+        description="EN_PROCESO hasta que un worker la termina. EXITOSA: publico una evaluacion "
+        "por promesa. FALLIDA: no publico nada."
+    )
+    resultado: str | None = Field(
+        description="EVALUACION_PUBLICADA, YA_EVALUADA (otra ejecucion ya evaluo exactamente las "
+        "mismas entradas a esa fecha), ERROR_INTERNO... null mientras esta EN_PROCESO."
+    )
+    despacho_id: str
+    cartera_id: str
+    as_of: date
+    zona_horaria: str
+    firma_entrada: str | None
+    horizonte_pagos: datetime | None = Field(
+        description="El pago observado mas reciente de la cartera al evaluar: hasta donde llegan "
+        "los datos. Una promesa vencida cuyo intervalo pasa del horizonte es NO_EVALUABLE."
+    )
+    conteos: ConteosEvaluacionRespuesta
+    monto_prometido: Decimal
+    monto_observado: Decimal = Field(
+        description="Lo que suman los movimientos compatibles con cada promesa; un movimiento "
+        "compatible con dos promesas cuenta en las dos."
+    )
+    trabajo_id: UUID | None = Field(description="Su trabajo EVALUACION_PROMESAS.")
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    detalle: str | None
+    aviso: str = Field(default=AVISO_EVALUACION)
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class ParametrosEvaluaciones(Paginacion):
+    as_of: date | None = Field(default=None, description="Solo las de esa fecha de corte.")
+    estado: Literal["EN_PROCESO", "EXITOSA", "FALLIDA"] | None = None
+
+
+class PaginaEvaluaciones(Pagina[EjecucionEvaluacionRespuesta]):
+    despacho_id: str
+    cartera_id: str
+
+
+class EvaluacionEnEjecucionRespuesta(BaseModel):
+    """Lo que una evaluacion concluyo de una promesa."""
+
+    promesa_id: UUID
+    cuenta_id: UUID
+    cliente_unico: str
+    monto_prometido: Decimal
+    fecha_limite: date
+    estado: Literal["PENDIENTE", "CUMPLIDA", "PARCIAL", "INCUMPLIDA", "CANCELADA", "NO_EVALUABLE"]
+    monto_observado: Decimal
+    movimientos_compatibles: int
+    primer_movimiento_en: datetime | None
+    ultimo_movimiento_en: datetime | None
+    motivos: list[dict]
+
+
+class ParametrosEvaluacionesDePromesas(Paginacion):
+    estado: (
+        Literal["PENDIENTE", "CUMPLIDA", "PARCIAL", "INCUMPLIDA", "CANCELADA", "NO_EVALUABLE"]
+        | None
+    ) = None
+
+
+class PaginaEvaluacionesDePromesas(Pagina[EvaluacionEnEjecucionRespuesta]):
+    evaluacion_run_id: UUID
+    as_of: date
+    aviso: str = Field(default=AVISO_EVALUACION)
