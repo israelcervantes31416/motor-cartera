@@ -118,6 +118,25 @@ def test_la_ejecucion_con_su_calidad_y_su_recuperacion(tmp_path, api):
     assert cuerpo["trabajo_id"] is not None and cuerpo["duracion_segundos"] >= 0
 
 
+def test_el_trabajo_de_una_ejecucion_dice_de_que_ejecucion_es(tmp_path, api):
+    """GET /trabajos/{trabajo_id} de un trabajo MOTOR_PAGOS: su tipo y el motor_pagos_run_id de su
+    ejecucion, sin flujo. La prueba de humo lo encontro: el identificador del objetivo salia de una
+    lista de tablas en la que faltaba la del motor, y la respuesta era un 500."""
+    _escenario(tmp_path)
+    ejecucion = vigente(SEPTIEMBRE)
+    cuerpo = api.get(f"/motor-pagos/{ejecucion.motor_pagos_run_id}").json()
+
+    respuesta = api.get(f"/trabajos/{cuerpo['trabajo_id']}")
+
+    assert respuesta.status_code == 200
+    trabajo = respuesta.json()
+    assert (trabajo["tipo"], trabajo["flujo_id"], trabajo["objetivo_run_id"]) == (
+        "MOTOR_PAGOS",
+        None,
+        str(ejecucion.motor_pagos_run_id),
+    )
+
+
 def test_la_lista_de_ejecuciones_dice_cual_es_la_vigente(tmp_path, api):
     _escenario(tmp_path)
     anterior = vigente(SEPTIEMBRE)

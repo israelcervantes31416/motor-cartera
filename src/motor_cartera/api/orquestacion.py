@@ -30,11 +30,9 @@ from motor_cartera.api.esquemas import (
 from motor_cartera.db.modelos import (
     Corrida,
     EjecucionDecision,
-    EjecucionHistoria,
     EjecucionRuteo,
     EjecucionTerritorial,
     FlujoOrquestacion,
-    IngestaPagos,
     TrabajoOrquestacion,
 )
 from motor_cartera.orquestacion.flujo import (
@@ -43,6 +41,7 @@ from motor_cartera.orquestacion.flujo import (
     FlujoYaCompletado,
     reanudar_flujo,
 )
+from motor_cartera.orquestacion.objetivos import OBJETIVOS
 
 router = APIRouter(tags=["orquestacion"])
 
@@ -303,37 +302,24 @@ def _buscar_flujo(s: Session, condicion: ColumnElement) -> tuple[int, FlujoRespu
 
 def _trabajos(condicion: ColumnElement) -> Select[Any]:
     """Los trabajos que cumplen `condicion`, con el flujo_id publico de su flujo, si es de uno, y el
-    identificador publico de su recurso: el de la unica de las tablas a la que apunta."""
-    return (
+    identificador publico de su recurso: el de la unica de las tablas a la que apunta. Las tablas
+    salen de los objetivos de la cola, una por tipo de trabajo, asi que un tipo nuevo no puede
+    quedarse sin el identificador de su recurso."""
+    tablas = list(OBJETIVOS.values())
+    consulta = (
         select(
             TrabajoOrquestacion,
             FlujoOrquestacion.flujo_id,
-            func.coalesce(
-                Corrida.run_id,
-                EjecucionDecision.decision_run_id,
-                EjecucionTerritorial.territorial_run_id,
-                EjecucionRuteo.ruteo_run_id,
-                IngestaPagos.pagos_run_id,
-                EjecucionHistoria.historia_run_id,
-            ),
+            func.coalesce(*(getattr(objetivo.modelo, objetivo.publico) for objetivo in tablas)),
         )
         .select_from(TrabajoOrquestacion)
         .outerjoin(FlujoOrquestacion, TrabajoOrquestacion.flujo_id == FlujoOrquestacion.id)
-        .outerjoin(Corrida, TrabajoOrquestacion.corrida_id == Corrida.id)
-        .outerjoin(
-            EjecucionDecision, TrabajoOrquestacion.ejecucion_decision_id == EjecucionDecision.id
-        )
-        .outerjoin(
-            EjecucionTerritorial,
-            TrabajoOrquestacion.ejecucion_territorial_id == EjecucionTerritorial.id,
-        )
-        .outerjoin(EjecucionRuteo, TrabajoOrquestacion.ejecucion_ruteo_id == EjecucionRuteo.id)
-        .outerjoin(IngestaPagos, TrabajoOrquestacion.ingesta_pagos_id == IngestaPagos.id)
-        .outerjoin(
-            EjecucionHistoria, TrabajoOrquestacion.ejecucion_historia_id == EjecucionHistoria.id
-        )
-        .where(condicion)
     )
+    for objetivo in tablas:
+        consulta = consulta.outerjoin(
+            objetivo.modelo, getattr(TrabajoOrquestacion, objetivo.columna) == objetivo.modelo.id
+        )
+    return consulta.where(condicion)
 
 
 def _respuesta_trabajo(
