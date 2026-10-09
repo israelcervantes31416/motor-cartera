@@ -106,15 +106,16 @@ def _esquema() -> None:
 
 @pytest.fixture
 def bd(_esquema) -> Iterator[None]:
-    """Base migrada y vacia: cada prueba empieza de cero. La ejecucion del motor de pagos no cuelga
-    de ninguna de las otras, asi que el CASCADE no la alcanza: se nombra."""
+    """Base migrada y vacia: cada prueba empieza de cero. Las ejecuciones del motor de pagos y de la
+    evaluacion de promesas no cuelgan de ninguna de las otras, asi que el CASCADE no las alcanza: se
+    nombran. TRUNCATE no pasa por los triggers que hacen al lifecycle solo de agregar."""
     from motor_cartera.db.sesion import crear_motor
 
     with crear_motor().begin() as conexion:
         conexion.execute(
             text(
                 "TRUNCATE corrida, cuenta, rechazo, artefacto_fuente, cuenta_canonica, "
-                "ejecucion_motor_pagos RESTART IDENTITY CASCADE"
+                "ejecucion_motor_pagos, ejecucion_evaluacion_promesas RESTART IDENTITY CASCADE"
             )
         )
     yield

@@ -14,6 +14,15 @@ from sqlmodel import Field, SQLModel
 
 from motor_cartera.config import config
 from motor_cartera.fuentes.formatos import Formato
+from motor_cartera.lifecycle.reglas import (
+    Canal,
+    Medio,
+    NivelContacto,
+    OrigenRegistro,
+    ResultadoGestion,
+    ResultadoVisita,
+    TipoEvento,
+)
 
 # Nombres deterministas para indices y restricciones. Sin esto PostgreSQL los inventa, y
 # una migracion futura que necesite borrar o cambiar una restriccion no sabe como se llama.
@@ -1516,6 +1525,757 @@ class ResultadoPagoObservado(SQLModel, table=True):
     """Por que: [{"codigo": ..., ...}], con los datos que lo explican."""
 
 
+# --- el lifecycle de cobranza ---------------------------------------------------------------------
+#
+# Desde la 0010. Las acciones de cobranza que registra Motor Cartera: no son una fuente oficial del
+# acreedor (esas siguen siendo dos, CARTERA y PAGOS) y no salen de los snapshots, porque lo que un
+# corte dice de la promesa o del plan de una cuenta es una observacion de esa fuente, no un evento.
+# Cada accion llega como un EventoLifecycle, con su momento de negocio (ocurrido_en) y el momento
+# en que se registro (registrado_en), y su detalle vive aparte: la gestion, su visita, la promesa, o
+# el convenio con sus cuotas. Nada se actualiza ni se borra: lo registrado por error se anula con
+# otro evento, y la base rechaza un UPDATE o un DELETE con un trigger de la 0010, que tambien
+# comprueba, al confirmar, las cuotas de cada convenio. El vocabulario (canal, medio, contacto y
+# resultados) es el de lifecycle/v1 y la base lo exige: son datos de entrada, no conclusiones de un
+# motor. Las tablas que crecen con la operacion llevan id BIGINT y sus columnas de 8 bytes primero.
+
+CIERRES_DEL_LIFECYCLE = "('GESTION_ANULADA', 'PROMESA_CANCELADA', 'CONVENIO_CANCELADO')"
+"""Los eventos que dejan sin efecto a otro: los unicos que llevan motivo."""
+
+PATRON_LLAVE = "^[A-Za-z0-9._:-]{8,128}$"
+"""La forma de una llave de idempotencia: la escoge el cliente, sin espacios ni datos personales."""
+
+PATRON_ACTOR = "^[A-Za-z0-9._:-]{1,64}$"
+"""La forma de una referencia opaca a un actor: un identificador, no un nombre ni un correo."""
+
+COHERENCIA_DE_LA_GESTION = (
+    "(resultado <> 'SIN_RESPUESTA' OR nivel_contacto IN ('SIN_CONTACTO', 'NO_APLICA')) "
+    "AND (resultado NOT IN ('CONTACTO', 'RECHAZO', 'PROMESA', 'CONVENIO') "
+    "OR nivel_contacto IN ('CONTACTO_TERCERO', 'CONTACTO_TITULAR')) "
+    "AND (resultado <> 'VISITA_REALIZADA' OR canal = 'CAMPO') "
+    "AND (canal <> 'CAMPO' OR resultado NOT IN ('SIN_RESPUESTA', 'CONTACTO')) "
+    "AND (nivel_contacto <> 'NO_APLICA' OR canal IN ('DIGITAL', 'OTRO'))"
+)
+"""Las reglas de `lifecycle.reglas.incoherencias_de_gestion` que caben en una fila: un SIN_RESPUESTA
+sin contacto, un resultado de compromiso o rechazo con contacto, VISITA_REALIZADA solo en CAMPO,
+CAMPO sin SIN_RESPUESTA ni CONTACTO, y NO_APLICA solo en DIGITAL u OTRO."""
+
+MEDIO_DEL_CANAL = (
+    "medio IS NULL OR (canal = 'TELEFONICA' AND medio = 'LLAMADA') "
+    "OR (canal = 'DIGITAL' AND medio IN ('SMS', 'WHATSAPP', 'EMAIL'))"
+)
+
+
+class EventoLifecycle(SQLModel, table=True):
+    """Un evento operacional del lifecycle de cobranza: el sobre comun de toda accion registrada.
+
+    Distingue dos tiempos que no se sustituyen: `ocurrido_en`, cuando paso en el negocio, y
+    `registrado_en`, cuando Motor Cartera lo recibio, con el reloj de la base. Un evento tardio,
+    como una gestion de hace dos semanas que se registra hoy, es valido: la historia de la cuenta se
+    ordena por ocurrido_en y la auditoria muestra los dos.
+
+    Toda escritura trae una llave de idempotencia: la misma llave con la misma peticion (su huella)
+    es el mismo evento, y con otra peticion es un error. Lo garantiza un indice unico, no solo el
+    codigo. Un evento que no es GESTION_REGISTRADA se refiere a uno anterior, el que anula, cancela
+    o detalla, y la base admite a lo mas uno de cada tipo sobre el mismo evento.
+    """
+
+    __tablename__ = "evento_lifecycle"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_evento_cuenta"
+        ),
+        sa.ForeignKeyConstraint(
+            ["evento_relacionado_id"], ["evento_lifecycle.id"], name="fk_evento_relacionado"
+        ),
+        # Una llave, un evento, por cartera: dos peticiones simultaneas con la misma llave no
+        # registran dos eventos.
+        sa.UniqueConstraint(
+            "despacho_id", "cartera_id", "idempotency_key", name="uq_evento_idempotencia"
+        ),
+        # A lo mas un evento de cada tipo sobre el mismo evento: una anulacion por gestion, una
+        # promesa y un convenio por gestion, una cancelacion por promesa o por convenio. Es tambien
+        # el indice con que se sabe si algo se anulo o se cancelo.
+        sa.Index(
+            "ux_evento_relacionado",
+            "evento_relacionado_id",
+            "tipo_evento",
+            unique=True,
+            postgresql_where=sa.text("evento_relacionado_id IS NOT NULL"),
+        ),
+        # La historia operacional de una cuenta por momento de negocio. El btree se recorre en los
+        # dos sentidos: con la cuenta fija, sirve igual a ORDER BY ocurrido_en DESC.
+        sa.Index("ix_evento_cuenta_ocurrido", "cuenta_canonica_id", "ocurrido_en"),
+        sa.CheckConstraint(
+            "(tipo_evento = 'GESTION_REGISTRADA') = (evento_relacionado_id IS NULL)",
+            name=conv("ck_evento_relacionado"),
+        ),
+        sa.CheckConstraint(
+            f"(motivo IS NOT NULL) = (tipo_evento IN {CIERRES_DEL_LIFECYCLE})",
+            name=conv("ck_evento_motivo"),
+        ),
+        # Nada ocurre despues de registrarse; cinco minutos de tolerancia para el reloj del cliente.
+        sa.CheckConstraint(
+            "registrado_en - ocurrido_en >= interval '-5 minutes'", name=conv("ck_evento_tiempos")
+        ),
+        sa.CheckConstraint("octet_length(payload_hash) = 32", name=conv("ck_evento_huella")),
+        sa.CheckConstraint(f"idempotency_key ~ '{PATRON_LLAVE}'", name=conv("ck_evento_llave")),
+        sa.CheckConstraint(f"actor_ref ~ '{PATRON_ACTOR}'", name=conv("ck_evento_actor")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    ocurrido_en: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """Cuando paso, en el negocio. Lo declara quien registra."""
+    registrado_en: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """Cuando Motor Cartera lo recibio: now() de la transaccion que lo registro, nunca del
+    cliente."""
+    evento_relacionado_id: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """El evento al que se refiere: el que anula, cancela o detalla. Vacio en GESTION_REGISTRADA."""
+    evento_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. Identifica un registro operacional, como un *_run_id, y por eso es
+    aleatorio: lo que tiene que ser reproducible es la historia que resulta, no el identificador."""
+    cuenta_canonica_id: int
+    tipo_evento: TipoEvento = Field(
+        sa_type=sa.Enum(
+            TipoEvento,
+            name="tipo_evento_lifecycle",
+            native_enum=False,
+            create_constraint=True,
+            length=24,
+        )
+    )
+    origen_registro: OrigenRegistro = Field(
+        sa_type=sa.Enum(
+            OrigenRegistro,
+            name="origen_registro",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    """API o IMPORTACION: por donde entro. Ninguno es una fuente oficial del acreedor."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    version_evento: str = Field(max_length=32)
+    """Con que version del lifecycle se registro: lifecycle/v1."""
+    idempotency_key: str = Field(max_length=128)
+    """La llave con que lo pidio el cliente (cabecera Idempotency-Key, o la de su linea al
+    importar)."""
+    actor_ref: str | None = Field(default=None, max_length=64)
+    """Quien lo registro, como referencia opaca. No es un GestorCanonico ni el Gestor de
+    pagos/v1."""
+    motivo: str | None = Field(default=None, max_length=500)
+    """Por que se anula o se cancela. Solo en los eventos de cierre."""
+    payload_hash: bytes = Field(sa_type=sa.LargeBinary)
+    """SHA-256 de la peticion en forma canonica (`lifecycle.reglas.huella`)."""
+
+
+class GestionCobranza(SQLModel, table=True):
+    """Una gestion de cobranza: una accion concreta para cobrar o comunicarse con una cuenta.
+
+    La registra un evento GESTION_REGISTRADA, y su momento de negocio es el de ese evento (se repite
+    aqui para el indice de la historia de la cuenta). Separa por donde se intento (canal y medio),
+    con quien se hablo (nivel de contacto) y que salio (resultado). No se actualiza: si se registro
+    mal, un GESTION_ANULADA la anula, junto con su visita, su promesa o su convenio, y la gestion
+    sigue aqui, auditable.
+    """
+
+    __tablename__ = "gestion_cobranza"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["evento_lifecycle_id"], ["evento_lifecycle.id"], name="fk_gestion_evento"
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_gestion_cuenta"
+        ),
+        sa.UniqueConstraint("evento_lifecycle_id", name="uq_gestion_evento"),
+        # Las gestiones de una cuenta por momento de negocio, en los dos sentidos; tambien las
+        # candidatas de un movimiento en la atribucion.
+        sa.Index("ix_gestion_cuenta_ocurrido", "cuenta_canonica_id", "ocurrido_en"),
+        sa.CheckConstraint(MEDIO_DEL_CANAL, name=conv("ck_gestion_medio")),
+        sa.CheckConstraint(COHERENCIA_DE_LA_GESTION, name=conv("ck_gestion_coherencia")),
+        sa.CheckConstraint(f"actor_ref ~ '{PATRON_ACTOR}'", name=conv("ck_gestion_actor")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    ocurrido_en: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """El ocurrido_en de su evento."""
+    evento_lifecycle_id: int = Field(sa_type=sa.BigInteger)
+    gestion_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    cuenta_canonica_id: int
+    canal: Canal = Field(
+        sa_type=sa.Enum(
+            Canal, name="canal_gestion", native_enum=False, create_constraint=True, length=12
+        )
+    )
+    medio: Medio | None = Field(
+        default=None,
+        sa_type=sa.Enum(
+            Medio, name="medio_gestion", native_enum=False, create_constraint=True, length=12
+        ),
+    )
+    nivel_contacto: NivelContacto = Field(
+        sa_type=sa.Enum(
+            NivelContacto,
+            name="nivel_contacto",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+        )
+    )
+    resultado: ResultadoGestion = Field(
+        sa_type=sa.Enum(
+            ResultadoGestion,
+            name="resultado_gestion",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+        )
+    )
+    actor_ref: str | None = Field(default=None, max_length=64)
+    """Quien hizo la gestion, como referencia opaca. No se cruza con el Gestor de pagos/v1."""
+    observacion: str | None = Field(default=None, max_length=500)
+    """Texto libre, sin datos personales: la API y la importacion rechazan lo que lo parece."""
+
+
+class VisitaCampo(SQLModel, table=True):
+    """El detalle de una gestion de CAMPO: que encontro la visita. Sin GPS, rutas ni zonas, que son
+    de versiones posteriores; su resultado no se valida contra ninguna geografia."""
+
+    __tablename__ = "visita_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["gestion_cobranza_id"], ["gestion_cobranza.id"], name="fk_visita_gestion"
+        ),
+        sa.UniqueConstraint("gestion_cobranza_id", name="uq_visita_gestion"),
+        sa.CheckConstraint(
+            "inicio IS NULL OR fin IS NULL OR inicio <= fin", name=conv("ck_visita_intervalo")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    inicio: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    fin: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    gestion_cobranza_id: int = Field(sa_type=sa.BigInteger)
+    visita_id: UUID = Field(default_factory=uuid4, unique=True)
+    resultado: ResultadoVisita = Field(
+        sa_type=sa.Enum(
+            ResultadoVisita,
+            name="resultado_visita",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+        )
+    )
+    observacion: str | None = Field(default=None, max_length=500)
+
+
+class PromesaPago(SQLModel, table=True):
+    """Una promesa de pago, nacida de una gestion con resultado PROMESA: cuanto y hasta cuando.
+
+    La crea un evento PROMESA_CREADA, cuyo ocurrido_en es el momento en que se acordo. No guarda si
+    se cumplio: su estado operativo (vigente, cancelada o anulada) sale de sus eventos, y si se
+    cumplio lo dice una evaluacion versionada con su propia fecha de corte, sin tocarla.
+    """
+
+    __tablename__ = "promesa_pago"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["evento_lifecycle_id"], ["evento_lifecycle.id"], name="fk_promesa_evento"
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestion_cobranza_id"], ["gestion_cobranza.id"], name="fk_promesa_gestion"
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_promesa_cuenta"
+        ),
+        sa.UniqueConstraint("evento_lifecycle_id", name="uq_promesa_evento"),
+        sa.UniqueConstraint("gestion_cobranza_id", name="uq_promesa_gestion"),
+        # Las promesas de una cuenta por fecha limite.
+        sa.Index("ix_promesa_cuenta_limite", "cuenta_canonica_id", "fecha_limite"),
+        sa.CheckConstraint("monto_prometido > 0", name=conv("ck_promesa_monto")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    evento_lifecycle_id: int = Field(sa_type=sa.BigInteger)
+    gestion_cobranza_id: int = Field(sa_type=sa.BigInteger)
+    fecha_limite: date
+    """El ultimo dia, en la hora local de la fuente, en que un pago la cumple."""
+    promesa_id: UUID = Field(default_factory=uuid4, unique=True)
+    cuenta_canonica_id: int
+    monto_prometido: Decimal = Field(max_digits=14, decimal_places=2)
+    version_modelo: str = Field(max_length=32)
+
+
+class ConvenioCobranza(SQLModel, table=True):
+    """Un convenio de cobranza: un acuerdo operacional registrado, nacido de una gestion con
+    resultado CONVENIO. Guarda lo que la operacion acordo (monto total, vigencia y, si se
+    declararon, sus cuotas) y nada mas: ni tasas ni terminos que nadie registro. No es un ledger:
+    ningun movimiento se aplica a una cuota."""
+
+    __tablename__ = "convenio_cobranza"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["evento_lifecycle_id"], ["evento_lifecycle.id"], name="fk_convenio_evento"
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestion_cobranza_id"], ["gestion_cobranza.id"], name="fk_convenio_gestion"
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_convenio_cuenta"
+        ),
+        sa.UniqueConstraint("evento_lifecycle_id", name="uq_convenio_evento"),
+        sa.UniqueConstraint("gestion_cobranza_id", name="uq_convenio_gestion"),
+        sa.Index("ix_convenio_cuenta_inicio", "cuenta_canonica_id", "fecha_inicio"),
+        sa.CheckConstraint("monto_total_acordado > 0", name=conv("ck_convenio_monto")),
+        sa.CheckConstraint(
+            "fecha_fin IS NULL OR fecha_fin >= fecha_inicio", name=conv("ck_convenio_vigencia")
+        ),
+        sa.CheckConstraint("cuotas >= 0", name=conv("ck_convenio_cuotas")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=sa.BigInteger)
+    evento_lifecycle_id: int = Field(sa_type=sa.BigInteger)
+    gestion_cobranza_id: int = Field(sa_type=sa.BigInteger)
+    fecha_inicio: date
+    fecha_fin: date | None = None
+    convenio_id: UUID = Field(default_factory=uuid4, unique=True)
+    cuenta_canonica_id: int
+    cuotas: int
+    """Cuantas cuotas declaro quien lo registro; 0 si no declaro un calendario. La base exige, al
+    confirmar, que el convenio tenga exactamente esas, que sumen su monto total, numeradas desde 1
+    con fechas crecientes dentro de su vigencia."""
+    monto_total_acordado: Decimal = Field(max_digits=14, decimal_places=2)
+    version_modelo: str = Field(max_length=32)
+
+
+class CuotaConvenio(SQLModel, table=True):
+    """Una obligacion del calendario de un convenio, tal como se declaro: cuando y cuanto. Nunca se
+    inventa una periodicidad que no se declaro."""
+
+    __tablename__ = "cuota_convenio"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["convenio_cobranza_id"], ["convenio_cobranza.id"], name="fk_cuota_convenio"
+        ),
+        sa.CheckConstraint("monto > 0", name=conv("ck_cuota_monto")),
+        sa.CheckConstraint("numero >= 1", name=conv("ck_cuota_numero")),
+    )
+
+    convenio_cobranza_id: int = Field(primary_key=True, sa_type=sa.BigInteger)
+    numero: int = Field(primary_key=True)
+    fecha_vencimiento: date
+    monto: Decimal = Field(max_digits=14, decimal_places=2)
+
+
+# --- la atribucion operativa ----------------------------------------------------------------------
+#
+# Desde la 0010. Asocia, con reglas versionadas, cada movimiento economico canonico con las
+# gestiones que lo antecedieron: asociacion operacional, no causalidad. Como el motor de pagos,
+# interpreta por ventana (un mes de recepcion de una cartera) y publica todo o nada: una ejecucion,
+# lo que concluyo de cada movimiento y sus candidatas, en relaciones y no en texto. Una ejecucion
+# nueva no toca la anterior: la vigente de una ventana es su EXITOSA mas reciente. El vocabulario es
+# el de la version y se guarda como texto, salvo las invariantes que no dependen de ella.
+
+CONTEOS_DE_LA_ATRIBUCION = (
+    "movimientos_evaluados >= 0 AND asociados >= 0 AND ambiguos >= 0 AND sin_candidato >= 0 "
+    "AND candidatos >= 0 AND movimientos_anulados >= 0 AND gestiones_leidas >= 0 "
+    "AND gestiones_anuladas >= 0 AND gestiones_anuladas <= gestiones_leidas "
+    "AND movimientos_anulados <= movimientos_evaluados "
+    "AND movimientos_evaluados = asociados + ambiguos + sin_candidato "
+    "AND candidatos >= asociados + 2 * ambiguos"
+)
+"""Cada movimiento evaluado tiene exactamente una clasificacion, y una asociacion unica tiene una
+candidata y una ambigua al menos dos."""
+
+MONTOS_DE_LA_ATRIBUCION = (
+    "monto_asociado >= 0 AND monto_ambiguo >= 0 AND monto_sin_candidato >= 0 AND monto_anulado >= 0"
+)
+
+
+class EstadoAtribucion(StrEnum):
+    """En que quedo una ejecucion de la atribucion. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoAtribucion(StrEnum):
+    """Como termino una ejecucion de la atribucion, en el vocabulario de atribucion/v1."""
+
+    ATRIBUCION_PUBLICADA = "ATRIBUCION_PUBLICADA"
+    """EXITOSA: publico lo que concluyo de cada movimiento de su ventana."""
+    YA_ATRIBUIDA = "YA_ATRIBUIDA"
+    """FALLIDA: otra ejecucion ya publico exactamente las mismas entradas con esta version."""
+    SIN_INTERPRETACION_DE_PAGOS = "SIN_INTERPRETACION_DE_PAGOS"
+    """FALLIDA: la ventana no tiene una interpretacion vigente del motor de pagos que atribuir."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionAtribucion(SQLModel, table=True):
+    """Una atribucion versionada de los movimientos economicos de una ventana: un despacho, una
+    cartera y un mes de recepcion, [periodo_desde, periodo_hasta).
+
+    Lee los movimientos de la interpretacion vigente del motor de pagos de su ventana (la guarda en
+    `ejecucion_motor_pagos_id`) y las gestiones de sus cuentas. La ventana hacia atras
+    (`ventana_dias`) y la zona horaria con que se comparan los instantes de las gestiones con las
+    horas locales de pagos/v1 son parametros de la ejecucion, no verdades de negocio: se guardan
+    aqui y entran en su firma de entrada. Como en el motor de pagos, a lo mas una EXITOSA por
+    ventana, version y firma, y a lo mas una EN_PROCESO por ventana y version.
+    """
+
+    __tablename__ = "ejecucion_atribucion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_atribucion_motor_pagos",
+        ),
+        sa.Index(
+            "ux_ejecucion_atribucion_exitosa",
+            "despacho_id",
+            "cartera_id",
+            "version_atribucion",
+            "periodo_desde",
+            "firma_entrada",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_ejecucion_atribucion_en_proceso",
+            "despacho_id",
+            "cartera_id",
+            "version_atribucion",
+            "periodo_desde",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint("periodo_desde < periodo_hasta", name=conv("ck_atribucion_periodo")),
+        # La ventana de atribucion/v1 es un mes calendario, como la del motor de pagos.
+        sa.CheckConstraint(
+            "version_atribucion <> 'atribucion/v1' OR (extract(day FROM periodo_desde) = 1 "
+            "AND periodo_hasta = (periodo_desde + interval '1 month')::date)",
+            name=conv("ck_atribucion_mes"),
+        ),
+        sa.CheckConstraint(
+            "ventana_dias BETWEEN 1 AND 366", name=conv("ck_atribucion_ventana_dias")
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_atribucion_resultado")
+        ),
+        sa.CheckConstraint(
+            "(firma_entrada IS NULL OR firma_entrada ~ '^[0-9a-f]{64}$') "
+            "AND (estado <> 'EXITOSA' OR firma_entrada IS NOT NULL)",
+            name=conv("ck_atribucion_firma"),
+        ),
+        sa.CheckConstraint(CONTEOS_DE_LA_ATRIBUCION, name=conv("ck_atribucion_conteos")),
+        sa.CheckConstraint(MONTOS_DE_LA_ATRIBUCION, name=conv("ck_atribucion_montos")),
+        # Una EXITOSA dice que interpretacion de pagos leyo; las demas no publicaron nada.
+        sa.CheckConstraint(
+            "(estado = 'EXITOSA' AND ejecucion_motor_pagos_id IS NOT NULL) "
+            "OR (estado <> 'EXITOSA' AND movimientos_evaluados = 0 AND candidatos = 0)",
+            name=conv("ck_atribucion_publicacion"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    atribucion_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. Identifica un intento, y por eso es aleatorio."""
+    version_atribucion: str = Field(max_length=32)
+    """Con que version se atribuyo: atribucion/v1. Sin valor por omision en la base."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    periodo_desde: date
+    periodo_hasta: date
+    ventana_dias: int
+    """Cuantos dias antes de un movimiento puede haber ocurrido una gestion candidata."""
+    zona_horaria: str = Field(max_length=64)
+    """La zona de las horas locales de pagos/v1, con que se comparan con los instantes del
+    lifecycle."""
+    estado: EstadoAtribucion = Field(
+        default=EstadoAtribucion.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoAtribucion,
+            name="estado_atribucion",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    firma_entrada: str | None = Field(default=None, max_length=64)
+    """SHA-256 de lo que leyo: la interpretacion de pagos y cada gestion de sus cuentas en el rango,
+    con su anulacion."""
+    ejecucion_motor_pagos_id: int | None = None
+    """La interpretacion de pagos cuyos movimientos atribuyo: la vigente de su ventana al leer."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    movimientos_evaluados: int = Field(default=0, sa_type=sa.BigInteger)
+    """Los PAGO de la interpretacion: cada uno recibe exactamente una clasificacion."""
+    asociados: int = Field(default=0, sa_type=sa.BigInteger)
+    ambiguos: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_candidato: int = Field(default=0, sa_type=sa.BigInteger)
+    candidatos: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas parejas (movimiento, gestion candidata) publico."""
+    movimientos_anulados: int = Field(default=0, sa_type=sa.BigInteger)
+    """De los evaluados, los que el motor de pagos dice que anulo un reverso."""
+    gestiones_leidas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las gestiones de sus cuentas en el rango que pudieron ser candidatas, anuladas o no."""
+    gestiones_anuladas: int = Field(default=0, sa_type=sa.BigInteger)
+    monto_asociado: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    """Lo que suman los movimientos con asociacion unica que ningun reverso anulo."""
+    monto_ambiguo: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    monto_sin_candidato: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    monto_anulado: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    """Lo que suman los evaluados que anulo un reverso: no cuentan como recuperacion."""
+    detalle: str | None = None
+
+
+class AtribucionMovimiento(SQLModel, table=True):
+    """Lo que una ejecucion de la atribucion concluyo de un movimiento economico canonico, y por
+    que.
+
+    Un movimiento evaluado tiene exactamente uno por ejecucion. Apunta a la fila del movimiento en
+    la interpretacion que se leyo y repite su `movimiento_id`, que es el mismo en cualquier
+    interpretacion. La asociacion es operacional: dice que hubo una sola gestion candidata antes del
+    movimiento, no que la gestion lo haya causado.
+    """
+
+    __tablename__ = "atribucion_movimiento"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_atribucion_id"],
+            ["ejecucion_atribucion.id"],
+            name="fk_atribucion_movimiento_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["movimiento_economico_canonico_id"],
+            ["movimiento_economico_canonico.id"],
+            name="fk_atribucion_movimiento_movimiento",
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestion_cobranza_id"],
+            ["gestion_cobranza.id"],
+            name="fk_atribucion_movimiento_gestion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["cuenta_canonica_id"], ["cuenta_canonica.id"], name="fk_atribucion_movimiento_cuenta"
+        ),
+        # Las atribuciones de un movimiento, en cualquier interpretacion.
+        sa.Index("ix_atribucion_movimiento_movimiento_id", "movimiento_id"),
+        # Una asociacion unica nombra a su gestion y tiene una candidata; una ambigua, al menos dos;
+        # sin candidata, ninguna. Ninguna elige entre varias.
+        sa.CheckConstraint(
+            "clasificacion NOT IN ('SIN_GESTION_CANDIDATA', 'ASOCIACION_UNICA', 'AMBIGUA') OR ("
+            "(clasificacion = 'ASOCIACION_UNICA') = (gestion_cobranza_id IS NOT NULL) "
+            "AND ((clasificacion = 'SIN_GESTION_CANDIDATA' AND candidatos = 0) "
+            "OR (clasificacion = 'ASOCIACION_UNICA' AND candidatos = 1) "
+            "OR (clasificacion = 'AMBIGUA' AND candidatos >= 2)))",
+            name=conv("ck_atribucion_movimiento_clase"),
+        ),
+    )
+
+    # La llave primaria es la natural: un movimiento, una vez por ejecucion.
+    ejecucion_atribucion_id: int = Field(primary_key=True)
+    movimiento_economico_canonico_id: int = Field(primary_key=True, sa_type=sa.BigInteger)
+    fecha_recepcion: datetime = Field(sa_type=sa.DateTime(timezone=False))
+    """La del movimiento: hora local de la fuente, sin zona."""
+    gestion_cobranza_id: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """La gestion asociada, solo en una ASOCIACION_UNICA."""
+    movimiento_id: UUID
+    cuenta_canonica_id: int | None = None
+    """La cuenta con que el motor de pagos concilio el movimiento; vacia si no la tenia."""
+    candidatos: int
+    monto: Decimal = Field(max_digits=14, decimal_places=2)
+    anulado_por_reverso: bool
+    """Si la interpretacion de pagos dice que lo anulo un reverso: su monto no es recuperacion."""
+    clasificacion: str = Field(max_length=24)
+    """SIN_GESTION_CANDIDATA, ASOCIACION_UNICA o AMBIGUA."""
+    motivos: list[dict] = Field(sa_type=JSONB)
+
+
+class CandidatoAtribucion(SQLModel, table=True):
+    """Una gestion candidata de un movimiento en una ejecucion: por que el movimiento quedo asociado
+    o ambiguo, en una relacion que se puede consultar y no en una lista de texto."""
+
+    __tablename__ = "candidato_atribucion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_atribucion_id", "movimiento_economico_canonico_id"],
+            [
+                "atribucion_movimiento.ejecucion_atribucion_id",
+                "atribucion_movimiento.movimiento_economico_canonico_id",
+            ],
+            name="fk_candidato_atribucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestion_cobranza_id"], ["gestion_cobranza.id"], name="fk_candidato_gestion"
+        ),
+        sa.CheckConstraint("antelacion_segundos >= 0", name=conv("ck_candidato_antelacion")),
+    )
+
+    ejecucion_atribucion_id: int = Field(primary_key=True)
+    movimiento_economico_canonico_id: int = Field(primary_key=True, sa_type=sa.BigInteger)
+    gestion_cobranza_id: int = Field(primary_key=True, sa_type=sa.BigInteger)
+    antelacion_segundos: int = Field(sa_type=sa.BigInteger)
+    """Cuanto antes del movimiento ocurrio la gestion."""
+
+
+# --- la evaluacion de las promesas ----------------------------------------------------------------
+#
+# Desde la 0010. Si una promesa se cumplio no lo decide nadie con un UPDATE: lo concluye, para una
+# fecha de corte explicita (as_of), una evaluacion versionada que observa los movimientos economicos
+# de su cuenta. Que haya recuperacion compatible con una promesa no dice que la promesa la produjo.
+
+CLASES_DE_LA_EVALUACION = (
+    "promesas_evaluadas = pendientes + cumplidas + parciales + incumplidas + canceladas "
+    "+ no_evaluables"
+)
+CONTEOS_DE_LA_EVALUACION = (
+    "promesas_evaluadas >= 0 AND pendientes >= 0 AND cumplidas >= 0 AND parciales >= 0 "
+    "AND incumplidas >= 0 AND canceladas >= 0 AND no_evaluables >= 0 "
+    "AND monto_prometido >= 0 AND monto_observado >= 0"
+)
+
+
+class EstadoEvaluacionPromesas(StrEnum):
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEvaluacionPromesas(StrEnum):
+    """Como termino una ejecucion de la evaluacion de promesas."""
+
+    EVALUACION_PUBLICADA = "EVALUACION_PUBLICADA"
+    YA_EVALUADA = "YA_EVALUADA"
+    """FALLIDA: otra ejecucion ya evaluo exactamente las mismas entradas, con el mismo as_of."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionEvaluacionPromesas(SQLModel, table=True):
+    """Una evaluacion versionada de las promesas de una cartera a una fecha de corte (`as_of`).
+
+    Evalua, en un solo trabajo y por conjuntos, cada promesa acordada hasta el final de as_of. La
+    misma cartera, el mismo as_of, la misma version y los mismos datos dan el mismo resultado: as_of
+    nunca sale del reloj. A lo mas una EXITOSA por cartera, version, as_of y firma de entrada, y a
+    lo mas una EN_PROCESO por cartera, version y as_of.
+    """
+
+    __tablename__ = "ejecucion_evaluacion_promesas"
+    __table_args__ = (
+        sa.Index(
+            "ux_evaluacion_promesas_exitosa",
+            "despacho_id",
+            "cartera_id",
+            "version_evaluacion",
+            "as_of",
+            "firma_entrada",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_evaluacion_promesas_en_proceso",
+            "despacho_id",
+            "cartera_id",
+            "version_evaluacion",
+            "as_of",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_evaluacion_resultado")
+        ),
+        sa.CheckConstraint(
+            "(firma_entrada IS NULL OR firma_entrada ~ '^[0-9a-f]{64}$') "
+            "AND (estado <> 'EXITOSA' OR firma_entrada IS NOT NULL)",
+            name=conv("ck_evaluacion_firma"),
+        ),
+        sa.CheckConstraint(CONTEOS_DE_LA_EVALUACION, name=conv("ck_evaluacion_conteos")),
+        sa.CheckConstraint(CLASES_DE_LA_EVALUACION, name=conv("ck_evaluacion_clases")),
+        sa.CheckConstraint(
+            "estado = 'EXITOSA' OR promesas_evaluadas = 0", name=conv("ck_evaluacion_publicacion")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    evaluacion_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    version_evaluacion: str = Field(max_length=32)
+    """evaluacion-promesa/v1. Sin valor por omision en la base."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    as_of: date
+    """La fecha de corte: se observa hasta el final de ese dia, en la hora local de la fuente."""
+    zona_horaria: str = Field(max_length=64)
+    estado: EstadoEvaluacionPromesas = Field(
+        default=EstadoEvaluacionPromesas.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoEvaluacionPromesas,
+            name="estado_evaluacion_promesas",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    firma_entrada: str | None = Field(default=None, max_length=64)
+    horizonte_pagos: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=False))
+    """El pago observado mas reciente de la cartera al evaluar: hasta donde llegan los datos."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    promesas_evaluadas: int = Field(default=0, sa_type=sa.BigInteger)
+    pendientes: int = Field(default=0, sa_type=sa.BigInteger)
+    cumplidas: int = Field(default=0, sa_type=sa.BigInteger)
+    parciales: int = Field(default=0, sa_type=sa.BigInteger)
+    incumplidas: int = Field(default=0, sa_type=sa.BigInteger)
+    canceladas: int = Field(default=0, sa_type=sa.BigInteger)
+    no_evaluables: int = Field(default=0, sa_type=sa.BigInteger)
+    monto_prometido: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    monto_observado: Decimal = Field(default=Decimal("0.00"), max_digits=24, decimal_places=2)
+    """Lo que suman los movimientos compatibles con cada promesa; un movimiento compatible con dos
+    promesas cuenta en las dos."""
+    detalle: str | None = None
+
+
+class EvaluacionPromesa(SQLModel, table=True):
+    """Lo que una ejecucion de la evaluacion concluyo de una promesa, y por que."""
+
+    __tablename__ = "evaluacion_promesa"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_evaluacion_promesas_id"],
+            ["ejecucion_evaluacion_promesas.id"],
+            name="fk_evaluacion_promesa_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["promesa_pago_id"], ["promesa_pago.id"], name="fk_evaluacion_promesa_promesa"
+        ),
+        # Las evaluaciones de una promesa, para dar la ultima.
+        sa.Index("ix_evaluacion_promesa_promesa", "promesa_pago_id"),
+        sa.CheckConstraint(
+            "movimientos_compatibles >= 0 AND monto_observado >= 0",
+            name=conv("ck_evaluacion_promesa_conteos"),
+        ),
+    )
+
+    ejecucion_evaluacion_promesas_id: int = Field(primary_key=True)
+    promesa_pago_id: int = Field(primary_key=True, sa_type=sa.BigInteger)
+    primer_movimiento_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=False))
+    ultimo_movimiento_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=False))
+    movimientos_compatibles: int
+    monto_observado: Decimal = Field(max_digits=14, decimal_places=2)
+    estado: str = Field(max_length=16)
+    """PENDIENTE, CUMPLIDA, PARCIAL, INCUMPLIDA, CANCELADA o NO_EVALUABLE."""
+    motivos: list[dict] = Field(sa_type=JSONB)
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -1543,7 +2303,9 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'RUTEO') = (ejecucion_ruteo_id IS NOT NULL) "
     "AND (tipo = 'INGESTA_PAGOS') = (ingesta_pagos_id IS NOT NULL) "
     "AND (tipo = 'HISTORIA') = (ejecucion_historia_id IS NOT NULL) "
-    "AND (tipo = 'MOTOR_PAGOS') = (ejecucion_motor_pagos_id IS NOT NULL)"
+    "AND (tipo = 'MOTOR_PAGOS') = (ejecucion_motor_pagos_id IS NOT NULL) "
+    "AND (tipo = 'ATRIBUCION') = (ejecucion_atribucion_id IS NOT NULL) "
+    "AND (tipo = 'EVALUACION_PROMESAS') = (ejecucion_evaluacion_promesas_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -1692,6 +2454,12 @@ class TipoTrabajo(StrEnum):
     """Desde la 0009: interpretar los pagos observados de una ventana con el motor de pagos. Lo
     abre la historia de un archivo de pagos al publicar sus pagos observados, o el backfill. No
     es de ningun flujo, y ninguna etapa operacional lo espera."""
+    ATRIBUCION = "ATRIBUCION"
+    """Desde la 0010: asociar los movimientos de una ventana con las gestiones que los antecedieron.
+    No se abre solo: lo piden POST /atribuciones o backfill-atribucion. No es de ningun flujo."""
+    EVALUACION_PROMESAS = "EVALUACION_PROMESAS"
+    """Desde la 0010: evaluar las promesas de una cartera a una fecha de corte. Lo piden POST
+    /evaluaciones-promesas o backfill-lifecycle, uno por cartera y fecha, nunca uno por promesa."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -1742,6 +2510,16 @@ class TrabajoOrquestacion(SQLModel, table=True):
             ["ejecucion_motor_pagos.id"],
             name="fk_trabajo_motor_pagos",
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_atribucion_id"],
+            ["ejecucion_atribucion.id"],
+            name="fk_trabajo_atribucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_evaluacion_promesas_id"],
+            ["ejecucion_evaluacion_promesas.id"],
+            name="fk_trabajo_evaluacion",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -1749,6 +2527,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ingesta_pagos_id", name="uq_trabajo_pagos"),
         sa.UniqueConstraint("ejecucion_historia_id", name="uq_trabajo_historia"),
         sa.UniqueConstraint("ejecucion_motor_pagos_id", name="uq_trabajo_motor_pagos"),
+        sa.UniqueConstraint("ejecucion_atribucion_id", name="uq_trabajo_atribucion"),
+        sa.UniqueConstraint("ejecucion_evaluacion_promesas_id", name="uq_trabajo_evaluacion"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -1777,10 +2557,11 @@ class TrabajoOrquestacion(SQLModel, table=True):
     flujo."""
     tipo: TipoTrabajo = Field(
         sa_type=sa.Enum(
-            TipoTrabajo, name="tipo_trabajo", native_enum=False, create_constraint=True, length=16
+            TipoTrabajo, name="tipo_trabajo", native_enum=False, create_constraint=True, length=24
         )
     )
-    """VARCHAR(16) desde la 0007: INGESTA_PAGOS no cabia en los 12 de antes."""
+    """VARCHAR(16) desde la 0007, porque INGESTA_PAGOS no cabia en los 12 de antes, y VARCHAR(24)
+    desde la 0010, por EVALUACION_PROMESAS."""
     estado: EstadoTrabajo = Field(
         default=EstadoTrabajo.PENDIENTE,
         sa_type=sa.Enum(
@@ -1802,6 +2583,10 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo HISTORIA, desde la 0008."""
     ejecucion_motor_pagos_id: int | None = None
     """El objetivo de un trabajo MOTOR_PAGOS, desde la 0009."""
+    ejecucion_atribucion_id: int | None = None
+    """El objetivo de un trabajo ATRIBUCION, desde la 0010."""
+    ejecucion_evaluacion_promesas_id: int | None = None
+    """El objetivo de un trabajo EVALUACION_PROMESAS, desde la 0010."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int
