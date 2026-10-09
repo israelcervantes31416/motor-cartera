@@ -24,11 +24,19 @@ Lo que hace, cada etapa en su propio proceso para que su memoria pico sea solo s
 Necesita una PostgreSQL en MC_DATABASE_URL cuya base se llame *_bench. El almacen de artefactos
 es MC_SOURCE_STORE_ROOT, o un directorio temporal si no se define. Escribe un JSON con todo, los
 planes en texto y una tabla en Markdown para la documentacion.
+
+Cada etapa se anota en una bitacora (benchmark_motor_pagos.etapas.json, junto al reporte) en cuanto
+termina. Con --reanudar, una corrida interrumpida sigue sobre la misma base y el mismo --destino:
+no repite ninguna etapa que ya termino y conserva su medicion. Lo que la base da por terminado y la
+bitacora no tiene se anota con lo que dice la base, sin tiempos, y el reporte lo dice.
+
+    python scripts/benchmark_motor_pagos.py --perfil XL --cortes 12 --destino <dir> --reanudar
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -67,18 +75,46 @@ TABLAS_DEL_MOTOR = (
 def interpretar_ventana(ejecucion_id: int) -> dict:
     from sqlalchemy import text
 
-    from motor_cartera.db.modelos import EjecucionMotorPagos
     from motor_cartera.db.sesion import sesion
     from motor_cartera.ingesta.fuente_oficial import Cronometro
     from motor_cartera.motor_pagos.ejecuciones import interpretar
 
+    # El WAL que escribe la interpretacion: sus filas nuevas y sus indices, y tambien el bloqueo
+    # KEY SHARE que cada llave foranea pone en el pago observado que referencia.
+    with sesion() as s:
+        wal_antes = s.exec(text("SELECT CAST(pg_current_wal_lsn() AS text)")).one()[0]
     cronometro = Cronometro()
     inicio = time.perf_counter()
     interpretar(ejecucion_id, cronometro=cronometro)
     segundos = time.perf_counter() - inicio
     with sesion() as s:
+        wal = s.exec(
+            text("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), CAST(:antes AS pg_lsn))"),
+            params={"antes": wal_antes},
+        ).one()[0]
+    publicado = resumen_de_ejecucion(ejecucion_id)
+    return {
+        **publicado,
+        "segundos": round(segundos, 3),
+        "observaciones_por_segundo": round(publicado["observaciones"] / segundos)
+        if segundos
+        else None,
+        "fases": {nombre: round(s_, 3) for nombre, s_ in cronometro.fases.items()},
+        "memoria_pico_mb": memoria_pico_mb(),
+        "wal_mib": round(float(wal) / 2**20, 1),
+    }
+
+
+def resumen_de_ejecucion(ejecucion_id: int) -> dict:
+    """Lo que publico una ejecucion del motor, leido de la base: sus conteos y, por que, cuantas
+    observaciones de cada clase tienen cada motivo. Fuera de cualquier tiempo medido."""
+    from sqlalchemy import text
+
+    from motor_cartera.db.modelos import EjecucionMotorPagos
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
         e = s.get_one(EjecucionMotorPagos, ejecucion_id)
-        # Por que: cuantas observaciones de cada clase con cada motivo. Fuera del tiempo medido.
         motivos = [
             {"clasificacion": clase, "motivo": motivo, "observaciones": n}
             for clase, motivo, n in s.exec(
@@ -92,6 +128,7 @@ def interpretar_ventana(ejecucion_id: int) -> dict:
             )
         ]
         return {
+            "ejecucion": ejecucion_id,
             "periodo": f"{e.periodo_desde:%Y-%m}",
             "estado": str(e.estado),
             "resultado": e.resultado,
@@ -110,12 +147,6 @@ def interpretar_ventana(ejecucion_id: int) -> dict:
             "pagos_anulados": e.pagos_anulados,
             "bruta": str(e.recuperacion_bruta_interpretada),
             "neta": str(e.recuperacion_neta_interpretada),
-            "segundos": round(segundos, 3),
-            "observaciones_por_segundo": round(e.observaciones_leidas / segundos)
-            if segundos
-            else None,
-            "fases": {nombre: round(s_, 3) for nombre, s_ in cronometro.fases.items()},
-            "memoria_pico_mb": memoria_pico_mb(),
             "motivos": motivos,
         }
 
@@ -127,7 +158,11 @@ def tardio(
     recibidas `dias` despues (y un segundo mas, para que sean pagos nuevos y no copias). Con
     `reversos`, solo las de importe positivo, con el importe en negativo: el reverso de cada pago,
     que el motor tiene que emparejar con el pago que ya interpreto. Cada llegada usa otras filas:
-    un pago con dos copias recibidas en otro momento ya no tendria un solo original posible."""
+    un pago con dos copias recibidas en otro momento ya no tendria un solo original posible.
+
+    Lee `origen` por bloques y se detiene en cuanto junta las filas que necesita: el archivo de un
+    periodo XL tiene cientos de miles. Las mismas filas, el mismo archivo: con --reanudar, una
+    llegada que ya se ingirio se reconoce por su SHA-256."""
     import pandas as pd
 
     from motor_cartera.contratos.pagos import CONTRATO_PAGOS
@@ -138,13 +173,26 @@ def tardio(
         return nombre
 
     recepcion, importe = columna("Fecha_Recepci"), columna("Recuperaci")
-    tabla = pd.read_csv(origen, dtype=str, keep_default_na=False).iloc[desde_fila:]
+    bloques = pd.read_csv(
+        origen,
+        dtype=str,
+        keep_default_na=False,
+        skiprows=range(1, desde_fila + 1),
+        chunksize=max(cuantas, 1000),
+    )
+    partes, juntas = [], 0
+    for bloque in bloques:
+        if reversos:
+            bloque = bloque[~bloque[importe].str.startswith("-")]
+        partes.append(bloque)
+        juntas += len(bloque)
+        if juntas >= cuantas:
+            break
+    bloques.close()
+    tabla = pd.concat(partes).head(cuantas).copy()
     if reversos:
-        tabla = tabla[~tabla[importe].str.startswith("-")].head(cuantas).copy()
         tabla[importe] = "-" + tabla[importe]
         tabla[columna("Concepto_C")] = "AJUSTE"
-    else:
-        tabla = tabla.head(cuantas).copy()
     instantes = pd.to_datetime(tabla[recepcion]) + timedelta(days=dias, seconds=1)
     tabla[recepcion] = instantes.dt.strftime("%Y-%m-%d %H:%M:%S")
     escrito = escribir_pagos(tabla.replace("", None), destino)
@@ -311,6 +359,26 @@ def consultar(destino: Path) -> dict:
             limite=50,
         )
 
+    def resultados_de_la_ventana(s):
+        return consultas.resultados_de(
+            s,
+            consultas.obtener_ejecucion(s, run_de_la_copia).ejecucion,
+            clasificacion=None,
+            cliente_unico=None,
+            desplazamiento=0,
+            limite=50,
+        )
+
+    def ambiguas_de_la_ventana(s):
+        return consultas.resultados_de(
+            s,
+            consultas.obtener_ejecucion(s, run_de_la_copia).ejecucion,
+            clasificacion=Clasificacion.COINCIDENCIA_AMBIGUA,
+            cliente_unico=None,
+            desplazamiento=0,
+            limite=50,
+        )
+
     def primera_pagina(s):
         return consultas.listar_movimientos(
             s,
@@ -347,6 +415,8 @@ def consultar(destino: Path) -> dict:
     # De una ventana o de toda la cartera, no de una cuenta: se miden para saber cuanto cuestan.
     globales = {
         "grupo_legacy_sin_cliente": grupo_legacy_sin_cliente,
+        "primera_pagina_de_resultados_de_una_ventana": resultados_de_la_ventana,
+        "coincidencias_ambiguas_de_una_ventana": ambiguas_de_la_ventana,
         "primera_pagina_de_movimientos_de_la_cartera": primera_pagina,
         "posibles_reversos_de_un_dia_en_la_cartera": del_dia,
     }
@@ -496,23 +566,284 @@ def _pendientes() -> list[tuple[int, str]]:
     )
 
 
-def _interpretar_pendientes(etiqueta: str) -> list[dict]:
-    hechas = []
-    for ejecucion_id, periodo in _pendientes():
-        print(f"Interpretando la ventana {periodo} ({etiqueta})...", flush=True)
-        resultado = _hijo("interpretar", "--ejecucion", str(ejecucion_id))
-        hechas.append(resultado)
-        print(
-            f"  {resultado['resultado']}: {resultado['observaciones']:,} observaciones en "
-            f"{resultado['segundos']:,.1f} s ({resultado['observaciones_por_segundo']:,}/s, "
-            f"{resultado['memoria_pico_mb'] or 0:,.0f} MiB)",
-            flush=True,
+def _tardias_empezadas() -> bool:
+    """Si ya llego alguna de las llegadas tardias: despues de eso, el backfill ya termino."""
+    return bool(_sql("SELECT 1 FROM ingesta_pagos WHERE origen LIKE 'pagos_tardios_%' LIMIT 1"))
+
+
+def _ejecuciones() -> list[dict]:
+    return [
+        {
+            "ejecucion": ejecucion,
+            "periodo": periodo,
+            "estado": estado,
+            "resultado": resultado,
+            "observaciones": observaciones,
+            "contexto": contexto,
+            "movimientos": movimientos,
+        }
+        for ejecucion, periodo, estado, resultado, observaciones, contexto, movimientos in _sql(
+            "SELECT id, to_char(periodo_desde, 'YYYY-MM'), estado, resultado, "
+            "observaciones_leidas, observaciones_contexto, movimientos_canonicos "
+            "FROM ejecucion_motor_pagos ORDER BY id"
         )
-    return hechas
+    ]
+
+
+def _suma(valores) -> float | None:
+    """La suma, o None si falta alguna medicion: un total con huecos no es un total."""
+    valores = list(valores)
+    return None if any(v is None for v in valores) else round(sum(valores), 3)
+
+
+# --- la bitacora: lo que ya se midio, etapa por etapa ---------------------------------------------
+
+RECUPERADA = (
+    "De la base: la corrida se interrumpio despues de que esta etapa termino y antes de anotar su "
+    "medicion."
+)
+SIN_MEDICION = {"segundos": None, "fases": {}, "memoria_pico_mb": None}
+
+
+class Bitacora:
+    """Lo que ya se midio, en un JSON junto al reporte que se reescribe entero, de forma atomica,
+    en cuanto termina cada etapa. El XL tarda horas: si se interrumpe, --reanudar no repite lo que
+    ya termino y conserva su medicion. Una etapa que la base da por terminada y que la bitacora no
+    tiene (la corrida se detuvo entre las dos cosas) se anota con lo que dice la base, sin tiempos y
+    con `recuperado`."""
+
+    def __init__(self, ruta: Path, reanudar: bool) -> None:
+        self.ruta = ruta
+        self.etapas: dict = (
+            json.loads(ruta.read_text(encoding="utf-8")) if reanudar and ruta.exists() else {}
+        )
+
+    def __contains__(self, clave: str) -> bool:
+        return clave in self.etapas
+
+    def __getitem__(self, clave: str):
+        return self.etapas[clave]
+
+    def anotar(self, clave: str, valor):
+        self.etapas[clave] = valor
+        self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        provisional = self.ruta.with_name(self.ruta.name + ".tmp")
+        provisional.write_text(
+            json.dumps(self.etapas, indent=1, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+        provisional.replace(self.ruta)
+        return valor
+
+    def recuperadas(self) -> list[str]:
+        return sorted(
+            clave
+            for clave, valor in self.etapas.items()
+            if isinstance(valor, dict) and valor.get("recuperado")
+        )
+
+
+def _ingeridas() -> dict[str, dict]:
+    """Las ingestas EXITOSA que ya tiene la base, por la firma de su archivo."""
+    return {
+        firma: {
+            "estado": estado,
+            "filas": filas,
+            "segundos": None,
+            "segundos_en_la_base": round(float(segundos), 3),
+            "memoria_pico_mb": None,
+            "recuperado": RECUPERADA,
+        }
+        for firma, estado, filas, segundos in _sql(
+            "SELECT firma, estado, filas_validas, extract(epoch FROM terminada_en - iniciada_en) "
+            "FROM corrida WHERE estado = 'EXITOSA' UNION ALL "
+            "SELECT firma, estado, filas_validas, extract(epoch FROM terminada_en - iniciada_en) "
+            "FROM ingesta_pagos WHERE estado = 'EXITOSA'"
+        )
+    }
+
+
+def _ingesta(
+    bitacora: Bitacora,
+    ingeridas: dict[str, dict],
+    firma: str,
+    etiqueta: str,
+    ruta: Path,
+    corte: str | None = None,
+    clave: str | None = None,
+) -> dict:
+    clave = clave or f"ingesta:{firma}"
+    if clave in bitacora:
+        print(f"Ya estaba ingerido: {etiqueta}", flush=True)
+        return bitacora[clave]
+    if firma in ingeridas:
+        print(f"Ya estaba ingerido: {etiqueta}", flush=True)
+        return bitacora.anotar(clave, ingeridas[firma])
+    print(f"Ingiriendo {etiqueta}...", flush=True)
+    argumentos = ["ingerir", "--ruta", str(ruta)]
+    if corte is not None:
+        argumentos += ["--corte", corte]
+    return bitacora.anotar(clave, _hijo(*argumentos))
+
+
+def _historia(bitacora: Bitacora, ejecucion_id: int, tipo: str, estado: str) -> dict:
+    clave = f"historia:{ejecucion_id}"
+    if clave in bitacora:
+        print(f"Ya estaba materializada: la historia {ejecucion_id} ({tipo})", flush=True)
+        return bitacora[clave]
+    if estado == "EN_PROCESO":
+        print(f"Materializando la historia {ejecucion_id} ({tipo})...", flush=True)
+        return bitacora.anotar(clave, _hijo("historiar", "--ejecucion", str(ejecucion_id)))
+    print(f"Ya estaba materializada: la historia {ejecucion_id} ({tipo})", flush=True)
+    ((resultado, registros, detalle),) = _sql(
+        "SELECT resultado, registros_publicados, detalle FROM ejecucion_historia WHERE id = :id",
+        {"id": ejecucion_id},
+    )
+    return bitacora.anotar(
+        clave,
+        {
+            "estado": estado,
+            "resultado": resultado,
+            "tipo": tipo,
+            "registros": registros,
+            **SIN_MEDICION,
+            "filas_por_segundo": None,
+            "detalle": detalle,
+            "recuperado": RECUPERADA,
+        },
+    )
+
+
+def _motor(bitacora: Bitacora, ejecucion_id: int, etiqueta: str) -> dict:
+    clave = f"motor:{ejecucion_id}"
+    if clave in bitacora:
+        hecha = bitacora[clave]
+        print(f"Ya estaba interpretada: la ventana {hecha['periodo']} ({etiqueta})", flush=True)
+        return hecha
+    ((estado, periodo),) = _sql(
+        "SELECT estado, to_char(periodo_desde, 'YYYY-MM') FROM ejecucion_motor_pagos "
+        "WHERE id = :id",
+        {"id": ejecucion_id},
+    )
+    if estado != "EN_PROCESO":
+        print(f"Ya estaba interpretada: la ventana {periodo} ({etiqueta})", flush=True)
+        return bitacora.anotar(
+            clave,
+            {
+                **resumen_de_ejecucion(ejecucion_id),
+                **SIN_MEDICION,
+                "observaciones_por_segundo": None,
+                "wal_mib": None,
+                "recuperado": RECUPERADA,
+            },
+        )
+    print(f"Interpretando la ventana {periodo} ({etiqueta})...", flush=True)
+    resultado = bitacora.anotar(clave, _hijo("interpretar", "--ejecucion", str(ejecucion_id)))
+    print(
+        f"  {resultado['resultado']}: {resultado['observaciones']:,} observaciones en "
+        f"{resultado['segundos']:,.1f} s ({resultado['observaciones_por_segundo']:,}/s, "
+        f"{resultado['memoria_pico_mb'] or 0:,.0f} MiB, WAL {resultado['wal_mib']:,.0f} MiB)",
+        flush=True,
+    )
+    return resultado
+
+
+def _tardio(
+    bitacora: Bitacora,
+    ingeridas: dict[str, dict],
+    numero: int,
+    caso: str,
+    origen: Path,
+    carpeta: Path,
+    desde_fila: int,
+    cuantas: int,
+    dias: int,
+    reversos: bool,
+) -> dict:
+    """Una llegada tardia de punta a punta: su archivo, su ingesta, su historia (que abre las
+    ventanas que cambian) y la interpretacion de esas ventanas."""
+    clave = f"tardio:{numero}"
+    if clave in bitacora:
+        print(f"Ya estaba medida la llegada tardia: {caso}", flush=True)
+        return bitacora[clave]
+    ruta = carpeta / f"pagos_tardios_{numero}.csv"
+    escrito = _hijo(
+        "tardio",
+        "--destino",
+        str(ruta),
+        "--origen",
+        str(origen),
+        "--desde-fila",
+        str(desde_fila),
+        "--cuantas",
+        str(cuantas),
+        "--dias",
+        str(dias),
+        *(["--reversos"] if reversos else []),
+    )
+    firma = hashlib.sha256(ruta.read_bytes()).hexdigest()
+    print(f"Llega un archivo {caso}: {escrito['filas']:,} pagos...", flush=True)
+    if _sql(
+        "SELECT 1 FROM ingesta_pagos WHERE origen = :origen AND estado = 'EXITOSA' "
+        "AND firma <> :firma",
+        {"origen": ruta.name, "firma": firma},
+    ):
+        sys.exit(f"La base ya tiene otro {ruta.name}, con otro contenido: no es la misma llegada.")
+    ingesta = _ingesta(
+        bitacora, ingeridas, firma, f"la llegada tardia {numero}", ruta, clave=f"{clave}:ingesta"
+    )
+    if ingesta["estado"] != "EXITOSA":
+        sys.exit(f"La llegada tardia {numero} no se ingirio EXITOSA: el benchmark no es valido.")
+    ((historia_id, tipo, estado),) = _sql(
+        "SELECT e.id, e.tipo_fuente, e.estado FROM ejecucion_historia e "
+        "JOIN dataset_conformado d ON d.id = e.dataset_conformado_id "
+        "JOIN ingesta_pagos i ON i.id = d.ingesta_pagos_id "
+        "WHERE i.firma = :firma AND i.estado = 'EXITOSA'",
+        {"firma": firma},
+    )
+    historia = _historia(bitacora, historia_id, tipo, estado)
+    if historia["estado"] != "EXITOSA":
+        sys.exit(f"La historia de la llegada tardia {numero} no termino EXITOSA.")
+    # Las ventanas que abrio su historia: las unicas EN_PROCESO, porque todo va en secuencia.
+    if f"{clave}:ventanas" not in bitacora:
+        bitacora.anotar(f"{clave}:ventanas", {"ejecuciones": [i for i, _ in _pendientes()]})
+    interpretadas = [
+        _motor(bitacora, ejecucion_id, caso)
+        for ejecucion_id in bitacora[f"{clave}:ventanas"]["ejecuciones"]
+    ]
+    if any(v["estado"] != "EXITOSA" for v in interpretadas):
+        sys.exit(f"Alguna ventana de la llegada tardia {numero} no termino EXITOSA.")
+    return bitacora.anotar(
+        clave,
+        {
+            "caso": caso,
+            "filas": escrito["filas"],
+            "firma": firma,
+            "ingesta": ingesta,
+            "historia": historia,
+            "interpretadas": interpretadas,
+        },
+    )
+
+
+# --- el reporte -----------------------------------------------------------------------------------
 
 
 def _mib(valor: int) -> str:
     return f"{valor / 2**20:,.1f} MiB"
+
+
+def _num(valor, formato: str = ",", sufijo: str = "") -> str:
+    """Un numero con su formato, o n/d si no se midio."""
+    return "n/d" if valor is None else f"{valor:{formato}}{sufijo}"
+
+
+def _interpretaciones(reporte: dict) -> list[tuple[str, dict]]:
+    """Cada interpretacion de la corrida con su etiqueta: las del backfill y las de cada llegada."""
+    return [(v["periodo"], v) for v in reporte["motor"]] + [
+        (f"{v['periodo']} (tardia {numero})", v)
+        for numero, caso in enumerate(reporte["incremental"], start=1)
+        for v in caso["interpretadas"]
+    ]
 
 
 def _markdown(reporte: dict) -> str:
@@ -526,16 +857,16 @@ def _markdown(reporte: dict) -> str:
             f"| {v['periodo']} | {v['observaciones']:,} | {v['contexto']:,} | "
             f"{v['movimientos']:,} | {v['duplicados_exactos']:,} | "
             f"{v['coincidencias_ambiguas']:,} | {v['reversos']:,} | {v['posibles_reversos']:,} | "
-            f"{v['segundos']:,.1f} s | {v['observaciones_por_segundo'] or 0:,} | "
-            f"{v['memoria_pico_mb'] or 0:,.0f} MiB |"
+            f"{_num(v['segundos'], ',.1f', ' s')} | {_num(v['observaciones_por_segundo'])} | "
+            f"{_num(v['memoria_pico_mb'], ',.0f', ' MiB')} |"
         )
     total = reporte["totales"]
     lineas += [
         "",
-        f"Total del motor: {total['segundos_motor']:,.1f} s para {total['observaciones']:,} "
-        f"observaciones ({total['observaciones_por_segundo']:,}/s). Historia de los pagos: "
-        f"{total['segundos_historia_pagos']:,.1f} s, de los que la apertura de sus ventanas fue "
-        f"{total['segundos_apertura']:,.2f} s.",
+        f"Total del motor: {_num(total['segundos_motor'], ',.1f', ' s')} para "
+        f"{total['observaciones']:,} observaciones ({_num(total['observaciones_por_segundo'])}/s). "
+        f"Historia de los pagos: {_num(total['segundos_historia_pagos'], ',.1f', ' s')}, de los "
+        f"que la apertura de sus ventanas fue {_num(total['segundos_apertura'], ',.2f', ' s')}.",
         "",
         f"El manifiesto del escenario dice {total['manifiesto']['movimientos']:,} movimientos, "
         f"{total['manifiesto']['repetidos_exactos']:,} repetidos exactos y "
@@ -543,40 +874,72 @@ def _markdown(reporte: dict) -> str:
         f"observaciones, con {total['duplicados_exactos']:,} duplicados exactos, "
         f"{total['coincidencias_ambiguas']:,} coincidencias ambiguas, {total['reversos']:,} "
         f"reversos y {total['posibles_reversos']:,} posibles reversos.",
-        "",
-        "| Fase | " + " | ".join(v["periodo"] for v in reporte["motor"]) + " |",
-        "|---|" + "---|" * len(reporte["motor"]),
     ]
-    fases = sorted({f for v in reporte["motor"] for f in v["fases"]})
-    for fase in fases:
-        celdas = " | ".join(f"{v['fases'].get(fase, 0):,.1f} s" for v in reporte["motor"])
-        lineas.append(f"| {fase} | {celdas} |")
+    medidas = [(etiqueta, v) for etiqueta, v in _interpretaciones(reporte) if v["fases"]]
+    if medidas:
+        lineas += [
+            "",
+            "| Fase | " + " | ".join(etiqueta for etiqueta, _ in medidas) + " |",
+            "|---|" + "---|" * len(medidas),
+        ]
+        for fase in sorted({f for _, v in medidas for f in v["fases"]}):
+            celdas = " | ".join(_num(v["fases"].get(fase), ",.1f", " s") for _, v in medidas)
+            lineas.append(f"| {fase} | {celdas} |")
+        celdas = " | ".join(_num(v["wal_mib"], ",.0f", " MiB") for _, v in medidas)
+        lineas.append(f"| WAL escrito | {celdas} |")
+    final = reporte["tamanos_al_final"]
     lineas += ["", "| Tabla | Filas | Datos | Indices | Total |", "|---|---|---|---|---|"]
-    for tabla in reporte["tamanos_despues"]["tablas"]:
+    for tabla in final["tablas"]:
         if tabla["tabla"] not in (*TABLAS_DEL_MOTOR, "pago_observado"):
             continue
         lineas.append(
             f"| {tabla['tabla']} | ~{tabla['filas_estimadas']:,} | {_mib(tabla['datos_bytes'])} | "
             f"{_mib(tabla['indices_bytes'])} | {_mib(tabla['total_bytes'])} |"
         )
-    antes = reporte["tamanos_antes"]["base_bytes"]
-    despues = reporte["tamanos_despues"]["base_bytes"]
+    del_motor = sum(t["total_bytes"] for t in final["tablas"] if t["tabla"] in TABLAS_DEL_MOTOR)
     lineas += [
         "",
-        f"Base: {_mib(antes)} antes del motor, {_mib(despues)} despues ({_mib(despues - antes)} "
-        "mas).",
+        f"Al final, la base ocupa {_mib(final['base_bytes'])}, y las tablas del motor, "
+        f"{_mib(del_motor)}.",
+    ]
+    if reporte["tamanos_antes"] and reporte["tamanos_despues"]:
+        antes = reporte["tamanos_antes"]["base_bytes"]
+        despues = reporte["tamanos_despues"]["base_bytes"]
+        lineas.append(
+            f"Base: {_mib(antes)} antes del motor, {_mib(despues)} despues del backfill "
+            f"({_mib(despues - antes)} mas)."
+        )
+    publicadas = [e for e in reporte["ejecuciones_al_final"] if e["estado"] == "EXITOSA"]
+    lineas += [
         "",
-        "| Llegada tardia | Filas | Historia | Ventanas interpretadas | Interpretacion |",
-        "|---|---|---|---|---|",
+        f"{len(publicadas)} interpretaciones publicadas de "
+        f"{len({e['periodo'] for e in publicadas})} ventanas; cada una guarda sus resultados y sus "
+        "movimientos:",
+        "",
+        "| Ejecucion | Ventana | Estado | Observaciones | Contexto | Movimientos |",
+        "|---|---|---|---|---|---|",
+    ]
+    for e in reporte["ejecuciones_al_final"]:
+        lineas.append(
+            f"| {e['ejecucion']} | {e['periodo']} | {e['estado']} | {e['observaciones']:,} | "
+            f"{e['contexto']:,} | {e['movimientos']:,} |"
+        )
+    lineas += [
+        "",
+        "| Llegada tardia | Filas | Historia | Apertura | Ventanas interpretadas | "
+        "Interpretacion |",
+        "|---|---|---|---|---|---|",
     ]
     for caso in reporte["incremental"]:
         ventanas = ", ".join(
             f"{v['periodo']} ({v['observaciones']:,} obs., {v['reversos']:,} reversos)"
             for v in caso["interpretadas"]
         )
+        historia = caso["historia"]
         lineas.append(
-            f"| {caso['caso']} | {caso['filas']:,} | {caso['historia']['segundos']:,.1f} s | "
-            f"{ventanas} | {sum(v['segundos'] for v in caso['interpretadas']):,.1f} s |"
+            f"| {caso['caso']} | {caso['filas']:,} | {_num(historia['segundos'], ',.1f', ' s')} | "
+            f"{_num(historia['fases'].get('motor_de_pagos'), ',.2f', ' s')} | {ventanas} | "
+            f"{_num(_suma(v['segundos'] for v in caso['interpretadas']), ',.1f', ' s')} |"
         )
     lineas += ["", "| Consulta | Mediana | p95 | Maximo |", "|---|---|---|---|"]
     for nombre, t in reporte["consultas"]["tiempos"].items():
@@ -592,6 +955,14 @@ def _markdown(reporte: dict) -> str:
         f"{maquina['sistema']}, Python {maquina['python']}, {maquina['cpus']} CPU. Mediana de "
         f"{reporte['consultas']['repeticiones']} repeticiones por consulta.",
     ]
+    reanudado = reporte["reanudado"]
+    if reanudado and reanudado["etapas_recuperadas"]:
+        lineas += [
+            "",
+            f"Corrida reanudada: {len(reanudado['etapas_recuperadas'])} etapas ya habian terminado "
+            "cuando se interrumpio y se tomaron de la base, sin su medicion (n/d en las "
+            "tablas).",
+        ]
     return "\n".join(lineas)
 
 
@@ -604,8 +975,34 @@ def main(argumentos: argparse.Namespace) -> None:
     formato = argumentos.formato.lower().lstrip(".")
     temporal = Path(tempfile.mkdtemp(prefix="motor-cartera-motor-pagos-"))
     destino = Path(argumentos.destino) if argumentos.destino else temporal / "escenario"
+    salida = (
+        Path(argumentos.salida) if argumentos.salida else destino / "benchmark_motor_pagos.json"
+    )
     os.environ.setdefault("MC_SOURCE_STORE_ROOT", str(temporal / "almacen"))
-    _preparar_base()
+    bitacora = Bitacora(salida.with_name("benchmark_motor_pagos.etapas.json"), argumentos.reanudar)
+    if argumentos.reanudar:
+        # La base de una corrida que se interrumpio: no se vacia, y lo que ya termino no se repite.
+        # Una ingesta cortada a la mitad dejo su registro EN_PROCESO, sin nada publicado: se cierra
+        # FALLIDA para que su archivo se pueda ingerir otra vez. Una historia o una interpretacion
+        # cortada sigue EN_PROCESO, sin nada publicado, y se ejecuta de nuevo.
+        from sqlalchemy import make_url, text
+
+        from motor_cartera.db.sesion import crear_motor
+
+        if not (make_url(os.environ.get("MC_DATABASE_URL", "")).database or "").endswith("_bench"):
+            sys.exit("MC_DATABASE_URL tiene que apuntar a una base *_bench.")
+        with crear_motor().begin() as conexion:
+            for tabla in ("corrida", "ingesta_pagos"):
+                conexion.execute(
+                    text(
+                        f"UPDATE {tabla} SET estado = 'FALLIDA', terminada_en = now(), "
+                        "detalle = 'Ingesta interrumpida: el benchmark se detuvo antes de "
+                        "confirmarla.' WHERE estado = 'EN_PROCESO'"
+                    )
+                )
+    else:
+        _preparar_base()
+    ingeridas = _ingeridas()
 
     manifiesto_existente = destino / "escenario.json"
     if manifiesto_existente.exists():
@@ -630,118 +1027,164 @@ def main(argumentos: argparse.Namespace) -> None:
         manifiesto = generado.pop("manifiesto")
         print(f"  {generado['segundos']:,.1f} s", flush=True)
 
-    ingestas = []
-    for corte in manifiesto["cortes"]:
-        print(f"Ingiriendo el corte {corte['fecha_corte']}...", flush=True)
-        ingestas.append(
-            _hijo(
-                "ingerir",
-                "--ruta",
-                str(destino / corte["archivo"]),
-                "--corte",
-                corte["fecha_corte"],
-            )
+    ingestas = [
+        _ingesta(
+            bitacora,
+            ingeridas,
+            corte["sha256"],
+            f"el corte {corte['fecha_corte']}",
+            destino / corte["archivo"],
+            corte["fecha_corte"],
         )
-    for periodo in manifiesto["periodos"]:
-        print(f"Ingiriendo los pagos {periodo['archivo']}...", flush=True)
-        ingestas.append(_hijo("ingerir", "--ruta", str(destino / periodo["archivo"])))
+        for corte in manifiesto["cortes"]
+    ] + [
+        _ingesta(
+            bitacora,
+            ingeridas,
+            periodo["sha256"],
+            f"los pagos {periodo['archivo']}",
+            destino / periodo["archivo"],
+        )
+        for periodo in manifiesto["periodos"]
+    ]
     if any(i["estado"] != "EXITOSA" for i in ingestas):
         sys.exit("Alguna ingesta no termino EXITOSA: el benchmark no es valido.")
 
-    historias = []
-    for ejecucion_id, tipo in _sql(
-        "SELECT e.id, e.tipo_fuente FROM ejecucion_historia e "
-        "JOIN dataset_conformado d ON d.id = e.dataset_conformado_id "
-        "LEFT JOIN corrida c ON c.id = d.corrida_id ORDER BY e.tipo_fuente, c.fecha_corte, e.id"
-    ):
-        print(f"Materializando la historia {ejecucion_id} ({tipo})...", flush=True)
-        historias.append(_hijo("historiar", "--ejecucion", str(ejecucion_id)))
+    # Las historias de los archivos del escenario, no las de las llegadas tardias.
+    firmas = [c["sha256"] for c in manifiesto["cortes"]] + [
+        p["sha256"] for p in manifiesto["periodos"]
+    ]
+    historias = [
+        _historia(bitacora, ejecucion_id, tipo, estado)
+        for ejecucion_id, tipo, estado in _sql(
+            "SELECT e.id, e.tipo_fuente, e.estado FROM ejecucion_historia e "
+            "JOIN dataset_conformado d ON d.id = e.dataset_conformado_id "
+            "LEFT JOIN corrida c ON c.id = d.corrida_id "
+            "LEFT JOIN ingesta_pagos i ON i.id = d.ingesta_pagos_id "
+            "WHERE coalesce(c.firma, i.firma) = ANY(:firmas) "
+            "ORDER BY e.tipo_fuente, c.fecha_corte, e.id",
+            {"firmas": firmas},
+        )
+    ]
     if any(h["estado"] != "EXITOSA" for h in historias):
         sys.exit("Alguna historia no termino EXITOSA: el benchmark no es valido.")
     de_pagos = [h for h in historias if h["tipo"] == "PAGOS"]
 
-    print("VACUUM ANALYZE antes del motor...", flush=True)
-    vacuum_antes = _vacuum(("pago_observado", "snapshot_cuenta", "cuenta_canonica"))
-    tamanos_antes = _tamanos()
+    if "antes_del_motor" not in bitacora:
+        if _sql("SELECT 1 FROM ejecucion_motor_pagos WHERE estado <> 'EN_PROCESO' LIMIT 1"):
+            bitacora.anotar(
+                "antes_del_motor",
+                {
+                    "vacuum_segundos": None,
+                    "tamanos": None,
+                    "recuperado": "No se midio: la corrida se reanudo cuando el motor ya habia "
+                    "publicado.",
+                },
+            )
+        else:
+            print("VACUUM ANALYZE antes del motor...", flush=True)
+            vacuum = _vacuum(("pago_observado", "snapshot_cuenta", "cuenta_canonica"))
+            bitacora.anotar("antes_del_motor", {"vacuum_segundos": vacuum, "tamanos": _tamanos()})
+    antes = bitacora["antes_del_motor"]
 
-    motor = _interpretar_pendientes("backfill")
+    # Las ventanas del backfill son las que abrieron las historias de los pagos del escenario.
+    if "backfill" not in bitacora:
+        if _tardias_empezadas():
+            sys.exit(
+                "La corrida se interrumpio en las llegadas tardias y su bitacora no dice que "
+                "ventanas eran del backfill: no se puede reanudar."
+            )
+        bitacora.anotar("backfill", {"ejecuciones": [i for i, _ in _pendientes()]})
+    motor = [_motor(bitacora, i, "backfill") for i in bitacora["backfill"]["ejecuciones"]]
     if any(v["estado"] != "EXITOSA" for v in motor):
         sys.exit("Alguna ventana no termino EXITOSA: el benchmark no es valido.")
 
-    print("VACUUM ANALYZE despues del motor...", flush=True)
-    vacuum_despues = _vacuum(TABLAS_DEL_MOTOR)
-    tamanos_despues = _tamanos()
+    if "despues_del_motor" not in bitacora:
+        if _tardias_empezadas():
+            bitacora.anotar(
+                "despues_del_motor",
+                {
+                    "vacuum_segundos": None,
+                    "tamanos": None,
+                    "recuperado": "No se midio: la corrida se reanudo cuando ya habian llegado "
+                    "pagos tardios.",
+                },
+            )
+        else:
+            print("VACUUM ANALYZE despues del motor...", flush=True)
+            vacuum = _vacuum(TABLAS_DEL_MOTOR)
+            bitacora.anotar("despues_del_motor", {"vacuum_segundos": vacuum, "tamanos": _tamanos()})
+    despues = bitacora["despues_del_motor"]
 
-    # Llegadas tardias: pagos nuevos de la ultima ventana, y pagos del mes siguiente.
+    # Llegadas tardias: pagos nuevos de la ultima ventana, el reverso de pagos ya interpretados y
+    # pagos del mes siguiente. Sus archivos van junto al reporte, para que una reanudacion los
+    # encuentre.
     ultimo = manifiesto["periodos"][-1]
-    origen = destino / ultimo["archivo"]
-    if origen.suffix == ".zip":
-        import zipfile
-
-        with zipfile.ZipFile(origen) as paquete:
-            (miembro,) = [n for n in paquete.namelist() if n.upper().startswith("PAGOS")]
-            paquete.extract(miembro, temporal)
-        origen = temporal / miembro
+    carpeta = salida.parent / "tardios"
     # Del primer dia del periodo al dia siguiente al primero del mes que sigue a su fin.
     desde = date.fromisoformat(ultimo["desde"])
     siguiente = (date.fromisoformat(ultimo["hasta"]).replace(day=1) + timedelta(days=32)).replace(
         day=1
     )
-    incremental = []
-    for numero, (caso, dias, reversos) in enumerate(
-        (
-            ("pagos tarde, en la ultima ventana", -3, False),
-            ("reversos de pagos ya interpretados", 2, True),
-            ("pagos del mes siguiente", (siguiente - desde).days + 1, False),
-        ),
-        start=1,
-    ):
-        ruta = temporal / f"pagos_tardios_{numero}.csv"
-        escrito = _hijo(
-            "tardio",
-            "--destino",
-            str(ruta),
-            "--origen",
-            str(origen),
-            "--desde-fila",
-            str((numero - 1) * argumentos.tardias),
-            "--cuantas",
-            str(argumentos.tardias),
-            "--dias",
-            str(dias),
-            *(["--reversos"] if reversos else []),
-        )
-        print(f"Llega un archivo {caso}: {escrito['filas']:,} pagos...", flush=True)
-        ingesta = _hijo("ingerir", "--ruta", escrito["ruta"])
-        (historia_id,) = _sql(
-            "SELECT e.id FROM ejecucion_historia e JOIN dataset_conformado d ON "
-            "d.id = e.dataset_conformado_id WHERE e.estado = 'EN_PROCESO'"
-        )[0]
-        historia = _hijo("historiar", "--ejecucion", str(historia_id))
-        interpretadas = _interpretar_pendientes(caso)
-        incremental.append(
-            {
-                "caso": caso,
-                "filas": escrito["filas"],
-                "ingesta": ingesta,
-                "historia": historia,
-                "interpretadas": interpretadas,
-            }
-        )
-
-    print("Consultas de una cuenta y de un movimiento...", flush=True)
-    salida = (
-        Path(argumentos.salida) if argumentos.salida else destino / "benchmark_motor_pagos.json"
+    casos = (
+        ("pagos tarde, en la ultima ventana", -3, False),
+        ("reversos de pagos ya interpretados", 2, True),
+        ("pagos del mes siguiente", (siguiente - desde).days + 1, False),
     )
-    consultas = _hijo("consultar", "--destino", str(salida.parent))
+    origen = destino / ultimo["archivo"]
+    if origen.suffix == ".zip" and any(f"tardio:{n}" not in bitacora for n in (1, 2, 3)):
+        import zipfile
+
+        with zipfile.ZipFile(origen) as paquete:
+            (miembro,) = [n for n in paquete.namelist() if n.upper().startswith("PAGOS")]
+            paquete.extract(miembro, carpeta)
+        origen = carpeta / miembro
+    incremental = [
+        _tardio(
+            bitacora,
+            ingeridas,
+            numero,
+            caso,
+            origen,
+            carpeta,
+            (numero - 1) * argumentos.tardias,
+            argumentos.tardias,
+            dias,
+            reversos,
+        )
+        for numero, (caso, dias, reversos) in enumerate(casos, start=1)
+    ]
+
+    # Al final, como lo dejaria autovacuum: lo que ocupa todo, y cada interpretacion publicada.
+    if "al_final" not in bitacora:
+        print("VACUUM ANALYZE al final...", flush=True)
+        vacuum = _vacuum((*TABLAS_DEL_MOTOR, "pago_observado"))
+        bitacora.anotar(
+            "al_final",
+            {"vacuum_segundos": vacuum, "tamanos": _tamanos(), "ejecuciones": _ejecuciones()},
+        )
+    al_final = bitacora["al_final"]
+
+    if "consultas" not in bitacora:
+        print("Consultas de una cuenta y de un movimiento...", flush=True)
+        bitacora.anotar("consultas", _hijo("consultar", "--destino", str(salida.parent)))
+    consultas = bitacora["consultas"]
+
     observaciones = sum(v["observaciones"] for v in motor)
-    segundos = sum(v["segundos"] for v in motor)
+    segundos = _suma(v["segundos"] for v in motor)
     reporte = {
         "perfil": perfil,
         "cuentas_iniciales": PERFILES[perfil],
         "cortes": len(manifiesto["cortes"]),
         "formato": formato,
         "semilla": argumentos.semilla,
+        "reanudado": {
+            "archivos_ya_ingeridos": len(ingeridas),
+            "etapas_recuperadas": bitacora.recuperadas(),
+        }
+        if argumentos.reanudar
+        else None,
+        "filas_por_lote": os.environ.get("MC_FILAS_POR_LOTE"),
         "generacion": generado,
         "manifiesto": manifiesto,
         "ingestas": ingestas,
@@ -750,13 +1193,14 @@ def main(argumentos: argparse.Namespace) -> None:
         "incremental": incremental,
         "totales": {
             "observaciones": observaciones,
-            "segundos_motor": round(segundos, 3),
+            "segundos_motor": segundos,
             "observaciones_por_segundo": round(observaciones / segundos) if segundos else None,
-            "memoria_pico_motor_mb": max(v["memoria_pico_mb"] or 0 for v in motor),
-            "segundos_historia_pagos": round(sum(h["segundos"] for h in de_pagos), 3),
-            "segundos_apertura": round(
-                sum(h["fases"].get("motor_de_pagos", 0) for h in de_pagos), 3
+            "memoria_pico_motor_mb": max(
+                (v["memoria_pico_mb"] for v in motor if v["memoria_pico_mb"] is not None),
+                default=None,
             ),
+            "segundos_historia_pagos": _suma(h["segundos"] for h in de_pagos),
+            "segundos_apertura": _suma(h["fases"].get("motor_de_pagos") for h in de_pagos),
             **{
                 clase: sum(v[clase] for v in motor)
                 for clase in (
@@ -774,9 +1218,15 @@ def main(argumentos: argparse.Namespace) -> None:
                 for clave in ("movimientos", "repetidos_exactos", "ajustes")
             },
         },
-        "vacuum_segundos": {"antes": vacuum_antes, "despues": vacuum_despues},
-        "tamanos_antes": tamanos_antes,
-        "tamanos_despues": tamanos_despues,
+        "vacuum_segundos": {
+            "antes": antes["vacuum_segundos"],
+            "despues": despues["vacuum_segundos"],
+            "al_final": al_final["vacuum_segundos"],
+        },
+        "tamanos_antes": antes["tamanos"],
+        "tamanos_despues": despues["tamanos"],
+        "tamanos_al_final": al_final["tamanos"],
+        "ejecuciones_al_final": al_final["ejecuciones"],
         "consultas": consultas,
         "maquina": {
             "sistema": f"{platform.system()} {platform.release()}",
@@ -826,6 +1276,12 @@ if __name__ == "__main__":
     lector.add_argument("--destino", help="Donde se escriben (o se reusan) los archivos.")
     lector.add_argument("--salida", help="El reporte JSON; por omision, junto a los archivos.")
     lector.add_argument("--semilla", type=int, default=31416)
+    lector.add_argument(
+        "--reanudar",
+        action="store_true",
+        help="Sigue una corrida interrumpida sobre la misma base: no la vacia, no repite "
+        "ninguna etapa que ya termino y conserva su medicion (ver la bitacora).",
+    )
     lector.add_argument(
         "--tardias", type=int, default=5000, help="Cuantos pagos trae cada llegada tardia."
     )
