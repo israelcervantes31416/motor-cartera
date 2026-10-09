@@ -213,23 +213,17 @@ def abrir_por_dataset(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:llave, 0))"),
         {"llave": f"motor-pagos:{despacho}:{cartera}"},
     )
+    for sentencia in SQL_APERTURA:
+        s.execute(text(sentencia), {"dataset": dataset.id})
     extremos = s.execute(
-        text(
-            "SELECT min(fecha_recepcion), max(fecha_recepcion) FROM pago_observado "
-            "WHERE dataset_conformado_id = :dataset"
-        ),
-        {"dataset": dataset.id},
+        text("SELECT min(fecha_recepcion), max(fecha_recepcion) FROM mp_apertura")
     ).one()
     if extremos[0] is None:
         return []
     propias = {
         fila[0]
         for fila in s.execute(
-            text(
-                "SELECT DISTINCT date_trunc('month', fecha_recepcion)::date FROM pago_observado "
-                "WHERE dataset_conformado_id = :dataset"
-            ),
-            {"dataset": dataset.id},
+            text("SELECT DISTINCT date_trunc('month', fecha_recepcion)::date FROM mp_apertura")
         )
     }
     vecinas = [
@@ -237,7 +231,7 @@ def abrir_por_dataset(
         for periodo in periodos_entre(extremos[0] - VENTANA_REVERSO, extremos[1] + VENTANA_REVERSO)
         if periodo not in propias
     ]
-    relevantes = {v.desde for v in vecinas if _cambia_su_contexto(s, v, dataset.id)}
+    relevantes = {v.desde for v in vecinas if _cambia_su_contexto(s, v)}
     abiertas = []
     for periodo in sorted(propias | relevantes):
         ejecucion, _ = abrir_ventana(
@@ -247,9 +241,24 @@ def abrir_por_dataset(
     return abiertas
 
 
-def _cambia_su_contexto(s: Session, ventana: Ventana, dataset_id: int) -> bool:
-    """Si los pagos del dataset entran al contexto de `ventana`: es exactamente la condicion con que
-    la interpretacion los leeria (ver SQL_LEER)."""
+SQL_APERTURA = (
+    "DROP TABLE IF EXISTS pg_temp.mp_apertura",
+    "CREATE TEMP TABLE mp_apertura ON COMMIT DROP AS SELECT cliente_unico, "
+    "abs(recuperacion_por_gestion) AS importe, fecha_recepcion FROM pago_observado "
+    "WHERE dataset_conformado_id = :dataset",
+    "CREATE INDEX ON mp_apertura (cliente_unico, importe)",
+    "ANALYZE mp_apertura",
+)
+"""Los pagos del dataset que se acaba de publicar, en una tabla temporal con su indice y sus
+estadisticas. Se publicaron en esta misma transaccion, asi que las estadisticas de pago_observado
+todavia no los conocen: el planificador estima una fila, y con esa estimacion puede unir el contexto
+de una vecina recorriendo todos los pagos del dataset por cada negativo (medido en el XL: 84 s para
+un archivo de 262,997 pagos). Con la tabla temporal, cualquier plan que elija es lineal."""
+
+
+def _cambia_su_contexto(s: Session, ventana: Ventana) -> bool:
+    """Si los pagos del dataset (en mp_apertura) entran al contexto de `ventana`: es exactamente la
+    condicion con que la interpretacion los leeria (ver SQL_LEER)."""
     return bool(
         s.execute(
             text(
@@ -257,17 +266,16 @@ def _cambia_su_contexto(s: Session, ventana: Ventana, dataset_id: int) -> bool:
                 "importe FROM pago_observado n WHERE n.despacho_id = :despacho AND n.cartera_id = "
                 ":cartera AND n.recuperacion_por_gestion < 0 AND n.fecha_recepcion >= "
                 ":contexto_desde AND n.fecha_recepcion < :contexto_hasta) "
-                "SELECT EXISTS (SELECT 1 FROM pago_observado o JOIN llaves k ON k.cliente_unico = "
-                "o.cliente_unico AND k.importe = abs(o.recuperacion_por_gestion) "
-                "WHERE o.dataset_conformado_id = :dataset "
-                "AND ((o.fecha_recepcion >= :contexto_desde AND o.fecha_recepcion < :desde) "
+                "SELECT EXISTS (SELECT 1 FROM mp_apertura o JOIN llaves k ON k.cliente_unico = "
+                "o.cliente_unico AND k.importe = o.importe "
+                "WHERE ((o.fecha_recepcion >= :contexto_desde AND o.fecha_recepcion < :desde) "
                 "OR (o.fecha_recepcion >= :hasta AND o.fecha_recepcion < :contexto_hasta)) "
                 "AND EXISTS (SELECT 1 FROM pago_observado a WHERE a.despacho_id = :despacho "
                 "AND a.cartera_id = :cartera AND a.cliente_unico = o.cliente_unico "
                 "AND a.fecha_recepcion >= :desde AND a.fecha_recepcion < :hasta "
                 "AND abs(a.recuperacion_por_gestion) = k.importe))"
             ),
-            {**ventana.parametros(), "dataset": dataset_id},
+            ventana.parametros(),
         ).scalar_one()
     )
 
