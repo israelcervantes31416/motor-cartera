@@ -10,6 +10,7 @@ import pytest
 
 from motor_cartera.contratos.cartera_v2 import COLUMNAS_CARRIER, CONTRATO_V2, TELEFONOS_ANCHOS
 from motor_cartera.contratos.pagos import CONTRATO_PAGOS
+from motor_cartera.motor_pagos.reglas import Clasificacion, Motivo
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 FILA = re.compile(r"^\| (\d+) \| `([^`]+)` \| ([^|]+) \| ([^|]+) \|")
@@ -49,3 +50,17 @@ def test_el_documento_de_carrier_dice_que_columnas_reemplaza():
     for columna in ("TEL_AVAL", "TELEFONO1", "TIPOTEL1", "TELEFONO"):
         assert f"`{columna}`" in texto
     assert len(TELEFONOS_ANCHOS) == 9
+
+
+def test_el_documento_del_motor_de_pagos_define_cada_clasificacion_y_cada_motivo():
+    """Cada clase y cada motivo que el motor publica tiene su fila en las tablas de
+    motor_pagos.md: uno nuevo no llega a la API sin que se documente que quiere decir."""
+    texto = (DOCS / "motor_pagos.md").read_text(encoding="utf-8")
+    filas = {
+        linea.split(" | ")[0].strip("| `")
+        for linea in texto.splitlines()
+        if linea.startswith("| `")
+    }
+
+    assert {c.value for c in Clasificacion} <= filas
+    assert {m.value for m in Motivo} <= filas

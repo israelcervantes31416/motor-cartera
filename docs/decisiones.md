@@ -1,17 +1,19 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales y Modelo Histórico
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico y Motor de Pagos
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
-Escala (v0.6.0) y el Modelo Histórico y Cuenta 360 (v0.7.0) están hechos como están, y qué haría
-distinto o cuándo cambiaría cada decisión. El uso está en el [README](../README.md), en
-[fuentes.md](fuentes.md), en [historia.md](historia.md) y en [cuenta_360.md](cuenta_360.md); aquí
-va el porqué.
+Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0) y el Motor de Pagos Canónico y
+Conciliación (v0.8.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
+decisión. El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
+[historia.md](historia.md), en [cuenta_360.md](cuenta_360.md) y en
+[motor_pagos.md](motor_pagos.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
-de las Fuentes Oficiales, y las 71 a 84, del Modelo Histórico. Donde las de la fase 1 hablan de la
-orquestación de la fase 3, hoy es la orquestación durable de v0.5.0. Las secciones que una versión
-posterior cambió lo dicen al final, en un párrafo *Desde v0.5.0*, *Desde v0.6.0* o *Desde v0.7.0*.
+de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico, y las 85 a 98, del Motor de Pagos.
+Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
+v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
+v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0* o *Desde v0.8.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -97,6 +99,20 @@ posterior cambió lo dicen al final, en un párrafo *Desde v0.5.0*, *Desde v0.6.
 82. [Concurrencia sin bloqueos mutuos](#82-concurrencia-sin-bloqueos-mutuos)
 83. [Backfill fuera de Alembic, idempotente](#83-backfill-fuera-de-alembic-idempotente)
 84. [Índices medidos, sin particionado; y qué no resuelve v0.7.0](#84-índices-medidos-sin-particionado-y-qué-no-resuelve-v070)
+85. [Observación e interpretación, separadas: el motor no toca PagoObservado](#85-observación-e-interpretación-separadas-el-motor-no-toca-pagoobservado)
+86. [La ventana: un mes de recepción por cartera, con 30 días de contexto](#86-la-ventana-un-mes-de-recepción-por-cartera-con-30-días-de-contexto)
+87. [Dos huellas, y la comparación campo por campo antes de fusionar](#87-dos-huellas-y-la-comparación-campo-por-campo-antes-de-fusionar)
+88. [Duplicado exacto, coincidencia ambigua y un representante por contenido](#88-duplicado-exacto-coincidencia-ambigua-y-un-representante-por-contenido)
+89. [Reversos: solo la pareja aislada](#89-reversos-solo-la-pareja-aislada)
+90. [El signo económico y una recuperación que no es un ledger](#90-el-signo-económico-y-una-recuperación-que-no-es-un-ledger)
+91. [La conciliación es otro eje, y es versionada](#91-la-conciliación-es-otro-eje-y-es-versionada)
+92. [El contexto temporal, al consultar](#92-el-contexto-temporal-al-consultar)
+93. [movimiento_id: UUID v8 determinista, único por ejecución](#93-movimiento_id-uuid-v8-determinista-único-por-ejecución)
+94. [Firma de entrada, ejecución vigente e historia de interpretaciones](#94-firma-de-entrada-ejecución-vigente-e-historia-de-interpretaciones)
+95. [Por conjuntos, todo o nada, con un núcleo puro que lo verifica](#95-por-conjuntos-todo-o-nada-con-un-núcleo-puro-que-lo-verifica)
+96. [Se abre con la historia de sus pagos, va al final de la cola y no bloquea la operación](#96-se-abre-con-la-historia-de-sus-pagos-va-al-final-de-la-cola-y-no-bloquea-la-operación)
+97. [Solo publica el dueño vigente de su trabajo](#97-solo-publica-el-dueño-vigente-de-su-trabajo)
+98. [Índices medidos, sin particionado; backfill por ventanas; y qué no resuelve v0.8.0](#98-índices-medidos-sin-particionado-backfill-por-ventanas-y-qué-no-resuelve-v080)
 
 ---
 
@@ -1435,6 +1451,9 @@ se ejecute dos veces.
 **Desde v0.7.0.** El orden ya no es solo por id: entre los que se pueden tomar, primero los
 operacionales y al final los `HISTORIA` (ver 80).
 
+**Desde v0.8.0.** Son tres niveles: los operacionales, los `HISTORIA` y, al final, los
+`MOTOR_PAGOS` (ver 96).
+
 ## 46. Lease y heartbeat
 
 **Decisión.** Un trabajo tomado es de su worker mientras dure su lease, `MC_WORKER_LEASE_SEGUNDOS`
@@ -1639,8 +1658,8 @@ administrada cuesta poco operar (ver 53).
 - no hay autoscaling ni trazas distribuidas entre la API y el worker.
 
 *Desde v0.7.0* la cola tiene dos niveles: entre los trabajos que se pueden tomar, primero los
-operacionales y al final los `HISTORIA` (ver 80). Sigue sin haber prioridades por despacho, por
-cartera ni por urgencia.
+operacionales y al final los `HISTORIA` (ver 80); *desde v0.8.0*, tres, con los `MOTOR_PAGOS` al
+último (ver 96). Sigue sin haber prioridades por despacho, por cartera ni por urgencia.
 
 **Lo que sigue, v0.6.0 — Cloud + observabilidad.** El despliegue en la nube, el archivo en un
 *object storage*, las métricas de la cola (cuántos trabajos esperan, cuánto tardan, cuántos se
@@ -1879,6 +1898,10 @@ es una heurística: también junta dos pagos legítimos e iguales. Deduplicar, c
 reversos tiene que poder explicar qué movimiento fuente produjo cada movimiento canónico, y eso es
 el motor de pagos de v0.8, que va a partir de este conformado, que trae todos los movimientos.
 
+**Desde v0.8.0.** El motor de pagos existe, y no parte del conformado directamente sino de los
+pagos observados que la historia materializa de él (85, 96): cada movimiento canónico se explica
+hasta su fila del archivo original.
+
 **Por qué tolerancia 0.** Es dinero: un archivo aceptado a medias subestimaría la recuperación sin
 que nadie lo notara. Sus rechazos quedan a la vista, con su fila, sus 23 valores y su motivo.
 
@@ -2060,6 +2083,10 @@ obligaría a volver a enlazar. Sin ella, un pago de un cliente que ningún corte
 como `SIN_CUENTA_OBSERVADA` y **no crea una cuenta**; cuando el corte llega, el pago se relaciona
 solo, sin que se toque. Las relaciones económicas explícitas son del motor de pagos.
 
+**Desde v0.8.0.** Esas relaciones existen, en capas aparte: el motor de pagos interpreta los pagos
+observados sin modificarlos y concilia cada movimiento con su cuenta dentro de su interpretación,
+que es versionada (85, 91). El pago observado sigue sin llave hacia la cuenta.
+
 **Por qué su id no tiene índice.** `pago_observado_id` sale del dataset y la fila, que ya son la
 llave primaria, así que su unicidad está implicada; ninguna consulta de v0.7 lo busca, y un índice
 sobre quince millones de UUID al año sería costo sin uso.
@@ -2121,6 +2148,9 @@ ordenarlo no cuesta.
 
 **El riesgo.** Con un flujo constante de trabajo operacional, la historia podría esperar; con la
 operación de un despacho (unas pocas subidas al día) no pasa, y más workers lo resuelven.
+
+**Desde v0.8.0.** Hay un tercer nivel, al final: `MOTOR_PAGOS`. El orden es `ORDER BY CASE` (0 los
+operacionales, 1 `HISTORIA`, 2 `MOTOR_PAGOS`), `id` (ver 96).
 
 ## 81. Carga masiva todo o nada: Parquet, CSV de Arrow, COPY e INSERT ... SELECT
 
@@ -2204,3 +2234,370 @@ conciliación, reversos, aplicación, atribución, recuperación neta, la llave 
 v0.8; el lifecycle de cobranza, de v0.9; variables históricas, scores o modelos en las decisiones,
 de v0.10; persona, crédito, correcciones explícitas de un corte y multitenancy, sin evidencia
 todavía. La historia está hecha para que todo eso se calcule encima sin rediseñarla.
+
+**Desde v0.8.0.** El motor de pagos existe (85 a 98): duplicados exactos, coincidencias de la llave
+histórica, reversos, conciliación con la cuenta y recuperación interpretada. La atribución de
+cada pago a una gestión sigue pendiente: necesita el lifecycle de cobranza de v0.9.
+
+## 85. Observación e interpretación, separadas: el motor no toca PagoObservado
+
+**Decisión.** `PagoObservado` sigue siendo exactamente lo que era en v0.7: una fila aceptada de
+pagos/v1, sin columnas nuevas, sin marcas y sin borrados. Lo que el motor de pagos concluye vive en
+tres entidades nuevas y versionadas: `EjecucionMotorPagos` (una interpretación de una ventana),
+`ResultadoPagoObservado` (lo que esa interpretación concluyó de cada observación, y por qué) y
+`MovimientoEconomicoCanonico` (cada hecho económico que considera distinto). No hay tabla de grupos
+(`GrupoConciliacionPago`).
+
+**Por qué.** La meta no es eliminar filas repetidas: es conservar cada observación, interpretar la
+realidad económica de forma explícita, explicar cada decisión, poder reconstruirla y poder
+reinterpretarla con otra versión. Si el motor marcara las observaciones (un `es_duplicado`, un
+`es_reverso`), una versión posterior tendría que deshacer lo que hizo la anterior, y un error de
+interpretación quedaría escrito sobre la evidencia. Separadas, `motor-pagos/v2` puede publicar su
+propia interpretación de los mismos pagos sin tocar la de `v1`. Una prueba compara cada pago
+observado, columna por columna, antes y después de interpretar, y las llaves foráneas de los
+resultados impiden borrar una observación que ya se interpretó.
+
+**Por qué sin tabla de grupos.** Un grupo de copias o de la llave histórica es una consulta: las
+observaciones de la ventana con esa huella. Cada resultado ya guarda sus dos huellas y, en sus
+motivos, cuántas observaciones y cuántas firmas distintas tiene su grupo y qué campos las
+distinguen; `GET /motor-pagos/{id}/resultados?firma_legacy=...` lista el grupo entero. Una tabla más
+sería otra cosa que mantener consistente, sin agregar auditabilidad.
+
+## 86. La ventana: un mes de recepción por cartera, con 30 días de contexto
+
+**Decisión.** Una ejecución interpreta una **ventana**: un despacho, una cartera y un mes calendario
+de `Fecha_Recepción`, `[periodo_desde, periodo_hasta)`, con todos los pagos observados de ese mes,
+vengan del archivo que vengan. Lee además un **contexto** acotado: los pagos de hasta 30 días antes
+y después del mes que comparten cliente e importe absoluto con algún pago de la ventana, cuando esa
+llave tiene algún negativo en ese rango. El contexto sirve solo para decidir parejas de reverso y no
+recibe resultado. La ventana y su contexto se leen en una sola sentencia. `ck_motor_pagos_mes` exige
+que la ventana de `motor-pagos/v1` sea un mes; otra versión puede usar otra.
+
+**Por qué por ventana y no por archivo.** Un archivo no es una unidad económica: el mismo pago puede
+llegar en dos archivos, y su reverso en el siguiente. Interpretar un archivo a la vez obligaría a
+corregir lo que se concluyó del anterior.
+
+**Por qué es incremental.** Cuando llega un archivo, se interpreta otra vez la ventana que toca (y
+una vecina solo si su contexto cambia), no la historia: el costo es el de un mes de pagos y no crece
+con los meses acumulados. El resultado es el mismo que reconstruir todo desde cero con la misma
+versión, porque una ventana se interpreta siempre entera: la prueba de reconstrucción borra la capa
+de v0.8 y la vuelve a calcular, la de orden de llegada ingiere los archivos en tres órdenes, y la de
+equivalencia compara contra el núcleo puro aplicado a todos los pagos de la cartera a la vez.
+
+**Por qué 30 días de contexto, y no más.** Es la ventana de los reversos (89): una pareja nunca está a
+más de 30 días, así que ningún otro pago puede cambiar una decisión de la ventana, y por eso no se lee.
+Lo que sí puede cambiarla (un pago o un negativo del mismo cliente e importe, a menos de 30 días)
+vuelve a abrir la ventana (96).
+
+**El costo.** Una ventana se interpreta entera aunque llegue un solo pago: con la cartera objetivo, un
+mes tiene del orden de un millón de observaciones, y el benchmark mide cuánto cuesta (98). Una
+interpretación por diferencias (solo lo nuevo y los grupos que toca) costaría menos, pero la vigente
+dejaría de ser una interpretación completa de su ventana, y la API tendría que componer cada respuesta
+de varias. Si un mes llegara a ser demasiado, una versión posterior puede usar ventanas más cortas.
+
+## 87. Dos huellas, y la comparación campo por campo antes de fusionar
+
+**Decisión.** Cada observación tiene dos huellas SHA-256 de una línea canónica (la de
+`contratos.fuente.linea_canonica`), con un prefijo de versión: la **firma exacta**, del despacho, la
+cartera y los 23 campos del contrato en su orden, cada uno con el texto canónico de su tipo; y la
+**llave histórica** (`firma_legacy`), del despacho, la cartera, el cliente, la recepción truncada al
+segundo y el importe con dos decimales. Se calculan en SQL, donde el motor las necesita para millones
+de filas, y en Python, que es la referencia; las pruebas comprueban que coinciden. Antes de tratar
+varias observaciones como copias, el motor compara cada una con su representante **campo por campo**
+(`IS DISTINCT FROM` sobre las 25 columnas); si alguna difiere, el grupo queda `NO_CONCILIADO` con
+`FIRMA_SIN_VALIDAR`.
+
+**Por qué una huella.** Comparar 23 columnas entre todas las observaciones sería cuadrático; agrupar
+por una llave de 32 bytes es un `GROUP BY` con un índice en la tabla temporal, y la llave queda en
+cada resultado para auditar. **Por qué además la comparación.** Nunca se confía ciegamente en un hash
+para dejar de contar evidencia. Con SHA-256 no debería haber colisiones, pero si las hubiera, el
+motor no fusionaría dos observaciones distintas: una prueba lo provoca con una huella pobre.
+
+**Por qué un texto canónico explícito.** La huella no puede depender de la configuración del servidor
+ni de quién la calcula: los importes van con dos decimales y el cero sin signo, las fechas en un
+formato fijo, y el `float8` de `Porcentaje_Comision` con el texto que PostgreSQL le da con
+`extra_float_digits = 1`, que el motor fija en su transacción y que la versión de Python reproduce.
+**Por qué el despacho y la cartera dentro.** Dos pagos idénticos de dos carteras no son el mismo hecho.
+
+**Por qué la llave histórica solo como heurística.** Es la llave con que el sistema anterior juntaba
+pagos. En los archivos reales que se revisaron no colisionó, pero eso no demuestra que nunca junte dos
+pagos legítimos: aquí solo dice que unas observaciones *podrían* ser el mismo pago, y nunca fusiona
+nada por sí misma.
+
+## 88. Duplicado exacto, coincidencia ambigua y un representante por contenido
+
+**Decisión.** Un grupo de observaciones con la misma firma exacta, validado campo por campo, funda
+**un** movimiento: su representante es `MOVIMIENTO_PRIMARIO`, `REVERSO` o `POSIBLE_REVERSO` según el
+tipo del movimiento, y las demás son `DUPLICADO_EXACTO`, apuntando al mismo movimiento. Si el grupo de
+la llave histórica junta firmas distintas, **todas** sus observaciones son `COINCIDENCIA_AMBIGUA`, sin
+movimiento, incluidas las copias exactas entre sí, y su importe se reporta aparte
+(`importe_ambiguo_observado`). El representante es la observación de menor (SHA-256 del archivo
+original, fila de la fuente).
+
+**Por qué un duplicado exacto cuenta una vez.** Las 23 columnas iguales, en la misma cartera, son
+evidencia fuerte de que es el mismo evento reportado otra vez. La lógica no supone pares: tres copias
+son un grupo de tres, y cada una conserva su resultado.
+
+**Por qué una coincidencia ambigua no se resuelve.** No hay evidencia de si son uno o dos pagos:
+contarlas dos veces inflaría la recuperación, y contarlas una podría perder un pago legítimo. Elegir
+sería inventar. Por eso no fundan movimiento, quedan con los campos que las distinguen y su importe
+se informa sin entrar en ninguna recuperación. Las copias exactas dentro de un grupo ambiguo también
+son ambiguas: si una parte del grupo fundara un movimiento y la otra no, el motor estaría eligiendo.
+Dos pagos legítimos iguales del mismo día, a otra hora, son otra llave y dos movimientos.
+
+**Por qué el representante por contenido.** El primero que llegó dependería del orden de ingesta, y
+el de menor id saldría de un identificador sorteado: los dos darían otro representante al
+reconstruir. El SHA-256 del archivo y la fila salen de la evidencia misma.
+
+## 89. Reversos: solo la pareja aislada
+
+**Decisión.** Un negativo es `REVERSO` solo si forma una **pareja aislada** con un pago: mismo
+despacho, cartera y cliente, el mismo importe absoluto, el negativo recibido entre el instante del
+pago y 30 días después; el pago es el único original posible del negativo, el negativo el único
+reverso posible del pago, y los dos son grupos limpios (un grupo ambiguo cuenta como un candidato que
+no lo es). Entonces el reverso apunta a su original y el pago queda anulado. Cualquier otro negativo
+es `POSIBLE_REVERSO`, con su motivo: `SIN_CANDIDATOS`, `VARIOS_CANDIDATOS`, `CANDIDATO_AMBIGUO` u
+`ORIGINAL_DISPUTADO`.
+
+**Por qué.** pagos/v1 no trae ninguna columna que diga cuál es el original de un reverso, y
+`Concepto_Cálculo` es texto libre sin catálogo: leerlo sería inventar uno. Lo único que hay es el
+cliente, el importe y el tiempo. Con un solo candidato en cada sentido no hay nada que elegir; con
+dos, cualquier elección sería una asociación forzada. El motor no elige: el negativo resta de la neta,
+porque su signo y su importe son ciertos, pero no anula ningún pago.
+
+**El costo.** Un reverso real con dos pagos posibles queda como posible reverso, y la bruta sigue
+contando los dos pagos. Es el error conservador: la neta lo descuenta igual. La ventana de 30 días no
+tiene evidencia empírica (no hay reversos reales para medirla); es una regla explícita de `v1`, y
+cambiarla es otra versión.
+
+## 90. El signo económico y una recuperación que no es un ledger
+
+**Decisión.** El signo lo decide solo `Recuperación_por_Gestión`. La **recuperación bruta
+interpretada** es la suma de los `PAGO` que ningún reverso anuló; la **neta**, la bruta más los
+`POSIBLE_REVERSO`. Un `REVERSO` y el pago que anula suman cero. Los duplicados exactos, las
+coincidencias ambiguas y los no conciliados no suman. Se calculan por ventana, en la ejecución, y por
+cuenta, en la Cuenta 360, sobre las interpretaciones vigentes.
+
+**Por qué esos nombres.** No son contabilidad: el acreedor carga intereses, cargos, condonaciones y
+ajustes que ninguna fuente trae, y el saldo oficial sigue siendo el que observa `SnapshotCuenta`. Por
+eso se llaman *interpretadas*, cada respuesta que las trae lo advierte, y ninguna se usa para
+calcular un saldo. `Captación`, `Cobranza_Total` y `Cargos_Automáticos` se conservan pero no se usan:
+suponer cómo se relacionan con el importe sería inventar una regla. En el escenario sintético, donde
+el generador sí descuenta cada pago del saldo, una prueba comprueba que el `SALDO` de cada cuenta
+evoluciona exactamente con la suma de sus movimientos interpretados, y que con las observaciones sin
+deduplicar no cuadraría.
+
+## 91. La conciliación es otro eje, y es versionada
+
+**Decisión.** Cada movimiento y cada resultado tiene un estado de conciliación, aparte de su
+clasificación: `CONCILIADO_CUENTA`, si cuando se interpretó había una `CuentaCanonica` con su
+despacho, cartera y `CLIENTE_UNICO` (la identidad de v0.7, sin lógica nueva), o
+`SIN_CUENTA_OBSERVADA`, si no. Un pago sin cuenta se interpreta igual, se conserva y no crea una
+cuenta. Los clientes de la ventana que tenían cuenta entran en la firma de entrada.
+
+**Por qué otro eje.** Un pago sin cuenta puede ser primario, duplicado o ambiguo: si
+`SIN_CUENTA_OBSERVADA` fuera una clasificación, habría que elegir entre dos verdades.
+
+**Por qué versionada.** Si después llega un corte que trae al cliente, la ejecución anterior no se
+modifica: decía lo que se sabía entonces. `backfill-motor-pagos --reconciliar` encuentra las ventanas
+cuya interpretación vigente tiene movimientos sin cuenta que ya la tienen y abre otra ejecución, con
+otra firma de entrada, que publica la interpretación conciliada. Sobrescribir la anterior borraría
+la historia de la interpretación.
+
+## 92. El contexto temporal, al consultar
+
+**Decisión.** Dónde cae un movimiento entre los snapshots de su cuenta (el anterior, el siguiente,
+antes de la primera observación, después de la última, durante una ausencia) se calcula al consultar,
+en un núcleo puro (`motor_pagos/contexto.py`), con los cortes de la cartera y los de la cuenta, como
+los eventos de presencia de v0.7 (78). No se guarda. El corte del mismo día que el pago cuenta como
+anterior: la fecha de un corte no tiene hora, y `v1` no supone a qué hora se toma.
+
+**Por qué al consultar.** Un corte que llega tarde cambia el contexto de los pagos ya interpretados;
+guardado, obligaría a reescribirlos o a interpretar otra vez cada ventana. Calculado, sale igual que
+si el corte hubiera llegado a tiempo, y cuesta leer los cortes de la cartera y los de una cuenta, que
+ya tienen índice. **Por qué no es un error.** Un pago antes de la primera observación de su cuenta, o
+mientras faltaba, es información. Con el snapshot anterior y el siguiente se mira *saldo antes →
+pago → saldo después*, sin afirmar que la diferencia la causó el pago.
+
+## 93. movimiento_id: UUID v8 determinista, único por ejecución
+
+**Decisión.** `movimiento_id` es un UUID versión 8 con nombre y SHA-256 (RFC 9562, apéndice B.2):
+los primeros 128 bits de `SHA-256(espacio + "movimiento:" + versión + ":" + hex(firma_exacta))`, con
+sus bits de versión y variante, en un espacio de nombres propio. Se calcula en SQL, dentro del
+`INSERT ... SELECT` de los movimientos, y en Python como referencia; una prueba fija el vector del
+RFC. Es único por ejecución (`uq_movimiento_ejecucion`), no global. `motor_pagos_run_id`, en cambio,
+es aleatorio: identifica un intento.
+
+**Por qué determinista.** El mismo hecho, con la misma versión, tiene el mismo identificador al
+reconstruir, en cualquier orden de ingesta y en cualquier base: un cliente de la API puede guardarlo.
+Sale de la firma exacta del grupo y no de una observación, así que no depende de cuál copia llegó
+primero; y como la firma lleva la fecha, un hecho pertenece a una sola ventana. Otra versión del
+motor da otros identificadores, porque es otra interpretación. **Por qué v8 y no v5**, como los de
+v0.7: PostgreSQL no trae SHA-1 sin una extensión, y el motor genera millones de identificadores dentro
+de la base; la propiedad que importa es la misma.
+
+**Por qué único por ejecución.** Cada interpretación de una ventana es completa e inmutable: el mismo
+hecho aparece en cada ejecución que lo interpretó, con el mismo identificador. `GET
+/movimientos/{movimiento_id}` devuelve el de la interpretación vigente; si la vigente ya no lo funda
+(una observación nueva lo volvió ambiguo, por ejemplo), el de la ejecución más reciente que lo
+publicó, con `vigente: false`.
+
+## 94. Firma de entrada, ejecución vigente e historia de interpretaciones
+
+**Decisión.** La firma de entrada de una ejecución es el SHA-256 de lo que leyó, en forma canónica:
+la versión, la ventana, el SHA-256 de cada archivo original con pagos en la ventana, cada pago del
+contexto (por su archivo y su fila) y cada cliente de la ventana con cuenta canónica. Índices únicos
+parciales: a lo más una `EXITOSA` por ventana, versión y firma (`ux_ejecucion_motor_pagos_exitosa`), y
+a lo más una `EN_PROCESO` por ventana y versión (`ux_ejecucion_motor_pagos_en_proceso`). Una ejecución
+que encuentra su firma ya publicada termina `FALLIDA` con `YA_INTERPRETADA`, nombrando a la que ganó.
+La **vigente** de una ventana es su `EXITOSA` más reciente con la versión que se pide; las demás son
+historia y no cambian.
+
+**Por qué una firma.** Hace que la idempotencia sea una propiedad de los datos y no de la
+orquestación: dos ejecuciones con las mismas entradas no pueden publicar dos veces, aunque la cola
+entregue un trabajo dos veces o alguien abra otra a mano. No depende de identificadores sorteados: un
+archivo se nombra por su SHA-256, y un pago observado no cambia ni se borra, así que los pagos de un
+archivo en una ventana son siempre los mismos.
+
+**Por qué la vigente se calcula y no se marca.** Marcarla obligaría a modificar la ejecución anterior
+cada vez que se publica otra. Calcularla es agrupar las ejecuciones, que son pocas (una por mes de
+cada cartera, y sus reinterpretaciones), y como solo hay una `EN_PROCESO` por ventana a la vez, la
+más reciente es la de mayor id. La API dice en cada ejecución y en cada movimiento si es vigente, y
+`GET /motor-pagos` lista la historia.
+
+## 95. Por conjuntos, todo o nada, con un núcleo puro que lo verifica
+
+**Decisión.** La interpretación de una ventana es una transacción: lee la ventana y su contexto, con
+sus huellas, a una tabla temporal con un `INSERT ... SELECT`; agrupa por firma exacta y por llave
+histórica, elige representantes con `DISTINCT ON`, compara las copias campo por campo y busca las
+parejas de reverso con `CREATE TEMP TABLE ... AS` e índices temporales; inserta los movimientos y
+los resultados con `INSERT ... SELECT`, con sus motivos armados en SQL; cuenta lo publicado desde las
+tablas, comprueba que cada observación tenga su resultado y que cada movimiento lo funde una
+observación, y cierra `EXITOSA`. Las tablas temporales son `ON COMMIT DROP`. Las mismas reglas están
+escritas en Python puro (`motor_pagos/reglas.py`), que no toca la base.
+
+**Por qué por conjuntos.** Ninguna observación pasa por Python: con un millón de pagos por ventana, un
+objeto por fila no escala, y agrupar, unir, ordenar y contar es lo que PostgreSQL hace bien. No hay
+`COPY` porque nada viene de fuera de la base: las observaciones ya están en PostgreSQL.
+
+**Por qué todo o nada.** La interpretación corre en un savepoint: si algo falla, se revierte todo lo
+de ese intento y la ejecución queda `FALLIDA` en la misma transacción, sin soltar su fila, así que
+nadie la puede reusar entre el fallo y su cierre; ningún camino de error degrada un estado terminal.
+Un error transitorio de la base (la conexión, un interbloqueo, una cancelación) no es una conclusión
+del motor: no marca nada, la ejecución sigue `EN_PROCESO` y la cola la reintenta. Nunca quedan
+500,000 pagos clasificados de 700,000. Las pruebas inyectan fallas antes del staging, después
+de clasificar, después de crear los movimientos, antes de insertar los resultados y antes de cerrar.
+Además, la base lo exige: `ck_motor_pagos_publicacion` no deja cerrar `EXITOSA` sin un resultado por
+observación leída, y `ck_motor_pagos_movimientos` sin que cada movimiento tenga quien lo funde.
+
+**Por qué el núcleo puro.** El SQL escala pero se lee mal; el Python se lee y se prueba caso por caso,
+pero no escala. La prueba de equivalencia genera pagos al azar (copias, coincidencias de la llave
+histórica, ceros, negativos con uno o varios originales posibles y pagos sin cuenta, en varios
+archivos y varios meses), los interpreta archivo por archivo y compara cada ventana vigente con lo
+que concluye el núcleo sobre todos los pagos de la cartera a la vez, observación por observación y
+movimiento por movimiento: son las mismas reglas, escritas dos veces.
+
+## 96. Se abre con la historia de sus pagos, va al final de la cola y no bloquea la operación
+
+**Decisión.** Un tipo de trabajo nuevo, `MOTOR_PAGOS`, con la cola durable de siempre (lease, latido,
+reintentos, recuperación, varios workers, entrega al menos una vez). La historia que publica los
+pagos observados de un archivo abre, **en su misma transacción**, la ejecución `EN_PROCESO` de cada
+ventana que esos pagos tocan, y la de cada ventana vecina cuyo contexto reciben, con su trabajo
+(`abrir_por_dataset`); si la ventana ya tiene una `EN_PROCESO` que no ha empezado, la reusa, y si un
+worker la está interpretando, espera a que termine y abre otra. Las aperturas de una misma cartera
+van una a la vez, con un bloqueo consultivo hasta el commit. En la cola, el motor va al final:
+primero lo operacional, después `HISTORIA`, después `MOTOR_PAGOS`. No es parte del flujo.
+
+**Por qué con la historia.** Como en 79: si se abriera después, habría un instante con pagos
+observados y sin una interpretación pendiente que los lea, y una caída en ese instante los dejaría
+fuera. Abierta en la misma transacción, la interpretación existe exactamente cuando la historia queda
+`EXITOSA`. El motor lee `PagoObservado`, nunca la ingesta ni el Parquet.
+
+**Por qué reusar, esperar y serializar por cartera.** Reusar una `EN_PROCESO` que no ha empezado hace
+que una ventana se interprete una vez con todos sus archivos pendientes, y no una vez por archivo; y
+esperar a la que se está interpretando garantiza que ningún pago quede fuera de la interpretación
+vigente. Sin el bloqueo por cartera, dos archivos que llegan a la vez podrían decidir, cada uno sin
+ver los pagos del otro, que una vecina no cambia, cuando sí cambia con los dos.
+
+**Por qué al final de la cola, y fuera del flujo.** `decision/v1`, `territorial/v1` y `ruteo/v1` no
+leen los movimientos, y una falla del motor no debe detener la operación del día. Con los `HISTORIA`
+pendientes antes que el motor, los archivos de un mismo mes se publican primero y la ventana se
+interpreta una vez.
+
+**Por qué la apertura lee los pagos del dataset a una tabla temporal.** Los acaba de publicar la
+misma transacción, así que las estadísticas de `pago_observado` todavía no los conocen y el
+planificador estima una fila. Con esa estimación, el contexto de una vecina se unía recorriendo todos
+los pagos del dataset por cada negativo: en el benchmark XL, la historia de un archivo de 262,997
+pagos tardó 107.1 s, de los que 86.6 s fueron la apertura (84.1 s una sola vecina). La apertura los
+lee una vez a `mp_apertura`, con su índice y su `ANALYZE`, y cualquier plan que elija es lineal: otro
+archivo del mismo tamaño se historió en 21.7 s, con 1.27 s de apertura. La condición es la misma: las
+dos versiones de la consulta dan lo mismo en las 70 combinaciones de dataset y ventana de esa base.
+
+## 97. Solo publica el dueño vigente de su trabajo
+
+**Decisión.** El worker deja en un `ContextVar` el trabajo que está ejecutando (`cola.en_curso`).
+Antes de confirmar la interpretación, y antes de marcarla `FALLIDA`, la ejecución bloquea la fila de
+su trabajo y comprueba que siga siendo de su worker (`cola.confirmar_dueno`). Si no, levanta
+`TrabajoAjeno`: se revierte todo, no publica ni falla nada, y el worker no cierra el trabajo.
+
+**Por qué.** Con entrega al menos una vez, un worker que se quedó sin lease mientras calculaba (una
+pausa larga, una máquina lenta) puede terminar después de que otro tomó su trabajo. La ejecución
+bloqueada ya impedía que los dos publicaran a la vez, pero no que publicara el que perdió el trabajo:
+en v0.8 eso queda prohibido, como desde v0.5 lo está cerrar un trabajo ajeno. El que tomó el trabajo,
+que estaba esperando la fila de la ejecución, la interpreta entera. Con la fila del trabajo bloqueada
+entre la comprobación y el commit, nadie puede tomarlo en medio. Una prueba lo recorre con dos
+workers y PostgreSQL real.
+
+## 98. Índices medidos, sin particionado; backfill por ventanas; y qué no resuelve v0.8.0
+
+**Decisión.** Dos índices nuevos sobre `pago_observado`, que la interpretación necesita para leer una
+ventana sin recorrer la historia: `(despacho_id, cartera_id, fecha_recepcion)` y el mismo, parcial,
+solo para los negativos (`WHERE recuperacion_por_gestion < 0`), que son pocos y deciden el contexto
+de los reversos. En las tablas nuevas, solo los de las consultas que existen: la llave primaria de
+los resultados (que también es la de una ventana), los resultados de un movimiento, los movimientos
+de una ejecución (el único), un movimiento por su `movimiento_id` en cualquier interpretación, y los
+de una cuenta por cliente y fecha de recepción. Las huellas no tienen índice persistente: la
+interpretación agrupa por ellas en tablas temporales con índices temporales, y un grupo se busca por
+el cliente, que su llave histórica contiene. No hay particionado. El backfill es por ventanas, fuera
+de Alembic, como el de la historia (83).
+
+**Por qué así.** En el benchmark XL, con 3,010,973 pagos observados y 8 millones de movimientos y de
+resultados en 9 interpretaciones, cada sentencia de una consulta de una cuenta o de un movimiento
+entra por uno de esos índices y se resuelve en menos de 0.25 ms dentro de PostgreSQL; la consulta
+entera, en 4 a 9 ms (mediana) desde el servicio. La interpretación lee una ventana de un millón de
+pagos por el índice de recepción y su contexto por el de negativos, que ocupa 1 MiB. Un índice más se
+midió y se descartó: `(ejecucion_motor_pagos_id, fecha_recepcion DESC, movimiento_id)` bajaba los
+posibles reversos de un día de toda la cartera de 1,991 a 70 ms, pero no la primera página sin
+filtros (que cuenta los 3 millones de movimientos vigentes), y escribir 250,000 movimientos tomó de
+2.3 a 2.9 veces más con él, en una prueba A/B que se revirtió; cada llegada tardía reinterpreta meses
+enteros. Las consultas de toda la cartera o de una ventana sin el cliente (de 1.6 a 4.9 s de mediana)
+quedan así, medidas. Una sí se corrigió, sin índice nuevo: la primera página de los resultados de una
+ventana ordenaba todos los pagos observados de la cartera (3.9 s de mediana, hasta 51 s); ahora lee
+los de la ventana por su índice de recepción y se detiene al llenarla (77 ms).
+
+**Por qué sin particionado.** Ninguna consulta de una cuenta o de un movimiento recorre una tabla
+grande. Lo que cuesta es escribir una interpretación completa: de 5 a 7 minutos y de 1.8 a 2.2 GB
+de WAL por mes XL, el 70 a 80 % insertando sus movimientos y sus resultados, y particionar no lo
+reduce. Donde podría pagar es en la retención de las interpretaciones que ya no son vigentes, que
+crecen unos 0.6 GB por cada mes XL que se reinterpreta: quitar particiones enteras en lugar de
+borrar filas. Esa política es de la operación, con datos de producción (v0.18).
+
+**Por qué el backfill por ventanas.** Lo que se interpreta es una ventana, no un pago: encolar un
+trabajo por pago observado serían millones de trabajos, y por archivo, interpretaciones que se
+pisan. El backfill agrupa los pagos observados por ventana y compara cada una con su vigente;
+contar basta para saber si leyó todos sus pagos, porque un pago observado no se borra. Contar no
+basta para lo demás: una ventana se vuelve a abrir también cuando cambia su contexto o su
+conciliación, y si esa reinterpretación falla, la vigente sigue sin verlo aunque cuente bien. Por
+eso el backfill también encuentra las ventanas cuya última ejecución, posterior a la vigente,
+quedó `FALLIDA` (salvo `YA_INTERPRETADA`, que dice que no cambió nada), las reintenta con
+`--reintentar-fallidas`, y el CI exige que no haya ninguna.
+
+**Lo que v0.8.0 no hace**, a propósito: la atribución de cada pago a una gestión y el
+`GestorCanonico`, que necesitan el lifecycle de cobranza de v0.9 (la interfaz futura cuelga del
+`movimiento_id`); resolver las coincidencias ambiguas o leer `Concepto_Cálculo`, `Captación` y
+`Cobranza_Total`, que necesitan reglas con evidencia; un saldo contable o un ledger, que ninguna
+fuente permite; la conciliación automática de los pagos sin cuenta cuando llega su corte (la hace
+`--reconciliar`); reinterpretar solo lo que cambió, porque una ventana se interpreta siempre entera
+(una llegada que cambia el contexto de una vecina sin cambiar ninguna de sus conclusiones también la
+publica otra vez: en el benchmark, 3 de 6 reinterpretaciones); el Decision Engine v2, de v0.10; y
+analítica, scores, ML, geografía real, nube ni multitenancy.

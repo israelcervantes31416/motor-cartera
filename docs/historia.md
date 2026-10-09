@@ -6,8 +6,9 @@ a través de los cortes, con sus pagos observados y su evidencia completa, sin v
 un solo archivo.
 
 No pretende saber todavía **por qué** pasó (eso necesita las gestiones, de v0.9) ni **qué pago es
-económicamente válido** (eso es del motor de pagos, de v0.8). Construye la base temporal sobre la
-que esas respuestas se van a apoyar.
+económicamente válido** (eso es del motor de pagos, que desde v0.8 lo interpreta en capas aparte:
+[motor_pagos.md](motor_pagos.md)). Construye la base temporal sobre la que esas respuestas se
+apoyan.
 
 La API de la Cuenta 360 está en [cuenta_360.md](cuenta_360.md); las decisiones de diseño, de la 71
 a la 84 de [decisiones.md](decisiones.md).
@@ -132,7 +133,10 @@ código: la llave foránea es compuesta, `(corte_canonico_id, fecha_corte)` haci
 Cada fila aceptada de pagos/v1 es exactamente un pago observado, y **ninguno se deduplica**: dos
 filas idénticas son dos observaciones, y el mismo movimiento en dos archivos también. Son
 observaciones, no verdad económica: no hay `PagoConciliado`, `PagoAplicado`, reversos ni
-atribución; eso lo va a construir el motor de pagos de v0.8 sobre estas filas.
+atribución. Desde v0.8, el motor de pagos interpreta estas filas sin modificarlas: lo que
+concluye (duplicados, coincidencias, reversos, conciliación y recuperación interpretada) vive en
+sus propias entidades, versionadas ([motor_pagos.md](motor_pagos.md)), y cada pago observado sigue
+siendo exactamente la fila que llegó.
 
 Conserva los 23 campos, tipados como en el Parquet (`Año` → `anio` BIGINT, `Fecha_Recepción` →
 `fecha_recepcion` TIMESTAMP sin zona, porque es la hora local de la fuente, `Recuperación_por_Gestión`
@@ -533,8 +537,11 @@ A propósito, y con su versión:
 
 - **Analytics** (roll rates, vintages, cure rates, cohortes, recurrencia, matrices de transición,
   pronósticos): v0.14. Los snapshots permiten calcularlos después sin rediseñar nada.
-- **El motor de pagos** (deduplicación, conciliación, reversos, aplicación contable, atribución a
-  gestiones, recuperación neta, la llave económica definitiva): v0.8.
+- **Interpretar los pagos** (duplicados, coincidencias de la llave histórica, reversos,
+  conciliación con la cuenta y recuperación interpretada): lo hace aparte, desde v0.8, el motor de
+  pagos ([motor_pagos.md](motor_pagos.md)), sin tocar los pagos observados. Un saldo contable no lo
+  calcula nadie: el oficial sigue siendo el del snapshot. La atribución a gestiones queda para
+  después del lifecycle de v0.9.
 - **El lifecycle de cobranza** (gestiones, contactos, promesas, convenios y visitas): v0.9.
 - **Decision Engine v2** (variables históricas, scores, probabilidades, ML): v0.10. `decision/v1`
   sigue leyendo `Cuenta` y no sabe que existe la historia.
