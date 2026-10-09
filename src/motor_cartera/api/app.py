@@ -14,11 +14,14 @@ from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
 from motor_cartera.api import (
+    acuerdos,
     cartera,
     corridas,
     cuentas,
     decisiones,
+    gestiones,
     historia,
+    lifecycle,
     motor_pagos,
     movimientos,
     orquestacion,
@@ -213,6 +216,14 @@ ETIQUETAS = [
         "cada uno con su por que, sus observaciones y su archivo original. No son el libro "
         "contable del acreedor.",
     },
+    {
+        "name": "lifecycle",
+        "description": "Lo que la cobranza hizo con cada cuenta: gestiones, contactos, visitas, "
+        "promesas y convenios, como eventos operacionales que registra Motor Cartera, con su "
+        "momento de negocio y su momento de registro. No son una fuente oficial del acreedor. "
+        "Cada escritura exige su Idempotency-Key, y nada se sobrescribe: se anula o se cancela con "
+        "otro evento.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -246,5 +257,8 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(historia.router, dependencies=protegidas)
     app.include_router(motor_pagos.router, dependencies=protegidas)
     app.include_router(movimientos.router, dependencies=protegidas)
+    app.include_router(gestiones.router, dependencies=protegidas)
+    app.include_router(acuerdos.router, dependencies=protegidas)
+    app.include_router(lifecycle.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

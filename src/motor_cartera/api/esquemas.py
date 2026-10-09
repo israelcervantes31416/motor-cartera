@@ -1191,6 +1191,35 @@ class CuentaEncontradaRespuesta(BaseModel):
     cartera_id: str
 
 
+class UltimaGestionRespuesta(BaseModel):
+    gestion_id: UUID
+    ocurrido_en: datetime
+    canal: str
+    nivel_contacto: str
+    resultado: str
+
+
+class LifecycleResumenRespuesta(BaseModel):
+    """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
+    de tiempo son subrecursos paginados: aqui no estan."""
+
+    version_lifecycle: str
+    gestiones: int = Field(description="Las vigentes: sin las anuladas.")
+    gestiones_anuladas: int
+    ultima_gestion: UltimaGestionRespuesta | None = Field(
+        description="La vigente de ocurrido_en mas reciente."
+    )
+    ultimo_contacto_titular: UltimaGestionRespuesta | None = Field(
+        description="La ultima gestion vigente con CONTACTO_TITULAR. Hablar con el titular no es "
+        "un resultado favorable."
+    )
+    promesas: int = Field(description="Las acordadas, sin las de una gestion anulada.")
+    promesas_vigentes: int = Field(description="De esas, las que nadie cancelo.")
+    convenios: int
+    convenios_vigentes: int
+    visitas: int = Field(description="Las gestiones de CAMPO vigentes.")
+
+
 class Cuenta360Respuesta(BaseModel):
     """El resumen de una cuenta a traves de sus cortes. La historia, los eventos y los pagos son
     subrecursos paginados: esta respuesta no los trae."""
@@ -1241,6 +1270,11 @@ class Cuenta360Respuesta(BaseModel):
         "cuantas observaciones, cuantos movimientos, duplicados, ambiguos y reversos, y la "
         "recuperacion interpretada. Los movimientos estan en /movimientos y las observaciones tal "
         "como llegaron en /pagos-observados."
+    )
+    lifecycle_resumen: LifecycleResumenRespuesta = Field(
+        description="Lo que la cobranza hizo con la cuenta, en numeros: gestiones, la ultima, el "
+        "ultimo contacto con el titular, promesas, convenios y visitas. El detalle esta en "
+        "/gestiones, /promesas, /convenios y /lifecycle."
     )
 
 

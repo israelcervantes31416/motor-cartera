@@ -14,6 +14,8 @@ mezclarla con las otras dos:
 Ninguna es una tercera fuente oficial del acreedor, y nada aqui se fabrica desde un snapshot.
 
 - `reglas`: el vocabulario de lifecycle/v1 y sus reglas de coherencia, sin base.
+- `registro`: registrar un evento con su llave de idempotencia, en una transaccion.
+- `consultas`: lo que la API lee: gestiones, promesas, convenios, la linea de tiempo y el resumen.
 
 No reexporta nada: cada modulo se importa por su nombre.
 """
