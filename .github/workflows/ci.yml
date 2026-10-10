@@ -137,6 +137,22 @@ jobs:
           grep -q "solo con ejecuciones FALLIDA: 0" motor.txt
           grep -q "con una reinterpretacion FALLIDA despues de su vigente: 0" motor.txt
 
+      # La prueba de humo evaluo las promesas de la cartera a la fecha de su corte: el backfill del
+      # lifecycle ya no tiene nada que evaluar a esa fecha.
+      - name: Backfill del lifecycle
+        run: |
+          docker compose exec -T worker motor-cartera backfill-lifecycle --as-of 2026-09-30 \
+            --dry-run | tee lifecycle.txt
+          grep -q "Evaluaciones pendientes: 0" lifecycle.txt
+
+      # Y atribuyo la ventana de sus pagos: el backfill de la atribucion la encuentra al dia, y
+      # ninguna atribucion fallo.
+      - name: Backfill de la atribucion
+        run: |
+          docker compose exec -T worker motor-cartera backfill-atribucion --dry-run | tee atribucion.txt
+          grep -q "al dia con atribucion/v1: 1" atribucion.txt
+          grep -q "solo con atribuciones FALLIDA: 0" atribucion.txt
+
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
       # base registra tiene que seguir en el almacen con sus mismos bytes: las dos carteras, los

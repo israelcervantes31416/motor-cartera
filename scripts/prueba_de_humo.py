@@ -23,8 +23,13 @@ el modelo historico en paralelo a su flujo, y la Cuenta 360 de cuentas elegidas 
 que esta en todos los cortes, una que sale, una que llega despues y una que paga varias veces) dice
 lo que paso con cada una. Despues sigue al motor de pagos: cada ventana de pagos interpretada por
 su trabajo MOTOR_PAGOS, y una fila que un archivo trae dos veces, que es un solo movimiento con sus
-dos observaciones. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del
-contenedor o en una laptop:
+dos observaciones.
+
+Con --oficial y --pagos, recorre ademas el lifecycle de cobranza sobre sus cuentas y sus pagos:
+gestion, promesa, movimiento, evaluacion de la promesa a una fecha explicita, atribucion y Cuenta
+360, con una gestion sin contacto, una anulada, un pago ambiguo, la idempotencia de las escrituras
+y los trabajos EVALUACION_PROMESAS y ATRIBUCION. Solo usa la biblioteca estandar, para correr igual
+en el CI, dentro del contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
@@ -50,6 +55,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE = os.environ.get("MC_URL_API", "http://localhost:8000").rstrip("/")
@@ -59,10 +65,11 @@ PAQUETE = Path(__file__).resolve().parents[1] / "src" / "motor_cartera" / "__ini
 ETAPAS = ["INGESTA", "DECISION", "TERRITORIAL", "RUTEO"]
 
 
-def pedir(metodo, ruta, *, cuerpo=None, tipo=None, con_clave=True, timeout=30):
+def pedir(metodo, ruta, *, cuerpo=None, tipo=None, con_clave=True, timeout=30, extra=None):
     encabezados = {"X-API-Key": CLAVE} if con_clave else {}
     if tipo:
         encabezados["Content-Type"] = tipo
+    encabezados.update(extra or {})
     peticion = urllib.request.Request(BASE + ruta, data=cuerpo, headers=encabezados, method=metodo)
     try:
         with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
@@ -98,6 +105,11 @@ def esperar(condicion: bool, descripcion: str) -> None:
 
 def ubicacion_de(encabezados: dict) -> str | None:
     return encabezados.get("location") or encabezados.get("Location")
+
+
+def encabezado(encabezados: dict, nombre: str) -> str | None:
+    """Una cabecera de la respuesta, como la haya escrito el servidor (uvicorn, en minusculas)."""
+    return next((v for k, v in encabezados.items() if k.lower() == nombre.lower()), None)
 
 
 def version_del_repositorio() -> str:
@@ -463,6 +475,7 @@ def el_modelo_historico(directorio: Path) -> None:
 
 ESPERA_MOTOR = 600  # segundos: el motor va al final de la cola, despues de la historia
 RECEPCION = "Fecha_Recepci\u00f3n"  # la columna de pagos/v1, sin un acento en el codigo
+MONTO = "Recuperaci\u00f3n_por_Gesti\u00f3n"
 
 
 def _filas_de_pagos(archivo: Path) -> list[dict]:
@@ -580,6 +593,243 @@ def el_motor_de_pagos(directorio: Path) -> None:
         and "No son el libro contable" in interpretados["aviso"],
         f"{cliente}: {observados['total']} pagos observados y {interpretados['total']} "
         "movimientos en su Cuenta 360, con su contexto temporal",
+    )
+
+
+# --- el lifecycle de cobranza y la atribucion ----------------------------------------------------
+
+ESPERA_LIFECYCLE = 600  # segundos: la evaluacion y la atribucion van despues del motor de pagos
+
+
+def enviar(ruta: str, cuerpo: dict, *, llave: str | None = None):
+    """Un POST con cuerpo JSON y, si se da, su Idempotency-Key."""
+    extra = {"Idempotency-Key": llave} if llave else None
+    return pedir(
+        "POST", ruta, cuerpo=json.dumps(cuerpo).encode(), tipo="application/json", extra=extra
+    )
+
+
+def seguir(ruta: str) -> dict:
+    """Consulta un recurso mientras siga EN_PROCESO, hasta ESPERA_LIFECYCLE."""
+    limite = time.monotonic() + ESPERA_LIFECYCLE
+    while True:
+        estado, _, recurso = pedir("GET", ruta)
+        if estado != 200 or recurso["estado"] != "EN_PROCESO" or time.monotonic() > limite:
+            return recurso
+        time.sleep(1)
+
+
+def _cuenta_de(cliente: str) -> str:
+    """La cuenta canonica del cliente, cuando su historia ya la publico."""
+    limite = time.monotonic() + ESPERA_HISTORIA
+    while True:
+        estado, _, encontrada = pedir("GET", f"/cuentas?cliente_unico={cliente}")
+        if estado == 200 or time.monotonic() > limite:
+            esperar(estado == 200, f"{cliente}: su cuenta canonica existe ({estado})")
+            return encontrada["cuenta_id"]
+        time.sleep(1)
+
+
+def el_lifecycle(pagos: Path, corte: str) -> None:
+    """El lifecycle de punta a punta sobre la cartera oficial y sus pagos: cuenta, gestion,
+    promesa, movimiento, evaluacion a una fecha explicita (la del corte), atribucion y Cuenta 360;
+    y ademas una gestion sin contacto, una anulada, una atribucion ambigua, la idempotencia de las
+    escrituras y los trabajos durables que lo ejecutan. Las gestiones ocurren antes de los pagos
+    del archivo: un dia antes, en la hora de la fuente."""
+    print(f"Lifecycle de cobranza y atribucion con los pagos de {pagos}")
+    filas = _filas_de_pagos(pagos)
+    veces: dict[str, int] = {}
+    for fila in filas:
+        veces[fila["Cliente_Unico"]] = veces.get(fila["Cliente_Unico"], 0) + 1
+    # Clientes con un solo pago, positivo: su movimiento es uno y es un PAGO.
+    unicos = sorted(
+        (f for f in filas if veces[f["Cliente_Unico"]] == 1 and not f[MONTO].startswith("-")),
+        key=lambda f: (f[RECEPCION], f["Cliente_Unico"]),
+    )
+    esperar(len(unicos) >= 4, f"{len(unicos)} clientes con un solo pago en el archivo")
+    con_promesa, ambiguo, anulado, sin_contacto = unicos[:4]
+    periodo = con_promesa[RECEPCION][:7]
+    todas = seguir_el_motor()
+    vigente = next((e for e in todas if e["vigente"] and e["periodo"] == periodo), None)
+    esperar(
+        vigente is not None and vigente["estado"] == "EXITOSA",
+        f"la ventana {periodo} de los pagos tiene una interpretacion vigente",
+    )
+
+    def instante(fila: dict, dias: int) -> str:
+        cuando = datetime.fromisoformat(fila[RECEPCION]) - timedelta(days=dias)
+        return f"{cuando.isoformat()}-06:00"
+
+    def gestion(fila: dict, dias: int, **campos) -> tuple[str, str]:
+        cuenta_id = _cuenta_de(fila["Cliente_Unico"])
+        cuerpo = {
+            "ocurrido_en": instante(fila, dias),
+            "canal": "TELEFONICA",
+            "medio": "LLAMADA",
+            "nivel_contacto": "CONTACTO_TITULAR",
+            "resultado": "CONTACTO",
+            "actor_ref": "AGT-0007",
+            **campos,
+        }
+        estado, encabezados, creada = enviar(
+            f"/cuentas/{cuenta_id}/gestiones", cuerpo, llave=f"humo-{uuid.uuid4().hex}"
+        )
+        esperar(
+            estado == 201 and ubicacion_de(encabezados) == f"/gestiones/{creada['gestion_id']}",
+            f"POST /cuentas/{{cuenta_id}}/gestiones de {fila['Cliente_Unico']}: {estado} "
+            f"{cuerpo['nivel_contacto']} {cuerpo['resultado']}",
+        )
+        return cuenta_id, creada["gestion_id"]
+
+    # Cuenta -> gestion -> promesa, y la idempotencia de la escritura.
+    cuenta_id = _cuenta_de(con_promesa["Cliente_Unico"])
+    llave = f"humo-{uuid.uuid4().hex}"
+    cuerpo = {
+        "ocurrido_en": instante(con_promesa, 1),
+        "canal": "TELEFONICA",
+        "medio": "LLAMADA",
+        "nivel_contacto": "CONTACTO_TITULAR",
+        "resultado": "PROMESA",
+    }
+    estado, _, creada = enviar(f"/cuentas/{cuenta_id}/gestiones", cuerpo, llave=llave)
+    estado_r, encabezados_r, repetida = enviar(
+        f"/cuentas/{cuenta_id}/gestiones", cuerpo, llave=llave
+    )
+    estado_o, _, otra = enviar(
+        f"/cuentas/{cuenta_id}/gestiones", {**cuerpo, "resultado": "RECHAZO"}, llave=llave
+    )
+    gestion_promesa = creada.get("gestion_id")
+    esperar(
+        (estado, estado_r, estado_o) == (201, 200, 409)
+        and encabezado(encabezados_r, "Idempotent-Replayed") == "true"
+        and repetida["gestion_id"] == gestion_promesa
+        and otra["codigo"] == "IDEMPOTENCY_KEY_REUTILIZADA",
+        "la misma Idempotency-Key: 201, luego 200 con la misma gestion, y 409 con otros datos",
+    )
+    monto = con_promesa[MONTO]
+    estado, _, promesa = enviar(
+        f"/gestiones/{gestion_promesa}/promesas",
+        {"monto_prometido": monto, "fecha_limite": con_promesa[RECEPCION][:10]},
+        llave=f"humo-{uuid.uuid4().hex}",
+    )
+    esperar(
+        estado == 201 and promesa["estado_operativo"] == "VIGENTE",
+        f"POST /gestiones/{{gestion_id}}/promesas: {estado}, {monto} al "
+        f"{con_promesa[RECEPCION][:10]}",
+    )
+
+    # Una gestion sin contacto, dos candidatas de un mismo pago y una gestion anulada.
+    gestion(sin_contacto, 1, nivel_contacto="SIN_CONTACTO", resultado="SIN_RESPUESTA")
+    gestion(ambiguo, 2)
+    gestion(ambiguo, 1, nivel_contacto="CONTACTO_TERCERO")
+    _, anulada = gestion(anulado, 1)
+    estado, _, anulacion = enviar(
+        f"/gestiones/{anulada}/anulaciones",
+        {"ocurrido_en": instante(anulado, 0), "motivo": "Capturada por error."},
+        llave=f"humo-{uuid.uuid4().hex}",
+    )
+    _, _, vista = pedir("GET", f"/gestiones/{anulada}")
+    esperar(
+        estado == 201 and vista["estado"] == "ANULADA" and vista["anulacion"] is not None,
+        "POST /gestiones/{gestion_id}/anulaciones: 201, y la gestion sigue visible, ANULADA",
+    )
+
+    # La evaluacion de las promesas, a una fecha de corte explicita: la del corte, despues de
+    # todos los pagos del archivo.
+    as_of = corte
+    esperar(unicos[-1][RECEPCION][:10] <= as_of, f"los pagos del archivo llegan hasta el {as_of}")
+    estado, encabezados, pedida = enviar("/evaluaciones-promesas", {"as_of": as_of})
+    esperar(
+        estado == 201 and pedida["estado"] == "EN_PROCESO",
+        f"POST /evaluaciones-promesas al {as_of}: {estado} EN_PROCESO",
+    )
+    evaluacion = seguir(ubicacion_de(encabezados))
+    _, _, de_la_promesa = pedir("GET", f"/promesas/{promesa['promesa_id']}")
+    ultima = de_la_promesa.get("ultima_evaluacion") or {}
+    esperar(
+        evaluacion.get("estado") == "EXITOSA"
+        and (ultima.get("estado"), ultima.get("monto_observado")) == ("CUMPLIDA", monto)
+        and "no afirma" in ultima.get("aviso", "").lower(),
+        f"la evaluacion termino {evaluacion.get('estado')}: la promesa quedo "
+        f"{ultima.get('estado')} con {ultima.get('monto_observado')} observados",
+    )
+
+    # La atribucion de la ventana.
+    estado, encabezados, pedida = enviar("/atribuciones", {"periodo": periodo})
+    esperar(
+        estado == 201 and pedida["estado"] == "EN_PROCESO" and pedida["ventana_dias"] >= 1,
+        f"POST /atribuciones {periodo}: {estado} EN_PROCESO, ventana de "
+        f"{pedida.get('ventana_dias')} dias",
+    )
+    atribucion = seguir(ubicacion_de(encabezados))
+    esperar(
+        atribucion.get("estado") == "EXITOSA"
+        and atribucion["vigente"]
+        and atribucion["motor_pagos_run_id"] == vigente["motor_pagos_run_id"]
+        and "no causalidad" in atribucion["aviso"],
+        f"la atribucion termino {atribucion.get('estado')}: "
+        f"{atribucion.get('conteos', {}).get('asociados')} asociados, "
+        f"{atribucion.get('conteos', {}).get('ambiguos')} ambiguos, "
+        f"{atribucion.get('conteos', {}).get('sin_candidato')} sin candidata",
+    )
+
+    def resultado(fila: dict) -> dict:
+        _, _, pagina = pedir(
+            "GET",
+            f"{ubicacion_de(encabezados)}/resultados?cliente_unico={fila['Cliente_Unico']}",
+        )
+        (unico,) = pagina["elementos"]
+        return unico
+
+    asociado, ambigua, sin = resultado(con_promesa), resultado(ambiguo), resultado(anulado)
+    esperar(
+        (asociado["clasificacion"], asociado["gestion_id"])
+        == ("ASOCIACION_UNICA", gestion_promesa),
+        f"{con_promesa['Cliente_Unico']}: su pago tiene una gestion candidata, la de su promesa",
+    )
+    esperar(
+        (ambigua["clasificacion"], ambigua["gestion_id"], len(ambigua["candidatas"]))
+        == ("AMBIGUA", None, 2),
+        f"{ambiguo['Cliente_Unico']}: su pago queda AMBIGUA, con sus dos candidatas y sin elegir",
+    )
+    esperar(
+        sin["clasificacion"] == "SIN_GESTION_CANDIDATA"
+        and sin["motivos"][0]["gestiones_anuladas"] == 1,
+        f"{anulado['Cliente_Unico']}: su gestion anulada no es candidata",
+    )
+
+    # Los trabajos durables que las ejecutaron.
+    for recurso, tipo in ((evaluacion, "EVALUACION_PROMESAS"), (atribucion, "ATRIBUCION")):
+        estado, _, trabajo = pedir("GET", f"/trabajos/{recurso['trabajo_id']}")
+        esperar(
+            estado == 200 and (trabajo["tipo"], trabajo["estado"]) == (tipo, "COMPLETADO"),
+            f"su trabajo {tipo}: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+        )
+
+    # La Cuenta 360 y la linea de tiempo, sin mezclar las tres verdades.
+    _, _, resumen = pedir("GET", f"/cuentas/{cuenta_id}")
+    lifecycle = resumen.get("lifecycle_resumen", {})
+    esperar(
+        (lifecycle.get("gestiones"), lifecycle.get("promesas"), lifecycle.get("promesas_vigentes"))
+        == (1, 1, 1)
+        and (lifecycle.get("ultima_atribucion") or {}).get("clasificacion") == "ASOCIACION_UNICA",
+        f"GET /cuentas/{{cuenta_id}}: lifecycle_resumen con {lifecycle.get('gestiones')} "
+        "gestion, su promesa y su ultima atribucion",
+    )
+    estado, _, linea = pedir("GET", f"/cuentas/{cuenta_id}/lifecycle?orden=asc")
+    dominios = {e["dominio"] for e in linea.get("elementos", [])}
+    esperar(
+        estado == 200
+        and {"OPERACIONAL", "ECONOMICO"}
+        <= dominios
+        <= {"OPERACIONAL", "FUENTE_CORTE", "ECONOMICO"},
+        f"GET /cuentas/{{cuenta_id}}/lifecycle: {linea.get('total')} elementos en "
+        f"{', '.join(sorted(dominios))}",
+    )
+    estado, _, del_pago = pedir("GET", f"/movimientos/{asociado['movimiento_id']}/atribuciones")
+    esperar(
+        estado == 200 and del_pago["total"] == 1 and del_pago["elementos"][0]["vigente"],
+        "GET /movimientos/{movimiento_id}/atribuciones: la atribucion vigente del pago",
     )
 
 
@@ -944,13 +1194,34 @@ def main(
         "/movimientos/{movimiento_id}",
         "/movimientos/{movimiento_id}/observaciones",
         "/cuentas/{cuenta_id}/movimientos",
+        "/cuentas/{cuenta_id}/gestiones",
+        "/gestiones/{gestion_id}",
+        "/gestiones/{gestion_id}/anulaciones",
+        "/gestiones/{gestion_id}/promesas",
+        "/gestiones/{gestion_id}/convenios",
+        "/promesas/{promesa_id}",
+        "/promesas/{promesa_id}/cancelaciones",
+        "/convenios/{convenio_id}",
+        "/convenios/{convenio_id}/cancelaciones",
+        "/cuentas/{cuenta_id}/promesas",
+        "/cuentas/{cuenta_id}/convenios",
+        "/cuentas/{cuenta_id}/lifecycle",
+        "/evaluaciones-promesas",
+        "/evaluaciones-promesas/{evaluacion_run_id}",
+        "/evaluaciones-promesas/{evaluacion_run_id}/promesas",
+        "/atribuciones",
+        "/atribuciones/{atribucion_run_id}",
+        "/atribuciones/{atribucion_run_id}/resultados",
+        "/movimientos/{movimiento_id}/atribuciones",
+        "/cuentas/{cuenta_id}/atribuciones",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
-        "la evidencia de las fuentes, los pagos, la Cuenta 360 y el motor de pagos",
+        "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle "
+        "y la atribucion",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -959,6 +1230,8 @@ def main(
     if escenario is not None:
         el_modelo_historico(escenario)
         el_motor_de_pagos(escenario)
+    if oficial is not None and pagos is not None:
+        el_lifecycle(pagos, corte)
     print("Todo en orden.")
 
 

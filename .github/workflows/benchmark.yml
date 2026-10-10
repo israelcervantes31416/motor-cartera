@@ -6,14 +6,16 @@ name: Benchmark de escala
 # proyeccion y persistencia); con tipo=historia, la materializacion del modelo historico de varios
 # cortes y las consultas de una cuenta, con su plan; con tipo=motor_pagos, la interpretacion de los
 # pagos observados de esos cortes, las llegadas tardias y las consultas de una cuenta y de un
-# movimiento, con su plan.
+# movimiento, con su plan; con tipo=lifecycle, ademas, la carga de los eventos operacionales de esos
+# cortes, la atribucion de sus pagos, la evaluacion de sus promesas y las consultas de una cuenta,
+# con su plan.
 on:
   workflow_dispatch:
     inputs:
       tipo:
         description: "Que se mide"
         type: choice
-        options: [escala, historia, motor_pagos]
+        options: [escala, historia, motor_pagos, lifecycle]
         default: escala
       cortes:
         description: "Cuantos cortes (con tipo=historia o tipo=motor_pagos)"
@@ -29,6 +31,10 @@ on:
         type: choice
         options: [zip, csv]
         default: zip
+      intensidad:
+        description: "Intensidad del lifecycle (con tipo=lifecycle): 0.5 en el XL, unos 2.5 millones de eventos"
+        type: string
+        default: "0.5"
 
 jobs:
   benchmark:
@@ -130,3 +136,29 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+
+      - name: Benchmark del lifecycle y de la atribucion
+        if: inputs.tipo == 'lifecycle'
+        run: |
+          python scripts/benchmark_motor_pagos.py --perfil "$PERFIL" --cortes "$CORTES" \
+            --formato "$FORMATO" --destino "$RUNNER_TEMP/motor_pagos" \
+            --salida "$RUNNER_TEMP/motor_pagos/benchmark_motor_pagos.json" \
+            | tee "$RUNNER_TEMP/benchmark_motor_pagos.log"
+          python scripts/benchmark_lifecycle.py --escenario "$RUNNER_TEMP/motor_pagos" \
+            --destino "$RUNNER_TEMP/lifecycle" --intensidad "$INTENSIDAD" \
+            | tee "$RUNNER_TEMP/benchmark_lifecycle.log"
+          {
+            echo "## Benchmark del lifecycle: $CORTES cortes del perfil $PERFIL, intensidad $INTENSIDAD"
+            echo
+            cat "$RUNNER_TEMP/lifecycle/benchmark_lifecycle.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/lifecycle/planes_lifecycle.txt"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+          INTENSIDAD: ${{ inputs.intensidad }}
