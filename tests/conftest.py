@@ -104,11 +104,10 @@ def _esquema() -> None:
     command.upgrade(cfg, "head")
 
 
-@pytest.fixture
-def bd(_esquema) -> Iterator[None]:
-    """Base migrada y vacia: cada prueba empieza de cero. Las ejecuciones del motor de pagos y de la
-    evaluacion de promesas no cuelgan de ninguna de las otras, asi que el CASCADE no las alcanza: se
-    nombran. TRUNCATE no pasa por los triggers que hacen al lifecycle solo de agregar."""
+def _vaciar() -> None:
+    """Vacia la base de pruebas. Las ejecuciones del motor de pagos y de la evaluacion de promesas
+    no cuelgan de ninguna de las otras, asi que el CASCADE no las alcanza: se nombran. TRUNCATE no
+    pasa por los triggers que hacen al lifecycle solo de agregar."""
     from motor_cartera.db.sesion import crear_motor
 
     with crear_motor().begin() as conexion:
@@ -118,6 +117,20 @@ def bd(_esquema) -> Iterator[None]:
                 "ejecucion_motor_pagos, ejecucion_evaluacion_promesas RESTART IDENTITY CASCADE"
             )
         )
+
+
+@pytest.fixture
+def bd(_esquema) -> Iterator[None]:
+    """Base migrada y vacia: cada prueba empieza de cero."""
+    _vaciar()
+    yield
+
+
+@pytest.fixture(scope="module")
+def bd_del_modulo(_esquema) -> Iterator[None]:
+    """Base migrada y vacia al empezar el modulo: sus pruebas comparten lo que el modulo construye
+    una vez (un escenario caro), y ninguna escribe nada que otra lea."""
+    _vaciar()
     yield
 
 
