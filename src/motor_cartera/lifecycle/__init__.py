@@ -15,6 +15,8 @@ Ninguna es una tercera fuente oficial del acreedor, y nada aqui se fabrica desde
 
 - `reglas`: el vocabulario de lifecycle/v1 y sus reglas de coherencia, sin base.
 - `registro`: registrar un evento con su llave de idempotencia, en una transaccion.
+- `importacion`: importar eventos sinteticos de un JSONL por conjuntos, todo o nada
+  (`motor-cartera cargar-lifecycle`).
 - `consultas`: lo que la API lee: gestiones, promesas, convenios, la linea de tiempo y el resumen.
 
 No reexporta nada: cada modulo se importa por su nombre.

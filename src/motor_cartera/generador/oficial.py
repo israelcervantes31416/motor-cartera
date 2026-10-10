@@ -1136,6 +1136,19 @@ INVARIANTES = (
 )
 """Lo que cumple todo escenario. Las pruebas lo verifican sobre los archivos escritos."""
 
+INVARIANTES_LIFECYCLE = (
+    "El lifecycle es sintetico y determinista: la misma semilla da los mismos eventos, y "
+    "agregarlo no cambia ningun corte ni ningun pago.",
+    "Cada gestion es de una cuenta del corte que abre su periodo y cumple lifecycle/v1; cada "
+    "promesa, convenio, cancelacion y anulacion se refiere por su llave a un evento de su mismo "
+    "archivo.",
+    "Ningun evento ocurre despues del ultimo corte, y el escenario termina antes del dia en que se "
+    "genera: un evento operacional no ocurre en el futuro.",
+    "Un grupo tardio (una gestion con lo que nacio de ella) ocurrio en un periodo y llega en el "
+    "archivo del siguiente.",
+)
+"""Lo que cumple el lifecycle de un escenario que lo trae."""
+
 MANIFIESTO = "escenario.json"
 
 
@@ -1159,6 +1172,9 @@ def generar_escenario(
     con_carrier: bool = True,
     tasa_altas: float = 0.02,
     tasa_retiros: float = 0.01,
+    lifecycle: bool = False,
+    intensidad_lifecycle: float = 1.0,
+    hoy: date | None = None,
 ) -> Escenario:
     """Escribe `cortes` cortes de la misma cartera, cada `dias_entre_cortes` dias desde
     `primer_corte`, y los pagos de cada periodo entre un corte y el siguiente; y un manifiesto,
@@ -1167,6 +1183,10 @@ def generar_escenario(
     Cada corte sale del anterior con `evolucionar`: los pagos del periodo bajan los saldos y curan
     el atraso, las cuentas liquidadas y las retiradas salen y llegan altas. Todo se deriva de la
     semilla: el mismo escenario sale igual, byte por byte, en csv y en zip.
+
+    Con `lifecycle`, tambien los eventos operacionales de cada periodo (`generador.lifecycle`), en
+    un JSONL comprimido por periodo. Exige que el escenario termine antes de `hoy`: un evento
+    operacional no ocurre en el futuro.
     """
     if cortes < 1:
         raise ValueError("Un escenario tiene al menos un corte.")
@@ -1175,8 +1195,20 @@ def generar_escenario(
     extension = formato.lower().lstrip(".")
     if extension not in ("xlsx", "csv", "zip"):
         raise ValueError(f"Formato no soportado: {formato!r}. Usa xlsx, csv o zip.")
+    ultimo_corte = primer_corte + timedelta(days=dias_entre_cortes * (cortes - 1))
+    if lifecycle and ultimo_corte >= (hoy or date.today()):
+        raise ValueError(
+            f"Con el lifecycle el escenario tiene que terminar antes de hoy, y su ultimo corte es "
+            f"el {ultimo_corte.isoformat()}: un evento operacional no ocurre en el futuro. Usa un "
+            "primer corte anterior."
+        )
     directorio = Path(destino)
     directorio.mkdir(parents=True, exist_ok=True)
+    periodos = None
+    if lifecycle:
+        from motor_cartera.generador.lifecycle import Periodos
+
+        periodos = Periodos(directorio)
     usados: set[int] = set()
     estado = estado_inicial(cuentas, semilla=semilla, fecha_corte=primer_corte, usados=usados)
     registro_cortes: list[dict] = []
@@ -1216,6 +1248,22 @@ def generar_escenario(
                 "ajustes": movimientos.ajustes,
             }
         )
+        if periodos is not None:
+            from motor_cartera.generador.lifecycle import grupos_del_periodo
+
+            periodos.agregar(
+                desde,
+                siguiente,
+                grupos_del_periodo(
+                    estado,
+                    movimientos,
+                    semilla=semilla,
+                    desde=desde,
+                    hasta=siguiente,
+                    intensidad=intensidad_lifecycle,
+                    con_tardios=numero < cortes - 2,
+                ),
+            )
         estado, evolucion = evolucionar(
             estado,
             movimientos,
@@ -1240,6 +1288,11 @@ def generar_escenario(
         "periodos": registro_periodos,
         "invariantes": list(INVARIANTES),
     }
+    if periodos is not None:
+        manifiesto["contratos"]["lifecycle"] = "lifecycle/v1"
+        manifiesto["intensidad_lifecycle"] = intensidad_lifecycle
+        manifiesto["lifecycle"] = [archivo.manifiesto() for archivo in periodos.archivos]
+        manifiesto["invariantes"] += list(INVARIANTES_LIFECYCLE)
     (directorio / MANIFIESTO).write_text(
         json.dumps(manifiesto, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

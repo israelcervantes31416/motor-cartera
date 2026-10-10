@@ -134,6 +134,18 @@ def generar_escenario(
     tasa_retiros: Annotated[
         float, typer.Option(min=0.0, max=1.0, help="Fraccion que el acreedor retira.")
     ] = 0.01,
+    lifecycle: Annotated[
+        bool,
+        typer.Option(
+            "--lifecycle",
+            help="Tambien los eventos operacionales sinteticos de cada periodo, en JSONL "
+            "comprimido, para cargar-lifecycle. El escenario tiene que terminar antes de hoy.",
+        ),
+    ] = False,
+    intensidad_lifecycle: Annotated[
+        float,
+        typer.Option(min=0.01, max=5.0, help="Escala cuantas gestiones hay por periodo."),
+    ] = 1.0,
 ) -> None:
     """Genera un escenario longitudinal: varios cortes de la misma cartera (cartera/v2) y los pagos
     de cada periodo entre un corte y el siguiente (pagos/v1), con un manifiesto, escenario.json.
@@ -142,6 +154,10 @@ def generar_escenario(
     y las retiradas salen y llegan altas que nunca habian estado en la cartera. Todo se deriva de la
     semilla: el mismo escenario sale igual, byte por byte. El manifiesto trae cada archivo con su
     SHA-256, lo que paso en cada corte y las invariantes que cumple el escenario.
+
+    Con --lifecycle, tambien lo que la cobranza hizo en cada periodo: gestiones, contactos,
+    visitas, promesas, convenios, cancelaciones, anulaciones y eventos tardios, todo sintetico y
+    con su propia semilla derivada, sin cambiar un byte de los cortes ni de los pagos.
     """
     from motor_cartera.config import config
     from motor_cartera.generador.oficial import PERFILES
@@ -162,6 +178,8 @@ def generar_escenario(
             formato=formato,
             tasa_altas=tasa_altas,
             tasa_retiros=tasa_retiros,
+            lifecycle=lifecycle,
+            intensidad_lifecycle=intensidad_lifecycle,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -181,6 +199,11 @@ def generar_escenario(
                 f"{periodo['desde']} al {periodo['hasta']}: {periodo['movimientos']:,} movimientos"
             )
         typer.echo(linea)
+    for archivo in manifiesto.get("lifecycle", []):
+        typer.echo(
+            f"  lifecycle del {archivo['desde']} al {archivo['hasta']}: {archivo['eventos']:,} "
+            f"eventos ({archivo['tardios']:,} tardios), {archivo['archivo']}"
+        )
     typer.echo(f"Manifiesto: {escenario.destino / 'escenario.json'}")
 
 
@@ -270,6 +293,72 @@ def cargar_pagos(
     _avisar_historia(ingesta_pagos_id=ingesta.id)
     if ingesta.estado != EstadoIngestaPagos.EXITOSA:
         raise typer.Exit(code=1)
+
+
+@app.command("cargar-lifecycle")
+def cargar_lifecycle(
+    ruta: str,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Valida y resuelve todo, y no registra nada."),
+    ] = False,
+) -> None:
+    """Importa eventos operacionales sinteticos de un archivo JSONL (o .jsonl.gz): gestiones,
+    visitas, promesas, convenios, cancelaciones y anulaciones de la cartera del sistema.
+
+    No es una fuente oficial: es la importacion de eventos operacionales, con las reglas de la API.
+    Cada linea trae su idempotency_key: el mismo archivo dos veces no duplica nada. Lee por lotes,
+    copia con COPY y registra por conjuntos, en una transaccion: con un solo problema no registra
+    nada y termina con codigo 1, diciendo cada linea y por que.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.lifecycle.importacion import (
+        ArchivoIlegible,
+        ImportacionConcurrente,
+        importar,
+    )
+
+    try:
+        reporte = importar(
+            ruta,
+            despacho_id=config.despacho_id,
+            cartera_id=config.cartera_id,
+            zona=config.zona_horaria_fuente,
+            dry_run=dry_run,
+        )
+    except (ArchivoIlegible, ImportacionConcurrente) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Importacion de {reporte.archivo} en {config.despacho_id}/{config.cartera_id}: "
+        f"{reporte.lineas:,} lineas"
+    )
+    typer.echo(f"  repetidas en el archivo (misma llave, mismo contenido): {reporte.repetidas:,}")
+    typer.echo(f"  ya registradas antes (misma llave, mismo contenido): {reporte.ya_registradas:,}")
+    typer.echo(f"  eventos nuevos: {reporte.nuevos:,}")
+    for tipo, cuantos in reporte.registrados.items():
+        typer.echo(f"    {tipo}: {cuantos:,}")
+    if reporte.total_de_problemas:
+        typer.echo(f"Problemas: {reporte.total_de_problemas:,}. No se registro nada.", err=True)
+        for problema in reporte.problemas:
+            llave = f" ({problema.llave})" if problema.llave else ""
+            typer.echo(
+                f"  linea {problema.linea}{llave}: {problema.codigo}: {problema.detalle}",
+                err=True,
+            )
+        if reporte.total_de_problemas > len(reporte.problemas):
+            typer.echo(
+                f"  ... y {reporte.total_de_problemas - len(reporte.problemas):,} mas.", err=True
+            )
+        raise typer.Exit(code=1)
+    if dry_run:
+        typer.echo(
+            f"Con --dry-run no se registro nada; se registrarian {reporte.nuevos:,} eventos."
+        )
+        return
+    typer.echo(
+        f"Se registraron {reporte.nuevos:,} eventos en una transaccion, en {reporte.segundos} s."
+    )
 
 
 @app.command("verificar-fuentes")

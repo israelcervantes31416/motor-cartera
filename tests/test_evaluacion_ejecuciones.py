@@ -524,3 +524,146 @@ def test_la_api_pide_una_evaluacion_y_la_muestra_con_cada_promesa(tmp_path, clie
     )
     assert evaluacion["motivos"][0]["codigo"] == "MONTO_ALCANZADO"
     assert cliente.get(f"/evaluaciones-promesas/{llave()[:8]}").status_code == 422
+
+
+# --- varios workers -------------------------------------------------------------------------------
+
+
+def _en_otro_hilo(funcion, *argumentos):
+    import threading
+
+    salida: dict = {}
+
+    def correr() -> None:
+        try:
+            salida["resultado"] = funcion(*argumentos)
+        except BaseException as exc:
+            salida["error"] = exc
+
+    hilo = threading.Thread(target=correr, daemon=True)
+    hilo.start()
+    return hilo, salida
+
+
+def _detener_en(monkeypatch, funcion: str):
+    """El primer hilo que llega a `funcion` la ejecuta y se detiene despues, con la evaluacion
+    calculada y sin confirmar, hasta que la prueba lo suelte."""
+    import threading
+
+    llego, soltar = threading.Event(), threading.Event()
+    original = getattr(motor, funcion)
+
+    def envoltura(*args, **kwargs):
+        hecho = original(*args, **kwargs)
+        if not llego.is_set():
+            llego.set()
+            assert soltar.wait(60)
+        return hecho
+
+    monkeypatch.setattr(motor, funcion, envoltura)
+    return llego, soltar
+
+
+def test_dos_workers_con_la_misma_evaluacion_publican_una_sola_vez(tmp_path, monkeypatch):
+    import time
+
+    _escenario(tmp_path)
+    ejecucion_id = _abrir(date(2026, 9, 16))
+    llego, soltar = _detener_en(monkeypatch, "_cerrar")
+
+    primero, salida_1 = _en_otro_hilo(evaluar, ejecucion_id)
+    assert llego.wait(60)
+    # El segundo llega mientras el primero tiene la ejecucion bloqueada: espera.
+    segundo, salida_2 = _en_otro_hilo(evaluar, ejecucion_id)
+    time.sleep(0.5)
+    assert segundo.is_alive()
+
+    soltar.set()
+    for hilo in (primero, segundo):
+        hilo.join(60)
+
+    assert "error" not in salida_1 and "error" not in salida_2
+    with sesion() as s:
+        (terminada,) = s.exec(select(EjecucionEvaluacionPromesas)).all()
+    assert (terminada.estado, terminada.resultado) == ("EXITOSA", "EVALUACION_PUBLICADA")
+    assert _cuantos(EvaluacionPromesa) == 6
+
+
+def test_un_worker_que_pierde_el_lease_a_media_evaluacion_no_publica(tmp_path, monkeypatch):
+    import time
+    from datetime import timedelta as delta
+
+    from sqlalchemy import update
+
+    from motor_cartera.db.modelos import EstadoTrabajo
+    from motor_cartera.orquestacion import cola, worker
+
+    _escenario(tmp_path)
+    with sesion() as s:
+        # La historia y el motor se ejecutaron a mano: sus trabajos se dan por terminados.
+        s.execute(
+            update(TrabajoOrquestacion).values(
+                estado=EstadoTrabajo.COMPLETADO, terminado_en=func.now()
+            )
+        )
+        s.commit()
+    ejecucion_id = _abrir(date(2026, 9, 16))
+    config = Config(worker_lease_segundos=600, worker_heartbeat_segundos=300)
+    calculo, soltar = _detener_en(monkeypatch, "_cerrar")
+    reclamo_a = cola.reclamar("worker-a", config.worker_lease_segundos)
+    assert reclamo_a.tipo == TipoTrabajo.EVALUACION_PROMESAS
+    hilo_a, salida_a = _en_otro_hilo(worker.procesar_reclamo, reclamo_a, "worker-a", config)
+    assert calculo.wait(60)
+
+    # A ya evaluo en su transaccion, pero su lease vence antes de que confirme: B toma el trabajo.
+    with sesion() as s:
+        s.execute(
+            update(TrabajoOrquestacion)
+            .where(TrabajoOrquestacion.id == reclamo_a.id)
+            .values(lease_hasta=func.now() - delta(seconds=1))
+        )
+        s.commit()
+    hilo_b, salida_b = _en_otro_hilo(worker.procesar_un_trabajo, "worker-b", config)
+    time.sleep(0.5)
+    assert hilo_b.is_alive()  # espera la ejecucion, que A todavia tiene bloqueada
+
+    soltar.set()
+    for hilo in (hilo_a, hilo_b):
+        hilo.join(60)
+
+    assert "error" not in salida_a and "error" not in salida_b
+    assert salida_a["resultado"].estado is None  # A no publico: su trabajo ya era de B
+    assert salida_b["resultado"].estado == EstadoTrabajo.COMPLETADO
+    with sesion() as s:
+        trabajo = s.get_one(TrabajoOrquestacion, reclamo_a.id)
+        terminada = s.get_one(EjecucionEvaluacionPromesas, ejecucion_id)
+    assert (trabajo.estado, trabajo.intentos) == ("COMPLETADO", 2)
+    assert (terminada.estado, terminada.resultado) == ("EXITOSA", "EVALUACION_PUBLICADA")
+    assert _cuantos(EvaluacionPromesa) == 6 and _cuantos(EjecucionEvaluacionPromesas) == 1
+
+
+# --- por la linea de comandos ---------------------------------------------------------------------
+
+
+def test_backfill_lifecycle_dice_que_falta_y_encola_una_evaluacion_por_cartera(tmp_path):
+    from typer.testing import CliRunner
+
+    from motor_cartera.cli import app
+
+    _escenario(tmp_path)
+    cli = CliRunner()
+
+    en_seco = cli.invoke(app, ["backfill-lifecycle", "--as-of", "2026-09-16", "--dry-run"])
+    primero = cli.invoke(app, ["backfill-lifecycle", "--as-of", "2026-09-16"])
+    segundo = cli.invoke(app, ["backfill-lifecycle", "--as-of", "2026-09-16"])
+    sin_fecha = cli.invoke(app, ["backfill-lifecycle"])
+
+    assert en_seco.exit_code == primero.exit_code == segundo.exit_code == 0, primero.output
+    assert "Carteras con promesas acordadas hasta el 2026-09-16" in en_seco.output
+    assert "6 promesas, 6 vencidas: sin evaluacion a esa fecha" in en_seco.output
+    assert "Evaluaciones pendientes: 1" in en_seco.output
+    assert "Con --dry-run no se encolo nada." in en_seco.output
+    assert "Se encolaron 1 trabajos EVALUACION_PROMESAS" in primero.output
+    assert "en la cola (" in segundo.output and "Evaluaciones pendientes: 0" in segundo.output
+    assert sin_fecha.exit_code != 0  # la fecha de corte nunca sale del reloj
+    assert _cuantos(EjecucionEvaluacionPromesas) == 1
