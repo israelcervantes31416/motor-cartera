@@ -1199,6 +1199,24 @@ class UltimaGestionRespuesta(BaseModel):
     resultado: str
 
 
+class UltimaAtribucionRespuesta(BaseModel):
+    """Lo que la atribucion vigente dice del pago mas reciente de la cuenta que tiene una."""
+
+    atribucion_run_id: UUID
+    version_atribucion: str
+    ventana_dias: int
+    movimiento_id: UUID
+    fecha_recepcion: datetime
+    monto: Decimal
+    anulado_por_reverso: bool
+    clasificacion: str = Field(
+        description="SIN_GESTION_CANDIDATA, ASOCIACION_UNICA o AMBIGUA. Asociacion operacional, no "
+        "causalidad."
+    )
+    gestion_id: UUID | None = Field(description="La asociada, solo en ASOCIACION_UNICA.")
+    candidatas: int
+
+
 class LifecycleResumenRespuesta(BaseModel):
     """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
     de tiempo son subrecursos paginados: aqui no estan."""
@@ -1218,6 +1236,11 @@ class LifecycleResumenRespuesta(BaseModel):
     convenios: int
     convenios_vigentes: int
     visitas: int = Field(description="Las gestiones de CAMPO vigentes.")
+    ultima_atribucion: UltimaAtribucionRespuesta | None = Field(
+        description="La ultima atribucion disponible: la de la atribucion vigente de su ventana "
+        "sobre el PAGO vigente mas reciente de la cuenta que tiene una (con `al`, recibido hasta "
+        "ese dia). El detalle esta en /cuentas/{cuenta_id}/atribuciones."
+    )
 
 
 class Cuenta360Respuesta(BaseModel):

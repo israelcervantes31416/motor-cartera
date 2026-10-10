@@ -144,6 +144,9 @@ def listar_evaluaciones(
     ),
 )
 def obtener_evaluacion(evaluacion_run_id: UUID, s: SesionDeLectura) -> EjecucionEvaluacionRespuesta:
+    """Mientras el estado sea `EN_PROCESO`, un worker no la ha terminado. `conteos` dice cuantas
+    promesas quedaron en cada estado a su fecha de corte, y `horizonte_pagos`, hasta donde llegaban
+    los pagos observados al evaluar."""
     return ejecucion_respuesta(_vista(s, evaluacion_run_id))
 
 

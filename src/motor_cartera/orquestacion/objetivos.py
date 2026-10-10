@@ -19,12 +19,14 @@ from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.db.modelos import (
     Corrida,
+    EjecucionAtribucion,
     EjecucionDecision,
     EjecucionEvaluacionPromesas,
     EjecucionHistoria,
     EjecucionMotorPagos,
     EjecucionRuteo,
     EjecucionTerritorial,
+    EstadoAtribucion,
     EstadoCorrida,
     EstadoDecision,
     EstadoEvaluacionPromesas,
@@ -34,6 +36,7 @@ from motor_cartera.db.modelos import (
     EstadoRuteo,
     EstadoTerritorial,
     IngestaPagos,
+    ResultadoAtribucion,
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
@@ -101,6 +104,13 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         "ejecucion_motor_pagos_id",
         "motor_pagos_run_id",
         {"resultado": ResultadoMotorPagos.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.ATRIBUCION: Objetivo(
+        EjecucionAtribucion,
+        EstadoAtribucion,
+        "ejecucion_atribucion_id",
+        "atribucion_run_id",
+        {"resultado": ResultadoAtribucion.INTENTOS_AGOTADOS.value},
     ),
     TipoTrabajo.EVALUACION_PROMESAS: Objetivo(
         EjecucionEvaluacionPromesas,

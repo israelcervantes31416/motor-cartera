@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI
 from motor_cartera import __version__
 from motor_cartera.api import (
     acuerdos,
+    atribuciones,
     cartera,
     corridas,
     cuentas,
@@ -225,6 +226,13 @@ ETIQUETAS = [
         "Cada escritura exige su Idempotency-Key, y nada se sobrescribe: se anula o se cancela con "
         "otro evento.",
     },
+    {
+        "name": "atribucion",
+        "description": "La atribucion operativa de los pagos (atribucion/v1): con que gestiones "
+        "con contacto de la misma cuenta se asocia cada pago interpretado, dentro de una ventana "
+        "que se guarda en cada ejecucion. Asociacion operacional, no causalidad: con varias "
+        "candidatas el pago queda AMBIGUA y no se elige ninguna.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -262,5 +270,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(acuerdos.router, dependencies=protegidas)
     app.include_router(lifecycle.router, dependencies=protegidas)
     app.include_router(evaluaciones.router, dependencies=protegidas)
+    app.include_router(atribuciones.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

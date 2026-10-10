@@ -530,6 +530,98 @@ def backfill_lifecycle(
         )
 
 
+@app.command("backfill-atribucion")
+def backfill_atribucion(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta y que encolaria.")
+    ] = False,
+    reintentar_fallidas: Annotated[
+        bool,
+        typer.Option(
+            "--reintentar-fallidas",
+            help="Tambien encola las ventanas que solo tienen atribuciones FALLIDA.",
+        ),
+    ] = False,
+    ventana_dias: Annotated[
+        int | None,
+        typer.Option(
+            "--ventana-dias",
+            min=1,
+            max=366,
+            help="Cuantos dias antes de un pago puede ocurrir una gestion candidata, para las "
+            "ventanas que nunca se han atribuido. Por omision, MC_ATRIBUCION_VENTANA_DIAS. Una "
+            "ventana desactualizada conserva la de su atribucion vigente.",
+        ),
+    ] = None,
+) -> None:
+    """Encola la atribucion (atribucion/v1) de cada ventana de pagos interpretados que no tiene una
+    al dia.
+
+    La atribucion no se abre sola: depende de los pagos que interpreta el motor de pagos y de las
+    gestiones que registra la cobranza, y las dos cambian por separado. Una ventana (un despacho,
+    una cartera y un mes de recepcion) esta al dia si su atribucion vigente leyo la interpretacion
+    vigente de sus pagos y las mismas gestiones de sus cuentas, con las mismas anuladas. Una
+    gestion registrada tarde, una anulacion o una interpretacion nueva de los pagos la
+    desactualizan: se encola otra atribucion, que publica una nueva sin tocar la anterior.
+
+    Encola un trabajo ATRIBUCION por ventana, nunca uno por pago, que ejecuta un worker en
+    PostgreSQL. Es idempotente: una ventana en la cola o al dia no se toca, y una atribucion con
+    las mismas entradas que su vigente no publica (YA_ATRIBUIDA). Las ventanas que solo tienen
+    atribuciones FALLIDA se reintentan con --reintentar-fallidas.
+    """
+    from motor_cartera.atribucion.backfill import diagnosticar, encolar
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        diagnostico = diagnosticar(s)
+    fallidas = diagnostico.solo_fallidas
+    typer.echo(
+        f"Ventanas con pagos interpretados: {diagnostico.ventanas:,}, con {diagnostico.pagos:,} "
+        "pagos"
+    )
+    typer.echo(f"  al dia con atribucion/v1: {diagnostico.al_dia:,}")
+    typer.echo(f"  en la cola (EN_PROCESO): {diagnostico.en_cola:,}")
+    typer.echo(f"  sin atribucion: {len(diagnostico.sin_atribucion):,}")
+    typer.echo(f"  desactualizadas: {len(diagnostico.desactualizadas):,}")
+    for ventana in diagnostico.desactualizadas:
+        typer.echo(f"    {_ventana_atribuible(ventana)}: {ventana.motivo}")
+    nota = (
+        "" if reintentar_fallidas or not fallidas else "; se reintentan con --reintentar-fallidas"
+    )
+    typer.echo(f"  solo con atribuciones FALLIDA: {len(fallidas):,}{nota}")
+    for ventana in fallidas:
+        typer.echo(f"    {_ventana_atribuible(ventana)}: {ventana.motivo}")
+    typer.echo(f"Pagos sin una atribucion al dia: {diagnostico.pagos_sin_atribucion_al_dia:,}")
+    pendientes = (
+        diagnostico.sin_atribucion
+        + diagnostico.desactualizadas
+        + (fallidas if reintentar_fallidas else [])
+    )
+    if dry_run:
+        lista = "; se encolarian:" if pendientes else "."
+        typer.echo(f"Faltan {len(pendientes):,} ventanas. Con --dry-run no se encolo nada{lista}")
+        for ventana in pendientes:
+            typer.echo(f"  {_ventana_atribuible(ventana)}")
+        return
+    encoladas = encolar(pendientes, config=config, ventana_dias=ventana_dias)
+    nuevas = sum(1 for e in encoladas if e.nueva)
+    typer.echo(f"Se encolaron {nuevas:,} trabajos ATRIBUCION; los ejecuta un worker.")
+    for encolada in encoladas:
+        nota = "" if encolada.nueva else " (ya estaba en la cola)"
+        typer.echo(
+            f"  {_ventana_atribuible(encolada.ventana)}: {encolada.atribucion_run_id}, ventana de "
+            f"{encolada.ventana_dias} dias{nota}"
+        )
+
+
+def _ventana_atribuible(ventana) -> str:
+    """Una ventana de la atribucion, como la lee una persona."""
+    return (
+        f"{ventana.despacho_id}/{ventana.cartera_id} {ventana.desde:%Y-%m}: {ventana.pagos:,} pagos"
+    )
+
+
 def _ventana(ventana) -> str:
     """Una ventana del motor de pagos, como la lee una persona."""
     texto = (

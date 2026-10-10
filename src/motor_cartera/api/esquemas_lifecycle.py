@@ -22,6 +22,7 @@ from motor_cartera.api.esquemas import (
     Pagina,
     Paginacion,
 )
+from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION
 from motor_cartera.db.modelos import PATRON_ACTOR
 from motor_cartera.lifecycle.consultas import Dominio
 from motor_cartera.lifecycle.reglas import (
@@ -559,3 +560,208 @@ class PaginaEvaluacionesDePromesas(Pagina[EvaluacionEnEjecucionRespuesta]):
     evaluacion_run_id: UUID
     as_of: date
     aviso: str = Field(default=AVISO_EVALUACION)
+
+
+# --- la atribucion operativa ----------------------------------------------------------------------
+
+AVISO_ATRIBUCION = (
+    "Asociacion operacional, no causalidad: dice que gestiones con contacto de la misma cuenta "
+    "ocurrieron antes de un pago, dentro de la ventana de la ejecucion, no que una gestion lo haya "
+    "producido. Con dos o mas candidatas el pago queda AMBIGUA y no se elige ninguna."
+)
+
+PATRON_PERIODO = r"^\d{4}-(0[1-9]|1[0-2])$"
+Clasificacion = Literal["SIN_GESTION_CANDIDATA", "ASOCIACION_UNICA", "AMBIGUA"]
+
+
+class AtribucionEntrada(BaseModel):
+    """Que ventana atribuir, y con que ventana hacia atras."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"periodo": "2026-09", "ventana_dias": 30}]}
+    )
+
+    periodo: str = Field(
+        pattern=PATRON_PERIODO,
+        description="El mes de recepcion de los pagos, AAAA-MM: una ventana del motor de pagos.",
+    )
+    ventana_dias: int | None = Field(
+        default=None,
+        ge=1,
+        le=366,
+        description="Cuantos dias antes de un pago puede haber ocurrido una gestion candidata. Por "
+        "omision, MC_ATRIBUCION_VENTANA_DIAS (30, una politica del demo, no una verdad de "
+        "negocio). Se guarda en la ejecucion y entra en su firma de entrada.",
+    )
+
+
+class ConteosAtribucionRespuesta(BaseModel):
+    movimientos_evaluados: int = Field(
+        description="Los PAGO de la interpretacion de pagos que leyo; cada uno con una "
+        "clasificacion. Los reversos y posibles reversos no se atribuyen."
+    )
+    asociados: int = Field(description="ASOCIACION_UNICA: exactamente una gestion candidata.")
+    ambiguos: int = Field(description="AMBIGUA: dos o mas candidatas, sin elegir ninguna.")
+    sin_candidato: int = Field(description="SIN_GESTION_CANDIDATA.")
+    candidatos: int = Field(description="Las parejas (pago, gestion candidata) que publico.")
+    movimientos_anulados: int = Field(description="De los evaluados, los que anulo un reverso.")
+    gestiones_leidas: int = Field(
+        description="Las gestiones de sus cuentas que pudieron anteceder a un pago, con contacto o "
+        "sin el, anuladas o no."
+    )
+    gestiones_anuladas: int
+
+
+class MontosAtribucionRespuesta(BaseModel):
+    """Lo que suman los pagos de cada clase. Los que anulo un reverso van aparte: no son
+    recuperacion."""
+
+    asociado: Decimal
+    ambiguo: Decimal
+    sin_candidato: Decimal
+    anulado: Decimal
+
+
+class EjecucionAtribucionRespuesta(BaseModel):
+    """Una atribucion de los pagos de una ventana (un despacho, una cartera y un mes de
+    recepcion)."""
+
+    atribucion_run_id: UUID
+    version_atribucion: str
+    estado: str = Field(
+        description="EN_PROCESO hasta que un worker la termina. EXITOSA: publico una "
+        "clasificacion por pago. FALLIDA: no publico nada."
+    )
+    resultado: str | None = Field(
+        description="ATRIBUCION_PUBLICADA, YA_ATRIBUIDA (otra ejecucion ya atribuyo exactamente "
+        "las mismas entradas), SIN_INTERPRETACION_DE_PAGOS, ERROR_INTERNO... null mientras esta "
+        "EN_PROCESO."
+    )
+    despacho_id: str
+    cartera_id: str
+    periodo: str = Field(description="El mes de recepcion de sus pagos, AAAA-MM.")
+    periodo_desde: date
+    periodo_hasta: date
+    ventana_dias: int = Field(
+        description="Cuantos dias antes de un pago pudo ocurrir una gestion candidata: un "
+        "parametro de esta ejecucion, no una verdad de negocio."
+    )
+    zona_horaria: str = Field(
+        description="La de las horas locales de los pagos, con que se comparan con los instantes "
+        "de las gestiones."
+    )
+    vigente: bool = Field(
+        description="Si es la que vale hoy para su ventana: su EXITOSA mas reciente. Las demas son "
+        "historia y no cambian."
+    )
+    motor_pagos_run_id: UUID | None = Field(
+        description="La interpretacion de pagos cuyos movimientos atribuyo: la vigente de su "
+        "ventana al leer. Null si no publico."
+    )
+    interpretacion_de_pagos_vigente: bool | None = Field(
+        description="Si esa interpretacion sigue siendo la vigente. false: hay una mas reciente, y "
+        "la ventana se debe volver a atribuir (motor-cartera backfill-atribucion)."
+    )
+    firma_entrada: str | None
+    conteos: ConteosAtribucionRespuesta
+    montos: MontosAtribucionRespuesta
+    trabajo_id: UUID | None = Field(description="Su trabajo ATRIBUCION.")
+    iniciada_en: datetime
+    terminada_en: datetime | None
+    detalle: str | None
+    aviso: str = Field(default=AVISO_ATRIBUCION)
+
+    @computed_field(description="Segundos de inicio a fin; vacio mientras esta en proceso.")
+    @property
+    def duracion_segundos(self) -> float | None:
+        if self.terminada_en is None:
+            return None
+        return round((self.terminada_en - self.iniciada_en).total_seconds(), 3)
+
+
+class ParametrosAtribuciones(Paginacion):
+    periodo: str | None = Field(
+        default=None, pattern=PATRON_PERIODO, description="Solo las de un mes, AAAA-MM."
+    )
+    estado: Literal["EN_PROCESO", "EXITOSA", "FALLIDA"] | None = None
+    version: str = Field(
+        default=VERSION_ATRIBUCION, max_length=32, description="Por omision, la del servicio."
+    )
+
+
+class PaginaAtribuciones(Pagina[EjecucionAtribucionRespuesta]):
+    despacho_id: str
+    cartera_id: str
+    version_atribucion: str
+
+
+class CandidataRespuesta(BaseModel):
+    """Una gestion candidata de un pago: de su cuenta, vigente, con contacto y en la ventana."""
+
+    gestion_id: UUID
+    ocurrido_en: datetime
+    canal: str
+    nivel_contacto: str
+    resultado: str
+    antelacion_segundos: int = Field(description="Cuanto antes del pago ocurrio.")
+
+
+class ResultadoAtribucionRespuesta(BaseModel):
+    """Lo que una ejecucion concluyo de un pago, con sus candidatas y sus motivos."""
+
+    atribucion_run_id: UUID
+    vigente: bool = Field(description="Si su ejecucion es la atribucion vigente de su ventana.")
+    ventana_dias: int
+    motor_pagos_run_id: UUID
+    interpretacion_de_pagos_vigente: bool
+    movimiento_id: UUID
+    cuenta_id: UUID | None = Field(
+        description="La cuenta con que el motor de pagos concilio el pago; null si no la tenia, y "
+        "entonces no tiene candidatas."
+    )
+    fecha_recepcion: datetime = Field(description="Hora local de la fuente, sin zona.")
+    monto: Decimal
+    anulado_por_reverso: bool = Field(
+        description="Si un reverso lo anulo: se clasifica igual, porque las gestiones si lo "
+        "antecedieron, pero su monto no es recuperacion."
+    )
+    clasificacion: Clasificacion
+    gestion_id: UUID | None = Field(
+        description="La gestion asociada, solo en ASOCIACION_UNICA. En AMBIGUA es null: no se "
+        "elige entre las candidatas."
+    )
+    candidatas: list[CandidataRespuesta] = Field(
+        description="Todas, de la mas proxima al pago a la mas lejana: un orden para leerlas, no "
+        "una preferencia."
+    )
+    motivos: list[dict] = Field(description="Por que: [{'codigo': ...}], con lo que lo explica.")
+
+
+class ParametrosResultadosAtribucion(Paginacion):
+    clasificacion: Clasificacion | None = None
+    cliente_unico: str | None = Field(default=None, pattern=r"^[A-Z0-9]{8,20}$")
+
+
+class PaginaResultadosAtribucion(Pagina[ResultadoAtribucionRespuesta]):
+    atribucion_run_id: UUID
+    aviso: str = Field(default=AVISO_ATRIBUCION)
+
+
+class PaginaAtribucionesDeMovimiento(Pagina[ResultadoAtribucionRespuesta]):
+    movimiento: MovimientoRespuesta
+    aviso: str = Field(default=AVISO_ATRIBUCION)
+
+
+class PagoAtribuidoRespuesta(BaseModel):
+    movimiento: MovimientoRespuesta
+    atribucion: ResultadoAtribucionRespuesta | None = Field(
+        description="La de la atribucion vigente de su ventana; null si su ventana no se ha "
+        "atribuido."
+    )
+
+
+class PaginaAtribucionesDeCuenta(Pagina[PagoAtribuidoRespuesta]):
+    cuenta_id: UUID
+    cliente_unico: str
+    version_motor: str
+    aviso: str = Field(default=AVISO_ATRIBUCION)
