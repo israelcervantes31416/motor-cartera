@@ -1,19 +1,21 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico y Motor de Pagos
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos y Lifecycle de Cobranza
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
-Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0) y el Motor de Pagos Canónico y
-Conciliación (v0.8.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
-decisión. El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
-[historia.md](historia.md), en [cuenta_360.md](cuenta_360.md) y en
-[motor_pagos.md](motor_pagos.md); aquí va el porqué.
+Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
+Conciliación (v0.8.0) y el Lifecycle de Cobranza y Atribución Operativa (v0.9.0) están hechos como
+están, y qué haría distinto o cuándo cambiaría cada decisión. El uso está en el
+[README](../README.md), en [fuentes.md](fuentes.md), en [historia.md](historia.md), en
+[cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md), en
+[lifecycle.md](lifecycle.md) y en [atribucion.md](atribucion.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
-de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico, y las 85 a 98, del Motor de Pagos.
+de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos, y
+las 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
-v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0* o *Desde v0.8.0*.
+v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0* o *Desde v0.9.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -113,6 +115,20 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0* o *Desde v0.8.0*.
 96. [Se abre con la historia de sus pagos, va al final de la cola y no bloquea la operación](#96-se-abre-con-la-historia-de-sus-pagos-va-al-final-de-la-cola-y-no-bloquea-la-operación)
 97. [Solo publica el dueño vigente de su trabajo](#97-solo-publica-el-dueño-vigente-de-su-trabajo)
 98. [Índices medidos, sin particionado; backfill por ventanas; y qué no resuelve v0.8.0](#98-índices-medidos-sin-particionado-backfill-por-ventanas-y-qué-no-resuelve-v080)
+99. [El lifecycle es una tercera verdad, no una tercera fuente oficial](#99-el-lifecycle-es-una-tercera-verdad-no-una-tercera-fuente-oficial)
+100. [Los snapshots no se convierten en eventos](#100-los-snapshots-no-se-convierten-en-eventos)
+101. [Dos tiempos: cuándo pasó y cuándo se registró](#101-dos-tiempos-cuándo-pasó-y-cuándo-se-registró)
+102. [Solo se agrega: las correcciones son eventos](#102-solo-se-agrega-las-correcciones-son-eventos)
+103. [Idempotency-Key obligatoria, garantizada por PostgreSQL](#103-idempotency-key-obligatoria-garantizada-por-postgresql)
+104. [Una visita es una gestión de campo con su detalle](#104-una-visita-es-una-gestión-de-campo-con-su-detalle)
+105. [Cumplir una promesa lo dice una evaluación versionada, a una fecha explícita](#105-cumplir-una-promesa-lo-dice-una-evaluación-versionada-a-una-fecha-explícita)
+106. [Atribución conservadora: candidatas, ambigüedad sin elegir y una ventana que es parámetro](#106-atribución-conservadora-candidatas-ambigüedad-sin-elegir-y-una-ventana-que-es-parámetro)
+107. [Asociación no es causalidad, y compatible no es asociado](#107-asociación-no-es-causalidad-y-compatible-no-es-asociado)
+108. [La atribución por ventanas, sobre la interpretación vigente, por conjuntos y sin abrirse sola](#108-la-atribución-por-ventanas-sobre-la-interpretación-vigente-por-conjuntos-y-sin-abrirse-sola)
+109. [Sin GestorCanonico: `actor_ref` es una referencia opaca](#109-sin-gestorcanonico-actor_ref-es-una-referencia-opaca)
+110. [Un convenio sin ledger](#110-un-convenio-sin-ledger)
+111. [La importación masiva: COPY, tablas temporales y fases, todo o nada](#111-la-importación-masiva-copy-tablas-temporales-y-fases-todo-o-nada)
+112. [Índices medidos, sin particionado; y qué no resuelve v0.9.0](#112-índices-medidos-sin-particionado-y-qué-no-resuelve-v090)
 
 ---
 
@@ -2601,3 +2617,246 @@ fuente permite; la conciliación automática de los pagos sin cuenta cuando lleg
 (una llegada que cambia el contexto de una vecina sin cambiar ninguna de sus conclusiones también la
 publica otra vez: en el benchmark, 3 de 6 reinterpretaciones); el Decision Engine v2, de v0.10; y
 analítica, scores, ML, geografía real, nube ni multitenancy.
+
+*Desde v0.9.0*, la atribución existe, conservadora y sin causalidad, colgada del
+`movimiento_id` de la interpretación vigente (106 a 108), y el `GestorCanonico` sigue sin
+existir: quien hizo una gestión es una referencia opaca (109).
+
+## 99. El lifecycle es una tercera verdad, no una tercera fuente oficial
+
+**Decisión.** Lo que la cobranza hizo con cada cuenta se registra como eventos operacionales
+(`EventoLifecycle` y su detalle: `GestionCobranza`, `VisitaCampo`, `PromesaPago`,
+`ConvenioCobranza`, `CuotaConvenio`), en un dominio propio, `OPERACIONAL`, junto a los otros dos:
+`FUENTE` (lo que dicen CARTERA y PAGOS, tal como llegaron) y `ECONOMICO` (los movimientos que
+interpreta el motor de pagos). Las fuentes oficiales siguen siendo dos. Un evento operacional lo
+registra Motor Cartera, por su API o por una importación sintética, con origen `API` o
+`IMPORTACION`, y ninguno de los dos es una fuente oficial del acreedor.
+
+**Por qué.** Un motor de decisión que no sabe qué se hizo con una cuenta no puede aprender nada: solo
+reacciona al corte. Pero lo que la operación declara que hizo no es evidencia del acreedor, y
+mezclarlo con las fuentes borraría la frontera entre lo observado y lo declarado. Separado, cada
+dato dice de dónde viene: la línea de tiempo de una cuenta junta los tres dominios por tiempo de
+negocio y cada elemento dice de cuál es, con su propia evidencia. Hacer del lifecycle una fuente
+oficial habría obligado a darle contrato, archivo original, dataset conformado y historia, como a
+CARTERA y PAGOS, para algo que nace en el propio sistema.
+
+## 100. Los snapshots no se convierten en eventos
+
+**Decisión.** Lo que un corte dice de la promesa o del plan de una cuenta (`ESTATUS_PROMESA_PAGO`,
+`MONTO_PROMESA_PAGO`, `ESTATUS_PLAN`, `MONTO_PLAN`) se muestra en la línea de tiempo como
+`OBSERVACION_EN_CORTE`, en el dominio `FUENTE_CORTE`, con su snapshot, su corte, su dataset, su fila
+y su archivo original. No crea una `PromesaPago`, un `ConvenioCobranza` ni una gestión.
+
+**Por qué.** Un estatus en un corte es lo que la fuente dijo ese día, no un hecho con fecha: no se
+sabe cuándo se acordó la promesa, quién la acordó ni si es la misma de la semana anterior. Fabricar
+un evento de ahí inventaría un `ocurrido_en`, duplicaría promesas entre cortes y mezclaría lo
+observado con lo registrado. Se muestra lo que hay, con su linaje, y se deja que una regla futura,
+con evidencia, decida si dos observaciones son la misma promesa.
+
+## 101. Dos tiempos: cuándo pasó y cuándo se registró
+
+**Decisión.** Cada evento guarda `ocurrido_en`, que declara quien registra con su zona horaria, y
+`registrado_en`, que es `now()` de la transacción que lo registra: el reloj de la base, nunca el del
+cliente. La historia de una cuenta se ordena por `ocurrido_en`; la auditoría muestra los dos. Un
+evento tardío es válido; uno del futuro no: `ck_evento_tiempos` exige `registrado_en - ocurrido_en`
+de al menos -5 minutos, la tolerancia para el reloj de quien registra. Un evento que se refiere a
+otro no puede haber ocurrido antes que él. Los días de calendario (la fecha límite de una promesa,
+la fecha de corte de una evaluación, la hora local de un pago) se convierten a instantes en
+PostgreSQL, en la zona de la fuente (`MC_ZONA_HORARIA_FUENTE`), con su base de zonas.
+
+**Por qué.** La cobranza registra tarde: una visita se captura al volver a la oficina, una llamada al
+final del día. Si la historia se ordenara por registro, una gestión tardía aparecería después de un
+pago al que en realidad antecedió, y la atribución diría lo contrario de lo que pasó. Si el cliente
+pusiera `registrado_en`, la auditoría dependería de su reloj. Las zonas se resuelven en PostgreSQL y
+no en Python porque la imagen del servicio no tiene por qué traer la base de zonas de Python, y la
+base sí la tiene, la misma para todas las consultas.
+
+## 102. Solo se agrega: las correcciones son eventos
+
+**Decisión.** Ninguna tabla del lifecycle admite `UPDATE` ni `DELETE`: un trigger de sentencia lo
+rechaza (`lifecycle_solo_agrega`). Una gestión mal registrada se anula con `GESTION_ANULADA`; una
+promesa o un convenio que dejaron de valer se cancelan con `PROMESA_CANCELADA` o
+`CONVENIO_CANCELADO`. Cada cierre es un evento que se refiere al original, y un índice único parcial
+sobre (evento relacionado, tipo) admite a lo más una anulación por gestión, una promesa y un
+convenio por gestión, y una cancelación por promesa o por convenio. El estado operativo se deriva de
+los eventos al consultar, y no se guarda. La anulación de una gestión anula lo que nació de ella.
+
+**Por qué.** Un `UPDATE` borra lo que se sabía: después de cambiar una promesa no se puede decir qué
+decía antes, ni qué decisión se tomó con ella. Con eventos, lo original sigue auditable y una
+consulta "como se veía en una fecha" es posible. Que lo garantice un trigger y no el código es la
+misma lección de las fuentes oficiales: una regla que solo vive en la aplicación la rompe el primer
+script que escribe directo en la base. Anular y cancelar son dos cosas distintas, y por eso dos
+eventos: una anulación dice que el registro fue un error (y deja de contar hacia atrás); una
+cancelación, que el acuerdo dejó de valer desde que ocurrió (y la promesa contó hasta entonces).
+
+## 103. Idempotency-Key obligatoria, garantizada por PostgreSQL
+
+**Decisión.** Toda escritura del lifecycle exige `Idempotency-Key`. Su huella es el SHA-256 de la
+petición en forma canónica (tipo, recurso y datos; llaves ordenadas, instantes en UTC, importes con
+dos decimales). La misma llave con la misma huella responde `200` con el recurso ya registrado y
+`Idempotent-Replayed: true`; con otra huella, `409 IDEMPOTENCY_KEY_REUTILIZADA`; una llave nueva,
+`201`. Un índice único sobre (despacho, cartera, llave) lo garantiza: si dos peticiones llegan a la
+vez, la segunda pierde en el índice, revierte su `SAVEPOINT` y devuelve lo que registró la primera.
+La importación usa la llave de cada línea, con el mismo índice.
+
+**Por qué.** Una red que corta la respuesta hace que el cliente reintente, y un evento operacional
+duplicado cuenta dos veces una gestión, dos promesas o dos visitas. Revisar en el código antes de
+insertar no basta con dos peticiones a la vez: lo prueba una prueba con dos hilos. `200` y no `201`
+para la repetición, porque es distinguible: el cliente sabe si creó algo o si ya existía, sin dejar
+de recibir el mismo cuerpo. La huella incluye el recurso: la misma llave sobre otra cuenta es otra
+petición.
+
+## 104. Una visita es una gestión de campo con su detalle
+
+**Decisión.** Una visita se registra con la misma ruta que cualquier gestión
+(`POST /cuentas/{id}/gestiones`, `canal=CAMPO`) y un bloque `visita` con su resultado y, si se
+saben, su inicio y su fin. Se guarda en `VisitaCampo`, uno a uno con su gestión. No hay
+`POST /cuentas/{id}/visitas`. Sin GPS, rutas, zonas ni geocercas.
+
+**Por qué.** Una visita es una gestión: tiene cuenta, momento, contacto y resultado, y cuenta igual
+para la atribución y para el resumen de la cuenta. Dos rutas para el mismo concepto serían dos
+dominios que mantener coherentes. Lo territorial (rutas reales, geocercas, jornadas) es de
+v0.11–v0.13, y validar una visita contra una geografía sin esas reglas sería inventarlas.
+
+## 105. Cumplir una promesa lo dice una evaluación versionada, a una fecha explícita
+
+**Decisión.** Una promesa no guarda si se cumplió. Lo concluye `evaluacion-promesa/v1`, una
+ejecución por cartera y fecha de corte (`as_of`, obligatoria, nunca del reloj), en un trabajo
+`EVALUACION_PROMESAS`, por conjuntos y todo o nada, con firma de entrada. Los estados son
+`CANCELADA`, `CUMPLIDA`, `PENDIENTE`, `NO_EVALUABLE`, `PARCIAL` e `INCUMPLIDA`, con sus motivos. Lo
+compatible son los `PAGO` de la cuenta entre que se acordó y su fecha límite, sin los que un reverso
+anuló hasta `as_of`. Una evaluación posterior no toca la anterior; la de una promesa que muestra la
+API es la de su fecha de corte más reciente.
+
+**Por qué.** "Se cumplió" depende de cuándo se pregunta y de qué datos había: una promesa pendiente
+el día 14 está incumplida el 16, y un pago que llega tarde la vuelve cumplida. Una columna que se
+actualiza perdería esa historia; una evaluación con su `as_of` la conserva y se puede reproducir.
+`NO_EVALUABLE` existe porque afirmar un incumplimiento cuando los pagos de la cartera no llegan a la
+fecha límite sería inventar uno. Un trabajo por cartera, y no uno por promesa: cientos de miles de
+trabajos serían cientos de miles de transacciones para algo que es un `INSERT ... SELECT`.
+
+## 106. Atribución conservadora: candidatas, ambigüedad sin elegir y una ventana que es parámetro
+
+**Decisión.** `atribucion/v1` considera candidata de un `PAGO` a una gestión de la misma cuenta
+canónica (la de la conciliación del motor de pagos), no anulada, con contacto (titular o tercero),
+ocurrida antes del pago o en su instante y a lo más `ventana_dias` antes. Ninguna:
+`SIN_GESTION_CANDIDATA`; una: `ASOCIACION_UNICA`; dos o más: `AMBIGUA`, con todas sus candidatas en
+`CandidatoAtribucion` y sin elegir ninguna. La ventana es un parámetro de cada ejecución (30 días por
+omisión, política del demo) y se guarda en ella; la zona también. Un pago anulado por un reverso se
+clasifica igual y su monto va aparte; los reversos no se atribuyen.
+
+**Por qué.** Cualquier regla que elija entre varias candidatas (la última, la primera, la más
+cercana) produce un número que parece una medida y es una convención: sube el porcentaje
+"atribuido" sin saber nada más. Dejar el pago `AMBIGUA` con sus candidatas dice exactamente lo que se
+sabe, y deja a una versión futura usar otro modelo, con evidencia. Sin contacto no hay evidencia de
+que la gestión llegara a alguien. La ventana no es una verdad de negocio: depende de la operación, y
+por eso no se escribe en el código como una constante; distintas ventanas son distintas
+atribuciones, cada una con su firma.
+
+## 107. Asociación no es causalidad, y compatible no es asociado
+
+**Decisión.** Ni el código, ni la API, ni la documentación dicen que una gestión "produjo" o
+"causó" un pago. Se dice *asociado*, *candidata*, *compatible* y *observado después*, y cada
+respuesta de la atribución y de la evaluación trae un `aviso` que lo explica. Son dos conceptos
+distintos: un movimiento **asociado operacionalmente** (la atribución encontró exactamente una
+gestión candidata) y un movimiento **compatible temporalmente** con una promesa (la evaluación lo
+encontró en su intervalo). La evaluación no exige que el pago esté asociado a la gestión de la
+promesa.
+
+**Por qué.** El que un pago siga a una gestión no dice que la gestión lo provocó: el titular pudo
+haber pagado de todas formas. Un sistema que lo afirma enseña a quien lo usa a creerlo, y un modelo
+entrenado sobre esa afirmación aprende una causalidad que nadie midió. Mezclar asociado y compatible
+haría que una promesa cumplida dependiera de que no hubiera dos gestiones antes del pago.
+
+## 108. La atribución por ventanas, sobre la interpretación vigente, por conjuntos y sin abrirse sola
+
+**Decisión.** Una ejecución de la atribución trabaja por ventana, como el motor de pagos: un
+despacho, una cartera y un mes de recepción, sobre la interpretación vigente de los pagos de ese
+mes. Lee en tablas temporales sus `PAGO` y las gestiones de sus cuentas que pudieron anteceder a
+alguno; arma las parejas con una sola unión temporal; publica con `INSERT ... SELECT`, todo o nada,
+con firma de entrada, en un trabajo `ATRIBUCION` de la cola durable que solo publica su dueño
+vigente. No se abre sola: la piden `POST /atribuciones` y `backfill-atribucion`, que encuentra las
+ventanas desactualizadas (otra interpretación de pagos, gestiones nuevas o anuladas en su rango).
+Una gestión tardía publica otra ejecución; la anterior se conserva y la vigente es la `EXITOSA` más
+reciente.
+
+**Por qué.** Una consulta de gestiones por cada pago es N+1 sobre millones de pagos; la unión
+temporal, por cuenta y rango, entra por el índice de las gestiones de una cuenta y no depende del
+número de pagos (una prueba cuenta las sentencias con 2 y con 60 pagos). Abrirla en cada gestión
+registrada serían millones de trabajos y una ventana atribuida mil veces al día; abrirla con cada
+interpretación de pagos la dejaría desactualizada en cuanto llegara una gestión tardía. El backfill
+hace explícito cuándo una atribución ya no corresponde a sus entradas, y contar basta porque el
+lifecycle solo se agrega.
+
+## 109. Sin GestorCanonico: `actor_ref` es una referencia opaca
+
+**Decisión.** Quien hizo una gestión se guarda como `actor_ref`, un identificador opaco
+(`[A-Za-z0-9._:-]{1,64}`), sin catálogo de personas, sin nombre, sin correo y sin relación con el
+`Gestor` de `pagos/v1`. No hay `GestorCanonico`.
+
+**Por qué.** Un gestor canónico exige reglas de identidad (quién es la misma persona en dos fuentes,
+con nombres que cambian y homónimos), datos personales de empleados y una política de privacidad que
+el proyecto no tiene, y no tiene por qué inventar con datos sintéticos. El `Gestor` de `pagos/v1` es
+lo que la fuente dice, con su propia semántica. Una referencia opaca alcanza para agrupar y para
+auditar, y se puede mapear a un catálogo cuando exista uno con reglas.
+
+## 110. Un convenio sin ledger
+
+**Decisión.** Un convenio guarda su monto total, su vigencia y, si se declararon, sus cuotas una por
+una (vencimiento y monto). No se generan cuotas de un plazo ni de una periodicidad. Si se declaran,
+suman exactamente el total y vencen en fechas estrictamente crecientes dentro de su vigencia: lo
+revisa la API y, al confirmar, un trigger diferido. Ningún movimiento se aplica a una cuota: la API
+muestra la recuperación observada durante su vigencia, y `evaluacion_de_cuotas` es `NO_EVALUABLE`.
+
+**Por qué.** Aplicar pagos a cuotas exige reglas que no existen (¿un pago adelantado cubre la
+siguiente cuota o la última? ¿un pago parcial se reparte?) y con varios pagos y varias cuotas hay
+varias interpretaciones plausibles. Un ledger inventado parecería contabilidad y no lo sería. La
+recuperación observada en la vigencia es un hecho; "cuota pagada" sería una conclusión sin regla.
+
+## 111. La importación masiva: COPY, tablas temporales y fases, todo o nada
+
+**Decisión.** `motor-cartera cargar-lifecycle` importa un JSONL (o `.jsonl.gz`) de eventos
+operacionales sintéticos. Valida cada línea en Python con las reglas de la API y la copia con COPY a
+tablas temporales; en PostgreSQL, por conjuntos, resuelve las llaves (repetidas en el archivo, ya
+registradas), y registra por fases en el orden de sus dependencias: gestiones con sus visitas,
+promesas y convenios con sus cuotas, cancelaciones y anulaciones. Las referencias son por llave. Con
+un solo problema no registra nada y dice cada línea y por qué. Idempotente: el mismo archivo dos
+veces no duplica nada.
+
+**Por qué.** Millones de eventos fila por fila por el ORM tardarían horas y no serían todo o nada.
+La API individual sí usa el ORM, porque registra un evento a la vez. Las referencias por llave dejan
+que un archivo sea autocontenido sin conocer identificadores públicos que todavía no existen. Las
+anulaciones van al final, y llegan al mismo estado que la API: lo que nació de una gestión anulada
+queda anulado con ella.
+
+## 112. Índices medidos, sin particionado; y qué no resuelve v0.9.0
+
+**Decisión.** En el lifecycle, los índices de sus consultas y de sus garantías: la historia de una
+cuenta por momento de negocio (`ix_evento_cuenta_ocurrido`, `ix_gestion_cuenta_ocurrido`), sus
+promesas por fecha límite y sus convenios por inicio, la llave de idempotencia (única) y el evento
+relacionado (único parcial), y la unión de cada detalle con su evento. En la atribución, la llave
+primaria de sus resultados (que es la de una ventana), los de un movimiento por su `movimiento_id` y
+la de sus candidatas. Ningún otro. No hay particionado.
+
+**Por qué así.** En el benchmark XL, con 2,573,729 eventos cargados y 3,242,650 pagos atribuidos,
+cada sentencia de una consulta de una cuenta entra por uno de esos índices y se resuelve en menos de
+0.6 ms dentro de PostgreSQL; la Cuenta 360 entera, con su resumen del lifecycle y su última
+atribución, responde en 42 ms (mediana) desde el servicio. Ningún plan de una consulta de una cuenta
+tiene un Seq Scan sobre una tabla grande. Lo que cuesta es escribir: cargar un periodo XL (unos
+230,000 eventos) toma de 42 a 207 s y escribe de 0.3 a 0.55 GB de WAL, por los índices de
+`evento_lifecycle` y `gestion_cobranza` (la mitad de su tamaño); atribuir un mes de un millón de
+pagos, de 2 a 4 minutos. Una consulta global sí recorre: la primera página de los pagos ambiguos de
+una ventana de un millón tarda 0.5 s, y un índice por clasificación la evitaría a costa de escribir
+otro índice de millones de filas en cada atribución; se deja medida.
+
+**Por qué sin particionado.** Particionar por fecha no acelera ninguna consulta de una cuenta, que
+ya entra por su índice, y obligaría a incluir la fecha en las llaves únicas: la de idempotencia
+dejaría de garantizar una llave por cartera. Donde podría pagar es en la retención de las
+atribuciones que ya no son vigentes (cada una escribe de nuevo todos los pagos de su ventana), que
+es una política de la operación, con datos de producción (v0.18).
+
+**Lo que v0.9.0 no hace**, a propósito: el Decision Engine v2 y cualquier feature, score o modelo
+(v0.10 y después); causalidad, aporte o productividad de una gestión, de un canal o de un actor; un
+`GestorCanonico`; un ledger de convenios; geografía, rutas, zonas o jornadas para las visitas
+(v0.11–v0.13); resolver si dos observaciones de corte son la misma promesa; abrir la evaluación o la
+atribución sin que alguien la pida; y una fuente oficial nueva: el lifecycle no lo es.

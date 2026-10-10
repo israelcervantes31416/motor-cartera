@@ -143,6 +143,28 @@ trabajo `MOTOR_PAGOS`, cuando la historia publica los pagos observados de un arc
 La recuperacion interpretada es del motor sobre las fuentes disponibles: no es el libro contable del
 acreedor.
 
+**El lifecycle de cobranza** registra lo que la cobranza hizo con cada cuenta como eventos
+operacionales que solo se agregan, con su momento de negocio (`ocurrido_en`) y su momento de
+registro (`registrado_en`). No es una fuente oficial, y nada se fabrica de un snapshot. Cada
+escritura exige `Idempotency-Key`: la misma llave con la misma peticion responde `200` con
+`Idempotent-Replayed: true`; con otra peticion, `409 IDEMPOTENCY_KEY_REUTILIZADA`.
+
+25. `POST /cuentas/{cuenta_id}/gestiones` (con su visita si es de `CAMPO`), las gestiones de una
+    cuenta y `GET /gestiones/{gestion_id}`; `POST /gestiones/{gestion_id}/anulaciones`.
+26. `POST /gestiones/{gestion_id}/promesas` y `/convenios`, con sus cancelaciones;
+    `GET /promesas/{promesa_id}`, `GET /convenios/{convenio_id}` y los de una cuenta.
+27. `GET /cuentas/{cuenta_id}/lifecycle`: su linea de tiempo en tres dominios (`OPERACIONAL`,
+    `FUENTE_CORTE` y `ECONOMICO`), sin convertir uno en otro.
+28. `POST /evaluaciones-promesas` con `as_of`: evalua las promesas de la cartera a esa fecha
+    (`evaluacion-promesa/v1`) en un trabajo `EVALUACION_PROMESAS`; lo que concluyo de cada promesa.
+29. `POST /atribuciones` con un `periodo`: asocia cada pago interpretado del mes con las gestiones
+    con contacto que lo antecedieron (`atribucion/v1`) en un trabajo `ATRIBUCION`; sus resultados
+    con sus candidatas, las atribuciones de un movimiento y los pagos atribuidos de una cuenta.
+
+La atribucion es asociacion operacional, no causalidad: con dos o mas candidatas el pago queda
+`AMBIGUA` y no se elige ninguna. Que un pago sea compatible con una promesa no dice que la promesa
+lo produjo.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un

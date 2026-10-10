@@ -3,8 +3,10 @@
 La Cuenta 360 responde, para una cuenta, **qué le pasó a través del tiempo**: cuándo se observó por
 primera vez, en qué cortes estuvo, cuál es su estado más reciente, cómo evolucionaron su saldo y su
 mora, si dejó de aparecer o reapareció, cuántos cortes faltó, qué pagos observados tiene, de qué
-archivo y de qué fila salió cada dato, cuál era su estado en una fecha y, desde v0.8, qué
-movimientos económicos interpreta de sus pagos el motor de pagos ([motor_pagos.md](motor_pagos.md)).
+archivo y de qué fila salió cada dato, cuál era su estado en una fecha, desde v0.8, qué
+movimientos económicos interpreta de sus pagos el motor de pagos ([motor_pagos.md](motor_pagos.md)) y,
+desde v0.9, qué hizo la cobranza con ella y con qué gestiones se asocia cada pago
+([lifecycle.md](lifecycle.md), [atribucion.md](atribucion.md)).
 
 La responde desde el modelo histórico ([historia.md](historia.md)): sin volver a leer ningún xlsx,
 csv, zip ni Parquet, y con consultas de una sola cuenta que entran por un índice. La lógica vive en
@@ -24,11 +26,16 @@ esa respuesta, como una salida que no ocurrió.
 | Método y ruta | Qué devuelve | Respuestas |
 |---|---|---|
 | `GET /cuentas?cliente_unico=...` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
-| `GET /cuentas/{cuenta_id}` | Su resumen a través de sus cortes, con `resumen_pagos`; con `?al=AAAA-MM-DD`, como se veía en esa fecha | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | Su resumen a través de sus cortes, con `resumen_pagos` y `lifecycle_resumen`; con `?al=AAAA-MM-DD`, como se veía en esa fecha | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/historia` | Sus snapshots, con continuidad, deltas y evidencia, paginados (`orden=desc` por omisión, o `asc`) | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/movimientos` | Sus movimientos económicos interpretados por el motor de pagos, con su contexto temporal; `desde` y `hasta`, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/gestiones` | Sus gestiones, con su contacto, su resultado y si se anularon, filtradas en la base y paginadas | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/promesas` | Sus promesas, con su estado operativo y su última evaluación, paginadas | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/convenios` | Sus convenios, con sus cuotas declaradas, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/lifecycle` | Su línea de tiempo en tres dominios (`OPERACIONAL`, `FUENTE_CORTE`, `ECONOMICO`), paginada | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/atribuciones` | Sus pagos vigentes, cada uno con su atribución vigente y sus candidatas, paginados | 200, 401, 404, 422 |
 | `GET /cartera/cortes` | Los cortes canónicos de la cartera, por fecha, y el último | 200, 401, 422 |
 | `GET /cartera/cortes/{corte_id}` | Un corte con su evidencia: el Parquet, el original y sus fuentes equivalentes | 200, 401, 404, 422 |
 | `GET /historias/{historia_run_id}` | Una ejecución histórica: cómo va o cómo terminó | 200, 401, 404, 422 |
@@ -94,6 +101,16 @@ curl -s -H "X-API-Key: clave-local-de-desarrollo" \
     "recuperacion_bruta_interpretada": "2300.00", "recuperacion_neta_interpretada": "2300.00",
     "aviso": "Recuperacion interpretada por motor-pagos/v1 sobre las fuentes disponibles, ..."
   },
+  "lifecycle_resumen": {
+    "version_lifecycle": "lifecycle/v1", "gestiones": 3, "gestiones_anuladas": 1,
+    "ultima_gestion": { "gestion_id": "…", "ocurrido_en": "2026-09-20T16:15:00Z", "canal": "TELEFONICA",
+                        "nivel_contacto": "CONTACTO_TITULAR", "resultado": "PROMESA" },
+    "ultimo_contacto_titular": { "gestion_id": "…", "...": "..." },
+    "promesas": 1, "promesas_vigentes": 1, "convenios": 0, "convenios_vigentes": 0, "visitas": 0,
+    "ultima_atribucion": { "atribucion_run_id": "…", "version_atribucion": "atribucion/v1",
+                           "clasificacion": "ASOCIACION_UNICA", "gestion_id": "…", "candidatas": 1,
+                           "...": "..." }
+  },
   "snapshot_actual": { "fecha_corte": "2026-09-30", "saldo_total": "62450.00", "...": "..." },
   "ultimo_snapshot_observado": { "fecha_corte": "2026-09-30", "...": "..." }
 }
@@ -116,6 +133,12 @@ curl -s -H "X-API-Key: clave-local-de-desarrollo" \
   duplicados exactos, coincidencias ambiguas, reversos, posibles reversos o no conciliadas, cuántos
   pagos anuló un reverso, y la recuperación bruta y neta interpretadas, con su aviso: no es un saldo
   contable. No trae los movimientos, que son `/movimientos`.
+- **`lifecycle_resumen`** es lo que la cobranza hizo con la cuenta, en números: sus gestiones
+  vigentes y anuladas, la última y el último contacto con el titular, sus promesas y convenios (y
+  cuántos siguen vigentes), sus visitas y la **última atribución disponible**: lo que la atribución
+  vigente dice del pago más reciente de la cuenta que tiene una. Es asociación operacional, no
+  causalidad. Los detalles están en `/gestiones`, `/promesas`, `/convenios`, `/lifecycle` y
+  `/atribuciones`.
 
 Con `?al=2026-09-16`, la misma cuenta se ve como se veía ese día: solo cuentan los cortes con fecha
 hasta el 16, el último corte es el último hasta esa fecha, y los pagos, los recibidos hasta el final
