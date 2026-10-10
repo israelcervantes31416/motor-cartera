@@ -8,17 +8,19 @@ name: Benchmark de escala
 # pagos observados de esos cortes, las llegadas tardias y las consultas de una cuenta y de un
 # movimiento, con su plan; con tipo=lifecycle, ademas, la carga de los eventos operacionales de esos
 # cortes, la atribucion de sus pagos, la evaluacion de sus promesas y las consultas de una cuenta,
-# con su plan.
+# con su plan; con tipo=decision_v2, sobre ese mismo escenario con su lifecycle, decision/v1 y
+# decision/v2 de su ultimo corte por fase, una segunda decision comparada cuenta por cuenta, la
+# sombra y las consultas de una cuenta y de una pagina, con su plan.
 on:
   workflow_dispatch:
     inputs:
       tipo:
         description: "Que se mide"
         type: choice
-        options: [escala, historia, motor_pagos, lifecycle]
+        options: [escala, historia, motor_pagos, lifecycle, decision_v2]
         default: escala
       cortes:
-        description: "Cuantos cortes (con tipo=historia o tipo=motor_pagos)"
+        description: "Cuantos cortes (con tipo=historia, motor_pagos, lifecycle o decision_v2)"
         type: string
         default: "12"
       perfil:
@@ -32,7 +34,7 @@ on:
         options: [zip, csv]
         default: zip
       intensidad:
-        description: "Intensidad del lifecycle (con tipo=lifecycle): 0.5 en el XL, unos 2.5 millones de eventos"
+        description: "Intensidad del lifecycle (con tipo=lifecycle o decision_v2): 0.5 en el XL, unos 2.5 millones de eventos"
         type: string
         default: "0.5"
 
@@ -156,6 +158,34 @@ jobs:
             echo
             echo '```text'
             cat "$RUNNER_TEMP/lifecycle/planes_lifecycle.txt"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+          INTENSIDAD: ${{ inputs.intensidad }}
+
+      - name: Benchmark de decision/v2
+        if: inputs.tipo == 'decision_v2'
+        run: |
+          python scripts/benchmark_motor_pagos.py --perfil "$PERFIL" --cortes "$CORTES" \
+            --formato "$FORMATO" --destino "$RUNNER_TEMP/motor_pagos" \
+            --salida "$RUNNER_TEMP/motor_pagos/benchmark_motor_pagos.json" \
+            | tee "$RUNNER_TEMP/benchmark_motor_pagos.log"
+          python scripts/benchmark_lifecycle.py --escenario "$RUNNER_TEMP/motor_pagos" \
+            --destino "$RUNNER_TEMP/lifecycle" --intensidad "$INTENSIDAD" \
+            | tee "$RUNNER_TEMP/benchmark_lifecycle.log"
+          python scripts/benchmark_decision_v2.py --destino "$RUNNER_TEMP/decision_v2" \
+            | tee "$RUNNER_TEMP/benchmark_decision_v2.log"
+          {
+            echo "## Benchmark de decision/v2: el ultimo de $CORTES cortes del perfil $PERFIL"
+            echo
+            cat "$RUNNER_TEMP/decision_v2/benchmark_decision_v2.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/decision_v2/planes_decision_v2.txt"
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"

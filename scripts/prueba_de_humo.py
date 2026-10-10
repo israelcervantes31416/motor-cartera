@@ -28,8 +28,11 @@ dos observaciones.
 Con --oficial y --pagos, recorre ademas el lifecycle de cobranza sobre sus cuentas y sus pagos:
 gestion, promesa, movimiento, evaluacion de la promesa a una fecha explicita, atribucion y Cuenta
 360, con una gestion sin contacto, una anulada, un pago ambiguo, la idempotencia de las escrituras
-y los trabajos EVALUACION_PROMESAS y ATRIBUCION. Solo usa la biblioteca estandar, para correr igual
-en el CI, dentro del contenedor o en una laptop:
+y los trabajos EVALUACION_PROMESAS y ATRIBUCION. Y decision/v2 sobre el corte oficial: una decision
+a su as_of con su known_at declarado (un BACKTEST, si el escenario ya trajo cortes posteriores), sus
+features, una cuenta con un modificador -1, una con +1 y una con los dos, cada una explicada y
+verificada, su historia, la Cuenta 360 y su trabajo DECISION_V2. Solo usa la biblioteca estandar,
+para correr igual en el CI, dentro del contenedor o en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
@@ -833,6 +836,186 @@ def el_lifecycle(pagos: Path, corte: str) -> None:
     )
 
 
+# --- decision/v2 ----------------------------------------------------------------------------------
+
+REC, SAT = "RECUPERACION_RECIENTE", "SATURACION_SIN_CONTACTO"
+
+
+def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteriores: bool) -> None:
+    """decision/v2 de punta a punta sobre el corte de la cartera oficial: CorteCanonico, decision a
+    un as_of y un known_at declarados, features, resultado, explicacion y Cuenta 360. Antes registra
+    tres gestiones sin contacto en dos cuentas, para ver un modificador -1 (un pago reciente), uno
+    +1 (saturacion sin contacto) y dos que se cancelan (las dos cosas en la misma cuenta)."""
+    print(f"Decision v2 sobre el corte {corte}")
+    estado, _, cortes = pedir("GET", "/cartera/cortes?por_pagina=500")
+    del_dia = next((c for c in cortes.get("elementos", []) if c["fecha_corte"] == corte), None)
+    esperar(
+        estado == 200 and del_dia is not None,
+        f"GET /cartera/cortes: el corte canonico del {corte}, con {del_dia and del_dia['cuentas']} "
+        "cuentas",
+    )
+    filas = _filas_de_pagos(pagos)
+    veces: dict[str, int] = {}
+    for fila in filas:
+        veces[fila["Cliente_Unico"]] = veces.get(fila["Cliente_Unico"], 0) + 1
+    unicos = sorted(
+        (f for f in filas if veces[f["Cliente_Unico"]] == 1 and not f[MONTO].startswith("-")),
+        key=lambda f: (f[RECEPCION], f["Cliente_Unico"]),
+    )
+    # Las cuatro primeras son del lifecycle; estas, no tienen ninguna gestion.
+    menos, cancelan = unicos[4]["Cliente_Unico"], unicos[5]["Cliente_Unico"]
+    sin_pagos = sorted(set(_clientes(oficial)) - set(veces))
+    esperar(len(sin_pagos) > 0, f"{len(sin_pagos)} cuentas del corte sin pagos en el archivo")
+    mas = sin_pagos[0]
+    for cliente in (mas, cancelan):
+        cuenta_id = _cuenta_de(cliente)
+        for dia in (27, 28, 29):
+            estado, _, _ = enviar(
+                f"/cuentas/{cuenta_id}/gestiones",
+                {
+                    "ocurrido_en": f"{corte[:8]}{dia}T10:00:00-06:00",
+                    "canal": "TELEFONICA",
+                    "medio": "LLAMADA",
+                    "nivel_contacto": "SIN_CONTACTO",
+                    "resultado": "SIN_RESPUESTA",
+                },
+                llave=f"humo-{uuid.uuid4().hex}",
+            )
+            esperar(estado == 201, f"{cliente}: una llamada sin contacto el {dia} ({estado})")
+
+    pedida = {"corte_id": del_dia["corte_id"]}
+    if hay_cortes_posteriores:
+        # El escenario trae cortes posteriores: este ya no es el mas reciente, y una decision
+        # OPERATIVO de el se niega. Se pide como BACKTEST, declarando su frontera de conocimiento.
+        estado, _, error = enviar("/decisiones-v2", pedida)
+        esperar(
+            estado == 422 and error["codigo"] == "CORTE_NO_VIGENTE",
+            f"POST /decisiones-v2 OPERATIVO de un corte que ya no es el ultimo: {estado} "
+            f"{error.get('codigo')}",
+        )
+        estado, _, error = enviar("/decisiones-v2", {**pedida, "modo": "BACKTEST"})
+        esperar(
+            estado == 422 and error["codigo"] == "KNOWN_AT_REQUERIDO",
+            f"un BACKTEST sin known_at: {estado} {error.get('codigo')}",
+        )
+        known_at = (datetime.now().astimezone() - timedelta(seconds=1)).isoformat()
+        pedida.update(modo="BACKTEST", known_at=known_at)
+    estado, encabezados, abierta = enviar("/decisiones-v2", pedida)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and abierta["as_of"] == corte
+        and ubicacion_de(encabezados) == f"/decisiones-v2/{abierta['decision_run_id']}",
+        f"POST /decisiones-v2: {estado} EN_PROCESO, as_of {abierta.get('as_of')}, known_at "
+        f"{abierta.get('known_at')}",
+    )
+    decision = seguir(ubicacion_de(encabezados))
+    esperar(
+        decision.get("estado") == "EXITOSA"
+        and decision["conteos"]["cuentas_decididas"] == del_dia["cuentas"]
+        and decision["conteos"]["cuentas_fallidas"] == 0
+        and decision["known_at"] == abierta["known_at"],
+        f"la decision termino {decision.get('estado')}: {decision.get('detalle', '')[:160]}",
+    )
+    esperar(
+        decision["versiones"]
+        == {
+            "motor": "decision/v2",
+            "features": "features-decision/v1",
+            "politica": "decision-policy/public-v1",
+        }
+        and len(decision["hash_politica"]) == len(decision["firma_inputs"]) == 64
+        and "no es un modelo predictivo" in decision["aviso"],
+        f"versiones motor/features/politica y hash de la politica {decision['hash_politica'][:12]}"
+        f"...; firma de entrada {decision['firma_inputs'][:12]}...",
+    )
+    esperar(
+        decision["disponibilidad"]["pagos"]["7d"] is True,
+        "disponibilidad a known_at: pagos "
+        + ", ".join(f"{v} {ok}" for v, ok in decision["disponibilidad"]["pagos"].items())
+        + "; advertencias "
+        + ", ".join(a["codigo"] for a in decision["advertencias"]),
+    )
+
+    def explicada(cliente: str) -> tuple[str, dict]:
+        cuenta_id = _cuenta_de(cliente)
+        estado, _, cuerpo = pedir(
+            "GET", f"/decisiones-v2/{decision['decision_run_id']}/resultados/{cuenta_id}"
+        )
+        esperar(estado == 200, f"GET /decisiones-v2/{{id}}/resultados/{{cuenta_id}} de {cliente}")
+        return cuenta_id, cuerpo
+
+    for cliente, ajuste, activas in (
+        (menos, -1, [REC]),
+        (mas, 1, [SAT]),
+        (cancelan, 0, [REC, SAT]),
+    ):
+        _, cuerpo = explicada(cliente)
+        aplicadas = [r["codigo"] for r in cuerpo["reglas"] if r["activa"]]
+        esperar(
+            cuerpo["ajuste_total"] == ajuste
+            and aplicadas == activas
+            and [m["codigo"] for m in cuerpo["motivos"][1:-2]] == activas
+            and cuerpo["verificacion"]
+            == {"feature_hash": True, "decision_hash": True, "motivos": True},
+            f"{cliente}: {cuerpo['prioridad_base']} {ajuste:+d} = {cuerpo['prioridad_final']} "
+            f"({cuerpo['canal_recomendado']}) por {', '.join(activas)}; verificada",
+        )
+        for regla in cuerpo["reglas"]:
+            if regla["activa"]:
+                condiciones = "; ".join(
+                    f"{c['feature']} = {c['valor']} {c['operador']} {c['umbral']}"
+                    for c in regla["condiciones"]
+                )
+                print(f"      {regla['codigo']} ({regla['efecto']:+d}): {condiciones}")
+
+    cuenta_mas, de_mas = explicada(mas)
+    final = de_mas["prioridad_final"]
+    estado, _, pagina = pedir(
+        "GET",
+        f"/decisiones-v2/{decision['decision_run_id']}/resultados?prioridad_final={final}"
+        "&por_pagina=5",
+    )
+    esperar(
+        estado == 200
+        and pagina["total"] == decision["distribucion"]["prioridad_final"][final]
+        and {r["prioridad_final"] for r in pagina["elementos"]} == {final},
+        f"GET /decisiones-v2/{{id}}/resultados?prioridad_final={final}: {pagina.get('total')} "
+        "decisiones, por su indice",
+    )
+    estado, _, historia = pedir("GET", f"/cuentas/{cuenta_mas}/decisiones-v2")
+    estado_c, _, del_corte = pedir("GET", f"/cartera/cortes/{del_dia['corte_id']}/decisiones-v2")
+    esperar(
+        estado == estado_c == 200
+        and historia["total"] == 1
+        and historia["elementos"][0]["decision_run_id"] == decision["decision_run_id"]
+        and del_corte["total"] == 1,
+        "GET /cuentas/{cuenta_id}/decisiones-v2 y /cartera/cortes/{corte_id}/decisiones-v2: la "
+        "decision de la cuenta y la del corte",
+    )
+    _, _, resumen = pedir("GET", f"/cuentas/{cuenta_mas}")
+    esperar(
+        resumen.get("ultima_decision_v2")
+        == {
+            "decision_run_id": decision["decision_run_id"],
+            "as_of": corte,
+            "prioridad": final,
+            "canal": de_mas["canal_recomendado"],
+        },
+        f"GET /cuentas/{{cuenta_id}}: ultima_decision_v2 {final}, {de_mas['canal_recomendado']}",
+    )
+    estado, _, trabajo = pedir("GET", f"/trabajos/{decision['trabajo_id']}")
+    esperar(
+        estado == 200 and (trabajo["tipo"], trabajo["estado"]) == ("DECISION_V2", "COMPLETADO"),
+        f"su trabajo DECISION_V2: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+    )
+    estado, _, error = enviar("/decisiones-v2", {**pedida, "known_at": decision["known_at"]})
+    esperar(
+        estado == 409 and error["codigo"] == "DECISION_V2_YA_GENERADA",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+
+
 def main(
     archivo: Path,
     oficial: Path | None = None,
@@ -1214,14 +1397,20 @@ def main(
         "/atribuciones/{atribucion_run_id}/resultados",
         "/movimientos/{movimiento_id}/atribuciones",
         "/cuentas/{cuenta_id}/atribuciones",
+        "/decisiones-v2",
+        "/decisiones-v2/{decision_run_id}",
+        "/decisiones-v2/{decision_run_id}/resultados",
+        "/decisiones-v2/{decision_run_id}/resultados/{cuenta_id}",
+        "/cuentas/{cuenta_id}/decisiones-v2",
+        "/cartera/cortes/{corte_id}/decisiones-v2",
     )
     esperar(
         estado == 200
         and version == version_del_repositorio()
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
-        "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle "
-        "y la atribucion",
+        "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
+        "la atribucion y decision/v2",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -1232,6 +1421,7 @@ def main(
         el_motor_de_pagos(escenario)
     if oficial is not None and pagos is not None:
         el_lifecycle(pagos, corte)
+        la_decision_v2(oficial, pagos, corte, hay_cortes_posteriores=escenario is not None)
     print("Todo en orden.")
 
 
