@@ -347,10 +347,10 @@ núcleos, 12 hilos), 15 GB de RAM con 2 a 3 GB libres, PostgreSQL 16.15 con `sha
 - **Generar**: el lifecycle de los 11 periodos, 2,573,729 eventos, en 59 s (53 MB comprimidos).
 - **Cargar** con `cargar-lifecycle`, un archivo por periodo: **2,573,729 eventos en 832 s, 3,092 por
   segundo** en promedio (de 1,119 a 5,717 por archivo, según los checkpoints y el autovacuum de la
-  base), con **114 MiB de memoria pico** por proceso y de 278 a 551 MiB de WAL por archivo. Quedaron
-  2,066,688 gestiones (1,121,629 con contacto con el titular y 263,198 con un tercero), 230,085
-  visitas, 410,626 promesas, 29,588 convenios con 59,388 cuotas, 35,870 cancelaciones y 30,957
-  anulaciones.
+  base), con **de 113 a 122 MiB de memoria pico** por proceso y de 278 a 551 MiB de WAL por
+  archivo. Quedaron 2,066,688 gestiones (1,121,629 con contacto con el titular y 263,198 con un
+  tercero), 230,085 visitas, 410,626 promesas, 29,588 convenios con 59,388 cuotas, 35,870
+  cancelaciones y 30,957 anulaciones.
 - **Volver a cargar** el primer archivo: 17 s, ningún evento nuevo y 239,004 ya registrados.
 - **Evaluar** las 410,626 promesas al 2026-03-25: 39 s (10,563 por segundo): 207,220 cumplidas,
   43,805 parciales, 107,688 incumplidas, 38,607 canceladas, 13,306 pendientes y ninguna no evaluable.

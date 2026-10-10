@@ -877,8 +877,8 @@ cortes ni de los pagos. Todo está en [docs/lifecycle.md](docs/lifecycle.md) y
 [docs/atribucion.md](docs/atribucion.md); el porqué, en las decisiones 99 a 112.
 
 **Medido.** En la máquina de desarrollo, sobre los 12 cortes XL del motor de pagos, con intensidad
-0.5: `cargar-lifecycle` registró **2,573,729 eventos** en 832 s (3,092 por segundo) con 114 MiB de
-memoria pico por archivo, y volver a cargar uno no registró nada; la atribución de **3,242,650
+0.5: `cargar-lifecycle` registró **2,573,729 eventos** en 832 s (3,092 por segundo) con 113 a 122
+MiB de memoria pico por archivo, y volver a cargar uno no registró nada; la atribución de **3,242,650
 pagos** (829,365 con asociación única, 1,058,497 ambiguos y 1,354,788 sin candidata) tomó 625 s con
 152 MiB, y la evaluación de 410,626 promesas, 39 s. La base creció 3.1 GB. Cada sentencia de una
 consulta de una cuenta entra por un índice y se resuelve en menos de 0.6 ms dentro de PostgreSQL;
