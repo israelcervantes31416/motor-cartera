@@ -704,6 +704,161 @@ def backfill_atribucion(
         )
 
 
+@app.command("decidir-v2")
+def decidir_v2(
+    corte: Annotated[
+        datetime,
+        typer.Option(
+            "--corte",
+            formats=["%Y-%m-%d"],
+            help="La fecha del corte canonico cuyas cuentas se deciden: tambien su as_of.",
+        ),
+    ],
+    known_at: Annotated[
+        datetime | None,
+        typer.Option(
+            "--known-at",
+            formats=["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"],
+            help="La frontera de conocimiento, con su zona: 2026-09-17T08:00:00-06:00. Sin ella, "
+            "el reloj de la base al abrir. Obligatoria con --backtest.",
+        ),
+    ] = None,
+    backtest: Annotated[
+        bool,
+        typer.Option(
+            "--backtest",
+            help="Decide un corte que ya no es el mas reciente, con el known_at que se declare.",
+        ),
+    ] = False,
+    politica: Annotated[
+        str | None,
+        typer.Option("--politica", help="Por omision, decision-policy/public-v1."),
+    ] = None,
+) -> None:
+    """Decide las cuentas de un corte con decision/v2, en primer plano y sin la API.
+
+    Usa solo lo que se conocia en known_at de lo que paso hasta el final del dia del corte. Pasa por
+    la cola durable, como la API, pero con el trabajo ya de este proceso: si se interrumpe, un
+    worker la termina cuando vence su lease, con el mismo known_at. Corre en paralelo a
+    decision/v1: no cambia el flujo operacional. Termina con codigo 1 si no publico.
+    """
+    from sqlmodel import select
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import CorteCanonico, EstadoDecisionV2, ModoDecisionV2
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.decision_v2.ejecuciones import (
+        DecisionV2EnProceso,
+        DecisionV2YaGenerada,
+        EntradaNoDecidible,
+    )
+    from motor_cartera.orquestacion.worker import decidir_v2_en_primer_plano
+
+    fecha = corte.date()
+    with sesion() as s:
+        corte_id = s.exec(
+            select(CorteCanonico.corte_id).where(
+                CorteCanonico.despacho_id == config.despacho_id,
+                CorteCanonico.cartera_id == config.cartera_id,
+                CorteCanonico.fecha_corte == fecha,
+            )
+        ).first()
+    if corte_id is None:
+        typer.echo(
+            f"No hay un corte canonico del {fecha.isoformat()} en "
+            f"{config.despacho_id}/{config.cartera_id}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    modo = ModoDecisionV2.BACKTEST if backtest else ModoDecisionV2.OPERATIVO
+    try:
+        ejecucion = decidir_v2_en_primer_plano(
+            corte_id, known_at=known_at, modo=modo, version_politica=politica
+        )
+    except (EntradaNoDecidible, DecisionV2EnProceso, DecisionV2YaGenerada) as exc:
+        codigo = getattr(exc, "codigo", type(exc).__name__)
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Decision v2 {ejecucion.decision_run_id}: {ejecucion.estado}")
+    typer.echo(
+        f"  corte {fecha.isoformat()}, as_of {ejecucion.as_of.isoformat()}, known_at "
+        f"{ejecucion.known_at.isoformat()} ({modo})"
+    )
+    typer.echo(
+        f"  {ejecucion.version_motor} | {ejecucion.version_features} | "
+        f"{ejecucion.version_politica} ({ejecucion.hash_politica[:12]}...)"
+    )
+    typer.echo(f"  firma de entrada {ejecucion.firma_inputs}")
+    typer.echo(f"  {ejecucion.detalle}")
+    if ejecucion.disponibilidad:
+        for familia in ("pagos", "atribucion"):
+            ventanas = ", ".join(
+                f"{v} {'si' if ok else 'NO'}"
+                for v, ok in ejecucion.disponibilidad.get(familia, {}).items()
+            )
+            typer.echo(f"  {familia} disponibles a known_at: {ventanas}")
+    if ejecucion.estado != EstadoDecisionV2.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("comparar-decisiones")
+def comparar_decisiones(
+    corte: Annotated[
+        datetime,
+        typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte canonico."),
+    ],
+) -> None:
+    """Compara, en modo sombra, la decision v2 EXITOSA mas reciente de un corte con la decision/v1
+    de la corrida que lo publico: cuantas prioridades y canales coinciden y cuantos no, y por que
+    puede ser (el ajuste por saldo de v1, los modificadores de v2). Es un diagnostico: no dice
+    cual es mejor, y no se usa para ajustar la politica."""
+    from sqlmodel import select
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import CorteCanonico, EjecucionDecisionV2, EstadoDecisionV2
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.decision_v2.sombra import comparar
+
+    fecha = corte.date()
+    with sesion() as s:
+        ejecucion = s.exec(
+            select(EjecucionDecisionV2)
+            .join(CorteCanonico, CorteCanonico.id == EjecucionDecisionV2.corte_canonico_id)
+            .where(
+                CorteCanonico.despacho_id == config.despacho_id,
+                CorteCanonico.cartera_id == config.cartera_id,
+                CorteCanonico.fecha_corte == fecha,
+                EjecucionDecisionV2.estado == EstadoDecisionV2.EXITOSA,
+            )
+            .order_by(EjecucionDecisionV2.known_at.desc(), EjecucionDecisionV2.id.desc())
+        ).first()
+        if ejecucion is None:
+            typer.echo(
+                f"El corte del {fecha.isoformat()} no tiene una decision v2 EXITOSA.", err=True
+            )
+            raise typer.Exit(code=1)
+        c = comparar(s, ejecucion)
+    typer.echo(f"decision/v2 {c.decision_v2} contra decision/v1 {c.decision_v1 or '(ninguna)'}")
+    typer.echo(
+        f"  cuentas: v2 {c.cuentas_v2:,}, v1 {c.cuentas_v1:,}, comparadas {c.comparadas:,}, "
+        f"solo en v2 {c.solo_v2:,}, solo en v1 {c.solo_v1:,}"
+    )
+    typer.echo(
+        f"  prioridad: igual {c.prioridad_igual:,}, v2 mayor {c.v2_mayor:,}, v2 menor "
+        f"{c.v2_menor:,}"
+    )
+    typer.echo(f"  canal: igual {c.canal_igual:,}, distinto {c.canal_distinto:,}")
+    typer.echo(
+        f"  v1 subio por saldo (SALDO_ALTO, fuera de public-v1): {c.v1_con_saldo_alto:,}; base de "
+        f"v2 igual a la final de v1: {c.base_v2_igual_a_v1:,}"
+    )
+    for codigo, cuantas in c.modificadores.items():
+        typer.echo(f"  {codigo}: {cuantas:,}")
+    for fila, columnas in c.matriz.items():
+        typer.echo(f"  v1 {fila:>8} -> " + ", ".join(f"{p} {n:,}" for p, n in columnas.items()))
+    typer.echo("Es un diagnostico de diferencias, no un juicio de calidad.")
+
+
 def _ventana_atribuible(ventana) -> str:
     """Una ventana de la atribucion, como la lee una persona."""
     return (
