@@ -52,6 +52,7 @@ from motor_cartera.db.copia import copiar
 from motor_cartera.db.modelos import PATRON_ACTOR, PATRON_LLAVE
 from motor_cartera.db.sesion import restriccion, sesion
 from motor_cartera.lifecycle.reglas import (
+    TOLERANCIA_DEL_RELOJ,
     VERSION_LIFECYCLE,
     Canal,
     Medio,
@@ -59,10 +60,11 @@ from motor_cartera.lifecycle.reglas import (
     ResultadoGestion,
     ResultadoVisita,
     TipoEvento,
-    datos_personales,
+    datos_personales_en,
     huella,
     incoherencias_de_cuotas,
     incoherencias_de_gestion,
+    incoherencias_de_visita,
 )
 
 log = logging.getLogger(__name__)
@@ -260,6 +262,7 @@ def importar(
             "cartera": cartera_id,
             "zona": zona,
             "version": VERSION_LIFECYCLE,
+            "tolerancia": TOLERANCIA_DEL_RELOJ,
         }
         try:
             _registrar(s, reporte, parametros)
@@ -398,8 +401,13 @@ def _revisar(linea) -> None:
         if problemas:
             raise _Incoherente("GESTION_INCOHERENTE", problemas)
         if visita is not None:
-            _visita_en_su_tiempo(visita, linea)
-        _sin_datos_personales(linea.observacion, visita and visita.observacion)
+            problemas = incoherencias_de_visita(visita.inicio, visita.fin, linea.ocurrido_en)
+            if problemas:
+                raise _Incoherente("VISITA_INCOHERENTE", problemas)
+        _sin_datos_personales(
+            observacion=linea.observacion,
+            observacion_de_la_visita=visita and visita.observacion,
+        )
     elif isinstance(linea, ConvenioImportado):
         if linea.fecha_fin is not None and linea.fecha_fin < linea.fecha_inicio:
             raise _Incoherente(
@@ -414,28 +422,11 @@ def _revisar(linea) -> None:
         if problemas:
             raise _Incoherente("CUOTAS_INCOHERENTES", problemas)
     elif isinstance(linea, AnulacionImportada | CancelacionDePromesa | CancelacionDeConvenio):
-        _sin_datos_personales(linea.motivo)
+        _sin_datos_personales(motivo=linea.motivo)
 
 
-def _visita_en_su_tiempo(visita: VisitaImportada, gestion: GestionImportada) -> None:
-    problemas = []
-    if visita.inicio is not None and visita.fin is not None and visita.inicio > visita.fin:
-        problemas.append("La visita termina antes de empezar.")
-    if visita.inicio is not None and visita.inicio > gestion.ocurrido_en:
-        problemas.append("La gestion ocurre antes de que empiece su visita.")
-    if visita.fin is not None and visita.fin < gestion.ocurrido_en:
-        problemas.append("La gestion ocurre despues de que termina su visita.")
-    if problemas:
-        raise _Incoherente("VISITA_INCOHERENTE", problemas)
-
-
-def _sin_datos_personales(*textos: str | None) -> None:
-    problemas = [
-        f"Un texto libre parece traer {dato}: no se guardan datos personales."
-        for texto in textos
-        if texto
-        for dato in datos_personales(texto)
-    ]
+def _sin_datos_personales(**textos: str | None) -> None:
+    problemas = datos_personales_en(**textos)
     if problemas:
         raise _Incoherente("DATOS_PERSONALES", problemas)
 
@@ -553,7 +544,7 @@ SQL_LLAVES = (
     "ANALYZE imp_nueva",
     "INSERT INTO imp_problema SELECT linea, llave, 'OCURRIDO_EN_FUTURO', 'ocurrido_en (' || "
     "ocurrido_en || ') es posterior a este momento: un evento se registra cuando ya ocurrio.' "
-    "FROM imp_nueva WHERE ocurrido_en > now() + interval '5 minutes'",
+    "FROM imp_nueva WHERE ocurrido_en > now() + :tolerancia",
 )
 
 _SIN_PROBLEMA = "NOT EXISTS (SELECT 1 FROM imp_problema p WHERE p.linea = {linea})"
@@ -659,7 +650,7 @@ SQL_DETALLES = (
     "WHEN (ya_tiene OR orden > 1) AND tipo = 'PROMESA_CREADA' THEN 'PROMESA_YA_REGISTRADA' "
     "WHEN ya_tiene OR orden > 1 THEN 'CONVENIO_YA_REGISTRADO' "
     "WHEN ocurrido_en < ocurrido_gestion THEN 'OCURRIDO_ANTES_DEL_EVENTO' "
-    "WHEN ocurrido_en > now() + interval '5 minutes' THEN 'OCURRIDO_EN_FUTURO' "
+    "WHEN ocurrido_en > now() + :tolerancia THEN 'OCURRIDO_EN_FUTURO' "
     "WHEN tipo = 'PROMESA_CREADA' AND limite_anterior THEN 'FECHA_LIMITE_ANTERIOR' END AS codigo, "
     + _REFERENCIA_DETALLE.format(evento="evento_gestion")
     + "FROM imp_detalle) x WHERE codigo IS NOT NULL AND "

@@ -30,7 +30,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlmodel import Session, select
 
-from motor_cartera.atribucion.ejecuciones import abrir
+from motor_cartera.atribucion.ejecuciones import abrir, gestiones_del_rango
 from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
@@ -175,17 +175,15 @@ def gestiones_en_el_rango(
     y cuantas de ellas estan anuladas: exactamente el conjunto que entra en su firma de entrada."""
     return s.execute(
         text(
-            "WITH pagos AS (SELECT m.cuenta_canonica_id AS cuenta, "
-            "min(timezone(:zona, m.fecha_recepcion)) AS primero, "
-            "max(timezone(:zona, m.fecha_recepcion)) AS ultimo "
-            "FROM movimiento_economico_canonico m WHERE m.ejecucion_motor_pagos_id = :motor "
-            "AND m.tipo_movimiento = 'PAGO' AND m.cuenta_canonica_id IS NOT NULL GROUP BY 1) "
-            "SELECT count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM evento_lifecycle a "
-            "WHERE a.evento_relacionado_id = g.evento_lifecycle_id "
-            "AND a.tipo_evento = 'GESTION_ANULADA')) "
-            "FROM pagos c JOIN gestion_cobranza g ON g.cuenta_canonica_id = c.cuenta "
-            "AND g.ocurrido_en >= c.primero - make_interval(days => :ventana) "
-            "AND g.ocurrido_en <= c.ultimo"
+            "SELECT count(*), count(*) FILTER (WHERE anulada) FROM ("
+            + gestiones_del_rango(
+                "SELECT m.cuenta_canonica_id AS cuenta, "
+                "min(timezone(:zona, m.fecha_recepcion)) AS primero, "
+                "max(timezone(:zona, m.fecha_recepcion)) AS ultimo "
+                "FROM movimiento_economico_canonico m WHERE m.ejecucion_motor_pagos_id = :motor "
+                "AND m.tipo_movimiento = 'PAGO' AND m.cuenta_canonica_id IS NOT NULL GROUP BY 1"
+            )
+            + ") leidas"
         ),
         {"motor": motor_id, "zona": zona, "ventana": ventana_dias},
     ).one()

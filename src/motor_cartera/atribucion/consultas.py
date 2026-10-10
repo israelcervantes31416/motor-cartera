@@ -21,7 +21,7 @@ from sqlalchemy import func, text, tuple_
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import Select
 
-from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION
+from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION, Clasificacion
 from motor_cartera.db.modelos import (
     AtribucionMovimiento,
     CandidatoAtribucion,
@@ -283,7 +283,19 @@ def resultados_de(
                 )
             )
         )
-    total = s.exec(select(func.count()).select_from(AtribucionMovimiento).where(*condiciones)).one()
+    if cliente_unico is None:
+        # Los conteos de la ejecucion, que se escribieron con sus resultados en la transaccion que
+        # los publico: contarlos en cada pagina recorreria los de toda la ventana.
+        total = {
+            None: ejecucion.movimientos_evaluados,
+            Clasificacion.ASOCIACION_UNICA: ejecucion.asociados,
+            Clasificacion.AMBIGUA: ejecucion.ambiguos,
+            Clasificacion.SIN_GESTION_CANDIDATA: ejecucion.sin_candidato,
+        }[clasificacion]
+    else:
+        total = s.exec(
+            select(func.count()).select_from(AtribucionMovimiento).where(*condiciones)
+        ).one()
     filas = s.exec(
         _resultados()
         .where(*condiciones)

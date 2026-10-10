@@ -524,20 +524,3 @@ def _de_la_fecha(ejecucion: EjecucionEvaluacionPromesas):
         EjecucionEvaluacionPromesas.as_of == ejecucion.as_of,
         EjecucionEvaluacionPromesas.estado == EstadoEvaluacionPromesas.EXITOSA,
     )
-
-
-def ultima_exitosa(
-    s: Session, despacho_id: str, cartera_id: str, as_of: date
-) -> EjecucionEvaluacionPromesas | None:
-    """La evaluacion EXITOSA mas reciente de la cartera a esa fecha de corte."""
-    return s.exec(
-        select(EjecucionEvaluacionPromesas)
-        .where(
-            EjecucionEvaluacionPromesas.despacho_id == despacho_id,
-            EjecucionEvaluacionPromesas.cartera_id == cartera_id,
-            EjecucionEvaluacionPromesas.version_evaluacion == VERSION_EVALUACION,
-            EjecucionEvaluacionPromesas.as_of == as_of,
-            EjecucionEvaluacionPromesas.estado == EstadoEvaluacionPromesas.EXITOSA,
-        )
-        .order_by(EjecucionEvaluacionPromesas.id.desc())
-    ).first()

@@ -23,6 +23,7 @@ from motor_cartera.db.modelos import (
     PromesaPago,
     TrabajoOrquestacion,
 )
+from motor_cartera.evaluacion.reglas import EstadoEvaluacion
 
 
 class EvaluacionNoEncontrada(Exception):
@@ -108,7 +109,17 @@ def evaluaciones_de(
     condiciones: list = [EvaluacionPromesa.ejecucion_evaluacion_promesas_id == ejecucion.id]
     if estado is not None:
         condiciones.append(EvaluacionPromesa.estado == estado)
-    total = s.exec(select(func.count()).select_from(EvaluacionPromesa).where(*condiciones)).one()
+    # Los conteos de la ejecucion, que se escribieron con sus evaluaciones en la transaccion que
+    # las publico: contarlas en cada pagina recorreria las de toda la cartera.
+    total = {
+        None: ejecucion.promesas_evaluadas,
+        EstadoEvaluacion.PENDIENTE: ejecucion.pendientes,
+        EstadoEvaluacion.CUMPLIDA: ejecucion.cumplidas,
+        EstadoEvaluacion.PARCIAL: ejecucion.parciales,
+        EstadoEvaluacion.INCUMPLIDA: ejecucion.incumplidas,
+        EstadoEvaluacion.CANCELADA: ejecucion.canceladas,
+        EstadoEvaluacion.NO_EVALUABLE: ejecucion.no_evaluables,
+    }[estado]
     filas = s.exec(
         select(
             EvaluacionPromesa,

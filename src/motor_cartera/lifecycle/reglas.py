@@ -33,7 +33,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID
@@ -113,6 +113,10 @@ class NivelContacto(StrEnum):
 
 CONTACTOS = frozenset({NivelContacto.CONTACTO_TERCERO, NivelContacto.CONTACTO_TITULAR})
 """Los niveles en que se hablo con alguien."""
+
+TOLERANCIA_DEL_RELOJ = timedelta(minutes=5)
+"""Cuanto puede adelantarse el reloj de quien registra: la misma tolerancia que exige la base
+(ck_evento_tiempos). La aplican la API y la importacion."""
 
 
 class ResultadoGestion(StrEnum):
@@ -230,6 +234,21 @@ def incoherencias_de_gestion(
     return problemas
 
 
+def incoherencias_de_visita(
+    inicio: datetime | None, fin: datetime | None, ocurrido_en: datetime
+) -> list[str]:
+    """Lo que no cuadra entre una visita y su gestion, una frase por regla rota; vacia si cuadra: la
+    visita no termina antes de empezar, y la gestion ocurre mientras dura."""
+    problemas = []
+    if inicio is not None and fin is not None and inicio > fin:
+        problemas.append("La visita termina antes de empezar.")
+    if inicio is not None and inicio > ocurrido_en:
+        problemas.append("La gestion ocurre antes de que empiece su visita.")
+    if fin is not None and fin < ocurrido_en:
+        problemas.append("La gestion ocurre despues de que termina su visita.")
+    return problemas
+
+
 def incoherencias_de_cuotas(
     total: Decimal,
     inicio: date,
@@ -271,6 +290,18 @@ def datos_personales(texto: str) -> list[str]:
     telefono, una tarjeta, una CURP o un RFC. Es una barrera para no guardar PII sin necesidad en un
     campo libre, no una garantia: un nombre o un domicilio no se reconocen."""
     return [nombre for nombre, patron in _DATOS_PERSONALES if patron.search(texto)]
+
+
+def datos_personales_en(**textos: str | None) -> list[str]:
+    """Una frase por cada dato personal que parece traer cada texto libre, con el nombre de su
+    campo; vacia si ninguno parece traer uno."""
+    return [
+        f"{campo.replace('_', ' ').capitalize()} parece traer {dato}: no se guardan datos "
+        "personales en un texto libre."
+        for campo, texto in textos.items()
+        if texto
+        for dato in datos_personales(texto)
+    ]
 
 
 # --- la huella de una peticion --------------------------------------------------------------------

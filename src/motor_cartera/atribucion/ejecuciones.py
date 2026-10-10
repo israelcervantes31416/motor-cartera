@@ -301,6 +301,25 @@ def _atribuir(
 
 # --- lo que se lee --------------------------------------------------------------------------------
 
+
+def gestiones_del_rango(rangos: str) -> str:
+    """Las gestiones de cada cuenta que pudieron anteceder a alguno de sus pagos: de la ventana
+    hacia atras desde su primer pago hasta su ultimo. Todas, con contacto o sin el, anuladas o no:
+    son lo que se lee, lo que entra en la firma de entrada y lo que explica por que un movimiento
+    no tuvo candidata. `rangos` da, por cuenta (cuenta), el instante de su primer pago (primero) y
+    el de su ultimo (ultimo) en la zona de la fuente. La misma seleccion para la atribucion y para
+    el diagnostico de backfill-atribucion, que compara cuantas leeria hoy con cuantas se leyeron."""
+    return (
+        "SELECT g.id, g.gestion_id, g.cuenta_canonica_id AS cuenta, g.ocurrido_en, "
+        "g.nivel_contacto, EXISTS (SELECT 1 FROM evento_lifecycle a WHERE "
+        "a.evento_relacionado_id = g.evento_lifecycle_id AND a.tipo_evento = 'GESTION_ANULADA') "
+        f"AS anulada FROM ({rangos}) c "
+        "JOIN gestion_cobranza g ON g.cuenta_canonica_id = c.cuenta "
+        "AND g.ocurrido_en >= c.primero - make_interval(days => :ventana) "
+        "AND g.ocurrido_en <= c.ultimo"
+    )
+
+
 SQL_LEER = (
     # Los PAGO de la interpretacion vigente de la ventana, por el indice de sus movimientos, con
     # su recepcion como instante en la zona de la fuente.
@@ -312,18 +331,12 @@ SQL_LEER = (
     "WHERE m.ejecucion_motor_pagos_id = :motor AND m.tipo_movimiento = 'PAGO'",
     "CREATE INDEX ON at_movimiento (cuenta, instante)",
     "ANALYZE at_movimiento",
-    # Las gestiones de esas cuentas que pudieron anteceder a alguno de sus pagos: de la ventana
-    # hacia atras desde su primer pago hasta su ultimo. Todas, con contacto o sin el, anuladas o no:
-    # son lo que se leyo, y lo que explica por que un movimiento no tuvo candidata.
+    # Las gestiones de esas cuentas que pudieron anteceder a alguno de sus pagos.
     "CREATE TEMP TABLE at_gestion ON COMMIT DROP AS "
-    "SELECT g.id, g.gestion_id, g.cuenta_canonica_id AS cuenta, g.ocurrido_en, g.nivel_contacto, "
-    "EXISTS (SELECT 1 FROM evento_lifecycle a WHERE a.evento_relacionado_id = "
-    "g.evento_lifecycle_id AND a.tipo_evento = 'GESTION_ANULADA') AS anulada "
-    "FROM (SELECT cuenta, min(instante) AS primero, max(instante) AS ultimo "
-    "FROM at_movimiento WHERE cuenta IS NOT NULL GROUP BY cuenta) c "
-    "JOIN gestion_cobranza g ON g.cuenta_canonica_id = c.cuenta "
-    "AND g.ocurrido_en >= c.primero - make_interval(days => :ventana) "
-    "AND g.ocurrido_en <= c.ultimo",
+    + gestiones_del_rango(
+        "SELECT cuenta, min(instante) AS primero, max(instante) AS ultimo "
+        "FROM at_movimiento WHERE cuenta IS NOT NULL GROUP BY cuenta"
+    ),
     "CREATE INDEX ON at_gestion (cuenta, ocurrido_en)",
     "ANALYZE at_gestion",
 )

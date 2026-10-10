@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -43,6 +43,7 @@ from motor_cartera.db.modelos import (
 )
 from motor_cartera.db.sesion import restriccion, sesion
 from motor_cartera.lifecycle.reglas import (
+    TOLERANCIA_DEL_RELOJ,
     VERSION_LIFECYCLE,
     Canal,
     Medio,
@@ -51,16 +52,14 @@ from motor_cartera.lifecycle.reglas import (
     ResultadoGestion,
     ResultadoVisita,
     TipoEvento,
-    datos_personales,
+    datos_personales_en,
     huella,
     incoherencias_de_cuotas,
     incoherencias_de_gestion,
+    incoherencias_de_visita,
 )
 
 log = logging.getLogger(__name__)
-
-TOLERANCIA_DEL_RELOJ = timedelta(minutes=5)
-"""Cuanto puede adelantarse el reloj de quien registra: la misma tolerancia que exige la base."""
 
 INTENTOS = 3
 """Cuantas veces se vuelve a buscar la llave despues de perder la carrera contra otra peticion con
@@ -193,7 +192,9 @@ def registrar_gestion(cuenta_id: UUID, llave: str, datos: DatosGestion) -> Regis
     if problemas:
         raise PeticionInvalida("GESTION_INCOHERENTE", problemas)
     if visita is not None:
-        _visita_en_su_tiempo(visita, datos.ocurrido_en)
+        problemas = incoherencias_de_visita(visita.inicio, visita.fin, datos.ocurrido_en)
+        if problemas:
+            raise PeticionInvalida("VISITA_INCOHERENTE", problemas)
     _sin_datos_personales(
         observacion=datos.observacion, observacion_de_la_visita=visita and visita.observacion
     )
@@ -663,26 +664,8 @@ def _no_en_el_futuro(s: Session, ocurrido_en: datetime) -> None:
         )
 
 
-def _visita_en_su_tiempo(visita: DatosVisita, ocurrido_en: datetime) -> None:
-    problemas = []
-    if visita.inicio is not None and visita.fin is not None and visita.inicio > visita.fin:
-        problemas.append("La visita termina antes de empezar.")
-    if visita.inicio is not None and visita.inicio > ocurrido_en:
-        problemas.append("La gestion ocurre antes de que empiece su visita.")
-    if visita.fin is not None and visita.fin < ocurrido_en:
-        problemas.append("La gestion ocurre despues de que termina su visita.")
-    if problemas:
-        raise PeticionInvalida("VISITA_INCOHERENTE", problemas)
-
-
 def _sin_datos_personales(**textos: str | None) -> None:
-    problemas = [
-        f"{campo.replace('_', ' ').capitalize()} parece traer {dato}: no se guardan datos "
-        "personales en un texto libre."
-        for campo, texto in textos.items()
-        if texto
-        for dato in datos_personales(texto)
-    ]
+    problemas = datos_personales_en(**textos)
     if problemas:
         raise PeticionInvalida("DATOS_PERSONALES", problemas)
 

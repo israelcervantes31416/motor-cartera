@@ -248,9 +248,8 @@ def obtener_promesa(s: Session, promesa_id: UUID) -> PromesaVista:
     fila = s.exec(_promesas_vistas().where(PromesaPago.promesa_id == promesa_id)).first()
     if fila is None:
         raise PromesaNoEncontrada(promesa_id)
-    vista = PromesaVista(*fila)
-    ultimas = ultimas_evaluaciones(s, [vista.promesa.id])
-    return PromesaVista(*fila, ultima_evaluacion=ultimas.get(vista.promesa.id))
+    ultimas = ultimas_evaluaciones(s, [fila[0].id])
+    return PromesaVista(*fila, ultima_evaluacion=ultimas.get(fila[0].id))
 
 
 def promesas_de_cuenta(
@@ -297,7 +296,7 @@ def promesas_de_cuenta(
 def ultimas_evaluaciones(s: Session, promesas: list[int]) -> dict[int, EvaluacionVista]:
     """La ultima evaluacion EXITOSA de cada promesa: la de su fecha de corte mas reciente y, entre
     dos de la misma fecha, la ejecucion mas reciente. Entra por el indice de las evaluaciones de una
-    promesa."""
+    promesa y devuelve una fila por promesa, por muchas fechas de corte que la hayan evaluado."""
     if not promesas:
         return {}
     filas = s.exec(
@@ -310,16 +309,17 @@ def ultimas_evaluaciones(s: Session, promesas: list[int]) -> dict[int, Evaluacio
             EvaluacionPromesa.promesa_pago_id.in_(promesas),
             EjecucionEvaluacionPromesas.estado == EstadoEvaluacionPromesas.EXITOSA,
         )
+        .distinct(EvaluacionPromesa.promesa_pago_id)
         .order_by(
             EvaluacionPromesa.promesa_pago_id,
             EjecucionEvaluacionPromesas.as_of.desc(),
             EjecucionEvaluacionPromesas.id.desc(),
         )
     ).all()
-    ultimas: dict[int, EvaluacionVista] = {}
-    for evaluacion, ejecucion in filas:
-        ultimas.setdefault(evaluacion.promesa_pago_id, EvaluacionVista(evaluacion, ejecucion))
-    return ultimas
+    return {
+        evaluacion.promesa_pago_id: EvaluacionVista(evaluacion, ejecucion)
+        for evaluacion, ejecucion in filas
+    }
 
 
 # --- los convenios --------------------------------------------------------------------------------
