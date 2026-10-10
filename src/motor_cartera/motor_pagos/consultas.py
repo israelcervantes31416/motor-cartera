@@ -322,6 +322,24 @@ def listar_movimientos(
     return total, [MovimientoVisto(*fila, vigente=True) for fila in filas]
 
 
+def movimientos_por_id(s: Session, ids: list[int]) -> dict[int, MovimientoVisto]:
+    """Los movimientos con esos ids internos, cada uno con su ejecucion, su cuenta y si es de la
+    interpretacion vigente de su ventana. Es el detalle de una pagina que ya se eligio en otra
+    consulta, como la linea de tiempo de una cuenta o la atribucion de sus movimientos."""
+    if not ids:
+        return {}
+    filas = s.exec(_movimientos_vistos().where(MovimientoEconomicoCanonico.id.in_(ids))).all()
+    actuales = {
+        version: set(vigentes(s, version)) for version in {f[0].version_motor for f in filas}
+    }
+    return {
+        f[0].id: MovimientoVisto(
+            *f, vigente=f[0].ejecucion_motor_pagos_id in actuales[f[0].version_motor]
+        )
+        for f in filas
+    }
+
+
 @dataclass(frozen=True)
 class DetalleDelMovimiento:
     visto: MovimientoVisto

@@ -14,11 +14,16 @@ from fastapi import Depends, FastAPI
 
 from motor_cartera import __version__
 from motor_cartera.api import (
+    acuerdos,
+    atribuciones,
     cartera,
     corridas,
     cuentas,
     decisiones,
+    evaluaciones,
+    gestiones,
     historia,
+    lifecycle,
     motor_pagos,
     movimientos,
     orquestacion,
@@ -138,6 +143,28 @@ trabajo `MOTOR_PAGOS`, cuando la historia publica los pagos observados de un arc
 La recuperacion interpretada es del motor sobre las fuentes disponibles: no es el libro contable del
 acreedor.
 
+**El lifecycle de cobranza** registra lo que la cobranza hizo con cada cuenta como eventos
+operacionales que solo se agregan, con su momento de negocio (`ocurrido_en`) y su momento de
+registro (`registrado_en`). No es una fuente oficial, y nada se fabrica de un snapshot. Cada
+escritura exige `Idempotency-Key`: la misma llave con la misma peticion responde `200` con
+`Idempotent-Replayed: true`; con otra peticion, `409 IDEMPOTENCY_KEY_REUTILIZADA`.
+
+25. `POST /cuentas/{cuenta_id}/gestiones` (con su visita si es de `CAMPO`), las gestiones de una
+    cuenta y `GET /gestiones/{gestion_id}`; `POST /gestiones/{gestion_id}/anulaciones`.
+26. `POST /gestiones/{gestion_id}/promesas` y `/convenios`, con sus cancelaciones;
+    `GET /promesas/{promesa_id}`, `GET /convenios/{convenio_id}` y los de una cuenta.
+27. `GET /cuentas/{cuenta_id}/lifecycle`: su linea de tiempo en tres dominios (`OPERACIONAL`,
+    `FUENTE_CORTE` y `ECONOMICO`), sin convertir uno en otro.
+28. `POST /evaluaciones-promesas` con `as_of`: evalua las promesas de la cartera a esa fecha
+    (`evaluacion-promesa/v1`) en un trabajo `EVALUACION_PROMESAS`; lo que concluyo de cada promesa.
+29. `POST /atribuciones` con un `periodo`: asocia cada pago interpretado del mes con las gestiones
+    con contacto que lo antecedieron (`atribucion/v1`) en un trabajo `ATRIBUCION`; sus resultados
+    con sus candidatas, las atribuciones de un movimiento y los pagos atribuidos de una cuenta.
+
+La atribucion es asociacion operacional, no causalidad: con dos o mas candidatas el pago queda
+`AMBIGUA` y no se elige ninguna. Que un pago sea compatible con una promesa no dice que la promesa
+lo produjo.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -213,6 +240,21 @@ ETIQUETAS = [
         "cada uno con su por que, sus observaciones y su archivo original. No son el libro "
         "contable del acreedor.",
     },
+    {
+        "name": "lifecycle",
+        "description": "Lo que la cobranza hizo con cada cuenta: gestiones, contactos, visitas, "
+        "promesas y convenios, como eventos operacionales que registra Motor Cartera, con su "
+        "momento de negocio y su momento de registro. No son una fuente oficial del acreedor. "
+        "Cada escritura exige su Idempotency-Key, y nada se sobrescribe: se anula o se cancela con "
+        "otro evento.",
+    },
+    {
+        "name": "atribucion",
+        "description": "La atribucion operativa de los pagos (atribucion/v1): con que gestiones "
+        "con contacto de la misma cuenta se asocia cada pago interpretado, dentro de una ventana "
+        "que se guarda en cada ejecucion. Asociacion operacional, no causalidad: con varias "
+        "candidatas el pago queda AMBIGUA y no se elige ninguna.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -246,5 +288,10 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(historia.router, dependencies=protegidas)
     app.include_router(motor_pagos.router, dependencies=protegidas)
     app.include_router(movimientos.router, dependencies=protegidas)
+    app.include_router(gestiones.router, dependencies=protegidas)
+    app.include_router(acuerdos.router, dependencies=protegidas)
+    app.include_router(lifecycle.router, dependencies=protegidas)
+    app.include_router(evaluaciones.router, dependencies=protegidas)
+    app.include_router(atribuciones.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

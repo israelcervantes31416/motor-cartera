@@ -134,6 +134,18 @@ def generar_escenario(
     tasa_retiros: Annotated[
         float, typer.Option(min=0.0, max=1.0, help="Fraccion que el acreedor retira.")
     ] = 0.01,
+    lifecycle: Annotated[
+        bool,
+        typer.Option(
+            "--lifecycle",
+            help="Tambien los eventos operacionales sinteticos de cada periodo, en JSONL "
+            "comprimido, para cargar-lifecycle. El escenario tiene que terminar antes de hoy.",
+        ),
+    ] = False,
+    intensidad_lifecycle: Annotated[
+        float,
+        typer.Option(min=0.01, max=5.0, help="Escala cuantas gestiones hay por periodo."),
+    ] = 1.0,
 ) -> None:
     """Genera un escenario longitudinal: varios cortes de la misma cartera (cartera/v2) y los pagos
     de cada periodo entre un corte y el siguiente (pagos/v1), con un manifiesto, escenario.json.
@@ -142,6 +154,10 @@ def generar_escenario(
     y las retiradas salen y llegan altas que nunca habian estado en la cartera. Todo se deriva de la
     semilla: el mismo escenario sale igual, byte por byte. El manifiesto trae cada archivo con su
     SHA-256, lo que paso en cada corte y las invariantes que cumple el escenario.
+
+    Con --lifecycle, tambien lo que la cobranza hizo en cada periodo: gestiones, contactos,
+    visitas, promesas, convenios, cancelaciones, anulaciones y eventos tardios, todo sintetico y
+    con su propia semilla derivada, sin cambiar un byte de los cortes ni de los pagos.
     """
     from motor_cartera.config import config
     from motor_cartera.generador.oficial import PERFILES
@@ -162,6 +178,8 @@ def generar_escenario(
             formato=formato,
             tasa_altas=tasa_altas,
             tasa_retiros=tasa_retiros,
+            lifecycle=lifecycle,
+            intensidad_lifecycle=intensidad_lifecycle,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -181,6 +199,11 @@ def generar_escenario(
                 f"{periodo['desde']} al {periodo['hasta']}: {periodo['movimientos']:,} movimientos"
             )
         typer.echo(linea)
+    for archivo in manifiesto.get("lifecycle", []):
+        typer.echo(
+            f"  lifecycle del {archivo['desde']} al {archivo['hasta']}: {archivo['eventos']:,} "
+            f"eventos ({archivo['tardios']:,} tardios), {archivo['archivo']}"
+        )
     typer.echo(f"Manifiesto: {escenario.destino / 'escenario.json'}")
 
 
@@ -270,6 +293,72 @@ def cargar_pagos(
     _avisar_historia(ingesta_pagos_id=ingesta.id)
     if ingesta.estado != EstadoIngestaPagos.EXITOSA:
         raise typer.Exit(code=1)
+
+
+@app.command("cargar-lifecycle")
+def cargar_lifecycle(
+    ruta: str,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Valida y resuelve todo, y no registra nada."),
+    ] = False,
+) -> None:
+    """Importa eventos operacionales sinteticos de un archivo JSONL (o .jsonl.gz): gestiones,
+    visitas, promesas, convenios, cancelaciones y anulaciones de la cartera del sistema.
+
+    No es una fuente oficial: es la importacion de eventos operacionales, con las reglas de la API.
+    Cada linea trae su idempotency_key: el mismo archivo dos veces no duplica nada. Lee por lotes,
+    copia con COPY y registra por conjuntos, en una transaccion: con un solo problema no registra
+    nada y termina con codigo 1, diciendo cada linea y por que.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.lifecycle.importacion import (
+        ArchivoIlegible,
+        ImportacionConcurrente,
+        importar,
+    )
+
+    try:
+        reporte = importar(
+            ruta,
+            despacho_id=config.despacho_id,
+            cartera_id=config.cartera_id,
+            zona=config.zona_horaria_fuente,
+            dry_run=dry_run,
+        )
+    except (ArchivoIlegible, ImportacionConcurrente) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Importacion de {reporte.archivo} en {config.despacho_id}/{config.cartera_id}: "
+        f"{reporte.lineas:,} lineas"
+    )
+    typer.echo(f"  repetidas en el archivo (misma llave, mismo contenido): {reporte.repetidas:,}")
+    typer.echo(f"  ya registradas antes (misma llave, mismo contenido): {reporte.ya_registradas:,}")
+    typer.echo(f"  eventos nuevos: {reporte.nuevos:,}")
+    for tipo, cuantos in reporte.registrados.items():
+        typer.echo(f"    {tipo}: {cuantos:,}")
+    if reporte.total_de_problemas:
+        typer.echo(f"Problemas: {reporte.total_de_problemas:,}. No se registro nada.", err=True)
+        for problema in reporte.problemas:
+            llave = f" ({problema.llave})" if problema.llave else ""
+            typer.echo(
+                f"  linea {problema.linea}{llave}: {problema.codigo}: {problema.detalle}",
+                err=True,
+            )
+        if reporte.total_de_problemas > len(reporte.problemas):
+            typer.echo(
+                f"  ... y {reporte.total_de_problemas - len(reporte.problemas):,} mas.", err=True
+            )
+        raise typer.Exit(code=1)
+    if dry_run:
+        typer.echo(
+            f"Con --dry-run no se registro nada; se registrarian {reporte.nuevos:,} eventos."
+        )
+        return
+    typer.echo(
+        f"Se registraron {reporte.nuevos:,} eventos en una transaccion, en {reporte.segundos} s."
+    )
 
 
 @app.command("verificar-fuentes")
@@ -458,6 +547,168 @@ def backfill_motor_pagos(
     for encolada in encoladas:
         nota = "" if encolada.nueva else " (ya estaba en la cola)"
         typer.echo(f"  {_ventana(encolada.ventana)}: {encolada.motor_pagos_run_id}{nota}")
+
+
+@app.command("backfill-lifecycle")
+def backfill_lifecycle(
+    as_of: Annotated[
+        datetime,
+        typer.Option(
+            "--as-of",
+            formats=["%Y-%m-%d"],
+            help="La fecha de corte de las evaluaciones, AAAA-MM-DD. Obligatoria: nunca sale del "
+            "reloj.",
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta y que encolaria.")
+    ] = False,
+    reevaluar: Annotated[
+        bool,
+        typer.Option(
+            "--reevaluar",
+            help="Tambien encola las carteras que ya tienen una evaluacion a esa fecha: solo "
+            "publica si sus entradas cambiaron.",
+        ),
+    ] = False,
+) -> None:
+    """Encola la evaluacion (evaluacion-promesa/v1) de las promesas de cada cartera a la fecha de
+    corte --as-of, si todavia no la tiene.
+
+    Lo unico que el lifecycle deriva en lote es la evaluacion de sus promesas: un trabajo
+    EVALUACION_PROMESAS por cartera y fecha, nunca uno por promesa, que ejecuta un worker en
+    PostgreSQL. Es idempotente: una cartera con una evaluacion EN_PROCESO a esa fecha no se encola
+    otra vez, y una que ya tiene una EXITOSA no se toca, salvo con --reevaluar.
+    """
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.evaluacion.backfill import diagnosticar, encolar, pendientes
+
+    fecha = as_of.date()
+    with sesion() as s:
+        carteras = diagnosticar(s, fecha, zona=config.zona_horaria_fuente)
+    typer.echo(
+        f"Carteras con promesas acordadas hasta el {fecha.isoformat()} (fin del dia en "
+        f"{config.zona_horaria_fuente}): {len(carteras):,}"
+    )
+    for cartera in carteras:
+        estado = (
+            f"en la cola ({cartera.en_cola})"
+            if cartera.en_cola
+            else f"evaluada ({cartera.vigente})"
+            if cartera.vigente
+            else "sin evaluacion a esa fecha"
+        )
+        typer.echo(
+            f"  {cartera.despacho_id}/{cartera.cartera_id}: {cartera.promesas:,} promesas, "
+            f"{cartera.vencidas:,} vencidas: {estado}"
+        )
+    faltan = pendientes(carteras, reevaluar=reevaluar)
+    typer.echo(f"Evaluaciones pendientes: {len(faltan):,}")
+    if dry_run:
+        typer.echo("Con --dry-run no se encolo nada.")
+        return
+    encoladas = encolar(faltan, fecha, config=config)
+    nuevas = sum(1 for e in encoladas if e.nueva)
+    typer.echo(f"Se encolaron {nuevas:,} trabajos EVALUACION_PROMESAS; los ejecuta un worker.")
+    for encolada in encoladas:
+        nota = "" if encolada.nueva else " (ya estaba en la cola)"
+        typer.echo(
+            f"  {encolada.cartera.despacho_id}/{encolada.cartera.cartera_id}: "
+            f"{encolada.evaluacion_run_id}{nota}"
+        )
+
+
+@app.command("backfill-atribucion")
+def backfill_atribucion(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta y que encolaria.")
+    ] = False,
+    reintentar_fallidas: Annotated[
+        bool,
+        typer.Option(
+            "--reintentar-fallidas",
+            help="Tambien encola las ventanas que solo tienen atribuciones FALLIDA.",
+        ),
+    ] = False,
+    ventana_dias: Annotated[
+        int | None,
+        typer.Option(
+            "--ventana-dias",
+            min=1,
+            max=366,
+            help="Cuantos dias antes de un pago puede ocurrir una gestion candidata, para las "
+            "ventanas que nunca se han atribuido. Por omision, MC_ATRIBUCION_VENTANA_DIAS. Una "
+            "ventana desactualizada conserva la de su atribucion vigente.",
+        ),
+    ] = None,
+) -> None:
+    """Encola la atribucion (atribucion/v1) de cada ventana de pagos interpretados que no tiene una
+    al dia.
+
+    La atribucion no se abre sola: depende de los pagos que interpreta el motor de pagos y de las
+    gestiones que registra la cobranza, y las dos cambian por separado. Una ventana (un despacho,
+    una cartera y un mes de recepcion) esta al dia si su atribucion vigente leyo la interpretacion
+    vigente de sus pagos y las mismas gestiones de sus cuentas, con las mismas anuladas. Una
+    gestion registrada tarde, una anulacion o una interpretacion nueva de los pagos la
+    desactualizan: se encola otra atribucion, que publica una nueva sin tocar la anterior.
+
+    Encola un trabajo ATRIBUCION por ventana, nunca uno por pago, que ejecuta un worker en
+    PostgreSQL. Es idempotente: una ventana en la cola o al dia no se toca, y una atribucion con
+    las mismas entradas que su vigente no publica (YA_ATRIBUIDA). Las ventanas que solo tienen
+    atribuciones FALLIDA se reintentan con --reintentar-fallidas.
+    """
+    from motor_cartera.atribucion.backfill import diagnosticar, encolar
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        diagnostico = diagnosticar(s)
+    fallidas = diagnostico.solo_fallidas
+    typer.echo(
+        f"Ventanas con pagos interpretados: {diagnostico.ventanas:,}, con {diagnostico.pagos:,} "
+        "pagos"
+    )
+    typer.echo(f"  al dia con atribucion/v1: {diagnostico.al_dia:,}")
+    typer.echo(f"  en la cola (EN_PROCESO): {diagnostico.en_cola:,}")
+    typer.echo(f"  sin atribucion: {len(diagnostico.sin_atribucion):,}")
+    typer.echo(f"  desactualizadas: {len(diagnostico.desactualizadas):,}")
+    for ventana in diagnostico.desactualizadas:
+        typer.echo(f"    {_ventana_atribuible(ventana)}: {ventana.motivo}")
+    nota = (
+        "" if reintentar_fallidas or not fallidas else "; se reintentan con --reintentar-fallidas"
+    )
+    typer.echo(f"  solo con atribuciones FALLIDA: {len(fallidas):,}{nota}")
+    for ventana in fallidas:
+        typer.echo(f"    {_ventana_atribuible(ventana)}: {ventana.motivo}")
+    typer.echo(f"Pagos sin una atribucion al dia: {diagnostico.pagos_sin_atribucion_al_dia:,}")
+    pendientes = (
+        diagnostico.sin_atribucion
+        + diagnostico.desactualizadas
+        + (fallidas if reintentar_fallidas else [])
+    )
+    if dry_run:
+        lista = "; se encolarian:" if pendientes else "."
+        typer.echo(f"Faltan {len(pendientes):,} ventanas. Con --dry-run no se encolo nada{lista}")
+        for ventana in pendientes:
+            typer.echo(f"  {_ventana_atribuible(ventana)}")
+        return
+    encoladas = encolar(pendientes, config=config, ventana_dias=ventana_dias)
+    nuevas = sum(1 for e in encoladas if e.nueva)
+    typer.echo(f"Se encolaron {nuevas:,} trabajos ATRIBUCION; los ejecuta un worker.")
+    for encolada in encoladas:
+        nota = "" if encolada.nueva else " (ya estaba en la cola)"
+        typer.echo(
+            f"  {_ventana_atribuible(encolada.ventana)}: {encolada.atribucion_run_id}, ventana de "
+            f"{encolada.ventana_dias} dias{nota}"
+        )
+
+
+def _ventana_atribuible(ventana) -> str:
+    """Una ventana de la atribucion, como la lee una persona."""
+    return (
+        f"{ventana.despacho_id}/{ventana.cartera_id} {ventana.desde:%Y-%m}: {ventana.pagos:,} pagos"
+    )
 
 
 def _ventana(ventana) -> str:

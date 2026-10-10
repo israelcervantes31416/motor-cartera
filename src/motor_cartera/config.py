@@ -58,6 +58,19 @@ class Config(BaseSettings):
     almacen por bloques mientras llega, sin cargarlo en memoria: el tope cuida el disco, y alcanza
     para la cartera objetivo de 500,000 cuentas."""
 
+    zona_horaria_fuente: str = Field(
+        default="America/Mexico_City", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_/+-]+$"
+    )
+    """MC_ZONA_HORARIA_FUENTE: la zona de las horas locales que traen las fuentes. pagos/v1 no trae
+    zona, y el lifecycle registra instantes con su zona: para compararlos (una gestion antes de un
+    pago, un pago antes de la fecha limite de una promesa) se usa esta, con la base de zonas de
+    PostgreSQL. La atribucion y la evaluacion de promesas guardan con cual se ejecutaron."""
+    atribucion_ventana_dias: int = Field(default=30, ge=1, le=366)
+    """MC_ATRIBUCION_VENTANA_DIAS: cuantos dias antes de un movimiento puede haber ocurrido una
+    gestion para ser su candidata en atribucion/v1, cuando quien pide la atribucion no dice otra.
+    Los 30 dias son la politica del demo sobre datos sinteticos, no una verdad de negocio: cada
+    ejecucion guarda la ventana con que se hizo."""
+
     # El worker. Son parametros operativos: deciden cuando, cada cuanto y cuantas veces se ejecuta
     # un trabajo, nunca que calcula un motor. Ninguno cambia una decision, un municipio ni una ruta.
     worker_poll_segundos: float = Field(default=0.5, gt=0)

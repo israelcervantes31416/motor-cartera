@@ -56,6 +56,15 @@ qué archivo y de qué fila salió cada dato. No pretende saber todavía por qu�
 económicamente válido. Todo está en [docs/historia.md](docs/historia.md) y
 [docs/cuenta_360.md](docs/cuenta_360.md).
 
+Desde v0.8.0, los pagos observados se **interpretan** sin tocarlos: el motor de pagos decide qué
+hechos económicos distintos representan, cuáles son copias, cuáles revierten a otro y a qué cuenta
+pertenecen ([docs/motor_pagos.md](docs/motor_pagos.md)). Y desde v0.9.0, el sistema sabe además
+**qué hizo la cobranza** con cada cuenta: gestiones, contactos, visitas, promesas y convenios, como
+eventos operacionales con su momento de negocio y su momento de registro, que solo se agregan. Una
+promesa se evalúa a una fecha de corte explícita, y cada pago interpretado se asocia con las
+gestiones con contacto que lo antecedieron: **asociación operacional, no causalidad**. Todo está en
+[docs/lifecycle.md](docs/lifecycle.md) y [docs/atribucion.md](docs/atribucion.md).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -78,7 +87,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay ocho versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay nueve versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -106,6 +115,12 @@ punta:
   pago cuando la pareja es inequívoca, y cada movimiento se concilia con su cuenta, con su contexto
   entre los snapshots y la recuperación bruta y neta interpretadas. Cada conclusión se explica
   hasta el archivo y la fila que la justifican.
+- **v0.9.0 ✅ Lifecycle de Cobranza y Atribución Operativa**: lo que la cobranza hizo con cada
+  cuenta (gestiones, contactos, visitas, promesas, convenios, cancelaciones y anulaciones) se
+  registra como eventos operacionales que solo se agregan, con su momento de negocio y su momento
+  de registro y una llave de idempotencia garantizada por PostgreSQL; las promesas se evalúan a una
+  fecha de corte explícita, y cada pago interpretado se asocia con las gestiones con contacto que lo
+  antecedieron, sin elegir entre varias y sin afirmar causalidad.
 
 Lo que ya hace:
 
@@ -179,6 +194,21 @@ Lo que ya hace:
 - [x] API del motor: `/motor-pagos`, `/movimientos` con su evidencia y
   `/cuentas/{cuenta_id}/movimientos`, que la Cuenta 360 distingue de `/pagos-observados`; y un
   benchmark de 12 cortes XL fuera del CI, con el plan de cada consulta
+- [x] Lifecycle de cobranza (`lifecycle/v1`): `EventoLifecycle` con `ocurrido_en` y `registrado_en`,
+  gestiones con canal, medio, nivel de contacto y resultado coherentes (en Python y en la base),
+  visitas de campo, promesas y convenios con sus cuotas declaradas; solo se agrega (un trigger
+  rechaza `UPDATE` y `DELETE`), y se corrige con anulaciones y cancelaciones que son eventos
+- [x] Escrituras individuales por la API con `Idempotency-Key` obligatoria: `201`, `200` con
+  `Idempotent-Replayed` o `409`, garantizado por un índice único; y la línea de tiempo de una cuenta
+  en tres dominios (`OPERACIONAL`, `FUENTE_CORTE`, `ECONOMICO`), sin fabricar eventos de un snapshot
+- [x] Evaluación de promesas (`evaluacion-promesa/v1`) a una fecha de corte explícita, por cartera,
+  en un trabajo durable `EVALUACION_PROMESAS`, por conjuntos y verificada contra un núcleo puro
+- [x] Atribución operativa (`atribucion/v1`): por ventana, sobre la interpretación vigente de los
+  pagos, con candidatas en una relación, `AMBIGUA` sin elegir y una ventana que es parámetro de cada
+  ejecución; trabajo durable `ATRIBUCION` y `motor-cartera backfill-atribucion`
+- [x] `motor-cartera cargar-lifecycle` (JSONL por COPY y tablas temporales, todo o nada e
+  idempotente), `generar-escenario --lifecycle` determinista por semilla, `backfill-lifecycle`, la
+  Cuenta 360 con su `lifecycle_resumen`, y un benchmark del lifecycle sobre el XL fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -191,9 +221,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.6 Fuentes oficiales + evidencia + escala
 ✅ v0.7 Modelo histórico + Cuenta 360
 ✅ v0.8.0 — Motor de Pagos Canónico y Conciliación
-➡️ v0.9 — Lifecycle de cobranza
+✅ v0.9.0 — Lifecycle de Cobranza y Atribución Operativa
+➡️ v0.10 — Decision Engine v2
 
-v0.10 Decision Engine v2
 v0.11 Geografía real + Territorial v2
 v0.12 Campo v2
 v0.13 Ruteo vial v2
@@ -206,10 +236,11 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.9, el lifecycle de cobranza**: las gestiones, los intentos de contacto, los
-contactos efectivos, las promesas, los convenios y las visitas con su resultado. La atribución
-formal de cada pago a una gestión viene después, sobre los movimientos canónicos de v0.8. Sin
-adelantar ninguna.
+Lo que sigue es **v0.10, el Decision Engine v2**: decidir cada cuenta también con lo que la
+cobranza ya hizo con ella (días desde la última gestión, intentos y contactos recientes, promesas y
+su cumplimiento, recuperación observada después de una gestión, canal, visitas y convenios), que v0.9
+deja como verdad operacional consultable. Sin adelantar la geografía real, la analítica ni los
+modelos predictivos.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -616,6 +647,12 @@ docker compose exec api motor-cartera generar-escenario --destino datos/escenari
 python scripts/prueba_de_humo.py datos/humo.xlsx --escenario datos/escenario
 ```
 
+Con `--oficial` y `--pagos`, recorre además el lifecycle de cobranza sobre sus cuentas y sus pagos:
+registra gestiones (una con promesa, una sin contacto, dos antes de un mismo pago y una que anula),
+comprueba la idempotencia de las escrituras, evalúa las promesas a la fecha del corte, atribuye la
+ventana de los pagos (una asociación única, una ambigua y una sin candidata por la anulación) y
+revisa la Cuenta 360, la línea de tiempo y los trabajos `EVALUACION_PROMESAS` y `ATRIBUCION`.
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -781,6 +818,72 @@ observación. Una llegada tardía reinterpreta entero cada mes que toca, de 5 a 
 de 5,000 reversos tardíos, 4,941 se emparejaron con su pago. Con todo publicado, cada sentencia de
 una consulta de cuenta o de movimiento se resuelve por sus índices en menos de 0.25 ms dentro de
 PostgreSQL, y responde en 4 a 9 ms (mediana) desde el servicio.
+
+## El lifecycle de cobranza y la atribución
+
+Lo que la cobranza hizo con cada cuenta se registra como **eventos operacionales**: gestiones,
+contactos, visitas, promesas, convenios, sus cancelaciones y sus anulaciones. Es una tercera verdad,
+junto a lo que dicen las fuentes y a lo que interpreta el motor de pagos, y **no es una tercera
+fuente oficial**: lo registra Motor Cartera, por su API o por una importación sintética, y nunca se
+fabrica de un snapshot.
+
+```
+FUENTE        CARTERA y PAGOS tal como llegaron; lo que un corte dice de una promesa: OBSERVACION_EN_CORTE
+OPERACIONAL   EventoLifecycle: GESTION_REGISTRADA, PROMESA_CREADA, CONVENIO_CREADO, sus cierres...
+ECONOMICO     los movimientos canónicos del motor de pagos
+```
+
+- **Dos tiempos**: `ocurrido_en` (cuándo pasó, lo declara quien registra, con su zona) y
+  `registrado_en` (el reloj de la base). Un evento tardío es válido y queda donde ocurrió.
+- **Solo se agrega**: un trigger rechaza todo `UPDATE` y `DELETE`. Una gestión mal registrada se
+  anula con `GESTION_ANULADA`; una promesa o un convenio que dejaron de valer, se cancelan. Lo
+  original sigue auditable.
+- **Idempotencia**: cada escritura exige `Idempotency-Key`. La misma llave con la misma petición
+  responde `200` con `Idempotent-Replayed: true`; con otra, `409 IDEMPOTENCY_KEY_REUTILIZADA`. Lo
+  garantiza un índice único en PostgreSQL.
+- **Promesas**: si una se cumplió lo dice `evaluacion-promesa/v1`, a una fecha de corte explícita
+  (`as_of`, nunca del reloj): `CUMPLIDA`, `PARCIAL`, `INCUMPLIDA`, `PENDIENTE`, `CANCELADA` o
+  `NO_EVALUABLE`. Observar recuperación compatible no dice que la promesa la produjo.
+- **Convenios**: con sus cuotas declaradas una por una, sin ledger: ningún pago se aplica a una
+  cuota.
+- **Atribución** (`atribucion/v1`): cada `PAGO` interpretado con las gestiones con contacto de su
+  cuenta que ocurrieron antes, dentro de una ventana que es parámetro de cada ejecución (30 días por
+  omisión): `SIN_GESTION_CANDIDATA`, `ASOCIACION_UNICA` o `AMBIGUA`, con todas sus candidatas y sin
+  elegir ninguna. **Asociación operacional, no causalidad.**
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+curl -s -X POST -H "$K" -H "Idempotency-Key: gestion-0001" -H "Content-Type: application/json" \
+  -d '{"ocurrido_en":"2026-09-20T10:15:00-06:00","canal":"TELEFONICA","medio":"LLAMADA","nivel_contacto":"CONTACTO_TITULAR","resultado":"PROMESA"}' \
+  http://localhost:8000/cuentas/<cuenta_id>/gestiones
+curl -s -X POST -H "$K" -H "Idempotency-Key: promesa-0001" -H "Content-Type: application/json" \
+  -d '{"monto_prometido":"1000.00","fecha_limite":"2026-09-25"}' \
+  http://localhost:8000/gestiones/<gestion_id>/promesas
+curl -s -H "$K" "http://localhost:8000/cuentas/<cuenta_id>/lifecycle?orden=asc"   # las tres verdades
+curl -s -X POST -H "$K" -H "Content-Type: application/json" -d '{"as_of":"2026-09-30"}' \
+  http://localhost:8000/evaluaciones-promesas
+curl -s -X POST -H "$K" -H "Content-Type: application/json" -d '{"periodo":"2026-09"}' \
+  http://localhost:8000/atribuciones
+curl -s -H "$K" "http://localhost:8000/atribuciones/<atribucion_run_id>/resultados?clasificacion=AMBIGUA"
+```
+
+Lo masivo no pasa por las escrituras individuales: la evaluación y la atribución son trabajos
+durables (`EVALUACION_PROMESAS`, `ATRIBUCION`) que la cola toma después del motor de pagos, uno por
+cartera y fecha o por ventana, nunca uno por promesa o por pago; `backfill-lifecycle --as-of` y
+`backfill-atribucion` encuentran lo pendiente. `motor-cartera cargar-lifecycle` importa eventos
+sintéticos de un JSONL por conjuntos (COPY y tablas temporales), todo o nada e idempotente, y
+`generar-escenario --lifecycle` los genera, deterministas por semilla, sin cambiar un byte de los
+cortes ni de los pagos. Todo está en [docs/lifecycle.md](docs/lifecycle.md) y
+[docs/atribucion.md](docs/atribucion.md); el porqué, en las decisiones 99 a 112.
+
+**Medido.** En la máquina de desarrollo, sobre los 12 cortes XL del motor de pagos, con intensidad
+0.5: `cargar-lifecycle` registró **2,573,729 eventos** en 832 s (3,092 por segundo) con 113 a 122
+MiB de memoria pico por archivo, y volver a cargar uno no registró nada; la atribución de **3,242,650
+pagos** (829,365 con asociación única, 1,058,497 ambiguos y 1,354,788 sin candidata) tomó 625 s con
+152 MiB, y la evaluación de 410,626 promesas, 39 s. La base creció 3.1 GB. Cada sentencia de una
+consulta de una cuenta entra por un índice y se resuelve en menos de 0.6 ms dentro de PostgreSQL;
+por la API, de 18 a 43 ms (mediana). Los detalles, en [docs/lifecycle.md](docs/lifecycle.md) y
+[docs/atribucion.md](docs/atribucion.md).
 
 ## El Decision Engine
 
@@ -1091,7 +1194,7 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /ruteos/{ruteo_run_id}/rutas` | La ruta de cada municipio con sus distancias, en orden de prioridad territorial y paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas` | Las paradas de un municipio en orden de visita, con su punto sintético y su distancia, paginadas; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /cuentas?cliente_unico=…` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
-| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados, snapshot actual y `resumen_pagos` (lo que interpreta el motor de pagos); con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados, snapshot actual, `resumen_pagos` (lo que interpreta el motor de pagos) y `lifecycle_resumen` (lo que hizo la cobranza y la última atribución); con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/historia` | Sus snapshots con continuidad, deltas y evidencia (`corte_id`, `dataset_id`, `source_row`, `source_sheet`), paginados; `orden=desc` por omisión | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, sin deduplicar ni conciliar, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
@@ -1107,6 +1210,29 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /movimientos` | Los movimientos económicos vigentes, del más reciente al más antiguo; filtros `cliente_unico`, `cuenta_id`, `desde`, `hasta`, `tipo` y `estado_conciliacion`, paginados | 200, 401, 404, 422 |
 | `GET /movimientos/{movimiento_id}` | Un movimiento con su clasificación, sus motivos, su representante con su archivo original y su contexto temporal | 200, 401, 404, 422 |
 | `GET /movimientos/{movimiento_id}/observaciones` | Los pagos observados que lo sustentan, cada uno con su ingesta, su dataset, su fila y su archivo original, paginados | 200, 401, 404, 422 |
+| `POST /cuentas/{cuenta_id}/gestiones` | Registra una gestión (con su visita si es de `CAMPO`); exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `GET /cuentas/{cuenta_id}/gestiones` | Sus gestiones, filtradas en la base por `desde`, `hasta`, `canal`, `nivel_contacto`, `resultado` y `estado`, paginadas | 200, 401, 404, 422 |
+| `GET /gestiones/{gestion_id}` | Una gestión: su cuenta, su contacto, su resultado, sus dos tiempos, su evento, si fue anulada y lo que nació de ella | 200, 401, 404, 422 |
+| `POST /gestiones/{gestion_id}/anulaciones` | La anula, con su visita, su promesa y su convenio; exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `POST /gestiones/{gestion_id}/promesas` | La promesa de una gestión con resultado `PROMESA`; exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `GET /promesas/{promesa_id}` | Una promesa: lo prometido, su estado operativo, su última evaluación y su linaje | 200, 401, 404, 422 |
+| `POST /promesas/{promesa_id}/cancelaciones` | La cancela; exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `GET /cuentas/{cuenta_id}/promesas` | Las promesas de la cuenta, por estado operativo, paginadas | 200, 401, 404, 422 |
+| `POST /gestiones/{gestion_id}/convenios` | El convenio de una gestión con resultado `CONVENIO`, con sus cuotas declaradas; exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `GET /convenios/{convenio_id}` | Un convenio, sus cuotas y la recuperación observada durante su vigencia (no un ledger) | 200, 401, 404, 422 |
+| `POST /convenios/{convenio_id}/cancelaciones` | Lo cancela; exige `Idempotency-Key` | 200, 201, 401, 404, 409, 422 |
+| `GET /cuentas/{cuenta_id}/convenios` | Los convenios de la cuenta, paginados | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/lifecycle` | Su línea de tiempo: `OPERACIONAL`, `FUENTE_CORTE` y `ECONOMICO`, por tiempo de negocio, paginada | 200, 401, 404, 422 |
+| `POST /evaluaciones-promesas` | Pide evaluar las promesas de la cartera a una fecha de corte (`as_of`); la evalúa el worker | 201, 401, 409, 422 |
+| `GET /evaluaciones-promesas` | Las evaluaciones, por fecha de corte, paginadas | 200, 401, 422 |
+| `GET /evaluaciones-promesas/{evaluacion_run_id}` | Una evaluación: fecha de corte, estado, conteos por estado y montos | 200, 401, 404, 422 |
+| `GET /evaluaciones-promesas/{evaluacion_run_id}/promesas` | Lo que concluyó de cada promesa, con sus motivos, paginado | 200, 401, 404, 422 |
+| `POST /atribuciones` | Pide atribuir los pagos de un mes (`periodo`, y `ventana_dias` si no es la configurada); la atribuye el worker | 201, 401, 409, 422 |
+| `GET /atribuciones` | Las atribuciones, por mes, con cuál es la vigente, paginadas | 200, 401, 422 |
+| `GET /atribuciones/{atribucion_run_id}` | Una atribución: ventana, estado, conteos, montos y la interpretación de pagos que leyó | 200, 401, 404, 422 |
+| `GET /atribuciones/{atribucion_run_id}/resultados` | Lo que concluyó de cada pago, con sus candidatas; filtros `clasificacion` y `cliente_unico`, paginado | 200, 401, 404, 422 |
+| `GET /movimientos/{movimiento_id}/atribuciones` | Cada atribución de un pago: la vigente y las que la precedieron | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/atribuciones` | Los pagos de la cuenta, cada uno con su atribución vigente, paginados | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -1164,6 +1290,18 @@ Las reglas que un cliente tiene que conocer:
   contable del acreedor, y cada respuesta lo advierte en `aviso`. Un movimiento que la
   interpretación vigente de su ventana ya no funda se sigue leyendo, con `vigente: false`.
 - **El motor de pagos tampoco se pide: se abre solo** con la historia de cada archivo de pagos.
+- **Toda escritura del lifecycle exige `Idempotency-Key`.** La misma llave con la misma petición
+  responde `200` con el recurso ya registrado y `Idempotent-Replayed: true`; con otra petición,
+  `409 IDEMPOTENCY_KEY_REUTILIZADA`. Nada se actualiza: una corrección es una anulación o una
+  cancelación, y lo original sigue visible.
+- **`ocurrido_en` lleva su zona horaria** y no puede ser del futuro (`422 OCURRIDO_EN_FUTURO`); un
+  evento tardío es válido. `registrado_en` lo pone la base.
+- **La evaluación de promesas y la atribución se piden** (`POST /evaluaciones-promesas`,
+  `POST /atribuciones`) o las encuentra su backfill: no se abren solas. Una fecha de corte posterior a
+  hoy es `422 AS_OF_FUTURO`, y una ventana sin pagos interpretados,
+  `409 SIN_INTERPRETACION_DE_PAGOS`.
+- **Atribuido no es causado, y compatible no es atribuido.** Cada respuesta de la atribución y de la
+  evaluación lo dice en su `aviso`.
 - **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
   proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
   cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
@@ -1345,6 +1483,22 @@ src/motor_cartera/
 │   ├── backfill.py    Las ventanas sin interpretación vigente, desactualizadas o por conciliar
 │   └── consultas.py   Lo que se consulta: ejecuciones, resultados, movimientos, su evidencia y el
 │                      resumen de pagos de una cuenta
+├── lifecycle/
+│   ├── reglas.py      lifecycle/v1: el vocabulario, la coherencia de una gestión, los datos
+│   │                  personales y la huella de una petición, sin base
+│   ├── registro.py    Una escritura con su llave de idempotencia, en una transacción
+│   ├── importacion.py cargar-lifecycle: JSONL por COPY y tablas temporales, por fases, todo o nada
+│   └── consultas.py   Gestiones, promesas, convenios, la línea de tiempo y el resumen de una cuenta
+├── evaluacion/
+│   ├── reglas.py      evaluacion-promesa/v1: el núcleo puro
+│   ├── ejecuciones.py La evaluación de una cartera a una fecha, en PostgreSQL, todo o nada
+│   ├── backfill.py    Las evaluaciones que faltan a una fecha (backfill-lifecycle)
+│   └── consultas.py   Las evaluaciones y lo que concluyeron de cada promesa
+├── atribucion/
+│   ├── reglas.py      atribucion/v1: el núcleo puro (candidatas, clasificación y motivos)
+│   ├── ejecuciones.py La atribución de una ventana en PostgreSQL, por conjuntos y todo o nada
+│   ├── backfill.py    Las ventanas sin atribución al día (backfill-atribucion)
+│   └── consultas.py   Las ejecuciones, sus resultados con sus candidatas y la última de una cuenta
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1355,21 +1509,29 @@ src/motor_cartera/
 │                      la orquestación (flujos y trabajos), la evidencia (artefactos, datasets
 │                      conformados, hojas compañeras e ingestas de pagos con sus rechazos) y el
 │                      modelo histórico (cuentas canónicas, cortes, snapshots, pagos observados
-│                      y sus ejecuciones) y el motor de pagos (sus ejecuciones, un resultado por
-│                      observación y los movimientos canónicos)
-├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py)
-│                      y las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py)
+│                      y sus ejecuciones), el motor de pagos (sus ejecuciones, un resultado por
+│                      observación y los movimientos canónicos), el lifecycle (eventos, gestiones,
+│                      visitas, promesas, convenios y cuotas), la evaluación de promesas y la
+│                      atribución (sus ejecuciones, sus resultados y sus candidatas)
+├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
+│                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
+│                      y el lifecycle sintético de cada periodo del escenario (lifecycle.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
-│                      ruteo, cuentas (Cuenta 360), historia, motor de pagos y movimientos;
-│                      subidas, esquemas, errores y autenticación
+│                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
+│                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones y
+│                      atribuciones; subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
-                       verificar-fuentes, backfill-historia, backfill-motor-pagos y worker
+                       cargar-lifecycle, verificar-fuentes, backfill-historia,
+                       backfill-motor-pagos, backfill-lifecycle, backfill-atribucion y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
-                       modelo histórico y del motor de pagos, y actualización del catálogo del INEGI
+                       modelo histórico, del motor de pagos y del lifecycle, y actualización del
+                       catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
-                       (el motor de pagos), los diccionarios de CARTERA y PAGOS, y carrier.md
+                       (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
+                       de promesas), atribucion.md (la atribución operativa), los diccionarios de
+                       CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -1431,6 +1593,16 @@ IngestaPagos → ArtefactoFuente (original)`, y del movimiento a su `CuentaCanon
 snapshots. `motor_pagos/reglas.py` es el núcleo puro, `motor_pagos/ejecuciones.py` aplica las
 mismas reglas en PostgreSQL por conjuntos, y `api/motor_pagos.py` y `api/movimientos.py` solo
 traducen a HTTP. Ningún motor v1 lee los movimientos.
+
+El lifecycle cuelga de las cuentas canónicas, no de una fuente: cada **EventoLifecycle** es de una
+`CuentaCanonica`, y su detalle (**GestionCobranza**, **VisitaCampo**, **PromesaPago**,
+**ConvenioCobranza**, **CuotaConvenio**) cuelga del evento que lo registró. Una evaluación
+(**EjecucionEvaluacionPromesas** → **EvaluacionPromesa**) y una atribución (**EjecucionAtribucion**
+→ **AtribucionMovimiento** → **CandidatoAtribucion**) leen el lifecycle y los movimientos del motor
+de pagos sin cambiarlos: `AtribucionMovimiento → GestionCobranza → EventoLifecycle → CuentaCanonica`,
+y `→ MovimientoEconomicoCanonico → ResultadoPagoObservado → PagoObservado → DatasetConformado →
+ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.py`,
+`atribucion/reglas.py`) no saben de la base, y una prueba compara cada uno con su SQL.
 
 ## Limitaciones conocidas
 
@@ -1497,7 +1669,8 @@ traducen a HTTP. Ningún motor v1 lee los movimientos.
   ventana de 30 días es una regla de `v1`, sin evidencia empírica.
 - **No lee `Concepto_Cálculo`, `Captación` ni `Cobranza_Total`** para decidir signos ni tipos.
 - **No atribuye pagos a gestiones.** `Gestor`, `Fecha_de_Gestion` y `Campaña` quedan como atributos
-  observados; la atribución gestión → pago viene después del lifecycle de v0.9.
+  observados. Desde v0.9.0, `atribucion/v1` asocia cada pago interpretado con las gestiones que
+  registra el lifecycle, sin causalidad y sin leer esos atributos de la fuente.
 - **Un pago sin cuenta no se concilia solo cuando llega su corte**: lo hace
   `backfill-motor-pagos --reconciliar`, con una interpretación nueva.
 - **Cada interpretación es completa.** Una llegada tardía reinterpreta entero cada mes que toca, y
@@ -1510,6 +1683,30 @@ traducen a HTTP. Ningún motor v1 lee los movimientos.
 - **La recuperación interpretada no es contabilidad.** El saldo oficial sigue siendo el del snapshot.
 - **Medido en una sola máquina, que no era dedicada**, con poca memoria disponible: el tiempo de un
   mismo mes varió de 230 a 422 s entre interpretaciones. Se mide otra vez en producción (v0.18).
+
+**Del lifecycle y la atribución (v0.9.0).** Lo que v0.9.0 deja a propósito para después:
+
+- **La atribución no mide causalidad**, ni el aporte de una gestión, de un canal o de un actor, y no
+  elige entre candidatas: un pago con dos gestiones con contacto antes queda `AMBIGUA`. La ventana
+  de 30 días es una política del demo, sin evidencia empírica.
+- **No hay `GestorCanonico`**: quien hizo una gestión es un `actor_ref` opaco, sin catálogo ni
+  relación con el `Gestor` de `pagos/v1`.
+- **Un convenio no es un ledger**: ningún pago se aplica a una cuota, y su estado no se evalúa.
+- **Las visitas no tienen geografía**: sin GPS, rutas, zonas ni geocercas (v0.11–v0.13).
+- **Lo que un corte dice de una promesa o de un plan no se vuelve un evento**: se muestra como
+  `OBSERVACION_EN_CORTE`, y ninguna regla decide todavía si dos observaciones son la misma promesa.
+- **La evaluación y la atribución no se abren solas**: las piden la API o su backfill. Una gestión
+  tardía deja desactualizada la atribución de su ventana hasta que se vuelve a pedir.
+- **La importación es para datos sintéticos e integraciones de prueba**, no una fuente oficial: no
+  tiene contrato de archivo, almacén ni historia, y una llave usada al importar es de la importación.
+- **Escribir es lo que cuesta.** Cargar un periodo XL (unos 230,000 eventos) toma de 42 a 207 s y
+  de 0.3 a 0.55 GB de WAL; atribuir un mes de un millón de pagos, de 2 a 4 minutos, y cada
+  atribución nueva de una ventana escribe otra vez todos sus pagos. La primera página de los pagos
+  ambiguos de una ventana de un millón tarda 0.5 s: es una consulta global, sin índice propio
+  (decisión 112).
+- **Medido en una sola máquina, que no era dedicada**: el mismo tamaño de archivo se cargó a 1,119 o
+  a 5,717 eventos por segundo según los checkpoints y el autovacuum. Se mide otra vez en producción
+  (v0.18).
 
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +

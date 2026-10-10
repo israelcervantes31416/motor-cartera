@@ -28,6 +28,7 @@ from motor_cartera.api.esquemas import (
     Cuenta360Respuesta,
     CuentaEncontradaRespuesta,
     EventoRespuesta,
+    LifecycleResumenRespuesta,
     MovimientoDeCuentaRespuesta,
     Paginacion,
     PaginaEventos,
@@ -40,8 +41,12 @@ from motor_cartera.api.esquemas import (
     ResumenPagosRespuesta,
     SnapshotEnHistoriaRespuesta,
     SnapshotRespuesta,
+    UltimaAtribucionRespuesta,
+    UltimaGestionRespuesta,
 )
 from motor_cartera.api.motor_pagos import contexto_respuesta, movimiento_respuesta
+from motor_cartera.atribucion import consultas as atribucion
+from motor_cartera.atribucion.consultas import ResultadoVisto
 from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
 from motor_cartera.db.modelos import CuentaCanonica
@@ -53,6 +58,8 @@ from motor_cartera.historia.cuenta360 import (
     SnapshotEnHistoria,
     SnapshotVisto,
 )
+from motor_cartera.lifecycle import consultas as lifecycle
+from motor_cartera.lifecycle.reglas import VERSION_LIFECYCLE
 from motor_cartera.motor_pagos import consultas
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
 
@@ -141,6 +148,7 @@ def buscar_cuenta(
 )
 def obtener_cuenta(
     cuenta_id: UUID,
+    request: Request,
     s: SesionDeLectura,
     al: Annotated[
         date | None,
@@ -160,14 +168,21 @@ def obtener_cuenta(
     castigo o se vendio.
 
     `resumen_pagos` es lo que la interpretacion vigente del motor de pagos dice de sus pagos, en
-    numeros: no es contabilidad del acreedor.
+    numeros: no es contabilidad del acreedor. `lifecycle_resumen` es lo que la cobranza hizo con
+    ella: sus gestiones, sus contactos, sus promesas, sus convenios, sus visitas y la ultima
+    atribucion disponible de sus pagos, que es asociacion operacional y no causalidad.
 
-    La historia, los eventos, los pagos observados y los movimientos son subrecursos paginados:
-    `/historia`, `/eventos`, `/pagos-observados` y `/movimientos`.
+    La historia, los eventos, los pagos observados, los movimientos, las gestiones, las promesas,
+    los convenios, la linea de tiempo y las atribuciones son subrecursos paginados: `/historia`,
+    `/eventos`, `/pagos-observados`, `/movimientos`, `/gestiones`, `/promesas`, `/convenios`,
+    `/lifecycle` y `/atribuciones`.
     """
+    config: Config = request.app.state.config
     cuenta = _cuenta(s, cuenta_id)
     vista = cuenta360.resumen(s, cuenta, al)
     pagos = consultas.resumen_de_cuenta(s, cuenta, version=VERSION_MOTOR_PAGOS, al=al)
+    operacion = lifecycle.resumen_de_cuenta(s, cuenta, zona=config.zona_horaria_fuente, al=al)
+    atribuida = atribucion.ultima_de_cuenta(s, cuenta, version_motor=VERSION_MOTOR_PAGOS, al=al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -200,6 +215,49 @@ def obtener_cuenta(
             recuperacion_bruta_interpretada=pagos.recuperacion_bruta_interpretada,
             recuperacion_neta_interpretada=pagos.recuperacion_neta_interpretada,
         ),
+        lifecycle_resumen=LifecycleResumenRespuesta(
+            version_lifecycle=VERSION_LIFECYCLE,
+            gestiones=operacion.gestiones,
+            gestiones_anuladas=operacion.gestiones_anuladas,
+            ultima_gestion=_ultima(operacion.ultima_gestion),
+            ultimo_contacto_titular=_ultima(operacion.ultimo_contacto_titular),
+            promesas=operacion.promesas,
+            promesas_vigentes=operacion.promesas_vigentes,
+            convenios=operacion.convenios,
+            convenios_vigentes=operacion.convenios_vigentes,
+            visitas=operacion.visitas,
+            ultima_atribucion=_atribucion(atribuida),
+        ),
+    )
+
+
+def _atribucion(visto: ResultadoVisto | None) -> UltimaAtribucionRespuesta | None:
+    if visto is None:
+        return None
+    r = visto.resultado
+    return UltimaAtribucionRespuesta(
+        atribucion_run_id=visto.ejecucion.atribucion_run_id,
+        version_atribucion=visto.ejecucion.version_atribucion,
+        ventana_dias=visto.ejecucion.ventana_dias,
+        movimiento_id=r.movimiento_id,
+        fecha_recepcion=r.fecha_recepcion,
+        monto=r.monto,
+        anulado_por_reverso=r.anulado_por_reverso,
+        clasificacion=r.clasificacion,
+        gestion_id=visto.gestion_id,
+        candidatas=r.candidatos,
+    )
+
+
+def _ultima(gestion) -> UltimaGestionRespuesta | None:
+    if gestion is None:
+        return None
+    return UltimaGestionRespuesta(
+        gestion_id=gestion.gestion_id,
+        ocurrido_en=gestion.ocurrido_en,
+        canal=gestion.canal,
+        nivel_contacto=gestion.nivel_contacto,
+        resultado=gestion.resultado,
     )
 
 

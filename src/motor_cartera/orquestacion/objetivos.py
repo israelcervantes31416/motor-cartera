@@ -1,11 +1,11 @@
 """Lo que la cola necesita saber de cada recurso que ejecuta un trabajo.
 
-Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos,
-a una ejecucion historica o a una ejecucion del motor de pagos. Para cerrarlo, el worker
-necesita saber en que tabla vive ese recurso, cuales de sus estados son terminales, como se llama su
-identificador publico y como se deja FALLIDO cuando la cola agota sus intentos sin que el motor lo
-terminara. Los motores no saben de la cola y la cola no sabe de sus reglas: este modulo es lo unico
-que conoce a los dos lados.
+Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
+una ejecucion historica, a una del motor de pagos, a una atribucion o a una evaluacion de promesas.
+Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
+terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
+intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
+reglas: este modulo es lo unico que conoce a los dos lados.
 """
 
 from __future__ import annotations
@@ -19,19 +19,25 @@ from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.db.modelos import (
     Corrida,
+    EjecucionAtribucion,
     EjecucionDecision,
+    EjecucionEvaluacionPromesas,
     EjecucionHistoria,
     EjecucionMotorPagos,
     EjecucionRuteo,
     EjecucionTerritorial,
+    EstadoAtribucion,
     EstadoCorrida,
     EstadoDecision,
+    EstadoEvaluacionPromesas,
     EstadoHistoria,
     EstadoIngestaPagos,
     EstadoMotorPagos,
     EstadoRuteo,
     EstadoTerritorial,
     IngestaPagos,
+    ResultadoAtribucion,
+    ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
     TipoTrabajo,
@@ -98,6 +104,20 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         "ejecucion_motor_pagos_id",
         "motor_pagos_run_id",
         {"resultado": ResultadoMotorPagos.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.ATRIBUCION: Objetivo(
+        EjecucionAtribucion,
+        EstadoAtribucion,
+        "ejecucion_atribucion_id",
+        "atribucion_run_id",
+        {"resultado": ResultadoAtribucion.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.EVALUACION_PROMESAS: Objetivo(
+        EjecucionEvaluacionPromesas,
+        EstadoEvaluacionPromesas,
+        "ejecucion_evaluacion_promesas_id",
+        "evaluacion_run_id",
+        {"resultado": ResultadoEvaluacionPromesas.INTENTOS_AGOTADOS.value},
     ),
 }
 
