@@ -1,7 +1,8 @@
 """Lo que la cola necesita saber de cada recurso que ejecuta un trabajo.
 
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
-una ejecucion historica, a una del motor de pagos, a una atribucion o a una evaluacion de promesas.
+una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas o
+a una decision v2.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -21,6 +22,7 @@ from motor_cartera.db.modelos import (
     Corrida,
     EjecucionAtribucion,
     EjecucionDecision,
+    EjecucionDecisionV2,
     EjecucionEvaluacionPromesas,
     EjecucionHistoria,
     EjecucionMotorPagos,
@@ -29,6 +31,7 @@ from motor_cartera.db.modelos import (
     EstadoAtribucion,
     EstadoCorrida,
     EstadoDecision,
+    EstadoDecisionV2,
     EstadoEvaluacionPromesas,
     EstadoHistoria,
     EstadoIngestaPagos,
@@ -37,6 +40,7 @@ from motor_cartera.db.modelos import (
     EstadoTerritorial,
     IngestaPagos,
     ResultadoAtribucion,
+    ResultadoEjecucionDecisionV2,
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
@@ -118,6 +122,16 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         "ejecucion_evaluacion_promesas_id",
         "evaluacion_run_id",
         {"resultado": ResultadoEvaluacionPromesas.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.DECISION_V2: Objetivo(
+        EjecucionDecisionV2,
+        EstadoDecisionV2,
+        "ejecucion_decision_v2_id",
+        "decision_run_id",
+        {
+            "cuentas_decididas": 0,
+            "resultado": ResultadoEjecucionDecisionV2.INTENTOS_AGOTADOS.value,
+        },
     ),
 }
 
