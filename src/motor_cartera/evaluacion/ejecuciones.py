@@ -347,18 +347,28 @@ def _firma_de_entrada(s: Session, ejecucion: EjecucionEvaluacionPromesas) -> str
 # --- lo que se publica ----------------------------------------------------------------------------
 
 E = EstadoEvaluacion
-SQL_EVALUACIONES = f"""
-INSERT INTO evaluacion_promesa (ejecucion_evaluacion_promesas_id, promesa_pago_id,
-    primer_movimiento_en, ultimo_movimiento_en, movimientos_compatibles, monto_observado, estado,
-    motivos)
-SELECT :ejecucion, pr.id, a.primero, a.ultimo, coalesce(a.compatibles, 0),
-    coalesce(a.observado, 0), v.estado,
+
+
+def sql_conclusiones(promesa: str, movimiento: str, sin_interpretar: str, corte: str) -> str:
+    """Lo que evaluacion-promesa/v1 concluye de cada promesa, en un SELECT por conjuntos: una fila
+    por promesa (`promesa`), con su primer y ultimo movimiento compatible, cuantos son, el monto
+    observado, su estado y sus motivos, con las reglas de `evaluacion.reglas.evaluar` en el mismo
+    orden.
+
+    Lee cuatro tablas, por nombre: las promesas (id, monto, fin_limite, fin, anulada y
+    cancelada_en), sus movimientos (promesa, tipo, fecha_recepcion, monto y anulado_en), las
+    promesas con pagos sin interpretar (promesa) y el corte (fin_as_of y horizonte). Esta
+    evaluacion le pasa las suyas; decision/v2, las suyas point-in-time. Las reglas economicas viven
+    en un solo lugar."""
+    return f"""
+SELECT pr.id AS promesa, a.primero, a.ultimo, coalesce(a.compatibles, 0) AS compatibles,
+    coalesce(a.observado, 0) AS observado, v.estado,
     v.motivo || CASE WHEN coalesce(a.posibles, 0) > 0 AND v.estado <> '{E.CANCELADA}'
         THEN jsonb_build_array(jsonb_build_object('codigo', '{Motivo.POSIBLES_REVERSOS}',
             'cuantos', a.posibles, 'monto', a.monto_posibles::numeric(14, 2)::text))
-        ELSE '[]'::jsonb END
-FROM ev_promesa pr
-CROSS JOIN ev_corte k
+        ELSE '[]'::jsonb END AS motivos
+FROM {promesa} pr
+CROSS JOIN {corte} k
 LEFT JOIN (
     SELECT promesa,
         count(*) FILTER (WHERE compatible) AS compatibles,
@@ -370,10 +380,10 @@ LEFT JOIN (
     FROM (
         SELECT m.*, m.tipo = 'PAGO' AND (m.anulado_en IS NULL OR m.anulado_en >= k.fin_as_of)
             AS compatible
-        FROM ev_movimiento m CROSS JOIN ev_corte k
+        FROM {movimiento} m CROSS JOIN {corte} k
     ) x GROUP BY promesa
 ) a ON a.promesa = pr.id
-LEFT JOIN ev_sin_interpretar si ON si.promesa = pr.id
+LEFT JOIN {sin_interpretar} si ON si.promesa = pr.id
 CROSS JOIN LATERAL (
     SELECT coalesce(a.observado, 0)::numeric(14, 2)::text AS observado,
         pr.monto::numeric(14, 2)::text AS prometido
@@ -409,7 +419,16 @@ CROSS JOIN LATERAL (
                 'observado', t.observado, 'prometido', t.prometido)
         ELSE jsonb_build_object('codigo', '{Motivo.SIN_RECUPERACION}') END) AS motivo
 ) v
-ORDER BY pr.id
+"""
+
+
+SQL_EVALUACIONES = f"""
+INSERT INTO evaluacion_promesa (ejecucion_evaluacion_promesas_id, promesa_pago_id,
+    primer_movimiento_en, ultimo_movimiento_en, movimientos_compatibles, monto_observado, estado,
+    motivos)
+SELECT :ejecucion, c.promesa, c.primero, c.ultimo, c.compatibles, c.observado, c.estado, c.motivos
+FROM ({sql_conclusiones("ev_promesa", "ev_movimiento", "ev_sin_interpretar", "ev_corte")}) c
+ORDER BY c.promesa
 """
 """Una evaluacion por promesa, con las reglas de `evaluacion.reglas.evaluar`, en el mismo orden."""
 
