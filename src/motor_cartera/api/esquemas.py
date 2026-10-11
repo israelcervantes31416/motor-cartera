@@ -1217,6 +1217,15 @@ class UltimaAtribucionRespuesta(BaseModel):
     candidatas: int
 
 
+class UltimaDecisionV2Respuesta(BaseModel):
+    """La decision v2 mas reciente de una cuenta, en resumen."""
+
+    decision_run_id: UUID
+    as_of: date
+    prioridad: str
+    canal: str
+
+
 class LifecycleResumenRespuesta(BaseModel):
     """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
     de tiempo son subrecursos paginados: aqui no estan."""
@@ -1298,6 +1307,13 @@ class Cuenta360Respuesta(BaseModel):
         description="Lo que la cobranza hizo con la cuenta, en numeros: gestiones, la ultima, el "
         "ultimo contacto con el titular, promesas, convenios y visitas. El detalle esta en "
         "/gestiones, /promesas, /convenios y /lifecycle."
+    )
+    ultima_decision_v2: UltimaDecisionV2Respuesta | None = Field(
+        default=None,
+        description="La decision v2 mas reciente de la cuenta (con `al`, la de as_of hasta ese "
+        "dia): su ejecucion, su as_of, su prioridad y su canal. Sus features y sus motivos estan "
+        "en /decisiones-v2/{decision_run_id}/resultados/{cuenta_id}, y todas, en "
+        "/cuentas/{cuenta_id}/decisiones-v2.",
     )
 
 

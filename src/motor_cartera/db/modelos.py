@@ -2276,6 +2276,360 @@ class EvaluacionPromesa(SQLModel, table=True):
     motivos: list[dict] = Field(sa_type=JSONB)
 
 
+# --- decision/v2 ----------------------------------------------------------------------------------
+#
+# Desde la 0011. Decide cada cuenta de un corte canonico con lo que se sabia en un instante, con
+# reglas versionadas y explicables. Es paralelo a decision/v1: no toca su tabla, su enum ni su flujo
+# (ingesta, decision, territorial y ruteo siguen leyendo decision/v1). Tres relojes no se mezclan:
+# el corte fija el universo (las cuentas de sus snapshots), as_of el dia de negocio que se decide y
+# known_at hasta donde llega el conocimiento que se usa. Una ejecucion publica, todo o nada, las
+# features exactas con que decidio cada cuenta (FeatureDecisionCuenta) y lo que decidio, con sus
+# motivos (ResultadoDecisionV2): una decision de ayer se explica con lo que se sabia ayer, sin
+# volver a calcular nada. Las tablas por cuenta crecen con cada ejecucion: no tienen id propio, su
+# llave es la natural (ejecucion, cuenta), y sus columnas de 8 bytes van primero.
+
+CONTEOS_DE_DECISION_V2 = (
+    "cuentas_objetivo >= 0 AND cuentas_decididas >= 0 AND cuentas_fallidas >= 0 "
+    "AND cuentas_decididas <= cuentas_objetivo AND cuentas_fallidas <= cuentas_objetivo"
+)
+
+PUBLICACION_DE_DECISION_V2 = (
+    "(estado = 'EXITOSA' AND cuentas_objetivo > 0 AND cuentas_decididas = cuentas_objetivo "
+    "AND cuentas_fallidas = 0) OR (estado <> 'EXITOSA' AND cuentas_decididas = 0)"
+)
+"""Una EXITOSA decidio cada cuenta de su corte y ninguna fallo; las demas no publicaron nada."""
+
+NIVELES_DE_PRIORIDAD = (
+    "score_nivel_base BETWEEN 1 AND 4 AND score_nivel_final BETWEEN 1 AND 4 "
+    "AND score_nivel_final = least(4, greatest(1, score_nivel_base + ajuste_total)) "
+    "AND score_nivel_base = CASE prioridad_base WHEN 'BAJA' THEN 1 WHEN 'MEDIA' THEN 2 "
+    "WHEN 'ALTA' THEN 3 WHEN 'MUY_ALTA' THEN 4 END "
+    "AND score_nivel_final = CASE prioridad_final WHEN 'BAJA' THEN 1 WHEN 'MEDIA' THEN 2 "
+    "WHEN 'ALTA' THEN 3 WHEN 'MUY_ALTA' THEN 4 END"
+)
+"""El nivel es el orden de la prioridad (BAJA 1 a MUY_ALTA 4), y el final es el base mas el ajuste,
+acotado a ese rango. Lo exige la base, no solo la politica: no hay prioridad fuera de la escala ni
+un nivel que no sea la suma de sus efectos."""
+
+
+class EstadoDecisionV2(StrEnum):
+    """En que quedo una ejecucion de decision/v2. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ModoDecisionV2(StrEnum):
+    """Para que se pidio la decision. No entra en su firma: es un control de quien la pide."""
+
+    OPERATIVO = "OPERATIVO"
+    """El corte mas reciente conocido a known_at. known_at puede omitirse: es el reloj de la base al
+    abrir, una sola vez."""
+    BACKTEST = "BACKTEST"
+    """Cualquier corte conocido a known_at, que es obligatorio: un backtest declara su frontera de
+    conocimiento."""
+
+
+class ResultadoEjecucionDecisionV2(StrEnum):
+    """Como termino una ejecucion de decision/v2."""
+
+    DECISION_PUBLICADA = "DECISION_PUBLICADA"
+    """EXITOSA: publico las features y la decision de cada cuenta del corte."""
+    YA_DECIDIDA = "YA_DECIDIDA"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    CUENTAS_NO_DECIDIBLES = "CUENTAS_NO_DECIDIBLES"
+    """FALLIDA: alguna cuenta del corte no cumple lo que la politica necesita; no se publica
+    ninguna."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionDecisionV2(SQLModel, table=True):
+    """Una ejecucion de decision/v2 sobre un corte canonico, a un as_of y con conocimiento hasta
+    known_at.
+
+    Es una entidad, como las ejecuciones de los demas motores, porque tiene que existir aunque no
+    publique nada. Guarda todo lo que fija su resultado: el corte, as_of, known_at, la zona del dia
+    logico, las versiones de motor, features y politica, el hash de la politica y la firma de sus
+    entradas. La base garantiza a lo mas una EXITOSA por firma, y a lo mas una EN_PROCESO por corte
+    y versiones: la misma decision no se publica dos veces, y un corte no se decide dos veces a la
+    vez.
+    """
+
+    __tablename__ = "ejecucion_decision_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id"], ["corte_canonico.id"], name="fk_decision_v2_corte"
+        ),
+        # Lo que referencia cada FeatureDecisionCuenta: la ejecucion junto con su corte. Asi la base
+        # garantiza que las features son de cuentas del corte de su ejecucion.
+        sa.UniqueConstraint("id", "corte_canonico_id", name="uq_decision_v2_id_corte"),
+        sa.Index(
+            "ux_decision_v2_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_decision_v2_en_proceso",
+            "corte_canonico_id",
+            "version_features",
+            "version_politica",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Las ejecuciones de un corte, en cualquier estado, la mas reciente primero.
+        sa.Index("ix_decision_v2_corte", "corte_canonico_id", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_decision_v2_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_decision_v2_resultado")
+        ),
+        sa.CheckConstraint(CONTEOS_DE_DECISION_V2, name=conv("ck_decision_v2_conteos")),
+        sa.CheckConstraint(PUBLICACION_DE_DECISION_V2, name=conv("ck_decision_v2_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    decision_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. Identifica un intento, como los demas *_run_id, y por eso es
+    aleatorio; lo que es determinista es su firma y lo que publica."""
+    corte_canonico_id: int
+    """El corte cuyas cuentas son el universo. Su llave foranea esta en __table_args__."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    as_of: date
+    """El dia de negocio que se decide: el del corte. Se observa hasta el final de ese dia en la
+    zona de la ejecucion."""
+    known_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """Hasta cuando se conoce: un evento, un corte, una interpretacion o una atribucion registrados
+    despues no existen para esta ejecucion. Si se omite, es el reloj de la base al abrirla, una
+    vez."""
+    modo: ModoDecisionV2 = Field(
+        sa_type=sa.Enum(
+            ModoDecisionV2,
+            name="modo_decision_v2",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    zona_horaria: str = Field(max_length=64)
+    """La zona del dia logico: as_of termina al iniciar el dia siguiente en ella."""
+    version_motor: str = Field(max_length=32)
+    """decision/v2. Gobierna tambien el esquema de los motivos."""
+    version_features: str = Field(max_length=32)
+    """features-decision/v1: que variables y con que definicion."""
+    version_politica: str = Field(max_length=40)
+    """decision-policy/public-v1: que reglas."""
+    hash_politica: str = Field(max_length=64)
+    """SHA-256 de la definicion canonica de la politica: sus reglas, umbrales, efectos y mapeos."""
+    firma_inputs: str = Field(max_length=64)
+    """SHA-256 de las entradas logicas: versiones, hash de la politica, cartera, corte, as_of,
+    known_at y zona. Las mismas entradas son la misma decision."""
+    estado: EstadoDecisionV2 = Field(
+        default=EstadoDecisionV2.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoDecisionV2,
+            name="estado_decision_v2",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    """Como termino: DECISION_PUBLICADA, YA_DECIDIDA, CUENTAS_NO_DECIDIBLES..."""
+    cuentas_objetivo: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas del corte: sus snapshots. Se fija al abrir."""
+    cuentas_decididas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas decisiones publico: todas las objetivo en una EXITOSA, cero en las demas."""
+    cuentas_fallidas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Cuantas no se pudieron decidir. Con una sola, no se publica ninguna."""
+    disponibilidad: dict | None = Field(default=None, sa_type=JSONB)
+    """Que informacion estaba disponible a known_at, por familia y ventana: la cobertura de los
+    pagos y de la atribucion de cada mes, y hasta donde llegaban los pagos. Explica cada NULL."""
+    distribucion: dict | None = Field(default=None, sa_type=JSONB)
+    """Cuantas decisiones de cada prioridad, canal y ajuste, y cuantas activaron cada regla: lo que
+    publico, contado en la transaccion que lo publico."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class FeatureDecisionCuenta(SQLModel, table=True):
+    """Las features exactas con que una ejecucion de decision/v2 decidio una cuenta.
+
+    Una fila por cuenta del corte y ejecucion, inmutable: no se recalcula al consultar una decision
+    historica. Su llave foranea compuesta hacia el snapshot garantiza que la cuenta es del corte, y
+    la de la ejecucion, que el corte es el suyo. `feature_hash` es el SHA-256 de sus valores en
+    forma canonica, con la version de las features delante. Un NULL es informacion no disponible a
+    known_at, nunca un cero. Ni se actualiza ni se borra: un trigger de la 0011 rechaza cualquier
+    UPDATE o DELETE sobre esta tabla.
+    """
+
+    __tablename__ = "feature_decision_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id", "corte_canonico_id"],
+            ["ejecucion_decision_v2.id", "ejecucion_decision_v2.corte_canonico_id"],
+            name="fk_feature_decision_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "cuenta_canonica_id"],
+            ["snapshot_cuenta.corte_canonico_id", "snapshot_cuenta.cuenta_canonica_id"],
+            name="fk_feature_decision_snapshot",
+        ),
+        sa.CheckConstraint(
+            "octet_length(feature_hash) = 32", name=conv("ck_feature_decision_hash")
+        ),
+        sa.CheckConstraint(
+            "cortes_observados >= 1 AND reingresos_observados >= 0 AND gestiones_7d >= 0 "
+            "AND gestiones_7d <= gestiones_30d AND gestiones_sin_contacto_7d <= gestiones_7d "
+            "AND contactos_titular_30d + contactos_tercero_30d <= gestiones_contactables_30d "
+            "AND gestiones_contactables_30d <= gestiones_30d AND visitas_30d <= gestiones_30d "
+            "AND promesas_30d <= promesas_90d AND promesas_incumplidas_30d <= "
+            "promesas_incumplidas_90d AND convenios_90d >= 0 "
+            "AND (dias_desde_ultima_gestion IS NULL OR dias_desde_ultima_gestion >= 0) "
+            "AND (dias_desde_ultimo_pago IS NULL OR dias_desde_ultimo_pago >= 0)",
+            name=conv("ck_feature_decision_conteos"),
+        ),
+        sa.CheckConstraint(
+            "(tasa_contacto_titular_30d IS NULL) = (gestiones_contactables_30d = 0) "
+            "AND (tasa_contacto_titular_30d IS NULL OR tasa_contacto_titular_30d BETWEEN 0 AND 1)",
+            name=conv("ck_feature_decision_tasa"),
+        ),
+    )
+
+    # Las columnas de 8 bytes primero.
+    dias_atraso: int = Field(sa_type=sa.BigInteger)
+    semanas_atraso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    delta_dias_atraso_desde_corte_anterior: int | None = Field(default=None, sa_type=sa.BigInteger)
+    # La llave primaria es la natural: una cuenta, una vez por ejecucion.
+    ejecucion_decision_v2_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    corte_canonico_id: int
+    """El de su ejecucion: lo exige su llave foranea compuesta."""
+    cortes_observados: int
+    reingresos_observados: int
+    dias_desde_ultima_gestion: int | None = None
+    gestiones_7d: int
+    gestiones_30d: int
+    gestiones_sin_contacto_7d: int
+    contactos_titular_30d: int
+    contactos_tercero_30d: int
+    visitas_30d: int
+    gestiones_contactables_30d: int
+    promesas_30d: int
+    promesas_90d: int
+    promesas_cumplidas_90d: int
+    promesas_parciales_90d: int
+    promesas_incumplidas_30d: int
+    promesas_incumplidas_90d: int
+    convenios_90d: int
+    dias_desde_ultimo_pago: int | None = None
+    movimientos_pago_7d: int | None = None
+    movimientos_pago_30d: int | None = None
+    pagos_asociados_unicos_30d: int | None = None
+    saldo_total: Decimal = Field(max_digits=14, decimal_places=2)
+    saldo_atrasado: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    saldo_requerido: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    moratorios: Decimal | None = Field(default=None, max_digits=14, decimal_places=2)
+    delta_saldo_total_desde_corte_anterior: Decimal | None = Field(
+        default=None, max_digits=14, decimal_places=2
+    )
+    tasa_contacto_titular_30d: Decimal | None = Field(default=None, max_digits=5, decimal_places=4)
+    recuperacion_interpretada_7d: Decimal | None = Field(
+        default=None, max_digits=18, decimal_places=2
+    )
+    recuperacion_interpretada_30d: Decimal | None = Field(
+        default=None, max_digits=18, decimal_places=2
+    )
+    recuperacion_interpretada_90d: Decimal | None = Field(
+        default=None, max_digits=18, decimal_places=2
+    )
+    recuperacion_asociada_unica_30d: Decimal | None = Field(
+        default=None, max_digits=18, decimal_places=2
+    )
+    dias_gestion_a_pago_mediana_90d: Decimal | None = Field(
+        default=None, max_digits=7, decimal_places=2
+    )
+    producto: str = Field(max_length=20)
+    estrategia: str | None = None
+    estatus_plan: str | None = None
+    ultima_gestion_canal: str | None = Field(default=None, max_length=12)
+    ultima_gestion_nivel_contacto: str | None = Field(default=None, max_length=20)
+    continuo_desde_corte_anterior: bool | None = None
+    promesa_vigente: bool
+    convenio_vigente: bool
+    feature_hash: bytes = Field(sa_type=sa.LargeBinary)
+
+
+class ResultadoDecisionV2(SQLModel, table=True):
+    """Lo que una ejecucion de decision/v2 decidio de una cuenta, y por que.
+
+    Apunta a sus features por la misma llave natural (la llave foranea compuesta es su
+    `feature_decision_id`). Guarda la prioridad base, el ajuste, la prioridad final con su nivel
+    ordenado, el canal y los motivos: el codigo, las features con su valor, el operador, el umbral
+    y el efecto de cada regla que aplico. Ningun nivel es una probabilidad: es el orden de la escala
+    de prioridades. `decision_hash` resume la decision con el hash de sus features y el de la
+    politica. Como sus features, no se actualiza ni se borra: lo impide el mismo trigger.
+    """
+
+    __tablename__ = "resultado_decision_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id", "cuenta_canonica_id"],
+            [
+                "feature_decision_cuenta.ejecucion_decision_v2_id",
+                "feature_decision_cuenta.cuenta_canonica_id",
+            ],
+            name="fk_resultado_decision_v2_feature",
+        ),
+        # Una pagina de una prioridad o de un canal, en el orden de la cuenta, sin recorrer las
+        # demas.
+        sa.Index(
+            "ix_resultado_decision_v2_prioridad",
+            "ejecucion_decision_v2_id",
+            "prioridad_final",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_resultado_decision_v2_canal",
+            "ejecucion_decision_v2_id",
+            "canal_recomendado",
+            "cuenta_canonica_id",
+        ),
+        # Las decisiones de una cuenta en todas las ejecuciones: unas pocas por corte.
+        sa.Index(
+            "ix_resultado_decision_v2_cuenta", "cuenta_canonica_id", "ejecucion_decision_v2_id"
+        ),
+        sa.CheckConstraint(NIVELES_DE_PRIORIDAD, name=conv("ck_resultado_decision_v2_niveles")),
+        sa.CheckConstraint(
+            "octet_length(decision_hash) = 32", name=conv("ck_resultado_decision_v2_hash")
+        ),
+    )
+
+    ejecucion_decision_v2_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    score_nivel_base: int = Field(sa_type=sa.SmallInteger)
+    """El orden de la prioridad base: BAJA 1, MEDIA 2, ALTA 3, MUY_ALTA 4. No es una
+    probabilidad."""
+    ajuste_total: int = Field(sa_type=sa.SmallInteger)
+    """La suma de los efectos de las reglas que aplicaron, antes de acotar."""
+    score_nivel_final: int = Field(sa_type=sa.SmallInteger)
+    prioridad_base: str = Field(max_length=12)
+    prioridad_final: str = Field(max_length=12)
+    canal_recomendado: str = Field(max_length=20)
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que, regla por regla, con el esquema de decision/v2: la prioridad base, cada modificador
+    que aplico y la prioridad final con su canal."""
+    decision_hash: bytes = Field(sa_type=sa.LargeBinary)
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -2305,7 +2659,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'HISTORIA') = (ejecucion_historia_id IS NOT NULL) "
     "AND (tipo = 'MOTOR_PAGOS') = (ejecucion_motor_pagos_id IS NOT NULL) "
     "AND (tipo = 'ATRIBUCION') = (ejecucion_atribucion_id IS NOT NULL) "
-    "AND (tipo = 'EVALUACION_PROMESAS') = (ejecucion_evaluacion_promesas_id IS NOT NULL)"
+    "AND (tipo = 'EVALUACION_PROMESAS') = (ejecucion_evaluacion_promesas_id IS NOT NULL) "
+    "AND (tipo = 'DECISION_V2') = (ejecucion_decision_v2_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -2460,6 +2815,10 @@ class TipoTrabajo(StrEnum):
     EVALUACION_PROMESAS = "EVALUACION_PROMESAS"
     """Desde la 0010: evaluar las promesas de una cartera a una fecha de corte. Lo piden POST
     /evaluaciones-promesas o backfill-lifecycle, uno por cartera y fecha, nunca uno por promesa."""
+    DECISION_V2 = "DECISION_V2"
+    """Desde la 0011: decidir las cuentas de un corte canonico con decision/v2, a un as_of y con
+    conocimiento hasta known_at. Lo piden POST /decisiones-v2 o decidir-v2. No es de ningun flujo:
+    corre en paralelo a decision/v1, que sigue siendo la etapa DECISION."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -2520,6 +2879,11 @@ class TrabajoOrquestacion(SQLModel, table=True):
             ["ejecucion_evaluacion_promesas.id"],
             name="fk_trabajo_evaluacion",
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id"],
+            ["ejecucion_decision_v2.id"],
+            name="fk_trabajo_decision_v2",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -2529,6 +2893,7 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_motor_pagos_id", name="uq_trabajo_motor_pagos"),
         sa.UniqueConstraint("ejecucion_atribucion_id", name="uq_trabajo_atribucion"),
         sa.UniqueConstraint("ejecucion_evaluacion_promesas_id", name="uq_trabajo_evaluacion"),
+        sa.UniqueConstraint("ejecucion_decision_v2_id", name="uq_trabajo_decision_v2"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -2587,6 +2952,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo ATRIBUCION, desde la 0010."""
     ejecucion_evaluacion_promesas_id: int | None = None
     """El objetivo de un trabajo EVALUACION_PROMESAS, desde la 0010."""
+    ejecucion_decision_v2_id: int | None = None
+    """El objetivo de un trabajo DECISION_V2, desde la 0011."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

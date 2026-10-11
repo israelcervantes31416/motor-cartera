@@ -25,12 +25,12 @@ import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from motor_cartera.atribucion.ejecuciones import AtribucionYaPublicada, ejecutar_atribucion
 from motor_cartera.config import Config
@@ -40,15 +40,24 @@ from motor_cartera.db.modelos import (
     ArchivoCorrida,
     ArtefactoFuente,
     Corrida,
+    EjecucionDecisionV2,
     EstadoCorrida,
     EstadoIngestaPagos,
     EstadoTrabajo,
     EtapaFlujo,
     IngestaPagos,
+    ModoDecisionV2,
     TipoTrabajo,
+    TrabajoOrquestacion,
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.decision.ejecuciones import DecisionYaGenerada, ejecutar_decision
+from motor_cartera.decision_v2 import ejecuciones as decision_v2
+from motor_cartera.decision_v2.ejecuciones import (
+    DecisionV2YaGenerada,
+    FronteraSinAsentar,
+    ejecutar_decision_v2,
+)
 from motor_cartera.evaluacion.ejecuciones import EvaluacionYaPublicada, ejecutar_evaluacion
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
@@ -74,6 +83,7 @@ PERDIO_LA_CARRERA = (
     MotorPagosYaInterpretado,
     AtribucionYaPublicada,
     EvaluacionYaPublicada,
+    DecisionV2YaGenerada,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -136,6 +146,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.MOTOR_PAGOS: ejecutar_motor_pagos,
     TipoTrabajo.ATRIBUCION: ejecutar_atribucion,
     TipoTrabajo.EVALUACION_PROMESAS: ejecutar_evaluacion,
+    TipoTrabajo.DECISION_V2: ejecutar_decision_v2,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -238,6 +249,10 @@ def procesar_reclamo(
                 # Su lease vencio y otro worker lo tomo: este no publica, y tampoco lo cierra.
                 log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
                 return _procesado(reclamo, None)
+            except FronteraSinAsentar as exc:
+                # Transitorio y esperado: vuelve a la cola con su espera, sin traza.
+                log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+                error = exc
             except Exception as exc:
                 log.exception(
                     "trabajo %s: error del worker en el intento %s de %s",
@@ -369,6 +384,47 @@ def ingerir_pagos_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(IngestaPagos, ingesta.id)
+
+
+def decidir_v2_en_primer_plano(
+    corte_id: UUID,
+    *,
+    as_of: date | None = None,
+    known_at: datetime | None = None,
+    modo: ModoDecisionV2 = ModoDecisionV2.OPERATIVO,
+    version_politica: str | None = None,
+    config: Config | None = None,
+) -> EjecucionDecisionV2:
+    """La decision v2 del CLI: en una transaccion, su ejecucion y su trabajo, ya tomado por este
+    proceso; despues, la decision en primer plano, con su latido. Si el proceso muere, cualquier
+    worker la termina cuando vence el lease, con el mismo known_at. Propaga lo que levanta
+    `decision_v2.ejecuciones.abrir` sin registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = decision_v2.abrir(
+            s,
+            corte_id,
+            as_of=as_of,
+            known_at=known_at,
+            modo=modo,
+            version_politica=version_politica,
+            zona=config.zona_horaria_fuente,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_decision_v2_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionDecisionV2, ejecucion_id)
 
 
 def _cerrar(

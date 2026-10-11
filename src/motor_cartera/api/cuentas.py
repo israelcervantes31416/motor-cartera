@@ -42,6 +42,7 @@ from motor_cartera.api.esquemas import (
     SnapshotEnHistoriaRespuesta,
     SnapshotRespuesta,
     UltimaAtribucionRespuesta,
+    UltimaDecisionV2Respuesta,
     UltimaGestionRespuesta,
 )
 from motor_cartera.api.motor_pagos import contexto_respuesta, movimiento_respuesta
@@ -50,6 +51,7 @@ from motor_cartera.atribucion.consultas import ResultadoVisto
 from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
 from motor_cartera.db.modelos import CuentaCanonica
+from motor_cartera.decision_v2 import consultas as decision_v2
 from motor_cartera.historia import cuenta360
 from motor_cartera.historia.cuenta360 import (
     CuentaNoEncontrada,
@@ -171,6 +173,8 @@ def obtener_cuenta(
     numeros: no es contabilidad del acreedor. `lifecycle_resumen` es lo que la cobranza hizo con
     ella: sus gestiones, sus contactos, sus promesas, sus convenios, sus visitas y la ultima
     atribucion disponible de sus pagos, que es asociacion operacional y no causalidad.
+    `ultima_decision_v2` es la decision v2 mas reciente, en resumen: su ejecucion, su as_of, su
+    prioridad y su canal.
 
     La historia, los eventos, los pagos observados, los movimientos, las gestiones, las promesas,
     los convenios, la linea de tiempo y las atribuciones son subrecursos paginados: `/historia`,
@@ -183,6 +187,7 @@ def obtener_cuenta(
     pagos = consultas.resumen_de_cuenta(s, cuenta, version=VERSION_MOTOR_PAGOS, al=al)
     operacion = lifecycle.resumen_de_cuenta(s, cuenta, zona=config.zona_horaria_fuente, al=al)
     atribuida = atribucion.ultima_de_cuenta(s, cuenta, version_motor=VERSION_MOTOR_PAGOS, al=al)
+    decidida = decision_v2.ultima(s, cuenta, al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -227,6 +232,14 @@ def obtener_cuenta(
             convenios_vigentes=operacion.convenios_vigentes,
             visitas=operacion.visitas,
             ultima_atribucion=_atribucion(atribuida),
+        ),
+        ultima_decision_v2=None
+        if decidida is None
+        else UltimaDecisionV2Respuesta(
+            decision_run_id=decidida.ejecucion.decision_run_id,
+            as_of=decidida.ejecucion.as_of,
+            prioridad=decidida.resultado.prioridad_final,
+            canal=decidida.resultado.canal_recomendado,
         ),
     )
 

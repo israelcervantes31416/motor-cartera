@@ -153,6 +153,14 @@ jobs:
           grep -q "al dia con atribucion/v1: 1" atribucion.txt
           grep -q "solo con atribuciones FALLIDA: 0" atribucion.txt
 
+      # Y decidio el corte oficial con decision/v2, en paralelo a decision/v1. En modo sombra,
+      # contra la decision/v1 de su corrida: un diagnostico de diferencias, no un juicio de calidad.
+      - name: Decision v2 en sombra
+        run: |
+          docker compose exec -T worker motor-cartera comparar-decisiones --corte 2026-09-30 \
+            | tee sombra.txt
+          grep -q "no un juicio de calidad" sombra.txt
+
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
       # base registra tiene que seguir en el almacen con sus mismos bytes: las dos carteras, los

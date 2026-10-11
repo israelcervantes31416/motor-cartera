@@ -20,6 +20,7 @@ from motor_cartera.api import (
     corridas,
     cuentas,
     decisiones,
+    decisiones_v2,
     evaluaciones,
     gestiones,
     historia,
@@ -165,6 +166,30 @@ La atribucion es asociacion operacional, no causalidad: con dos o mas candidatas
 `AMBIGUA` y no se elige ninguna. Que un pago sea compatible con una promesa no dice que la promesa
 lo produjo.
 
+**El Decision Engine v2** (`decision/v2`) decide cada cuenta de un corte canonico con 43 features
+(`features-decision/v1`) de su snapshot, su historia, su lifecycle, sus promesas, sus convenios, sus
+pagos interpretados y sus asociaciones unicas, **point-in-time**: con lo que se conocia en
+`known_at` de lo que paso hasta el final de `as_of`. La politica (`decision-policy/public-v1`, con
+su hash) toma la prioridad base de `decision/v1` por dias de atraso y la ajusta con cuatro
+modificadores de -1 o +1. **Demuestra la capacidad del motor; no representa una politica real de un
+acreedor**, y no es una prediccion: no hay probabilidades ni modelos. Corre en paralelo a
+`decision/v1`, que sigue alimentando el territorial y el ruteo.
+
+30. `POST /decisiones-v2` con el `corte_id`: `OPERATIVO` (el corte mas reciente; sin `known_at`, el
+    reloj de la base) o `BACKTEST` (cualquier corte, con `known_at` obligatorio). La decide el
+    worker, en un trabajo `DECISION_V2`.
+31. `GET /decisiones-v2/{decision_run_id}`: sus entradas, versiones, firma, disponibilidad de pagos
+    y atribucion a `known_at`, distribucion y advertencias. `/resultados`: lo que decidio de cada
+    cuenta, por prioridad o por canal.
+32. `GET /decisiones-v2/{decision_run_id}/resultados/{cuenta_id}`: la decision de una cuenta
+    explicada, con sus features guardadas, cada regla, sus motivos, sus hashes y su verificacion.
+33. `GET /cuentas/{cuenta_id}/decisiones-v2` y `GET /cartera/cortes/{corte_id}/decisiones-v2`: las
+    decisiones de una cuenta a traves de los cortes y de las fronteras de conocimiento, y las de un
+    corte. `GET /cuentas/{cuenta_id}` trae su `ultima_decision_v2`.
+
+Una feature de pagos o de atribucion cuya ventana no estaba disponible a `known_at` es `null`, no
+cero, y no activa ninguna regla.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -255,6 +280,14 @@ ETIQUETAS = [
         "que se guarda en cada ejecucion. Asociacion operacional, no causalidad: con varias "
         "candidatas el pago queda AMBIGUA y no se elige ninguna.",
     },
+    {
+        "name": "decision-v2",
+        "description": "El Decision Engine v2 (decision/v2): cada cuenta de un corte decidida "
+        "point-in-time, con lo que se conocia en known_at de lo que paso hasta el final de as_of, "
+        "con sus features (features-decision/v1) y su politica (decision-policy/public-v1) "
+        "versionadas, sus motivos y sus hashes. Una politica publica y sintetica, no una "
+        "prediccion; corre en paralelo a decision/v1.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -293,5 +326,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(lifecycle.router, dependencies=protegidas)
     app.include_router(evaluaciones.router, dependencies=protegidas)
     app.include_router(atribuciones.router, dependencies=protegidas)
+    app.include_router(decisiones_v2.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

@@ -1,21 +1,23 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos y Lifecycle de Cobranza
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza y Decision Engine v2
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
 Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
-Conciliación (v0.8.0) y el Lifecycle de Cobranza y Atribución Operativa (v0.9.0) están hechos como
-están, y qué haría distinto o cuándo cambiaría cada decisión. El uso está en el
-[README](../README.md), en [fuentes.md](fuentes.md), en [historia.md](historia.md), en
-[cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md), en
-[lifecycle.md](lifecycle.md) y en [atribucion.md](atribucion.md); aquí va el porqué.
+Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0) y el Decision
+Engine v2 (v0.10.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
+El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
+[historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
+en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md) y en
+[decision_v2.md](decision_v2.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
-de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos, y
-las 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa.
+de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
+99 a 112, del Lifecycle de Cobranza y la Atribución Operativa, y las 113 a 121, del Decision Engine
+v2.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
-v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0* o *Desde v0.9.0*.
+v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde v0.10.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -129,6 +131,15 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0* o *Desde v0.9.0*.
 110. [Un convenio sin ledger](#110-un-convenio-sin-ledger)
 111. [La importación masiva: COPY, tablas temporales y fases, todo o nada](#111-la-importación-masiva-copy-tablas-temporales-y-fases-todo-o-nada)
 112. [Índices medidos, sin particionado; y qué no resuelve v0.9.0](#112-índices-medidos-sin-particionado-y-qué-no-resuelve-v090)
+113. [Dos relojes: `as_of` decide el día, `known_at` decide qué se sabía](#113-dos-relojes-as_of-decide-el-día-known_at-decide-qué-se-sabía)
+114. [La frontera se asienta antes de leer](#114-la-frontera-se-asienta-antes-de-leer)
+115. [Un filtro point-in-time por dominio, y las reglas de las promesas escritas una vez](#115-un-filtro-point-in-time-por-dominio-y-las-reglas-de-las-promesas-escritas-una-vez)
+116. [NULL no es cero: disponibilidad por mes y por ventana](#116-null-no-es-cero-disponibilidad-por-mes-y-por-ventana)
+117. [Tres versiones separadas, la política como datos con su hash, y sin ML ni predicción](#117-tres-versiones-separadas-la-política-como-datos-con-su-hash-y-sin-ml-ni-predicción)
+118. [Lo decidido se guarda tal cual, con sus hashes, y no se reescribe](#118-lo-decidido-se-guarda-tal-cual-con-sus-hashes-y-no-se-reescribe)
+119. [Por conjuntos, todo o nada, en un trabajo durable que alguien pide](#119-por-conjuntos-todo-o-nada-en-un-trabajo-durable-que-alguien-pide)
+120. [En paralelo a `decision/v1`, en modo sombra](#120-en-paralelo-a-decisionv1-en-modo-sombra)
+121. [Índices medidos, sin particionado; y qué no resuelve v0.10.0](#121-índices-medidos-sin-particionado-y-qué-no-resuelve-v0100)
 
 ---
 
@@ -2168,6 +2179,10 @@ operación de un despacho (unas pocas subidas al día) no pasa, y más workers l
 **Desde v0.8.0.** Hay un tercer nivel, al final: `MOTOR_PAGOS`. El orden es `ORDER BY CASE` (0 los
 operacionales, 1 `HISTORIA`, 2 `MOTOR_PAGOS`), `id` (ver 96).
 
+*Desde v0.9.0*, un cuarto nivel, 3, para `ATRIBUCION` y `EVALUACION_PROMESAS`, que leen lo que
+publica el motor de pagos; *desde v0.10.0*, un quinto, 4, para `DECISION_V2`, que lee todo lo
+anterior (ver 119). El nivel no cambia lo que decide una decisión v2: lo fija su `known_at`.
+
 ## 81. Carga masiva todo o nada: Parquet, CSV de Arrow, COPY e INSERT ... SELECT
 
 **Decisión.** La materialización de un corte lee el Parquet por lotes, solo con las columnas que
@@ -2860,3 +2875,187 @@ es una política de la operación, con datos de producción (v0.18).
 `GestorCanonico`; un ledger de convenios; geografía, rutas, zonas o jornadas para las visitas
 (v0.11–v0.13); resolver si dos observaciones de corte son la misma promesa; abrir la evaluación o la
 atribución sin que alguien la pida; y una fuente oficial nueva: el lifecycle no lo es.
+
+## 113. Dos relojes: `as_of` decide el día, `known_at` decide qué se sabía
+
+**Decisión.** Una decisión v2 tiene dos entradas temporales explícitas y guardadas: `as_of`, el día
+de negocio que se decide (el del corte; un día lógico termina a la medianoche siguiente en la zona
+de la fuente), y `known_at`, la frontera del conocimiento, un instante con su zona. Solo cuenta lo
+que pasó antes del final de `as_of` y se registró hasta `known_at`. Hay dos modos: `OPERATIVO`
+decide el corte más reciente conocido, con `known_at` del reloj de la base si se omite, fijado una
+sola vez al abrir y guardado para cada reintento; `BACKTEST` decide cualquier corte y exige
+`known_at`. `known_at` no puede ser futuro ni anterior a que el corte existiera. El modo no entra en
+la firma de entrada: no cambia nada de lo que se calcula.
+
+**Por qué.** Con un solo reloj, decidir hoy el corte del 16 de septiembre usaría pagos, gestiones y
+cortes que ese día nadie conocía: el backtest parecería mejor de lo que habría sido, y cualquier
+comparación con otra política estaría contaminada. Separar cuándo pasó de cuándo se supo es lo que
+el lifecycle ya hace con cada evento (ver 101); aquí se aplica a toda la decisión. Exigir `known_at`
+en un backtest hace imposible olvidarlo, y ese es el error más común de un backtest: decidir el
+pasado con el conocimiento de hoy. Fijarlo al abrir, y no al ejecutar, hace que la decisión no
+dependa de cuándo la tome un worker ni de cuántas veces se reintente.
+
+## 114. La frontera se asienta antes de leer
+
+**Decisión.** Antes de leer nada, el trabajo espera a que la frontera esté asentada: que el reloj de
+la base haya pasado `known_at` y que ninguna sesión cliente de la base tenga abierta una transacción
+que empezó hasta `known_at` (en `pg_stat_activity`, consultado en transacciones cortas, porque
+PostgreSQL lo congela dentro de una). Si no se asienta en 30 segundos, el intento termina sin tocar
+la ejecución y la cola lo reintenta con su espera.
+
+**Por qué.** `registrado_en`, `creado_en` y `terminada_en` son el `now()` de la transacción que
+registra: su inicio, no su confirmación. Una gestión cuya transacción empezó a las 10:00:00 y
+confirma a las 10:00:05 lleva `registrado_en` 10:00:00; una decisión con `known_at` 10:00:02 que lee
+a las 10:00:03 no la ve, y una reconstrucción posterior sí. Sin esperar, el mismo par (`as_of`,
+`known_at`) daría dos resultados. Una prueba pausa un registro a la mitad de su transacción y lo
+demuestra. **El límite**: `pg_stat_activity` solo muestra el inicio de la transacción de las
+sesiones del mismo rol, o de todas con `pg_read_all_stats`. El servicio usa un solo rol; con varios,
+el del worker necesita ese permiso.
+
+## 115. Un filtro point-in-time por dominio, y las reglas de las promesas escritas una vez
+
+**Decisión.** Cada fuente se lee con su propio filtro sobre los dos relojes. Un evento del lifecycle
+cuenta si ocurrió antes del final de `as_of` y se registró hasta `known_at`; una anulación, si se
+registró hasta `known_at`, ocurra cuando ocurra; una cancelación, con sus dos tiempos; un corte, si
+su fecha es hasta `as_of` y se materializó hasta `known_at`. Un movimiento es de la interpretación
+de su mes vigente a `known_at` (la `EXITOSA` más reciente terminada hasta entonces) y se recibió
+antes del final de `as_of`, y está anulado solo si su reverso se recibió antes de ese final. Una
+atribución es la vigente de su mes a `known_at`. Las promesas se evalúan con el mismo SQL de
+`evaluacion-promesa/v1` (`sql_conclusiones`), alimentado con esas entradas point-in-time.
+
+**Por qué.** Cada dominio tiene su propia semántica temporal, y no cabe en un solo filtro. Una
+anulación corrige un error de registro: la gestión anulada nunca debió contar, y tratarla como un
+hecho con fecha haría que la decisión dependiera de cuándo se descubrió el error; es lo que ya hace
+`evaluacion-promesa/v1`. Una cancelación sí es un hecho de negocio: la promesa valió hasta que se
+canceló. Los pagos tienen un tercer reloj, el de su interpretación: un pago observado que nadie
+había interpretado a `known_at` no se sabía qué era. Copiar las reglas de evaluación de promesas en
+otro SQL las dejaría divergir; reutilizar las suyas con tablas temporales point-in-time garantiza
+que pendiente e incumplida quieran decir lo mismo en los dos motores.
+
+## 116. NULL no es cero: disponibilidad por mes y por ventana
+
+**Decisión.** Un conteo del lifecycle sin eventos es 0. Una feature de pagos o de atribución es NULL
+si su ventana no estaba disponible a `known_at`, es decir, si algún mes que toca no está cubierto:
+queda fuera del rango de los pagos observados conocidos, tiene un pago observado conocido sin
+resultado en la interpretación vigente de su mes (comprobado pago por pago) o, para la atribución,
+su atribución vigente leyó otra interpretación. La ejecución guarda su `disponibilidad` mes por mes,
+la API lo advierte, y una regla sobre una feature NULL no se cumple.
+
+**Por qué.** No hubo pagos y no se sabe si hubo pagos son cosas distintas, y la política las
+trataría igual si una fuera 0: una cuenta sin el archivo de pagos de la semana perdería el
+modificador de recuperación reciente y subiría de prioridad por falta de datos. El lifecycle es otro
+caso: lo registra Motor Cartera, así que su ausencia es información. La cobertura se comprueba pago
+por pago y no comparando conteos porque una interpretación cuenta su mes entero: pagos posteriores a
+`as_of` que sí vio podrían tapar uno anterior que llegó tarde y no vio. Que un NULL no active reglas
+es lo conservador: la información ausente no empuja la prioridad en ningún sentido.
+
+## 117. Tres versiones separadas, la política como datos con su hash, y sin ML ni predicción
+
+**Decisión.** Una ejecución guarda tres versiones que cambian por razones distintas: `decision/v2`,
+el motor (cómo se calcula, se publica y se explica); `features-decision/v1`, las variables (su
+lista, tipo, ventana, fuente, filtro point-in-time y lo que significa su NULL), y
+`decision-policy/public-v1`, las reglas, que son una estructura de datos: la base de `decision/v1`
+por días de atraso (importada, no reescrita), cuatro modificadores con sus condiciones y un efecto
+de −1 o +1, la escala de cuatro niveles, el acotamiento y el canal de `decision/v1`. Su definición
+completa, en JSON canónico, tiene un SHA-256, `hash_politica`, que cada ejecución guarda y que entra
+en su firma. Un evaluador puro la aplica a una cuenta, y el SQL que la aplica a un corte se genera
+de la misma definición. Los efectos se suman sin que uno oculte a otro, y el nivel se acota. No hay
+ML, ni pesos aprendidos, ni scores continuos, ni probabilidades: el vocabulario es decisión,
+prioridad, regla, señal y feature, nunca predicción. El ajuste por saldo de v1 queda fuera de la
+base.
+
+**Por qué.** Con una sola versión, cambiar un umbral obligaría a decir que cambiaron las variables,
+y una feature nueva haría parecer que cambió la política: dos ejecuciones dejarían de ser
+comparables sin leer el código. Separadas, una regla nueva cambia la política sin fingir otras
+features, y una feature nueva cambia las features sin fingir la misma política. Si la política vive
+en código imperativo, su versión es una promesa que nadie verifica; con su hash, una ejecución que
+dice `public-v1` y aplicó otra cosa se nota. Generar el SQL de la misma definición que usa el
+evaluador puro elimina la segunda copia de las reglas, y una prueba de equivalencia lo confirma
+cuenta por cuenta. Sumar los efectos, en vez de aplicar el primero que se cumpla, hace que la
+explicación diga todo lo que pesó: una cuenta con un pago reciente y una promesa incumplida queda
+donde estaba y muestra las dos razones. Una política sintética no debe parecer un modelo: un score
+de 0.73 sugiere una probabilidad que nadie estimó, y un modelo entrenado necesitaría resultados
+medidos que el proyecto todavía no tiene (v0.14 y v0.15). Esta política demuestra la capacidad del
+motor; no representa una política real de un acreedor. Dejar el saldo fuera hace legible la
+diferencia con v1: lo que no viene del saldo viene de los modificadores.
+
+## 118. Lo decidido se guarda tal cual, con sus hashes, y no se reescribe
+
+**Decisión.** Cada cuenta guarda sus 43 features, en columnas tipadas y no en un JSON, con su
+`feature_hash`, y su decisión con sus niveles, sus motivos y su `decision_hash`. Las llaves son
+naturales, (ejecución, cuenta), con llaves foráneas compuestas que obligan a que las features sean
+de una cuenta del corte de su ejecución y a que cada decisión tenga sus features. Un trigger rechaza
+todo `UPDATE` y `DELETE` sobre las dos tablas. La consulta de una cuenta vuelve a aplicar la
+política a las features guardadas y dice en `verificacion` si da los mismos hashes y motivos.
+
+**Por qué.** Recalcular las features al consultar daría otro resultado en cuanto llegara un evento
+tardío: la explicación de una decisión de ayer tiene que ser la de ayer. Las columnas tipadas se
+pueden filtrar e indexar, y la base valida su tipo; un JSON no. Los hashes hacen comparable una
+reconstrucción sin comparar 43 columnas, y la verificación hace auditable cada decisión por sí sola.
+Sin un identificador propio, cada una de las 500,000 filas de una ejecución ahorra un entero y un
+índice, y la llave primaria ya es la consulta de una cuenta en una ejecución. El trigger convierte
+la inmutabilidad en una garantía de la base y no en una convención del código.
+
+## 119. Por conjuntos, todo o nada, en un trabajo durable que alguien pide
+
+**Decisión.** Una ejecución arma en tablas temporales (`ON COMMIT DROP`) el universo, la historia,
+el lifecycle, los pagos, las promesas y la atribución, y publica con dos `INSERT ... SELECT`, el de
+las features y el de las decisiones; cuenta, comprueba y cierra en la misma transacción, con su fila
+bloqueada y en un `SAVEPOINT`. Si algo falla, queda `FALLIDA` sin nada publicado. La ejecuta un
+trabajo `DECISION_V2`, en el último nivel de la cola, que solo publica su dueño vigente. Índices
+únicos parciales permiten una `EXITOSA` por firma y una `EN_PROCESO` por corte y versiones. No se
+abre sola: la piden `POST /decisiones-v2` y `motor-cartera decidir-v2`.
+
+**Por qué.** Lo mismo que en el motor de pagos y la atribución (95 y 108): 500,000 cuentas por
+Python serían horas y no serían todo o nada. Va al final de la cola porque lee lo que publican todos
+los demás, y su resultado no depende de cuándo se ejecute: lo fija `known_at`. Abrirla sola, con
+cada corte o con cada evento, sería decidir con una frontera que nadie eligió; pedirla es declarar
+`as_of` y `known_at`. Una decisión parcial sería peor que ninguna: quien la leyera no sabría qué
+cuentas faltan.
+
+## 120. En paralelo a `decision/v1`, en modo sombra
+
+**Decisión.** `decision/v2` no reemplaza a `decision/v1`: las dos coexisten, cada una con sus
+tablas, su API y sus versiones, y el flujo operacional (territorial y ruteo) sigue leyendo v1.
+`comparar-decisiones` compara las dos sobre las mismas cuentas, por `cliente_unico`: coincidencias,
+diferencias de prioridad con su matriz, diferencias de canal, cuántas diferencias vienen del saldo
+de v1 y cuántas cuentas activaron cada modificador. Se presenta como un diagnóstico de diferencias,
+no como un juicio de calidad.
+
+**Por qué.** Cambiar el motor que alimenta el trabajo de campo sin evidencia sería apostar con la
+operación. En sombra, v2 produce decisiones auditables mientras v1 sigue operando, y sus diferencias
+se pueden revisar antes de decidir si conviene cambiar, y cuándo. Decir que v2 es mejor exigiría
+medir resultados (qué cuentas pagaron después de cada recomendación, controlando por todo lo demás),
+que es analítica de v0.14 en adelante; una coincidencia del 80% no dice cuál acierta.
+
+## 121. Índices medidos, sin particionado; y qué no resuelve v0.10.0
+
+**Decisión.** En `decision/v2`, los índices de sus consultas y de sus garantías: la llave primaria
+(ejecución, cuenta) de las features y de los resultados, que es la decisión de una cuenta en una
+ejecución; (ejecución, prioridad final, cuenta) y (ejecución, canal, cuenta), una página de una
+prioridad o de un canal en el orden de la cuenta; (cuenta, ejecución), la historia de decisiones de
+una cuenta; y en las ejecuciones, el corte y los dos únicos parciales (una `EXITOSA` por firma, una
+`EN_PROCESO` por corte y versiones). La historia de una cuenta no se indexa por (cuenta, `as_of`):
+`as_of` vive en la ejecución, y una cuenta tiene una fila por decisión, que se ordena después de
+leerlas por su índice. Ninguna feature tiene índice. No hay particionado.
+
+**Por qué así.** En el benchmark XL, decidir el corte de 465,999 cuentas tomó 199 s con 154 MiB de
+memoria pico, y cada sentencia de una consulta de una cuenta o de una página entra por uno de esos
+índices y se resuelve en menos de 0.8 ms dentro de PostgreSQL; por la API, de 9 a 45 ms (mediana),
+con la Cuenta 360 en 45 ms. Ningún plan tiene un Seq Scan sobre una tabla grande, y una consulta de
+una cuenta no recorre las 465,999 decisiones de su ejecución. Indexar las features no lo pide
+ninguna consulta: se leen siempre por cuenta y ejecución, y cada índice sería otro medio millón de
+entradas en cada decisión.
+
+**Por qué sin particionado.** Cada decisión de un corte XL ocupa 513 MiB (843 bytes por resultado,
+de los que los motivos son unos 590, y 311 por las features), y crece con cada corte y cada frontera
+de conocimiento que se pida. Pero ninguna consulta lo necesita: todas entran por índices que
+empiezan por la ejecución o por la cuenta. Donde podría pagar es en la retención, para soltar
+decisiones viejas sin borrar fila por fila, y eso es una política de la operación, con datos de
+producción (v0.18). Los motivos son la explicación, y se guardan completos.
+
+**Lo que v0.10.0 no hace**, a propósito: modelos predictivos, propensión de pago, recuperación
+esperada y cualquier ML (v0.15); optimización matemática (v0.16); el Territorial v2, la geografía
+real, polígonos, bases, zonas, subzonas, tramos territoriales, capacidad y jornadas (v0.11 a v0.13);
+OSRM y VRP (v0.13); dashboards (v0.17); cloud, multitenancy y multi-despacho (v0.18); reemplazar a
+`decision/v1` en el flujo operacional; abrir `decision/v2` sola; y una política real de un acreedor.

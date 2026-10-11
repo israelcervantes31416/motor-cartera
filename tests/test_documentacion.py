@@ -12,6 +12,9 @@ from motor_cartera.atribucion.reglas import Clasificacion as ClasificacionAtribu
 from motor_cartera.atribucion.reglas import Motivo as MotivoAtribucion
 from motor_cartera.contratos.cartera_v2 import COLUMNAS_CARRIER, CONTRATO_V2, TELEFONOS_ANCHOS
 from motor_cartera.contratos.pagos import CONTRATO_PAGOS
+from motor_cartera.db.modelos import ResultadoEjecucionDecisionV2
+from motor_cartera.decision_v2.features import FEATURES
+from motor_cartera.decision_v2.politica import CodigoMotivo, hash_politica
 from motor_cartera.evaluacion.reglas import EstadoEvaluacion
 from motor_cartera.evaluacion.reglas import Motivo as MotivoEvaluacion
 from motor_cartera.lifecycle.reglas import TipoEvento
@@ -100,10 +103,55 @@ def test_el_documento_del_lifecycle_define_cada_tipo_de_evento_y_cada_estado_de_
 
 
 def test_la_documentacion_no_atribuye_causalidad():
-    """Asociacion operacional no es causalidad: ningun documento del lifecycle o de la atribucion
-    dice que una gestion produjo o causo un pago, salvo para negarlo."""
-    for archivo in ("lifecycle.md", "atribucion.md"):
+    """Asociacion operacional no es causalidad: ningun documento del lifecycle, de la atribucion o
+    de decision/v2 dice que una gestion produjo o causo un pago, salvo para negarlo."""
+    for archivo in ("lifecycle.md", "atribucion.md", "decision_v2.md"):
         texto = (DOCS / archivo).read_text(encoding="utf-8").lower()
         for frase in ("causado por", "causó el pago", "produjo el pago"):
             assert frase not in texto, (archivo, frase)
         assert "no causalidad" in texto or "no es causalidad" in texto
+
+
+DICCIONARIO = re.compile(
+    r"^\| (\d+) \| `([^`]+)` \| ([A-Z]+) \| ([A-Z]+) \| [^|]+ \| [^|]+ \| ([^|]+) \|$"
+)
+
+
+def test_el_diccionario_de_decision_v2_es_el_de_features_decision_v1():
+    """Cada feature de features-decision/v1 tiene su fila en el diccionario de decision_v2.md, en su
+    orden canonico, con su tipo, su familia y si puede ser NULL: una feature nueva, o una que
+    cambia, no llega a la API sin que se documente que quiere decir."""
+    texto = (DOCS / "decision_v2.md").read_text(encoding="utf-8")
+    seccion = texto.split("## El diccionario de features", 1)[1].split("\n## ", 1)[0]
+    filas = [c.groups() for linea in seccion.splitlines() if (c := DICCIONARIO.match(linea))]
+
+    assert [int(numero) for numero, *_ in filas] == list(range(1, len(FEATURES) + 1))
+    assert [(nombre, tipo, familia) for _, nombre, tipo, familia, _ in filas] == [
+        (f.nombre, f.tipo.value, f.familia.value) for f in FEATURES
+    ]
+    assert [not nulo.strip().startswith("nunca") for *_, nulo in filas] == [
+        f.nula for f in FEATURES
+    ]
+
+
+def test_el_documento_de_decision_v2_define_cada_motivo_y_cada_resultado():
+    """Cada codigo de motivo y cada resultado de una ejecucion tiene su fila en decision_v2.md, y el
+    hash de la politica que documenta es el de la politica que aplica el servicio."""
+    filas = _codigos_de_tablas("decision_v2.md")
+    texto = (DOCS / "decision_v2.md").read_text(encoding="utf-8")
+
+    assert {c.value for c in CodigoMotivo} <= filas
+    assert {r.value for r in ResultadoEjecucionDecisionV2} <= filas
+    assert hash_politica() in texto
+
+
+def test_la_documentacion_de_decision_v2_no_la_presenta_como_prediccion_ni_como_politica_real():
+    texto = " ".join((DOCS / "decision_v2.md").read_text(encoding="utf-8").split())
+
+    assert (
+        "Esta política demuestra la capacidad del motor; no representa una política real de un "
+        "acreedor." in texto
+    )
+    assert "No es una predicción." in texto
+    for frase in ("predice que", "la predicción de", "probabilidad de que"):
+        assert frase not in texto.lower(), frase
