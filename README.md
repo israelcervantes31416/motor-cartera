@@ -84,6 +84,18 @@ con bases versionadas e inmutables: **pertenencia territorial, no capacidad**. C
 ([docs/geografia.md](docs/geografia.md), [docs/territorial_v2.md](docs/territorial_v2.md) y
 [docs/bases_operativas.md](docs/bases_operativas.md)).
 
+Desde v0.12.0, **Campo v2** convierte esa pertenencia en una carga de trabajo diaria. Sobre una
+decisión/v2, una territorial/v2 y una **configuración de campo** versionada (gestores que son
+solo un código, calendarios con varias ventanas por día y excepciones en una zona horaria
+explícita, y el cupo declarado de cada gestor), `campo/v2` ubica cada candidata de campo en una
+partición operativa fija (zona, subzona, tramo de 5 km y microtramo de 1 km en EPSG:6372), da
+cada microtramo a su propietario preferido por Rendezvous y reparte la capacidad de cada base por
+prioridad, con spillover dentro de la base y sin llevar cuentas a otra. Es **capacidad
+declarada, no factibilidad vial**: cada candidata queda `ASIGNADA`, `REVISION_TERRITORIAL`,
+`SIN_GESTOR_DISPONIBLE` o `SIN_CAPACIDAD`, con sus motivos y sin coordenadas
+([docs/campo_v2.md](docs/campo_v2.md), [docs/configuracion_campo.md](docs/configuracion_campo.md)
+y [docs/particion_campo.md](docs/particion_campo.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -112,7 +124,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay once versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay doce versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -159,6 +171,14 @@ punta:
   versiones inmutables con su cobertura explícita, y `territorial/v2` asigna cada cuenta con
   geografía confiable a la base activa inequívocamente más cercana, o dice por qué no. En paralelo
   a `territorial/v1`, todo o nada y en trabajos durables.
+- **v0.12.0 ✅ Campo v2: Capacidad, Partición y Asignación Operativa**: la configuración de campo
+  se publica en versiones inmutables con su hash (gestores que son un código, calendarios con
+  varias ventanas por día y excepciones, zona horaria explícita y cupo declarado); cada candidata
+  de canal `CAMPO` de una decisión/v2, con la base que le dio `territorial/v2`, cae en zona,
+  subzona, tramo y microtramo de una cuadrícula fija en EPSG:6372, y la capacidad de cada base se
+  reparte por prioridad y por microtramos, con su propietario preferido por Rendezvous y spillover
+  dentro de la base. Todo o nada, en un trabajo durable `CAMPO_V2`, con la carga de cada gestor y
+  el balance como diagnóstico.
 
 Lo que ya hace:
 
@@ -265,6 +285,13 @@ Lo que ya hace:
   `asignar-territorial-v2`; coordenadas sintéticas en el generador, en proporciones explícitas; la
   Cuenta 360 con su `geografia_resumen`, sin coordenadas; y un benchmark de la geografía y de
   `territorial/v2` sobre el XL, con la referencia oficial, fuera del CI
+- [x] La configuración de campo versionada (`campo-configuracion/v1`), fail-closed y con su hash
+  canónico, y `campo/v2` (`campo-public-v2`, con su `hash_politica`): la partición operativa en
+  EPSG:6372, el ranking Rendezvous, la prioridad antes que el spillover y ninguna cuenta a otra
+  base, en un trabajo durable `CAMPO_V2` y con su backfill
+- [x] `cargar-campo`, `generar-campo-sintetico`, `planificar-campo-v2`, `resumen-campo-v2`,
+  `backfill-campo-v2` y `exportar-plan-campo`; la Cuenta 360 con su `campo_resumen`, sin
+  coordenadas; y un benchmark de `campo/v2` sobre el XL, fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -280,9 +307,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.9.0 — Lifecycle de Cobranza y Atribución Operativa
 ✅ v0.10.0 — Decision Engine v2
 ✅ v0.11.0 — Geografía Real, Territorial v2 y Bases Operativas
-➡️ v0.12 — Campo v2
+✅ v0.12.0 — Campo v2: Capacidad, Partición y Asignación Operativa
+➡️ v0.13 — Ruteo vial v2
 
-v0.13 Ruteo vial v2
 v0.14 Collection Analytics
 v0.15 Predictive Intelligence
 v0.16 Optimización Matemática
@@ -292,9 +319,10 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.12, Campo v2**: sobre la pertenencia territorial de v0.11, la capacidad de
-campo: gestores, jornadas, cargas por base y la partición operacional del trabajo. Sin adelantar el
-ruteo vial, la analítica ni los modelos predictivos.
+Lo que sigue es **v0.13, Ruteo vial v2**: sobre la carga diaria de cada gestor que publica Campo
+v2, si ese conjunto de visitas cabe en una ruta por calle: el orden de las visitas, los tiempos de
+traslado y la factibilidad dentro de la jornada. Sin adelantar la analítica ni los modelos
+predictivos.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -734,6 +762,20 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
   --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia
 ```
 
+Con `--campo` (y `--geografia` y `--pagos`), recorre además `campo/v2` sobre el mismo corte:
+publica bases de campo sobre los municipios de las candidatas de la decisión/v2 y las asigna con
+`territorial/v2`, publica una configuración de campo sintética (y la reutiliza) y pide el plan del
+día siguiente al corte, con la fecha declarada. Revisa una cuenta `ASIGNADA` a cada gestor de cupo
+1, una de ellas rebalanceada, `SIN_CAPACIDAD`, `SIN_GESTOR_DISPONIBLE` (un gestor cerrado por un
+festivo y uno inactivo) y `REVISION_TERRITORIAL`, las cargas, las unidades, la Cuenta 360, el
+trabajo `CAMPO_V2` y el `409` de las mismas entradas, sin coordenadas ni celdas. El CI, después,
+corre el backfill de esa configuración y esa fecha, que ya no encuentra nada que planear:
+
+```bash
+python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial_2026-09-30.zip \
+  --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia --campo
+```
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -1096,7 +1138,7 @@ declaradas, por conjuntos en PostgreSQL y todo o nada.
   municipio, la única o la inequívocamente más cercana por distancia geodésica; a no más de 100 m de
   otra, es un empate (`AMBIGUA_BASE`) y no se elige ninguna. Lo demás queda en
   `REVISION_GEOGRAFICA`, `FUERA_DE_COBERTURA` o `SIN_BASE_ELEGIBLE`, con sus motivos. Sin
-  capacidad, carga ni balanceo: eso es v0.12.
+  capacidad, carga ni balanceo: eso es Campo v2 (v0.12).
 - **Privacidad.** La coordenada observada se guarda como evidencia, pero no sale por la API, ni por
   la bitácora, ni en un error o una métrica: la Cuenta 360 trae su `geografia_resumen` sin ella.
 
@@ -1128,6 +1170,60 @@ asignadas, 1,053 empates y 27,381 sin base). El punto en polígono recorre los m
 de una cuenta, de un municipio, de una base ni de las anomalías hace un Seq Scan sobre los
 resultados; por la API, de 19 a 33 ms (mediana). Los detalles, en
 [docs/geografia.md](docs/geografia.md) y [docs/territorial_v2.md](docs/territorial_v2.md).
+
+## Campo v2
+
+`campo/v2` responde, para una fecha de operación declarada, qué candidata de campo queda con qué
+gestor y en qué unidad de la partición operativa, y por qué. Es un trabajo durable que alguien pide,
+con entradas declaradas, por conjuntos en PostgreSQL y todo o nada.
+
+- **Una configuración de campo versionada.** Sobre una versión de bases, los gestores (un código,
+  nunca una persona), sus calendarios (varias ventanas por día, en la hora local de una zona IANA
+  explícita, y excepciones por fecha: cerrado o ventanas especiales) y su cupo declarado de cuentas
+  al día. Se valida entera, fail-closed; el mismo contenido es la misma versión, y cambiar un cupo o
+  un calendario es publicar otra.
+- **El universo y la base, de quien los decide.** Las candidatas son las de canal `CAMPO` de la
+  decisión/v2 declarada, con su prioridad; su base, la de la territorial/v2 declarada. Una cuenta
+  que `territorial/v2` no asignó queda `REVISION_TERRITORIAL`, y ninguna se lleva a otra base.
+- **Una partición fija.** Zona (base y entidad), subzona (base y municipio), tramo de 5 km y
+  microtramo de 1 km de una cuadrícula en EPSG:6372, con identificadores UUIDv5 deterministas: la
+  misma cuenta cae en las mismas unidades en cualquier plan, orden o máquina.
+- **`campo-public-v2`.** En cada base, la capacidad se reparte por prioridad y por microtramos (los
+  más densos primero); cada microtramo va entero a su propietario preferido por Rendezvous
+  (SHA-256), o entero al siguiente del ranking con cupo (spillover), y se divide solo si no cabe en
+  nadie. Lo que no cabe queda `SIN_CAPACIDAD`, y una base sin gestores disponibles,
+  `SIN_GESTOR_DISPONIBLE`. **Capacidad declarada, no factibilidad vial**: sin distancias, tiempos
+  ni orden de visita (v0.13).
+- **Privacidad.** Ninguna respuesta, bitácora, error ni exportación lleva una coordenada, una celda,
+  un recuadro ni un centroide, y los gestores no tienen datos de personas.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec api motor-cartera generar-campo-sintetico --bases <bases_version_id> \
+  --destino datos/campo.json --gestores-por-base 20 --semilla 7
+docker compose exec api motor-cartera cargar-campo datos/campo.json
+curl -s -X POST -H "$K" -H "Content-Type: application/json" \
+  -d '{"corte_id":"<corte_id>","decision_run_id":"<decision_run_id>","territorial_run_id":"<territorial_run_id>","configuracion_campo_version_id":"<configuracion_campo_version_id>","fecha_operacion":"2026-10-01"}' \
+  http://localhost:8000/campo-v2/planes
+curl -s -H "$K" "http://localhost:8000/campo-v2/planes/<campo_run_id>/asignaciones?estado=SIN_CAPACIDAD"
+curl -s -H "$K" "http://localhost:8000/campo-v2/planes/<campo_run_id>/cargas"
+docker compose exec api motor-cartera resumen-campo-v2 --plan <campo_run_id>
+```
+
+Todo está en [docs/campo_v2.md](docs/campo_v2.md),
+[docs/configuracion_campo.md](docs/configuracion_campo.md) y
+[docs/particion_campo.md](docs/particion_campo.md). El porqué, en las decisiones 138 a 153.
+
+**Medido.** En la máquina de desarrollo, sobre el corte de 500,000 cuentas sintéticas del
+benchmark de la geografía, con su `territorial/v2` y su `decision/v2` (132,529 candidatas de
+campo) y una configuración declarada antes de planear (6,129 gestores en 12 bases: con sobrante, en
+el límite, saturadas y una sin gestores), el plan tomó **65.5 s** (2,024 candidatas por segundo,
+182 MiB de memoria pico): 99,720 asignadas, 20,898 en revisión territorial, 1,949 sin gestor y
+9,962 sin capacidad, en 12 zonas, 692 subzonas, 4,976 tramos y 9,122 microtramos. Agregar un gestor
+cambió el propietario preferido de 2 de 8,603 microtramos (un reparto por turnos habría cambiado
+796 de los 798 de su base). Ninguna consulta hace un Seq Scan sobre las asignaciones; por la API,
+de 11 a 29 ms (mediana), y la Cuenta 360, 62 ms. Los detalles, en
+[docs/campo_v2.md](docs/campo_v2.md).
 
 ## El Motor Territorial
 
@@ -1433,6 +1529,16 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /decisiones-v2/{decision_run_id}/resultados/{cuenta_id}` | La decisión de una cuenta explicada: sus features, cada regla y si aplicó, sus motivos, sus hashes y su verificación | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/decisiones-v2` | Las decisiones v2 de la cuenta a través de los cortes y de las fronteras de conocimiento, paginadas | 200, 401, 404, 422 |
 | `GET /cartera/cortes/{corte_id}/decisiones-v2` | Las decisiones v2 de un corte, en cualquier estado, paginadas | 200, 401, 404, 422 |
+| `POST /campo/configuraciones` | Publica una versión de la configuración de campo: gestores, calendarios, excepciones, zona y cupos; el mismo contenido se reutiliza | 200, 201, 401, 422 |
+| `GET /campo/configuraciones` | Las versiones de la configuración de campo, la más reciente primero, con sus conteos por base, paginadas | 200, 401, 422 |
+| `GET /campo/configuraciones/{configuracion_campo_version_id}` | Una versión con sus calendarios, ventanas, excepciones y gestores, y `hash_verificado` | 200, 401, 404, 422 |
+| `POST /campo-v2/planes` | Pide el plan de campo de una fecha con sus entradas declaradas: corte, decisión/v2, territorial/v2, configuración y `fecha_operacion`; lo planea el worker | 201, 401, 404, 409, 422 |
+| `GET /campo-v2/planes` | Los planes; filtros `corte_id` y `fecha_operacion`, paginados | 200, 401, 404, 422 |
+| `GET /campo-v2/planes/{campo_run_id}` | Un plan: entradas, política con su hash y su cuadrícula, firma, conteos, capacidad y distribución | 200, 401, 404, 422 |
+| `GET /campo-v2/planes/{campo_run_id}/asignaciones` | La asignación de cada candidata, sin coordenadas; filtros `estado`, `base`, `gestor`, `prioridad`, `zona`, `subzona`, `tramo` y `microtramo`, paginada | 200, 401, 404, 422 |
+| `GET /campo-v2/planes/{campo_run_id}/cargas` | La carga de cada gestor: su jornada en la fecha, su capacidad, lo que recibió y sus ventanas; filtro `base`, paginada | 200, 401, 404, 422 |
+| `GET /campo-v2/planes/{campo_run_id}/unidades` | Las zonas, subzonas, tramos y microtramos que ocupó el plan; filtros `nivel`, `padre` y `base`, paginadas | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/campo-v2` | Los planes de la cuenta, de la fecha de operación más reciente a la más antigua, paginados | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -1508,6 +1614,12 @@ Las reglas que un cliente tiene que conocer:
   `422 CORTE_NO_VIGENTE`. Las mismas entradas ya decididas dan `409 DECISION_V2_YA_GENERADA`, y un
   corte que se está decidiendo, `409 DECISION_V2_EN_PROCESO`. Cada respuesta trae sus advertencias:
   si es un backtest, si `known_at` es posterior al día y si faltaban pagos o atribuciones.
+- **Un plan de campo/v2 declara todas sus entradas, la fecha incluida.** Sin `fecha_operacion`,
+  `422 ENTRADA_INVALIDA`; una anterior al corte, `422 FECHA_ANTERIOR_AL_CORTE`; una decisión o una
+  territorial/v2 de otro corte, `422 CORTE_INCONSISTENTE`; una configuración sobre otras bases que
+  la territorial/v2, `422 BASES_INCONSISTENTES`. Las mismas entradas ya planeadas dan
+  `409 CAMPO_V2_YA_GENERADO`, y las que se están planeando, `409 CAMPO_V2_EN_PROCESO`. Cada plan
+  dice en su `aviso` que la capacidad es declarada, no factibilidad vial.
 - **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
   proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
   cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
@@ -1652,6 +1764,23 @@ fórmula de Vincenty. La referencia oficial del INEGI solo se prueba si el archi
 (`MC_REFERENCIA_INEGI`); el CI no la descarga. Las reglas puras (`pytest
 tests/test_geografia_reglas.py tests/test_territorial_v2_politica.py`) no necesitan base.
 
+`campo/v2` también, contra PostgreSQL con PostGIS y con escenarios cuyos puntos se eligen en
+EPSG:6372: la configuración de campo (cada regla fail-closed, con todos sus problemas juntos; el
+hash que no depende del orden ni del nombre; las ventanas encimadas que la base rechaza aunque no
+pasen por la validación; dos publicaciones simultáneas), la jornada de un gestor en cada caso
+(inactivo, festivo, ventanas especiales, día sin jornada), y un golden de las jornadas, de las
+celdas exactas y su jerarquía, de la frontera de una celda (es de la celda que empieza ahí), de
+tres gestores de cupos 2, 2 y 1 con siete candidatas (cinco asignadas y dos sin capacidad), de la
+prioridad que nunca se invierte, del microtramo que cabe entero, del spillover al siguiente del
+ranking y de la estabilidad al agregar un gestor, contra un reparto por turnos. Hay fallas
+inyectadas en seis puntos, dos workers sobre el mismo plan, el lease perdido, dos fechas y dos
+cortes a la vez, el cambio de gestor, de cupo y de calendario como otras versiones que no tocan el
+plan viejo, la reconstrucción idéntica, las mismas cuentas en otro orden, y el SQL contra el
+espejo en Python de la política, cuenta por cuenta; ninguna respuesta, bitácora ni exportación
+lleva una coordenada. La política, la cuadrícula y el generador (`pytest
+tests/test_campo_v2_politica.py tests/test_generador_campo.py`) no necesitan base. El benchmark
+de `campo/v2` no corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1661,12 +1790,12 @@ idempotencia y la API del historial, incluidos resultados de otras versiones de 
 prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
 de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos,
 y el corte oficial, con coordenadas sintéticas sobre una referencia sintética, por la geografía,
-las bases y `territorial/v2`; comprueba que ni el backfill de la historia ni el del motor encuentran
-nada pendiente, compara en modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
+las bases, `territorial/v2` y `campo/v2`; comprueba que ni el backfill de la historia, ni el del
+motor, ni el de `campo/v2` encuentran nada pendiente, compara en modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
 contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
-escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2` y de la geografía
-son un workflow aparte, que solo corre a mano.
+escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía
+y de `campo/v2` son un workflow aparte, que solo corre a mano.
 
 ## Arquitectura
 
@@ -1757,6 +1886,16 @@ src/motor_cartera/
 │   ├── politica.py    territorial-public-v2 como datos, su hash y su evaluador puro
 │   ├── ejecuciones.py La asignación de un corte en PostgreSQL, por conjuntos y todo o nada
 │   └── consultas.py   Las ejecuciones, sus asignaciones y las de una cuenta
+├── campo_v2/
+│   ├── politica.py    campo-public-v2 como datos y su hash; la cuadrícula, los identificadores,
+│   │                  el ranking Rendezvous y el reparto por bloques: el núcleo puro
+│   ├── configuracion.py  La configuración de campo: validación fail-closed, la jornada de un
+│   │                  gestor en una fecha, forma canónica, hash y publicación versionada
+│   ├── ejecuciones.py campo/v2: abrir con sus entradas declaradas y planear una fecha en
+│   │                  PostgreSQL, por conjuntos y todo o nada
+│   ├── consultas.py   Las configuraciones, los planes, sus asignaciones, cargas y unidades, y los
+│   │                  de una cuenta
+│   └── backfill.py    Los planes que faltan para una configuración y una fecha declaradas
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1773,31 +1912,37 @@ src/motor_cartera/
 │                      atribución (sus ejecuciones, sus resultados y sus candidatas), decision/v2
 │                      (sus ejecuciones, las features y la decisión de cada cuenta), la geografía
 │                      (versiones de la referencia, municipios, ejecuciones y resultados), las
-│                      bases operativas y territorial/v2 (ejecuciones y asignaciones)
+│                      bases operativas, territorial/v2 (ejecuciones y asignaciones) y campo/v2
+│                      (la configuración de campo, los planes, sus asignaciones, sus unidades y
+│                      la carga de cada gestor)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
-│                      y el lifecycle sintético de cada periodo del escenario (lifecycle.py)
+│                      el lifecycle sintético de cada periodo del escenario (lifecycle.py) y la
+│                      configuración de campo sintética (campo.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
-│                      atribuciones, decisiones v2, geografía, bases y territorial v2; subidas,
-│                      esquemas, errores y autenticación
+│                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
+│                      configuración de campo y campo v2; subidas, esquemas, errores y
+│                      autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
                        backfill-motor-pagos, backfill-lifecycle, backfill-atribucion, decidir-v2,
                        comparar-decisiones, generar-geografia-sintetica, importar-geografia,
-                       muestrear-puntos, geolocalizar, cargar-bases, asignar-territorial-v2 y
-                       worker
+                       muestrear-puntos, geolocalizar, cargar-bases, asignar-territorial-v2,
+                       cargar-campo, generar-campo-sintetico, planificar-campo-v2,
+                       resumen-campo-v2, backfill-campo-v2, exportar-plan-campo y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
-                       modelo histórico, del motor de pagos, del lifecycle, de decision/v2 y de la
-                       geografía, y actualización del catálogo del INEGI
+                       modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
+                       geografía y de campo/v2, y actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
                        de promesas), atribucion.md (la atribución operativa), decision_v2.md
                        (el Decision Engine v2 y su diccionario de features), geografia.md (la
-                       geografía real), territorial_v2.md, bases_operativas.md, los diccionarios
+                       geografía real), territorial_v2.md, bases_operativas.md, campo_v2.md,
+                       configuracion_campo.md, particion_campo.md, los diccionarios
                        de CARTERA y PAGOS, y carrier.md
 ```
 
@@ -1967,9 +2112,10 @@ y `ruteo/v1` siguen como estaban.
   elige entre candidatas: un pago con dos gestiones con contacto antes queda `AMBIGUA`. La ventana
   de 30 días es una política del demo, sin evidencia empírica.
 - **No hay `GestorCanonico`**: quien hizo una gestión es un `actor_ref` opaco, sin catálogo ni
-  relación con el `Gestor` de `pagos/v1`.
+  relación con el `Gestor` de `pagos/v1` ni con los gestores de la configuración de campo.
 - **Un convenio no es un ledger**: ningún pago se aplica a una cuota, y su estado no se evalúa.
-- **Las visitas no tienen geografía**: sin GPS, rutas, zonas ni geocercas (v0.12–v0.13).
+- **Las visitas no tienen geografía**: sin GPS ni geocercas, y una visita registrada no se liga a
+  un plan de `campo/v2` (v0.13 en adelante).
 - **Lo que un corte dice de una promesa o de un plan no se vuelve un evento**: se muestra como
   `OBSERVACION_EN_CORTE`, y ninguna regla decide todavía si dos observaciones son la misma promesa.
 - **La evaluación y la atribución no se abren solas**: las piden la API o su backfill. Una gestión
@@ -2024,7 +2170,8 @@ y `ruteo/v1` siguen como estaban.
   oficial, y 942 pares de municipios vecinos se enciman en astillas de 31.9 m² en total: un punto
   ahí es `MUNICIPIO_AMBIGUO`.
 - **Pertenencia, no capacidad.** `territorial/v2` no conoce gestores, jornadas, cargas ni límites
-  por base, y no balancea: su distribución por base es un diagnóstico (v0.12). La distancia es
+  por base, y no balancea: su distribución por base es un diagnóstico (la capacidad es de Campo v2,
+  v0.12). La distancia es
   geodésica, en línea recta, no por calle (v0.13), y la tolerancia de empate de 100 m es un
   parámetro de la política, sin evidencia empírica.
 - **No reemplaza a `territorial/v1`.** El flujo de cada corrida y `ruteo/v1` siguen con el
@@ -2034,6 +2181,26 @@ y `ruteo/v1` siguen como estaban.
 - **Sin particionado** (decisión 137), y medido en una sola máquina, que no era dedicada. Se mide
   otra vez en producción (v0.18).
 
+**De Campo v2 (v0.12.0).** Lo que v0.12.0 deja a propósito para después:
+
+- **Capacidad declarada, no factibilidad vial.** El cupo de un gestor es una declaración: si sus
+  cuentas caben en su jornada, con traslados, calles y tiempos, es v0.13 (Ruteo vial v2).
+- **Sin orden de visita.** `orden_prioridad` es el lugar de una cuenta en la cola de capacidad de
+  su base, no el orden en que se visita.
+- **Una cuenta, una unidad.** Sin pesos por tipo de visita, saldo o dificultad, y una media jornada
+  no reduce el cupo.
+- **Sin rebalanceo entre bases.** El déficit de una base y el sobrante de otra se ven en la
+  distribución del plan; se corrigen con otra configuración o con otras bases, no en el plan.
+- **Una partición fija.** Las celdas no se ajustan a la densidad: un microtramo con cien cuentas es
+  uno, y dos cuentas a pocos metros pueden quedar en microtramos distintos si una frontera pasa
+  entre ellas. Sus identificadores son opacos, no secretos (decisión 152).
+- **Gestores sin identidad.** Un código no se liga a una persona, a un `actor_ref` ni al `Gestor`
+  de los pagos, y lo que la cobranza hizo después no se compara con el plan (analítica, v0.14).
+- **No se abre sola.** Un plan se pide por fecha con sus entradas, o lo encuentra su backfill con
+  una configuración y una fecha declaradas: ni una decisión, ni una territorial/v2, ni una
+  configuración nuevas lo disparan.
+- **Sin particionado** (decisión 153), y medido en una sola máquina, que no era dedicada.
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -2042,10 +2209,10 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Seis niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+- **Siete niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
   los operacionales, después los `HISTORIA`, los `MOTOR_PAGOS`, los `ATRIBUCION` y
-  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, y al final los `TERRITORIAL_V2`; dentro de
-  cada nivel, en el orden en que se crearon.
+  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, los `TERRITORIAL_V2` y al final los
+  `CAMPO_V2`; dentro de cada nivel, en el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.

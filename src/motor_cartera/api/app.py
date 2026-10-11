@@ -17,6 +17,8 @@ from motor_cartera.api import (
     acuerdos,
     atribuciones,
     bases,
+    campo,
+    campo_v2,
     cartera,
     corridas,
     cuentas,
@@ -226,6 +228,26 @@ territorial/v1, que sigue alimentando el ruteo.
 
 Es pertenencia territorial, no capacidad: sin zonas, jornadas, gestores ni rutas (v0.12 y v0.13).
 
+**Campo v2** (`campo/v2`) dice que trabajo de campo puede ejecutarse en una fecha: sobre una
+decision/v2 (sus cuentas de canal `CAMPO`, con su prioridad), una territorial/v2 (su base) y una
+**configuracion de campo** versionada (gestores con un cupo diario declarado, calendarios con sus
+ventanas y excepciones, y su zona horaria), cada candidata queda con un gestor disponible de su base
+o dice por que no. La particion es una cuadricula fija en EPSG:6372: **zona** (base + entidad),
+**subzona** (base + municipio), **tramo** (5 km) y **microtramo** (1 km), con identificadores
+deterministas. Cada microtramo tiene un propietario preferido (Rendezvous hashing con SHA-256) y
+nunca se le da mas que su cupo: lo que no cabe va al siguiente del ranking (spillover), y lo que no
+cabe en la base queda `SIN_CAPACIDAD`, siempre lo de menor prioridad. Es **capacidad declarada, no
+factibilidad vial** (v0.13), y no mueve cuentas entre bases.
+
+40. `POST /campo/configuraciones`, `GET /campo/configuraciones` y
+    `/campo/configuraciones/{configuracion_campo_version_id}`: el mismo contenido es la misma
+    version.
+41. `POST /campo-v2/planes` con el `corte_id`, el `decision_run_id`, el `territorial_run_id`, la
+    `configuracion_campo_version_id` y la `fecha_operacion`, en un trabajo `CAMPO_V2`.
+    `GET /campo-v2/planes/{campo_run_id}`, `/asignaciones` (por estado, base, gestor, zona, subzona,
+    tramo, microtramo o prioridad), `/cargas` y `/unidades`.
+42. `GET /cuentas/{cuenta_id}/campo-v2`; `GET /cuentas/{cuenta_id}` trae su `campo_resumen`.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -341,6 +363,19 @@ ETIQUETAS = [
         "sobre una geografia EXITOSA y una version de bases declaradas, con "
         "territorial-public-v2. Pertenencia territorial, no capacidad.",
     },
+    {
+        "name": "campo",
+        "description": "La configuracion de campo: configuracion operacional versionada sobre una "
+        "version de bases, con sus gestores (un codigo, sin datos de personas), su cupo diario "
+        "declarado, sus calendarios con sus ventanas y excepciones, y su zona horaria. No es una "
+        "fuente de negocio.",
+    },
+    {
+        "name": "campo-v2",
+        "description": "campo/v2: los planes de campo de una fecha, con campo-public-v2. Que "
+        "candidata de campo quedo con que gestor de su base, en que zona, subzona, tramo y "
+        "microtramo, bajo la capacidad declarada; capacidad, no factibilidad vial.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -383,5 +418,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(geografia.router, dependencies=protegidas)
     app.include_router(bases.router, dependencies=protegidas)
     app.include_router(territorial_v2.router, dependencies=protegidas)
+    app.include_router(campo.router, dependencies=protegidas)
+    app.include_router(campo_v2.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

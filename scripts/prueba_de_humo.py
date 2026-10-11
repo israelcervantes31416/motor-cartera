@@ -38,14 +38,26 @@ coordenadas sinteticas (generar-oficial --puntos): recorre geografia/v1 sobre su
 municipio de cada cuenta, las anomalias por su indice), publica una version de bases operativas y
 la reutiliza, asigna con territorial/v2, y revisa la Cuenta 360 de una cuenta asignada, una sin
 coordenadas, una que discrepa de la fuente y una sin base, sin que ninguna respuesta lleve una
-coordenada. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o
-en una laptop:
+coordenada.
+
+Con --campo (y --geografia y --pagos), recorre campo/v2 sobre el mismo corte: publica bases de
+campo sobre los municipios de las candidatas de la decision/v2, las asigna con territorial/v2,
+publica una configuracion de campo sintetica (y la reutiliza) y pide el plan del dia siguiente al
+corte, con la fecha declarada: una cuenta ASIGNADA a cada gestor de cupo 1, una de ellas
+rebalanceada por capacidad, SIN_CAPACIDAD, SIN_GESTOR_DISPONIBLE (un gestor cerrado por un
+festivo y uno inactivo) y REVISION_TERRITORIAL; sus cargas, sus unidades y la Cuenta 360, sin
+coordenadas ni celdas.
+
+Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
+laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
     python scripts/prueba_de_humo.py datos/humo.xlsx --pagos datos/pagos.zip
     python scripts/prueba_de_humo.py datos/humo.xlsx --escenario datos/escenario
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30 --geografia
+    python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
+        --pagos pagos.zip --geografia --campo
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -849,7 +861,7 @@ def el_lifecycle(pagos: Path, corte: str) -> None:
 REC, SAT = "RECUPERACION_RECIENTE", "SATURACION_SIN_CONTACTO"
 
 
-def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteriores: bool) -> None:
+def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteriores: bool) -> dict:
     """decision/v2 de punta a punta sobre el corte de la cartera oficial: CorteCanonico, decision a
     un as_of y un known_at declarados, features, resultado, explicacion y Cuenta 360. Antes registra
     tres gestiones sin contacto en dos cuentas, para ver un modificador -1 (un pago reciente), uno
@@ -1027,6 +1039,7 @@ def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteri
         estado == 409 and error["codigo"] == "DECISION_V2_YA_GENERADA",
         f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
     )
+    return decision
 
 
 # --- la geografia real, las bases operativas y territorial/v2 -----------------------------------
@@ -1056,7 +1069,7 @@ def _corte_canonico(corte: str) -> dict:
         time.sleep(1)
 
 
-def la_geografia(corte: str) -> None:
+def la_geografia(corte: str) -> tuple[dict, dict]:
     """geografia/v1 y territorial/v2 de punta a punta sobre el corte de la cartera oficial, que trae
     coordenadas sinteticas: la referencia importada, la geografia del corte con el municipio de cada
     cuenta, una version de bases operativas, la asignacion de territorial/v2 y la Cuenta 360. Con
@@ -1301,6 +1314,372 @@ def la_geografia(corte: str) -> None:
         estado == 409 and error["codigo"] == "TERRITORIAL_V2_YA_GENERADO",
         f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
     )
+    return del_dia, geografia
+
+
+# --- campo/v2: la capacidad, la particion y la asignacion operativa -------------------------------
+
+LLAVES_DE_UBICACION = (
+    *LLAVES_DE_COORDENADAS,
+    '"x"',
+    '"y"',
+    '"grid_x"',
+    '"grid_y"',
+    '"bbox"',
+    '"centroide"',
+    '"geometria"',
+)
+SEMANA = ("LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO")
+
+
+def _sin_ubicacion(cuerpo, donde: str) -> None:
+    """Ni la coordenada de una cuenta ni la celda, el recuadro o el centroide de una unidad de la
+    particion salen por la API."""
+    texto = json.dumps(cuerpo)
+    esperar(
+        not any(llave in texto for llave in LLAVES_DE_UBICACION),
+        f"{donde}: sin coordenadas ni celdas",
+    )
+
+
+def _todas(ruta: str) -> list[dict]:
+    """Todos los elementos de una lista paginada, de 500 en 500."""
+    elementos: list[dict] = []
+    pagina = 1
+    while True:
+        estado, _, cuerpo = pedir("GET", f"{ruta}&por_pagina=500&pagina={pagina}")
+        if estado != 200:
+            esperar(False, f"GET {ruta}: {estado}")
+        elementos.extend(cuerpo["elementos"])
+        if not cuerpo["elementos"] or len(elementos) >= cuerpo["total"]:
+            return elementos
+        pagina += 1
+
+
+def el_campo(corte: str, del_dia: dict, decision: dict, geografia: dict) -> None:
+    """campo/v2 de punta a punta sobre el corte de la cartera oficial. Publica una version de bases
+    con dos bases activas sobre los municipios de las candidatas de campo de la decision/v2 (la B
+    cubre uno; la A, los demas), la asigna con territorial/v2, publica una configuracion de campo
+    sintetica (dos gestores de cupo 1 en la A; en la B, uno cerrado por un festivo ese dia y uno
+    inactivo) y pide el plan del dia siguiente al corte, con la fecha declarada. Cada estado sale:
+    ASIGNADA, una de ellas rebalanceada por capacidad, SIN_CAPACIDAD, SIN_GESTOR_DISPONIBLE y
+    REVISION_TERRITORIAL; y sus cargas, sus unidades, la Cuenta 360 y su trabajo CAMPO_V2, sin que
+    ninguna respuesta lleve una coordenada ni una celda."""
+    print(f"campo/v2 sobre el corte {corte}")
+    fecha_operacion = (datetime.fromisoformat(corte) + timedelta(days=1)).date().isoformat()
+
+    # Las candidatas de campo de la decision/v2, y el municipio de las que tienen coordenadas
+    # validas: la base B cubre el primero de esos municipios y la A, los demas. Las que no tienen
+    # coordenadas validas quedan en revision territorial.
+    candidatas = {
+        r["cuenta_id"]
+        for r in _todas(
+            f"/decisiones-v2/{decision['decision_run_id']}/resultados?canal_recomendado=CAMPO"
+        )
+    }
+    municipio = {
+        r["cuenta_id"]: r["municipio"]["cvegeo"]
+        for r in _todas(
+            f"/geografia/ejecuciones/{geografia['geografia_run_id']}/resultados"
+            "?estado_geografia=VALIDA"
+        )
+    }
+    por_municipio: dict[str, int] = {}
+    for cuenta in candidatas & municipio.keys():
+        por_municipio[municipio[cuenta]] = por_municipio.get(municipio[cuenta], 0) + 1
+    con_candidatas = sorted(por_municipio)
+    validas = sum(por_municipio.values())
+    esperar(
+        len(con_candidatas) >= 2
+        and validas - por_municipio[con_candidatas[0]] >= 3
+        and len(candidatas) > validas,
+        f"{len(candidatas)} candidatas de campo; {validas} con coordenadas validas, en "
+        f"{len(con_candidatas)} municipios",
+    )
+    bases = {
+        "nombre": f"Bases de campo de la prueba de humo del {corte}",
+        "bases": [
+            {
+                "codigo": "BASE_CAMPO_A",
+                "nombre": "Base de campo A (sintetica)",
+                "lat": 18.5,
+                "lon": -99.5,
+                "activa": True,
+                "municipios": con_candidatas[1:],
+            },
+            {
+                "codigo": "BASE_CAMPO_B",
+                "nombre": "Base de campo B (sintetica)",
+                "lat": 18.6,
+                "lon": -99.4,
+                "activa": True,
+                "municipios": con_candidatas[:1],
+            },
+        ],
+    }
+    estado, _, version_bases = enviar("/bases/versiones", bases)
+    esperar(
+        estado == 201 and (version_bases["bases"], version_bases["activas"]) == (2, 2),
+        f"POST /bases/versiones: {estado}, BASE_CAMPO_A y BASE_CAMPO_B, activas",
+    )
+    estado, encabezados, abierta = enviar(
+        "/territorial-v2",
+        {
+            "corte_id": del_dia["corte_id"],
+            "geografia_run_id": geografia["geografia_run_id"],
+            "bases_version_id": version_bases["bases_version_id"],
+        },
+    )
+    esperar(estado == 201, f"POST /territorial-v2 con las bases de campo: {estado}")
+    territorial = seguir(ubicacion_de(encabezados))
+    esperar(
+        territorial.get("estado") == "EXITOSA" and territorial["conteos"]["asignadas"] >= validas,
+        f"territorial/v2 termino {territorial.get('estado')}: "
+        f"{territorial.get('conteos', {}).get('asignadas')} asignadas",
+    )
+
+    ventanas = [{"inicio": "09:00", "fin": "14:00"}, {"inicio": "16:00", "fin": "19:00"}]
+    configuracion = {
+        "nombre": "Campo de la prueba de humo",
+        "bases_version_id": version_bases["bases_version_id"],
+        "zona_horaria": "America/Mexico_City",
+        "calendarios": [
+            {"codigo": "TODA_LA_SEMANA", "semana": {dia: ventanas for dia in SEMANA}},
+            {
+                "codigo": "CON_FESTIVO",
+                "semana": {dia: ventanas for dia in SEMANA},
+                "excepciones": [
+                    {"fecha": fecha_operacion, "tipo": "CERRADO", "motivo": "Festivo sintetico"}
+                ],
+            },
+        ],
+        "gestores": [
+            {
+                "codigo": codigo,
+                "base": base,
+                "calendario": calendario,
+                "capacidad_cuentas_dia": cupo,
+                "activo": activo,
+            }
+            for codigo, base, calendario, cupo, activo in (
+                ("GESTOR_HUMO_001", "BASE_CAMPO_A", "TODA_LA_SEMANA", 1, True),
+                ("GESTOR_HUMO_002", "BASE_CAMPO_A", "TODA_LA_SEMANA", 1, True),
+                ("GESTOR_HUMO_003", "BASE_CAMPO_B", "CON_FESTIVO", 5, True),
+                ("GESTOR_HUMO_004", "BASE_CAMPO_B", "TODA_LA_SEMANA", 5, False),
+            )
+        ],
+    }
+    estado, encabezados, publicada = enviar("/campo/configuraciones", configuracion)
+    esperar(
+        estado == 201
+        and (publicada["gestores"], publicada["gestores_activos"], publicada["calendarios"])
+        == (4, 3, 2)
+        and publicada["hash_verificado"] is True
+        and ubicacion_de(encabezados)
+        == f"/campo/configuraciones/{publicada['configuracion_campo_version_id']}",
+        f"POST /campo/configuraciones: {estado}, 4 gestores (3 activos), 2 calendarios, hash "
+        f"{publicada.get('hash_configuracion', '')[:12]}...",
+    )
+    estado, _, otra_vez = enviar(
+        "/campo/configuraciones",
+        {**configuracion, "nombre": "Otra etiqueta", "gestores": configuracion["gestores"][::-1]},
+    )
+    esperar(
+        estado == 200
+        and otra_vez["reutilizada"]
+        and otra_vez["configuracion_campo_version_id"]
+        == publicada["configuracion_campo_version_id"],
+        "el mismo contenido con otro nombre y en otro orden: 200, la misma version reutilizada",
+    )
+    sin_cupo = [{**configuracion["gestores"][0], "capacidad_cuentas_dia": 0}]
+    estado, _, error = enviar("/campo/configuraciones", {**configuracion, "gestores": sin_cupo})
+    esperar(
+        estado == 422 and error["codigo"] == "CONFIGURACION_INVALIDA",
+        f"un gestor con cupo 0: {estado} {error.get('codigo')}",
+    )
+
+    pedida = {
+        "corte_id": del_dia["corte_id"],
+        "decision_run_id": decision["decision_run_id"],
+        "territorial_run_id": territorial["territorial_run_id"],
+        "configuracion_campo_version_id": publicada["configuracion_campo_version_id"],
+        "fecha_operacion": fecha_operacion,
+    }
+    sin_fecha = {k: v for k, v in pedida.items() if k != "fecha_operacion"}
+    estado, _, error = enviar("/campo-v2/planes", sin_fecha)
+    esperar(
+        estado == 422 and error["codigo"] == "ENTRADA_INVALIDA",
+        f"sin fecha de operacion: {estado} {error.get('codigo')}; no se infiere",
+    )
+    antes = (datetime.fromisoformat(corte) - timedelta(days=1)).date().isoformat()
+    estado, _, error = enviar("/campo-v2/planes", {**pedida, "fecha_operacion": antes})
+    esperar(
+        estado == 422 and error["codigo"] == "FECHA_ANTERIOR_AL_CORTE",
+        f"un dia antes del corte: {estado} {error.get('codigo')}",
+    )
+    estado, encabezados, abierta = enviar("/campo-v2/planes", pedida)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and ubicacion_de(encabezados) == f"/campo-v2/planes/{abierta['campo_run_id']}",
+        f"POST /campo-v2/planes: {estado} {abierta.get('estado')}, para el {fecha_operacion}",
+    )
+    plan = seguir(ubicacion_de(encabezados))
+    conteos = plan.get("conteos", {})
+    esperar(
+        plan.get("estado") == "EXITOSA"
+        and conteos["candidatas_campo"] == len(candidatas)
+        and conteos["asignadas"]
+        + conteos["revision_territorial"]
+        + conteos["sin_gestor"]
+        + conteos["sin_capacidad"]
+        == len(candidatas)
+        and conteos["asignadas"] == 2
+        and conteos["rebalanceadas"] >= 1
+        and min(conteos["revision_territorial"], conteos["sin_gestor"], conteos["sin_capacidad"])
+        > 0,
+        f"campo/v2 termino {plan.get('estado')}: "
+        + ", ".join(f"{k} {v}" for k, v in conteos.items()),
+    )
+    esperar(
+        plan["version_politica"] == "campo-public-v2"
+        and len(plan["hash_politica"]) == len(plan["firma_inputs"]) == 64
+        and plan["particion"]
+        == {"srid": 6372, "tramo_m": 5000, "microtramo_m": 1000, "redondeo_m": "0.001"}
+        and plan["capacidad"]
+        == {"capacidad_total": 2, "capacidad_utilizada": 2, "utilizacion": "1.0000"}
+        and "factibilidad vial" in plan["aviso"],
+        f"campo-public-v2 (hash {plan['hash_politica'][:12]}...): EPSG:6372, tramos de 5 km y "
+        "microtramos de 1 km; capacidad declarada 2 de 2, sin factibilidad vial",
+    )
+    _sin_ubicacion(plan, "GET /campo-v2/planes/{campo_run_id}")
+
+    ruta = f"/campo-v2/planes/{plan['campo_run_id']}/asignaciones"
+
+    def de_estado(estado_campo: str, cuantas: int) -> dict:
+        estado, _, pagina = pedir("GET", f"{ruta}?estado={estado_campo}&por_pagina={cuantas}")
+        esperar(
+            estado == 200
+            and bool(pagina["elementos"])
+            and {a["estado"] for a in pagina["elementos"]} == {estado_campo},
+            f"GET {{asignaciones}}?estado={estado_campo}: {pagina.get('total')}, por su indice",
+        )
+        _sin_ubicacion(pagina, f"las asignaciones {estado_campo}")
+        return pagina
+
+    asignadas = de_estado("ASIGNADA", 50)
+    rebalanceada = next((a for a in asignadas["elementos"] if a["es_rebalanceada"]), None)
+    esperar(
+        {a["gestor"]["codigo"] for a in asignadas["elementos"]}
+        == {"GESTOR_HUMO_001", "GESTOR_HUMO_002"}
+        and {a["base"]["codigo"] for a in asignadas["elementos"]} == {"BASE_CAMPO_A"}
+        and rebalanceada is not None
+        and rebalanceada["motivos"][-1]["codigo"] == "SPILLOVER_POR_CAPACIDAD",
+        "una cuenta a cada gestor de BASE_CAMPO_A, y una de ellas rebalanceada: a su propietario "
+        "preferido ya no le cabia",
+    )
+    print(
+        f"      {rebalanceada['cliente_unico']}: {rebalanceada['gestor']['codigo']}, en lugar de "
+        f"{rebalanceada['motivos'][-1]['propietario_preferido']}"
+    )
+    sin_capacidad = de_estado("SIN_CAPACIDAD", 5)
+    sin_gestor = de_estado("SIN_GESTOR_DISPONIBLE", 5)
+    revision = de_estado("REVISION_TERRITORIAL", 5)
+    esperar(
+        sin_capacidad["total"] == conteos["sin_capacidad"]
+        and all(
+            a["gestor"] is None
+            and a["base"]["codigo"] == "BASE_CAMPO_A"
+            and a["motivos"][-1]["codigo"] == "CAPACIDAD_AGOTADA"
+            for a in sin_capacidad["elementos"]
+        )
+        and sin_gestor["total"] == conteos["sin_gestor"]
+        and all(
+            a["base"]["codigo"] == "BASE_CAMPO_B"
+            and a["motivos"][-1]["codigo"] == "SIN_GESTOR_DISPONIBLE"
+            for a in sin_gestor["elementos"]
+        )
+        and revision["total"] == conteos["revision_territorial"]
+        and all(a["base"] is None and a["zona_id"] is None for a in revision["elementos"]),
+        "SIN_CAPACIDAD en BASE_CAMPO_A, SIN_GESTOR_DISPONIBLE en BASE_CAMPO_B y "
+        "REVISION_TERRITORIAL sin base ni unidades, cada una con su motivo",
+    )
+
+    estado, _, cargas = pedir("GET", f"/campo-v2/planes/{plan['campo_run_id']}/cargas")
+    por_gestor = {c["gestor"]["codigo"]: c for c in cargas.get("elementos", [])}
+    esperar(
+        estado == 200
+        and [
+            (c["estado_jornada"], c["capacidad"], c["asignadas"])
+            for _, c in sorted(por_gestor.items())
+        ]
+        == [
+            ("JORNADA_SEMANAL", 1, 1),
+            ("JORNADA_SEMANAL", 1, 1),
+            ("CERRADO_POR_EXCEPCION", 0, 0),
+            ("INACTIVO", 0, 0),
+        ]
+        and por_gestor["GESTOR_HUMO_001"]["ventanas"][0]["inicio_en"]
+        == f"{fecha_operacion}T15:00:00Z",
+        "GET {cargas}: los dos de BASE_CAMPO_A llenos, uno cerrado por su festivo y uno inactivo; "
+        "las 09:00 de la Ciudad de Mexico son las 15:00 UTC",
+    )
+    _sin_ubicacion(cargas, "las cargas")
+    estado, _, microtramos = pedir(
+        "GET",
+        f"/campo-v2/planes/{plan['campo_run_id']}/unidades?nivel=MICROTRAMO&base=BASE_CAMPO_A"
+        "&por_pagina=500",
+    )
+    mayor = max((m["candidatas"] for m in microtramos.get("elementos", [])), default=0)
+    esperar(
+        estado == 200
+        and microtramos["total"] >= 1
+        and mayor >= 2
+        and all(m["propietario_preferido"] for m in microtramos["elementos"]),
+        f"GET {{unidades}}?nivel=MICROTRAMO: {microtramos.get('total')} microtramos en "
+        f"BASE_CAMPO_A, el mayor con {mayor} candidatas, cada uno con su propietario preferido",
+    )
+    _sin_ubicacion(microtramos, "las unidades")
+
+    # La Cuenta 360 de una asignada, una sin gestor y una en revision: su ultimo plan, sin
+    # coordenadas.
+    for elegida in (
+        rebalanceada,
+        sin_gestor["elementos"][0],
+        revision["elementos"][0],
+    ):
+        estado, _, resumen = pedir("GET", f"/cuentas/{elegida['cuenta_id']}")
+        c = resumen.get("campo_resumen") or {}
+        esperar(
+            estado == 200
+            and c.get("campo_run_id") == plan["campo_run_id"]
+            and c.get("fecha_plan") == fecha_operacion
+            and c.get("estado") == elegida["estado"]
+            and c.get("gestor_codigo") == (elegida["gestor"] or {}).get("codigo"),
+            f"GET /cuentas/{{cuenta_id}} de {elegida['cliente_unico']}: campo_resumen "
+            f"{elegida['estado']} {c.get('gestor_codigo') or ''}".rstrip(),
+        )
+        _sin_ubicacion(resumen, "la Cuenta 360")
+    estado, _, de_la_cuenta = pedir("GET", f"/cuentas/{rebalanceada['cuenta_id']}/campo-v2")
+    esperar(
+        estado == 200
+        and de_la_cuenta["total"] == 1
+        and de_la_cuenta["elementos"][0]["campo_run_id"] == plan["campo_run_id"],
+        "GET /cuentas/{cuenta_id}/campo-v2: el plan de la cuenta",
+    )
+    _sin_ubicacion(de_la_cuenta, "los planes de una cuenta")
+    estado, _, trabajo = pedir("GET", f"/trabajos/{plan['trabajo_id']}")
+    esperar(
+        estado == 200 and (trabajo["tipo"], trabajo["estado"]) == ("CAMPO_V2", "COMPLETADO"),
+        f"su trabajo CAMPO_V2: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+    )
+    estado, _, error = enviar("/campo-v2/planes", pedida)
+    esperar(
+        estado == 409 and error["codigo"] == "CAMPO_V2_YA_GENERADO",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+    print(f"configuracion_campo_version_id {publicada['configuracion_campo_version_id']}")
+    print(f"campo_run_id {plan['campo_run_id']}")
 
 
 def main(
@@ -1310,6 +1689,7 @@ def main(
     pagos: Path | None = None,
     escenario: Path | None = None,
     geografia: bool = False,
+    campo: bool = False,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
@@ -1703,6 +2083,14 @@ def main(
         "/territorial-v2/{territorial_run_id}",
         "/territorial-v2/{territorial_run_id}/resultados",
         "/cuentas/{cuenta_id}/territorial-v2",
+        "/campo/configuraciones",
+        "/campo/configuraciones/{configuracion_campo_version_id}",
+        "/campo-v2/planes",
+        "/campo-v2/planes/{campo_run_id}",
+        "/campo-v2/planes/{campo_run_id}/asignaciones",
+        "/campo-v2/planes/{campo_run_id}/cargas",
+        "/campo-v2/planes/{campo_run_id}/unidades",
+        "/cuentas/{cuenta_id}/campo-v2",
     )
     esperar(
         estado == 200
@@ -1710,7 +2098,7 @@ def main(
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
         "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
-        "la atribucion, decision/v2, la geografia, las bases y territorial/v2",
+        "la atribucion, decision/v2, la geografia, las bases, territorial/v2 y campo/v2",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -1719,11 +2107,16 @@ def main(
     if escenario is not None:
         el_modelo_historico(escenario)
         el_motor_de_pagos(escenario)
+    decision = None
     if oficial is not None and pagos is not None:
         el_lifecycle(pagos, corte)
-        la_decision_v2(oficial, pagos, corte, hay_cortes_posteriores=escenario is not None)
+        decision = la_decision_v2(
+            oficial, pagos, corte, hay_cortes_posteriores=escenario is not None
+        )
     if geografia:
-        la_geografia(corte)
+        del_dia, geografia_del_corte = la_geografia(corte)
+        if campo:
+            el_campo(corte, del_dia, decision, geografia_del_corte)
     print("Todo en orden.")
 
 
@@ -1742,11 +2135,19 @@ if __name__ == "__main__":
         help="La referencia ya esta importada y la cartera oficial trae coordenadas: recorre "
         "geografia/v1, las bases y territorial/v2 sobre su corte.",
     )
+    argumentos.add_argument(
+        "--campo",
+        action="store_true",
+        help="Recorre campo/v2 sobre el corte oficial: bases de campo, una configuracion de "
+        "campo sintetica y el plan del dia siguiente, con cada estado.",
+    )
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
     if leidos.geografia and leidos.oficial is None:
         argumentos.error("--geografia va con --oficial y --corte.")
+    if leidos.campo and not (leidos.geografia and leidos.pagos is not None):
+        argumentos.error("--campo va con --geografia y --pagos.")
     main(
         leidos.archivo,
         leidos.oficial,
@@ -1754,4 +2155,5 @@ if __name__ == "__main__":
         leidos.pagos,
         leidos.escenario,
         geografia=leidos.geografia,
+        campo=leidos.campo,
     )

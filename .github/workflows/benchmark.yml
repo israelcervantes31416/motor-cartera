@@ -13,14 +13,16 @@ name: Benchmark de escala
 # sombra y las consultas de una cuenta y de una pagina, con su plan; con tipo=geografia, descarga el
 # Marco Geoestadistico Integrado 2025 del INEGI (y comprueba su SHA-256 contra el manifiesto), lo
 # importa, y mide geografia/v1 y territorial/v2 sobre un corte de unas 500,000 cuentas sinteticas
-# con coordenadas sinteticas, con el plan de cada consulta y el uso del indice espacial.
+# con coordenadas sinteticas, con el plan de cada consulta y el uso del indice espacial; con
+# tipo=campo, sobre ese mismo corte, decision/v2 una vez y campo/v2 con una configuracion de campo
+# sintetica declarada en el script, la estabilidad al agregar un gestor y el plan de cada consulta.
 on:
   workflow_dispatch:
     inputs:
       tipo:
         description: "Que se mide"
         type: choice
-        options: [escala, historia, motor_pagos, lifecycle, decision_v2, geografia]
+        options: [escala, historia, motor_pagos, lifecycle, decision_v2, geografia, campo]
         default: escala
       cortes:
         description: "Cuantos cortes (con tipo=historia, motor_pagos, lifecycle o decision_v2)"
@@ -199,7 +201,7 @@ jobs:
       # El archivo oficial se descarga aqui, a mano y fuera del repositorio, y se comprueba contra
       # el SHA-256 del manifiesto antes de importarlo. Las cuentas son sinteticas.
       - name: Benchmark de geografia/v1 y territorial/v2
-        if: inputs.tipo == 'geografia'
+        if: inputs.tipo == 'geografia' || inputs.tipo == 'campo'
         run: |
           mkdir -p "$RUNNER_TEMP/inegi"
           url=$(python -c "import json; print(json.load(open('src/motor_cartera/geografia/referencias.json'))['referencias']['inegi-mg-2025-municipal']['url'])")
@@ -219,6 +221,28 @@ jobs:
             echo '```text'
             cat "$RUNNER_TEMP/geografia/planes_geografia_espaciales.txt"
             cat "$RUNNER_TEMP/geografia/planes_geografia.txt"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
+
+      # campo/v2 sobre el corte que dejo el benchmark de geografia, en la misma base: su decision/v2
+      # se toma una sola vez, y la configuracion de campo la declara el script antes de planear.
+      - name: Benchmark de campo/v2
+        if: inputs.tipo == 'campo'
+        run: |
+          python scripts/benchmark_campo.py --destino "$RUNNER_TEMP/campo" \
+            | tee "$RUNNER_TEMP/benchmark_campo.log"
+          {
+            echo "## Benchmark de campo/v2"
+            echo
+            cat "$RUNNER_TEMP/campo/benchmark_campo.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/campo/planes_campo.txt"
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"

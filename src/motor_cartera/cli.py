@@ -1231,6 +1231,402 @@ def asignar_territorial_v2(
         raise typer.Exit(code=1)
 
 
+@app.command("cargar-campo")
+def cargar_campo(
+    archivo: Annotated[
+        Path,
+        typer.Argument(
+            exists=True, dir_okay=False, help="Un JSON, o un JSONL con un registro por linea."
+        ),
+    ],
+) -> None:
+    """Publica una version de la configuracion de campo: valida el documento entero (fail-closed,
+    con todos sus problemas), lo lleva a su forma canonica, calcula su hash y la publica, o
+    reutiliza la version que ya tiene ese mismo contenido. Termina con codigo 1 si no es valida."""
+    import json
+
+    from motor_cartera.campo_v2.configuracion import (
+        ConfiguracionInvalida,
+        leer,
+        leer_jsonl,
+        publicar,
+    )
+    from motor_cartera.db.sesion import sesion
+
+    texto = archivo.read_text(encoding="utf-8")
+    try:
+        if archivo.suffix.lower() == ".jsonl":
+            configuracion = leer_jsonl(texto)
+        else:
+            configuracion = leer(json.loads(texto))
+        with sesion() as s:
+            publicada = publicar(s, configuracion)
+            s.commit()
+            v = publicada.version
+            s.refresh(v)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"{archivo.name} no es JSON: {exc.msg}.", err=True)
+        raise typer.Exit(code=1) from exc
+    except ConfiguracionInvalida as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    accion = "publicada" if publicada.creada else "ya existia: se reutiliza"
+    typer.echo(f"Configuracion de campo {v.configuracion_campo_version_id}: {accion}")
+    typer.echo(
+        f"  {v.nombre}: {v.gestores:,} gestores ({v.gestores_activos:,} activos), "
+        f"{v.calendarios} calendarios, {v.ventanas} ventanas, {v.excepciones} excepciones"
+    )
+    typer.echo(f"  capacidad declarada {v.capacidad_declarada:,} cuentas al dia; {v.zona_horaria}")
+    for codigo, b in v.metadatos.get("gestores_por_base", {}).items():
+        typer.echo(
+            f"  {codigo}: {b['gestores']} gestores, {b['activos']} activos, cupo "
+            f"{b['capacidad_declarada']:,}"
+        )
+    typer.echo(f"  hash {v.hash_configuracion} ({v.version_configuracion})")
+    typer.echo(f"configuracion_campo_version_id {v.configuracion_campo_version_id}")
+
+
+def _lista_de_fechas(texto: str | None) -> list:
+    from datetime import date as fecha
+
+    return [fecha.fromisoformat(f.strip()) for f in (texto or "").split(",") if f.strip()]
+
+
+@app.command("generar-campo-sintetico")
+def generar_campo_sintetico(
+    bases: Annotated[
+        str, typer.Option("--bases", help="La version de bases, por su UUID: la de los gestores.")
+    ],
+    destino: Annotated[str, typer.Option(help="El JSON que se escribe.")] = "datos/campo.json",
+    gestores_por_base: Annotated[
+        int, typer.Option(min=0, help="Cuantos gestores en cada base activa.")
+    ] = 5,
+    base: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--base", help="CODIGO=N: otro numero de gestores para esa base. Se puede repetir."
+        ),
+    ] = None,
+    capacidades: Annotated[
+        str, typer.Option(help="Los cupos posibles, separados por comas.")
+    ] = "15,20,25",
+    inactivos: Annotated[float, typer.Option(min=0, max=0.99)] = 0.05,
+    festivos: Annotated[
+        str | None, typer.Option(help="Fechas cerradas en todos los calendarios: AAAA-MM-DD,...")
+    ] = None,
+    medias_jornadas: Annotated[
+        str | None, typer.Option(help="Fechas de media jornada (09:00 a 13:00): AAAA-MM-DD,...")
+    ] = None,
+    semilla: Annotated[int, typer.Option(min=1)] = 7,
+) -> None:
+    """Escribe una configuracion de campo SINTETICA para las bases activas de una version: gestores
+    con codigos inventados (GESTOR_0001...), cupos de una lista declarada, tres calendarios publicos
+    y las excepciones que se declaren, determinista por semilla. Nada sale de personas reales.
+    Despues se publica con cargar-campo."""
+    import json
+    from uuid import UUID
+
+    from sqlmodel import select
+
+    from motor_cartera.db.modelos import BaseOperativa, VersionBasesOperativas
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.generador.campo import configuracion_sintetica
+
+    with sesion() as s:
+        version = s.exec(
+            select(VersionBasesOperativas).where(
+                VersionBasesOperativas.bases_version_id == UUID(bases)
+            )
+        ).one_or_none()
+        if version is None:
+            typer.echo(f"No existe la version de bases {bases}.", err=True)
+            raise typer.Exit(code=1)
+        activas = list(
+            s.exec(
+                select(BaseOperativa.codigo)
+                .where(
+                    BaseOperativa.version_bases_operativas_id == version.id, BaseOperativa.activa
+                )
+                .order_by(BaseOperativa.codigo)
+            ).all()
+        )
+    por_base: dict[str, int] = dict.fromkeys(activas, gestores_por_base)
+    for pareja in base or []:
+        codigo, _, cuantos = pareja.partition("=")
+        if codigo not in por_base or not cuantos.isdigit():
+            typer.echo(f"--base {pareja}: CODIGO=N de una base activa de la version.", err=True)
+            raise typer.Exit(code=2)
+        por_base[codigo] = int(cuantos)
+    try:
+        documento = configuracion_sintetica(
+            activas,
+            bases_version_id=bases,
+            gestores_por_base=por_base,
+            semilla=semilla,
+            capacidades=[int(c) for c in capacidades.split(",")],
+            inactivos=inactivos,
+            festivos=_lista_de_fechas(festivos),
+            medias_jornadas=_lista_de_fechas(medias_jornadas),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    ruta = Path(destino)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(json.dumps(documento, ensure_ascii=False, indent=1), encoding="utf-8")
+    typer.echo(
+        f"Escrito: {ruta} ({len(documento['gestores']):,} gestores en {len(activas)} bases; "
+        f"semilla {semilla})"
+    )
+
+
+def _fecha_obligatoria(fecha: datetime | None, comando: str):
+    if fecha is None:
+        typer.echo(
+            f"{comando} no infiere la fecha de operacion: declarala con --fecha-operacion.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return fecha.date()
+
+
+@app.command("planificar-campo-v2")
+def planificar_campo_v2(
+    corte: Annotated[
+        datetime, typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte.")
+    ],
+    decision_run: Annotated[
+        str, typer.Option("--decision-run", help="Una decision/v2 EXITOSA de ese corte.")
+    ],
+    territorial_run: Annotated[
+        str, typer.Option("--territorial-run", help="Una territorial/v2 EXITOSA de ese corte.")
+    ],
+    configuracion: Annotated[
+        str, typer.Option("--configuracion", help="La configuracion de campo, por su UUID.")
+    ],
+    fecha_operacion: Annotated[
+        datetime | None,
+        typer.Option("--fecha-operacion", formats=["%Y-%m-%d"], help="El dia que se planea."),
+    ] = None,
+    politica: Annotated[
+        str | None, typer.Option("--politica", help="Por omision, campo-public-v2.")
+    ] = None,
+) -> None:
+    """Planea el trabajo de campo de una fecha con campo/v2, en primer plano y sin la API, con todas
+    sus entradas declaradas: el corte, la decision/v2, la territorial/v2, la configuracion de campo
+    y la fecha. Pasa por la cola durable, con el trabajo de este proceso. Termina con codigo 1 si
+    no publico."""
+    from uuid import UUID
+
+    from motor_cartera.campo_v2.ejecuciones import (
+        CampoV2EnProceso,
+        CampoV2YaGenerado,
+        EntradaNoPlanificable,
+    )
+    from motor_cartera.db.modelos import EstadoCampoV2
+    from motor_cartera.orquestacion.worker import planificar_campo_v2_en_primer_plano
+
+    dia = _fecha_obligatoria(fecha_operacion, "planificar-campo-v2")
+    corte_id = _corte_por_fecha(corte.date())
+    try:
+        e = planificar_campo_v2_en_primer_plano(
+            corte_id,
+            UUID(decision_run),
+            UUID(territorial_run),
+            UUID(configuracion),
+            dia,
+            version_politica=politica,
+        )
+    except (EntradaNoPlanificable, CampoV2EnProceso, CampoV2YaGenerado) as exc:
+        codigo = getattr(exc, "codigo", type(exc).__name__)
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"campo/v2 {e.campo_run_id}: {e.estado}")
+    typer.echo(f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}")
+    typer.echo(f"  {e.detalle}")
+    typer.echo(f"campo_run_id {e.campo_run_id}")
+    if e.estado != EstadoCampoV2.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("resumen-campo-v2")
+def resumen_campo_v2(
+    plan: Annotated[str, typer.Option("--plan", help="El campo_run_id del plan.")],
+) -> None:
+    """Resume un plan de campo/v2: sus entradas, sus conteos, la capacidad usada, cada base y el
+    balance entre los gestores disponibles. Sin coordenadas."""
+    from uuid import UUID
+
+    from motor_cartera.campo_v2 import consultas
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        try:
+            v = consultas.obtener(s, UUID(plan))
+        except consultas.PlanNoEncontrado as exc:
+            typer.echo(f"No existe el plan {plan}.", err=True)
+            raise typer.Exit(code=1) from exc
+    e = v.ejecucion
+    typer.echo(f"campo/v2 {e.campo_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(
+        f"  corte {v.fecha_corte.isoformat()}, fecha de operacion "
+        f"{e.fecha_operacion.isoformat()}, decision {v.decision_run_id}, territorial "
+        f"{v.territorial_run_id}"
+    )
+    typer.echo(
+        f"  configuracion {v.configuracion.configuracion_campo_version_id} "
+        f"({v.configuracion.nombre}, {v.configuracion.zona_horaria})"
+    )
+    typer.echo(
+        f"  {e.candidatas_campo:,} candidatas de {e.cuentas_evaluadas_decision:,} cuentas: "
+        f"{e.asignadas:,} asignadas ({e.rebalanceadas:,} por spillover), "
+        f"{e.revision_territorial:,} en revision territorial, {e.sin_gestor:,} sin gestor, "
+        f"{e.sin_capacidad:,} sin capacidad"
+    )
+    typer.echo(f"  capacidad: {e.capacidad_utilizada:,} de {e.capacidad_total:,}")
+    distribucion = e.distribucion or {}
+    for codigo, b in distribucion.get("por_base", {}).items():
+        typer.echo(
+            f"  {codigo}: {b['candidatas']:,} candidatas, {b['asignadas']:,} asignadas, "
+            f"{b['sin_gestor']:,} sin gestor, {b['sin_capacidad']:,} sin capacidad; "
+            f"{b['gestores_disponibles']}/{b['gestores']} gestores, capacidad {b['capacidad']:,}, "
+            f"utilizacion {b['utilizacion']}"
+        )
+    unidades = distribucion.get("unidades", {})
+    if unidades:
+        typer.echo("  unidades: " + ", ".join(f"{n} {c:,}" for n, c in unidades.items()))
+    for nombre, valores in distribucion.get("balance", {}).items():
+        if isinstance(valores, dict):
+            typer.echo(
+                f"  {nombre}: minimo {valores['minimo']}, mediana {valores['mediana']}, p95 "
+                f"{valores['p95']}, maximo {valores['maximo']}"
+            )
+    typer.echo("Capacidad declarada, no factibilidad vial: las rutas son de v0.13.")
+
+
+@app.command("backfill-campo-v2")
+def backfill_campo_v2(
+    configuracion: Annotated[
+        str, typer.Option("--configuracion", help="La configuracion de campo, por su UUID.")
+    ],
+    fecha_operacion: Annotated[
+        datetime | None,
+        typer.Option(
+            "--fecha-operacion",
+            formats=["%Y-%m-%d"],
+            help="El dia que se planea: obligatoria, no se infiere.",
+        ),
+    ] = None,
+    corte: Annotated[
+        datetime | None,
+        typer.Option("--corte", formats=["%Y-%m-%d"], help="Solo ese corte."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta; no encola nada.")
+    ] = False,
+) -> None:
+    """Los planes de campo/v2 que faltan para una configuracion y una fecha de operacion
+    declaradas: de cada corte hasta esa fecha que tiene exactamente una decision/v2 EXITOSA y una
+    territorial/v2 EXITOSA sobre la version de bases de la configuracion, y todavia no tiene un plan
+    con esas entradas. Un corte con mas de una es ambiguo: se reporta y no se planea. Es
+    idempotente."""
+    from uuid import UUID
+
+    from motor_cartera.campo_v2 import consultas
+    from motor_cartera.campo_v2.backfill import encolar, revisar
+    from motor_cartera.config import config
+    from motor_cartera.db.sesion import sesion
+
+    dia = _fecha_obligatoria(fecha_operacion, "backfill-campo-v2")
+    with sesion() as s:
+        try:
+            version = consultas.configuracion(s, UUID(configuracion))
+        except consultas.ConfiguracionNoEncontrada as exc:
+            typer.echo(f"No existe la configuracion de campo {configuracion}.", err=True)
+            raise typer.Exit(code=1) from exc
+        revision = revisar(
+            s,
+            version,
+            dia,
+            despacho_id=config.despacho_id,
+            cartera_id=config.cartera_id,
+            corte=None if corte is None else corte.date(),
+        )
+        typer.echo(
+            f"Planes de campo/v2 para el {dia.isoformat()} con la configuracion "
+            f"{version.configuracion_campo_version_id}:"
+        )
+        typer.echo(
+            f"  ya planeados: {revision.planeados}; en proceso: {revision.en_proceso}; "
+            f"cortes sin decision/v2 o territorial/v2 EXITOSA: {revision.sin_entradas}"
+        )
+        typer.echo(f"  cortes ambiguos (no se planean): {len(revision.ambiguos)}")
+        for a in revision.ambiguos:
+            typer.echo(
+                f"    {a.fecha_corte.isoformat()}: {a.decisiones} decisiones v2 y "
+                f"{a.territoriales} territoriales v2 EXITOSA; declara las entradas con "
+                "planificar-campo-v2"
+            )
+        typer.echo(f"  Planes pendientes: {len(revision.pendientes)}")
+        for p in revision.pendientes:
+            typer.echo(
+                f"    {p.fecha_corte.isoformat()}: decision {p.decision_run_id}, territorial "
+                f"{p.territorial_run_id}"
+            )
+        if dry_run:
+            typer.echo("Con --dry-run no se encolo nada.")
+            return
+        abiertos = encolar(s, revision.pendientes, version, dia, config=config)
+        s.commit()
+        typer.echo(f"Se encolaron {len(abiertos)} trabajos CAMPO_V2; los ejecuta un worker.")
+        for e in abiertos:
+            typer.echo(f"  campo_run_id {e.campo_run_id}")
+
+
+@app.command("exportar-plan-campo")
+def exportar_plan_campo(
+    plan: Annotated[str, typer.Option("--plan", help="El campo_run_id de un plan EXITOSA.")],
+    destino: Annotated[str, typer.Option(help="El CSV que se escribe.")] = "datos/plan_campo.csv",
+) -> None:
+    """Escribe en CSV la asignacion de cada candidata de un plan, para inspeccionarla: su cuenta_id
+    publico, su estado, su prioridad, su lugar en la cola de su base, su base, su gestor y las
+    cuatro unidades de su particion. Sin coordenadas, direcciones, nombres ni telefonos."""
+    from uuid import UUID
+
+    from motor_cartera.campo_v2 import consultas
+    from motor_cartera.db.modelos import EstadoCampoV2
+    from motor_cartera.db.sesion import sesion
+
+    ruta = Path(destino)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    with sesion() as s:
+        try:
+            v = consultas.obtener(s, UUID(plan))
+        except consultas.PlanNoEncontrado as exc:
+            typer.echo(f"No existe el plan {plan}.", err=True)
+            raise typer.Exit(code=1) from exc
+        if v.ejecucion.estado != EstadoCampoV2.EXITOSA:
+            typer.echo(f"El plan {plan} esta {v.ejecucion.estado}: no publico nada.", err=True)
+            raise typer.Exit(code=1)
+        conexion = s.connection().connection.driver_connection
+        consulta = (
+            "COPY (SELECT c.cuenta_id, a.estado, a.prioridad, a.orden_prioridad, "
+            "b.codigo AS base, g.codigo AS gestor, a.zona_id, a.subzona_id, a.tramo_id, "
+            "a.microtramo_id, a.es_rebalanceada FROM asignacion_campo_cuenta a "
+            "JOIN cuenta_canonica c ON c.id = a.cuenta_canonica_id "
+            "LEFT JOIN base_operativa b ON b.id = a.base_operativa_id "
+            "LEFT JOIN gestor_campo g ON g.id = a.gestor_campo_id "
+            f"WHERE a.ejecucion_campo_v2_id = {int(v.ejecucion.id)} "
+            "ORDER BY b.codigo NULLS LAST, g.codigo NULLS LAST, a.orden_prioridad, c.cuenta_id) "
+            "TO STDOUT WITH (FORMAT csv, HEADER true)"
+        )
+        with conexion.cursor() as cursor, ruta.open("wb") as salida:
+            with cursor.copy(consulta) as copia:
+                for bloque in copia:
+                    salida.write(bloque)
+    typer.echo(f"Escrito: {ruta} ({v.ejecucion.candidatas_campo:,} candidatas del plan {plan})")
+
+
 def _ventana_atribuible(ventana) -> str:
     """Una ventana de la atribucion, como la lee una persona."""
     return (

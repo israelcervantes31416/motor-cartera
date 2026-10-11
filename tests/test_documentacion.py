@@ -228,3 +228,106 @@ def test_ninguna_documentacion_de_la_geografia_promete_geocodificar_ni_corregir(
     texto = " ".join((DOCS / "geografia.md").read_text(encoding="utf-8").split())
     assert "No geocodifica direcciones." in texto
     assert "No corrige coordenadas." in texto
+
+
+def _campos_de_tablas(archivo: str) -> set[str]:
+    """Los nombres de la primera columna de cada fila de una tabla: `campo` o `a`, `b`."""
+    texto = (DOCS / archivo).read_text(encoding="utf-8")
+    return {
+        nombre.strip()
+        for linea in texto.splitlines()
+        if linea.startswith("| `")
+        for nombre in linea.split(" | ")[0].strip("| ").replace("`", "").split(",")
+    }
+
+
+def test_el_documento_de_campo_v2_define_cada_estado_motivo_jornada_nivel_y_resultado():
+    """Cada estado de un plan y de una asignacion, cada motivo, cada estado de jornada, cada nivel
+    de la particion y cada resultado de campo/v2 tiene su fila en campo_v2.md, y la politica que
+    documenta, con su hash y su cuadricula, es la que aplica el servicio."""
+    from motor_cartera.campo_v2.politica import (
+        PUBLIC_V2,
+        EstadoCampo,
+        EstadoJornada,
+        MotivoCampo,
+        NivelUnidad,
+    )
+    from motor_cartera.campo_v2.politica import hash_politica as hash_campo
+    from motor_cartera.db.modelos import EstadoCampoV2, ResultadoEjecucionCampoV2
+
+    filas = _codigos_de_tablas("campo_v2.md")
+    texto = " ".join((DOCS / "campo_v2.md").read_text(encoding="utf-8").split())
+
+    for vocabulario in (
+        EstadoCampoV2,
+        EstadoCampo,
+        MotivoCampo,
+        EstadoJornada,
+        NivelUnidad,
+        ResultadoEjecucionCampoV2,
+    ):
+        assert {v.value for v in vocabulario} <= filas, vocabulario.__name__
+    assert hash_campo() in texto
+    assert f"EPSG:{PUBLIC_V2.srid_metrico}" in texto
+    assert f"{PUBLIC_V2.tamano_tramo_m:,} m" in texto
+    assert f"{PUBLIC_V2.tamano_microtramo_m:,} m" in texto
+    assert "capacidad declarada, no factibilidad vial" in texto.lower()
+
+
+def test_el_documento_de_la_configuracion_de_campo_define_cada_campo_y_cada_excepcion():
+    from motor_cartera.campo_v2.configuracion import (
+        LLAVES_DE_UN_CALENDARIO,
+        LLAVES_DE_UN_GESTOR,
+        LLAVES_DE_UNA_EXCEPCION,
+        LLAVES_DEL_DOCUMENTO,
+        VERSION_CONFIGURACION,
+        TipoExcepcion,
+    )
+    from motor_cartera.db.modelos import EstadoVersionCampo
+
+    texto = (DOCS / "configuracion_campo.md").read_text(encoding="utf-8")
+    campos = _campos_de_tablas("configuracion_campo.md")
+
+    for llaves in (
+        LLAVES_DEL_DOCUMENTO,
+        LLAVES_DE_UN_CALENDARIO,
+        LLAVES_DE_UNA_EXCEPCION,
+        LLAVES_DE_UN_GESTOR,
+    ):
+        assert set(llaves) <= campos, sorted(set(llaves) - campos)
+    assert {t.value for t in TipoExcepcion} <= campos
+    assert {e.value for e in EstadoVersionCampo} <= campos
+    assert VERSION_CONFIGURACION in texto
+    assert "Un gestor es un código, nunca una persona." in texto
+
+
+def test_el_documento_de_la_particion_define_cada_nivel_su_cuadricula_y_sus_identificadores():
+    from motor_cartera.campo_v2.politica import ESPACIO_CAMPO, PUBLIC_V2, NivelUnidad, particion
+
+    filas = _codigos_de_tablas("particion_campo.md")
+    texto = (DOCS / "particion_campo.md").read_text(encoding="utf-8")
+
+    assert {n.value for n in NivelUnidad} <= filas
+    assert f"EPSG:{PUBLIC_V2.srid_metrico}" in texto
+    assert f"{PUBLIC_V2.tamano_tramo_m:,} m" in texto
+    assert f"{PUBLIC_V2.tamano_microtramo_m:,} m" in texto
+    assert "k = floor(round(numeric(x), 3) / T)" in texto
+    # El ejemplo del documento es el identificador que calcula la politica.
+    assert str(ESPACIO_CAMPO) in texto
+    assert '"campo-public-v2:MICROTRAMO:BASE_A:21114:2897:787"' in texto
+    assert str(particion("BASE_A", "21114", 2897, 787).microtramo_id) in texto
+
+
+def test_ninguna_documentacion_de_campo_promete_una_ruta_ni_publica_una_coordenada():
+    for archivo in ("campo_v2.md", "configuracion_campo.md", "particion_campo.md"):
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for frase in (
+            "ruta óptima",
+            "ruta más corta",
+            "tiempo estimado de llegada",
+            "orden óptimo",
+        ):
+            assert frase not in texto, (archivo, frase)
+    texto = " ".join((DOCS / "campo_v2.md").read_text(encoding="utf-8").split())
+    assert "No usa distancias, tiempos de traslado, rutas ni la duración de una visita" in texto
+    assert "Ninguna respuesta lleva una coordenada, el índice de una celda, un recuadro" in texto

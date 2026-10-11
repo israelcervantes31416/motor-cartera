@@ -3245,6 +3245,15 @@ class EjecucionTerritorialV2(SQLModel, table=True):
             "version_bases_operativas_id",
             name="uq_territorial_v2_entradas",
         ),
+        # Desde la 0013, lo que referencia cada plan de campo/v2: la ejecucion junto con su corte y
+        # su version de bases. Asi la base garantiza que el plan, su decision y su configuracion son
+        # del mismo corte y de las mismas bases.
+        sa.UniqueConstraint(
+            "id",
+            "corte_canonico_id",
+            "version_bases_operativas_id",
+            name="uq_territorial_v2_corte_bases",
+        ),
         sa.Index(
             "ux_territorial_v2_exitosa",
             "firma_inputs",
@@ -3395,6 +3404,694 @@ class AsignacionTerritorialV2(SQLModel, table=True):
     el empate, con codigos estables. Sin coordenadas."""
 
 
+# --- campo/v2 -------------------------------------------------------------------------------------
+#
+# Desde la 0013. Dos capas que no se mezclan. La CONFIGURACION DE CAMPO es configuracion operacional
+# versionada sobre una version de bases, como las bases mismas: sus gestores (un codigo opaco, nunca
+# una persona), sus calendarios con las ventanas de cada dia y sus excepciones, el cupo declarado de
+# cada gestor y la zona horaria (VersionConfiguracionCampo, CalendarioCampo, VentanaJornadaCampo,
+# ExcepcionCalendarioCampo, GestorCampo). Un PLAN dice, para una fecha de operacion, que candidata
+# de campo de una decision/v2 quedo con que gestor de su base territorial, en que zona, subzona,
+# tramo y microtramo, o por que no (EjecucionCampoV2, AsignacionCampoCuenta), con las unidades que
+# ocupo y la carga de cada gestor (UnidadTerritorialCampo, CargaGestorCampo).
+#
+# Ninguna tabla guarda una coordenada ni una geometria: la particion es un identificador. Lo
+# publicado no se reescribe: triggers de la 0013 rechazan cualquier UPDATE o DELETE sobre la
+# configuracion, las asignaciones, las unidades y las cargas, y sobre un plan terminado.
+
+ESTADOS_CAMPO = ("ASIGNADA", "REVISION_TERRITORIAL", "SIN_GESTOR_DISPONIBLE", "SIN_CAPACIDAD")
+"""El vocabulario de campo/v2: cada candidata queda en exactamente uno."""
+
+PRIORIDADES = ("BAJA", "MEDIA", "ALTA", "MUY_ALTA")
+
+COHERENCIA_DEL_CAMPO = (
+    "estado IN ("
+    + ", ".join(f"'{e}'" for e in ESTADOS_CAMPO)
+    + ") AND prioridad IN ("
+    + ", ".join(f"'{p}'" for p in PRIORIDADES)
+    + ") AND (gestor_campo_id IS NOT NULL) = (estado = 'ASIGNADA') "
+    "AND (base_operativa_id IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (zona_id IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (subzona_id IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (tramo_id IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (microtramo_id IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (orden_prioridad IS NOT NULL) = (estado <> 'REVISION_TERRITORIAL') "
+    "AND (orden_prioridad IS NULL OR orden_prioridad >= 1) "
+    "AND (NOT es_rebalanceada OR estado = 'ASIGNADA')"
+)
+"""Solo una ASIGNADA tiene gestor, y solo ella puede ser rebalanceada; una candidata en revision
+territorial no tiene base, ni particion, ni lugar en la cola de capacidad de una base."""
+
+CONTEOS_DE_CAMPO_V2 = ("asignadas", "revision_territorial", "sin_gestor", "sin_capacidad")
+"""Las candidatas de un plan, por estado: una columna por estado."""
+
+_SUMA_DE_CAMPO_V2 = " + ".join(CONTEOS_DE_CAMPO_V2)
+PUBLICACION_DE_CAMPO_V2 = (
+    f"(estado = 'EXITOSA' AND {_SUMA_DE_CAMPO_V2} = candidatas_campo "
+    "AND candidatas_campo <= cuentas_evaluadas_decision AND rebalanceadas <= asignadas "
+    "AND capacidad_utilizada = asignadas AND asignadas <= capacidad_total) "
+    f"OR (estado <> 'EXITOSA' AND candidatas_campo = 0 AND {_SUMA_DE_CAMPO_V2} = 0 "
+    "AND rebalanceadas = 0 AND capacidad_total = 0 AND capacidad_utilizada = 0)"
+)
+"""Un plan EXITOSA puso cada candidata en exactamente un estado, y nunca uso mas capacidad que la
+declarada; los demas no publicaron nada."""
+
+NIVELES_DE_UNIDAD = ("ZONA", "SUBZONA", "TRAMO", "MICROTRAMO")
+ESTADOS_JORNADA = (
+    "JORNADA_SEMANAL",
+    "VENTANAS_ESPECIALES",
+    "SIN_JORNADA",
+    "CERRADO_POR_EXCEPCION",
+    "INACTIVO",
+)
+JORNADAS_DISPONIBLES = "('JORNADA_SEMANAL', 'VENTANAS_ESPECIALES')"
+CAPACIDAD_MAXIMA_GESTOR = 1_000
+
+
+class EstadoVersionCampo(StrEnum):
+    """Una version de la configuracion de campo nace PUBLICADA, en la transaccion que la crea con
+    todo lo suyo: no hay versiones a medias."""
+
+    PUBLICADA = "PUBLICADA"
+
+
+class VersionConfiguracionCampo(SQLModel, table=True):
+    """Una version de la configuracion de campo, sobre una version de bases declarada.
+
+    Es configuracion operacional versionada, no una fuente de negocio ni datos de CARTERA o PAGOS.
+    Se identifica por el SHA-256 de su configuracion en forma canonica, que incluye el hash de su
+    version de bases, sus calendarios, sus ventanas, sus excepciones, sus gestores con sus cupos y
+    su zona horaria: el mismo contenido es la misma version, que se reutiliza. Publicada, no cambia
+    (un trigger lo impide): cambiar un cupo, un horario o un gestor es publicar otra version, y los
+    planes viejos siguen con la suya.
+    """
+
+    __tablename__ = "version_configuracion_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_bases_operativas_id"],
+            ["version_bases_operativas.id"],
+            name="fk_configuracion_campo_bases",
+        ),
+        sa.UniqueConstraint("hash_configuracion", name="uq_version_configuracion_campo_hash"),
+        # Lo que referencia cada gestor y cada plan: la configuracion junto con su version de bases.
+        sa.UniqueConstraint(
+            "id", "version_bases_operativas_id", name="uq_configuracion_campo_id_bases"
+        ),
+        sa.CheckConstraint(
+            "hash_configuracion ~ '^[0-9a-f]{64}$'", name=conv("ck_configuracion_campo_hash")
+        ),
+        sa.CheckConstraint(
+            "calendarios > 0 AND ventanas >= 0 AND excepciones >= 0 AND gestores > 0 "
+            "AND gestores_activos >= 0 AND gestores_activos <= gestores "
+            "AND capacidad_declarada >= 0",
+            name=conv("ck_configuracion_campo_conteos"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    configuracion_campo_version_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    version_bases_operativas_id: int
+    """La version de bases sobre la que esta construida: la de las bases de sus gestores. Un plan
+    solo la usa con una asignacion de territorial/v2 de esa misma version."""
+    nombre: str = Field(max_length=120)
+    """Una etiqueta para personas. No entra en el hash."""
+    version_configuracion: str = Field(max_length=32)
+    """campo-configuracion/v1: la forma canonica con que se calculo el hash."""
+    hash_configuracion: str = Field(max_length=64)
+    zona_horaria: str = Field(max_length=64)
+    """La zona IANA en que se leen las horas de sus calendarios y la fecha de operacion de un plan:
+    explicita, nunca la del sistema operativo."""
+    estado: EstadoVersionCampo = Field(
+        default=EstadoVersionCampo.PUBLICADA,
+        sa_type=sa.Enum(
+            EstadoVersionCampo,
+            name="estado_version_campo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    calendarios: int
+    ventanas: int
+    """Cuantas ventanas declara, de la semana y de las excepciones."""
+    excepciones: int
+    gestores: int
+    gestores_activos: int
+    capacidad_declarada: int
+    """La suma de los cupos de sus gestores activos: un tope, no la capacidad de una fecha."""
+    metadatos: dict = Field(sa_type=JSONB)
+    """Lo que dice de si misma, sin entrar en el hash: sus gestores, activos y cupos por base."""
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    publicada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    """Nace publicada, en la transaccion que la crea: coincide con creada_en."""
+
+
+class CalendarioCampo(SQLModel, table=True):
+    """Un calendario de una configuracion: las ventanas de cada dia de la semana y sus excepciones,
+    reutilizable por varios gestores."""
+
+    __tablename__ = "calendario_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_campo_id"],
+            ["version_configuracion_campo.id"],
+            name="fk_calendario_campo_configuracion",
+        ),
+        sa.UniqueConstraint(
+            "version_configuracion_campo_id", "codigo", name="uq_calendario_campo_codigo"
+        ),
+        # Lo que referencia cada gestor: el calendario junto con su configuracion.
+        sa.UniqueConstraint(
+            "id", "version_configuracion_campo_id", name="uq_calendario_campo_id_configuracion"
+        ),
+        sa.CheckConstraint(f"codigo ~ '{PATRON_CODIGO_BASE}'", name=conv("ck_calendario_codigo")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    calendario_id: UUID = Field(default_factory=uuid4, unique=True)
+    version_configuracion_campo_id: int
+    codigo: str = Field(max_length=32)
+
+
+class TipoExcepcionCampo(StrEnum):
+    CERRADO = "CERRADO"
+    VENTANAS_ESPECIALES = "VENTANAS_ESPECIALES"
+
+
+class ExcepcionCalendarioCampo(SQLModel, table=True):
+    """Lo que un calendario dice de una fecha, en lugar de su semana: CERRADO (un festivo, una
+    capacitacion), o VENTANAS_ESPECIALES (una media jornada), con sus ventanas."""
+
+    __tablename__ = "excepcion_calendario_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["calendario_campo_id"], ["calendario_campo.id"], name="fk_excepcion_campo_calendario"
+        ),
+        sa.UniqueConstraint("calendario_campo_id", "fecha", name="uq_excepcion_campo_fecha"),
+        # Lo que referencia cada ventana especial: la excepcion junto con su calendario.
+        sa.UniqueConstraint("id", "calendario_campo_id", name="uq_excepcion_campo_id_calendario"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    calendario_campo_id: int
+    fecha: date
+    tipo: TipoExcepcionCampo = Field(
+        sa_type=sa.Enum(
+            TipoExcepcionCampo,
+            name="tipo_excepcion_campo",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+        )
+    )
+    motivo: str | None = Field(default=None, max_length=120)
+    """Para personas: festivo, capacitacion, media jornada. No es un dato de nadie."""
+
+
+class VentanaJornadaCampo(SQLModel, table=True):
+    """Una ventana de disponibilidad: de un dia de la semana de un calendario, o de una excepcion
+    VENTANAS_ESPECIALES. En hora local de la zona de su configuracion, como minutos desde la
+    medianoche: [minuto_inicio, minuto_fin), dentro de 00:00 a 24:00. Dos ventanas del mismo dia no
+    se enciman (un trigger de la 0013 lo garantiza)."""
+
+    __tablename__ = "ventana_jornada_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["calendario_campo_id"], ["calendario_campo.id"], name="fk_ventana_campo_calendario"
+        ),
+        sa.ForeignKeyConstraint(
+            ["excepcion_calendario_campo_id", "calendario_campo_id"],
+            ["excepcion_calendario_campo.id", "excepcion_calendario_campo.calendario_campo_id"],
+            name="fk_ventana_campo_excepcion",
+        ),
+        sa.CheckConstraint(
+            "(dia_semana IS NULL) <> (excepcion_calendario_campo_id IS NULL) "
+            "AND (dia_semana IS NULL OR dia_semana BETWEEN 1 AND 7) "
+            "AND minuto_inicio >= 0 AND minuto_inicio < minuto_fin AND minuto_fin <= 1440",
+            name=conv("ck_ventana_campo_horario"),
+        ),
+        # Las ventanas de un calendario: la jornada de cada gestor, las ventanas de cada carga y
+        # el trigger que no deja encimarlas las buscan asi.
+        sa.Index("ix_ventana_campo_calendario", "calendario_campo_id", "dia_semana"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    calendario_campo_id: int
+    excepcion_calendario_campo_id: int | None = None
+    """La excepcion de la que es, o NULL si es de la semana."""
+    dia_semana: int | None = Field(default=None, sa_type=sa.SmallInteger)
+    """El dia ISO de la semana (lunes 1, domingo 7), o NULL si es de una excepcion."""
+    minuto_inicio: int = Field(sa_type=sa.SmallInteger)
+    minuto_fin: int = Field(sa_type=sa.SmallInteger)
+    """1440 es las 24:00: el fin del dia."""
+
+
+class GestorCampo(SQLModel, table=True):
+    """Un gestor de campo de una configuracion: un recurso operacional, no una persona.
+
+    Se identifica por su codigo (GESTOR_001); no guarda nombre, correo, telefono ni ningun dato
+    personal, y no se relaciona con el `Gestor` de pagos/v1 ni con el `actor_ref` del lifecycle: que
+    sean el mismo es una identidad que ninguna fuente afirma. Su base es de la version de bases de
+    su configuracion, y su calendario, de su configuracion: lo garantizan sus llaves foraneas.
+    """
+
+    __tablename__ = "gestor_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_campo_id", "version_bases_operativas_id"],
+            [
+                "version_configuracion_campo.id",
+                "version_configuracion_campo.version_bases_operativas_id",
+            ],
+            name="fk_gestor_campo_configuracion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id", "version_bases_operativas_id"],
+            ["base_operativa.id", "base_operativa.version_bases_operativas_id"],
+            name="fk_gestor_campo_base",
+        ),
+        sa.ForeignKeyConstraint(
+            ["calendario_campo_id", "version_configuracion_campo_id"],
+            ["calendario_campo.id", "calendario_campo.version_configuracion_campo_id"],
+            name="fk_gestor_campo_calendario",
+        ),
+        sa.UniqueConstraint(
+            "version_configuracion_campo_id", "codigo", name="uq_gestor_campo_codigo"
+        ),
+        # Lo que referencia cada asignacion: el gestor junto con su configuracion y su base. Asi la
+        # base garantiza que una cuenta solo queda con un gestor de su misma base.
+        sa.UniqueConstraint(
+            "id",
+            "version_configuracion_campo_id",
+            "base_operativa_id",
+            name="uq_gestor_campo_id_configuracion_base",
+        ),
+        # Los gestores de una base en una configuracion, activos o no.
+        sa.Index(
+            "ix_gestor_campo_base", "version_configuracion_campo_id", "base_operativa_id", "activo"
+        ),
+        sa.CheckConstraint(f"codigo ~ '{PATRON_CODIGO_BASE}'", name=conv("ck_gestor_codigo")),
+        sa.CheckConstraint(
+            f"capacidad_cuentas_dia BETWEEN 1 AND {CAPACIDAD_MAXIMA_GESTOR}",
+            name=conv("ck_gestor_capacidad"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    gestor_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    version_configuracion_campo_id: int
+    version_bases_operativas_id: int
+    """La de su configuracion: lo exigen sus llaves foraneas compuestas."""
+    codigo: str = Field(max_length=32)
+    base_operativa_id: int
+    calendario_campo_id: int
+    capacidad_cuentas_dia: int
+    """Su cupo operativo declarado, de 1 a 1,000 cuentas al dia. No sale de horas ni de distancias:
+    se declara."""
+    activo: bool
+
+
+class EstadoCampoV2(StrEnum):
+    """En que quedo un plan de campo/v2. Solo uno EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEjecucionCampoV2(StrEnum):
+    """Como termino un plan de campo/v2."""
+
+    PLAN_PUBLICADO = "PLAN_PUBLICADO"
+    """EXITOSA: publico la asignacion de cada candidata de campo, las unidades y las cargas."""
+    YA_GENERADO = "YA_GENERADO"
+    """FALLIDA: otro plan publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    ENTRADAS_NO_EXITOSAS = "ENTRADAS_NO_EXITOSAS"
+    """FALLIDA: la decision o territorial/v2 que declara ya no esta EXITOSA."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    """FALLIDA: las candidatas no tienen su asignacion territorial, o los conteos no cuadran."""
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionCampoV2(SQLModel, table=True):
+    """Un plan de campo/v2: las candidatas de campo de una decision/v2, en una fecha de operacion,
+    con entradas declaradas.
+
+    Declara exactamente su corte, su decision/v2 y su territorial/v2 (EXITOSA y del mismo corte), su
+    configuracion de campo (sobre la misma version de bases que territorial/v2: lo garantizan sus
+    llaves foraneas), la fecha de operacion y la politica con su hash. Nunca usa la decision, la
+    asignacion o los gestores mas recientes: lo que se planeo se puede volver a planear igual.
+    """
+
+    __tablename__ = "ejecucion_campo_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id", "corte_canonico_id"],
+            ["ejecucion_decision_v2.id", "ejecucion_decision_v2.corte_canonico_id"],
+            name="fk_campo_v2_decision",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_v2_id", "corte_canonico_id", "version_bases_operativas_id"],
+            [
+                "ejecucion_territorial_v2.id",
+                "ejecucion_territorial_v2.corte_canonico_id",
+                "ejecucion_territorial_v2.version_bases_operativas_id",
+            ],
+            name="fk_campo_v2_territorial",
+        ),
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_campo_id", "version_bases_operativas_id"],
+            [
+                "version_configuracion_campo.id",
+                "version_configuracion_campo.version_bases_operativas_id",
+            ],
+            name="fk_campo_v2_configuracion",
+        ),
+        # Lo que referencia cada asignacion: el plan junto con sus entradas.
+        sa.UniqueConstraint(
+            "id",
+            "ejecucion_decision_v2_id",
+            "ejecucion_territorial_v2_id",
+            "version_configuracion_campo_id",
+            "version_bases_operativas_id",
+            name="uq_campo_v2_entradas",
+        ),
+        sa.Index(
+            "ux_campo_v2_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_campo_v2_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Los planes de un corte, en cualquier estado, el mas reciente primero.
+        sa.Index("ix_campo_v2_corte", "corte_canonico_id", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_campo_v2_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_campo_v2_resultado")
+        ),
+        sa.CheckConstraint(
+            "cuentas_evaluadas_decision >= 0 AND candidatas_campo >= 0 AND rebalanceadas >= 0 "
+            "AND capacidad_total >= 0 AND capacidad_utilizada >= 0 AND "
+            + " AND ".join(f"{c} >= 0" for c in CONTEOS_DE_CAMPO_V2),
+            name=conv("ck_campo_v2_conteos"),
+        ),
+        sa.CheckConstraint(PUBLICACION_DE_CAMPO_V2, name=conv("ck_campo_v2_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    campo_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento."""
+    corte_canonico_id: int
+    ejecucion_decision_v2_id: int
+    ejecucion_territorial_v2_id: int
+    version_bases_operativas_id: int
+    """La de territorial/v2 y la de la configuracion: la misma, lo exigen sus llaves foraneas."""
+    version_configuracion_campo_id: int
+    fecha_operacion: date
+    """El dia local, en la zona de la configuracion, para el que se planea el trabajo de campo."""
+    version_motor: str = Field(max_length=32)
+    """campo/v2."""
+    version_politica: str = Field(max_length=40)
+    """campo-public-v2."""
+    hash_politica: str = Field(max_length=64)
+    """SHA-256 de la definicion canonica de la politica, con su SRID, sus tamanos y su ranking."""
+    firma_inputs: str = Field(max_length=64)
+    estado: EstadoCampoV2 = Field(
+        default=EstadoCampoV2.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoCampoV2,
+            name="estado_campo_v2",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_evaluadas_decision: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas que decidio su decision/v2: el universo del que salen las candidatas. Se fija al
+    abrir."""
+    candidatas_campo: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las de canal CAMPO."""
+    asignadas: int = Field(default=0, sa_type=sa.BigInteger)
+    revision_territorial: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_gestor: int = Field(default=0, sa_type=sa.BigInteger)
+    """SIN_GESTOR_DISPONIBLE."""
+    sin_capacidad: int = Field(default=0, sa_type=sa.BigInteger)
+    rebalanceadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las asignadas que no quedaron con el propietario preferido de su microtramo, por
+    capacidad."""
+    capacidad_total: int = Field(default=0, sa_type=sa.BigInteger)
+    """La suma de las capacidades efectivas de sus gestores en la fecha: el cupo de los
+    disponibles."""
+    capacidad_utilizada: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las asignadas: una cuenta es una unidad de capacidad."""
+    distribucion: dict | None = Field(default=None, sa_type=JSONB)
+    """Lo que publico, contado en la transaccion que lo publico: por estado, por base, por motivo,
+    las unidades y el balance entre gestores. Sin coordenadas."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class AsignacionCampoCuenta(SQLModel, table=True):
+    """Lo que un plan de campo/v2 concluyo de una candidata: su gestor, su particion, o por que no.
+
+    Apunta a la decision de su cuenta y a su asignacion territorial por sus llaves naturales, y a su
+    gestor junto con la configuracion y la base de su plan: la base garantiza que el gestor es de la
+    configuracion declarada y de la misma base que la cuenta. No guarda coordenadas: la particion
+    son cuatro identificadores. Ni se actualiza ni se borra.
+    """
+
+    __tablename__ = "asignacion_campo_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            [
+                "ejecucion_campo_v2_id",
+                "ejecucion_decision_v2_id",
+                "ejecucion_territorial_v2_id",
+                "version_configuracion_campo_id",
+                "version_bases_operativas_id",
+            ],
+            [
+                "ejecucion_campo_v2.id",
+                "ejecucion_campo_v2.ejecucion_decision_v2_id",
+                "ejecucion_campo_v2.ejecucion_territorial_v2_id",
+                "ejecucion_campo_v2.version_configuracion_campo_id",
+                "ejecucion_campo_v2.version_bases_operativas_id",
+            ],
+            name="fk_asignacion_campo_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id", "cuenta_canonica_id"],
+            [
+                "resultado_decision_v2.ejecucion_decision_v2_id",
+                "resultado_decision_v2.cuenta_canonica_id",
+            ],
+            name="fk_asignacion_campo_decision",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_v2_id", "cuenta_canonica_id"],
+            [
+                "asignacion_territorial_v2.ejecucion_territorial_v2_id",
+                "asignacion_territorial_v2.cuenta_canonica_id",
+            ],
+            name="fk_asignacion_campo_territorial",
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestor_campo_id", "version_configuracion_campo_id", "base_operativa_id"],
+            [
+                "gestor_campo.id",
+                "gestor_campo.version_configuracion_campo_id",
+                "gestor_campo.base_operativa_id",
+            ],
+            name="fk_asignacion_campo_gestor",
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id", "version_bases_operativas_id"],
+            ["base_operativa.id", "base_operativa.version_bases_operativas_id"],
+            name="fk_asignacion_campo_base",
+        ),
+        # Una pagina de un estado, de una base, de un gestor, de una prioridad o de un microtramo,
+        # en el orden de la cuenta; y las asignaciones de una cuenta en todos los planes.
+        sa.Index(
+            "ix_asignacion_campo_estado", "ejecucion_campo_v2_id", "estado", "cuenta_canonica_id"
+        ),
+        sa.Index(
+            "ix_asignacion_campo_base",
+            "ejecucion_campo_v2_id",
+            "base_operativa_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_asignacion_campo_gestor",
+            "ejecucion_campo_v2_id",
+            "gestor_campo_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_asignacion_campo_prioridad",
+            "ejecucion_campo_v2_id",
+            "prioridad",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_asignacion_campo_microtramo",
+            "ejecucion_campo_v2_id",
+            "microtramo_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index("ix_asignacion_campo_cuenta", "cuenta_canonica_id", "ejecucion_campo_v2_id"),
+        sa.CheckConstraint(COHERENCIA_DEL_CAMPO, name=conv("ck_asignacion_campo_estado")),
+    )
+
+    zona_id: UUID | None = None
+    subzona_id: UUID | None = None
+    tramo_id: UUID | None = None
+    microtramo_id: UUID | None = None
+    """Las cuatro unidades de su particion: identificadores deterministas (UUIDv5), sin la
+    coordenada. NULL en una REVISION_TERRITORIAL."""
+    ejecucion_campo_v2_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    ejecucion_decision_v2_id: int
+    ejecucion_territorial_v2_id: int
+    version_configuracion_campo_id: int
+    version_bases_operativas_id: int
+    """Los de su plan: lo exige su llave foranea compuesta."""
+    base_operativa_id: int | None = None
+    """La de territorial/v2. NULL solo en una REVISION_TERRITORIAL."""
+    gestor_campo_id: int | None = None
+    """Solo en una ASIGNADA: un gestor de la misma base."""
+    orden_prioridad: int | None = None
+    """Su lugar, desde 1, en la cola de capacidad de su base: prioridad, bloque y cuenta_id. No es
+    un orden de visita: ese es de v0.13."""
+    estado: str = Field(max_length=24)
+    prioridad: str = Field(max_length=12)
+    """La prioridad final de decision/v2, tal como se decidio."""
+    es_rebalanceada: bool = False
+    """Asignada a otro gestor que el propietario preferido de su microtramo, por capacidad."""
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que salio asi, con codigos estables. Sin coordenadas."""
+
+
+class UnidadTerritorialCampo(SQLModel, table=True):
+    """Una unidad de la particion que ocupo un plan: una zona, una subzona, un tramo o un
+    microtramo con candidatas. No se materializan las celdas vacias, y no se guarda ninguna
+    geometria, celda ni coordenada: el identificador, su padre, su base y su municipio."""
+
+    __tablename__ = "unidad_territorial_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id"], ["ejecucion_campo_v2.id"], name="fk_unidad_campo_ejecucion"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id", "padre_id"],
+            [
+                "unidad_territorial_campo.ejecucion_campo_v2_id",
+                "unidad_territorial_campo.unidad_id",
+            ],
+            name="fk_unidad_campo_padre",
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id"], ["base_operativa.id"], name="fk_unidad_campo_base"
+        ),
+        sa.ForeignKeyConstraint(
+            ["propietario_gestor_campo_id"], ["gestor_campo.id"], name="fk_unidad_campo_propietario"
+        ),
+        # Las unidades hijas de una unidad.
+        sa.Index("ix_unidad_campo_padre", "ejecucion_campo_v2_id", "padre_id"),
+        sa.CheckConstraint(
+            "nivel IN ("
+            + ", ".join(f"'{n}'" for n in NIVELES_DE_UNIDAD)
+            + ") AND (nivel = 'ZONA') = (padre_id IS NULL) "
+            "AND (nivel = 'ZONA') = (cvegeo IS NULL) "
+            "AND cve_ent ~ '^[0-9]{2}$' "
+            f"AND (cvegeo IS NULL OR (cvegeo ~ '{PATRON_CVEGEO}' AND left(cvegeo, 2) = cve_ent)) "
+            "AND (propietario_gestor_campo_id IS NULL OR nivel = 'MICROTRAMO') "
+            "AND candidatas > 0 AND asignadas >= 0 AND asignadas <= candidatas",
+            name=conv("ck_unidad_campo_nivel"),
+        ),
+    )
+
+    ejecucion_campo_v2_id: int = Field(primary_key=True)
+    unidad_id: UUID = Field(primary_key=True)
+    """El mismo identificador que llevan las asignaciones: UUIDv5 de la politica, el nivel, la base
+    y su clave."""
+    nivel: str = Field(max_length=12)
+    padre_id: UUID | None = None
+    """La unidad que la contiene: la zona de una subzona, la subzona de un tramo, el tramo de un
+    microtramo. NULL en una zona."""
+    base_operativa_id: int
+    cve_ent: str = Field(max_length=2)
+    cvegeo: str | None = Field(default=None, max_length=5)
+    """El municipio de una subzona, un tramo o un microtramo. NULL en una zona."""
+    candidatas: int
+    """Las candidatas de su base que caen en ella, en cualquier estado salvo
+    REVISION_TERRITORIAL."""
+    asignadas: int
+    propietario_gestor_campo_id: int | None = None
+    """Solo en un microtramo: el propietario preferido de su ranking, si la base tenia gestores
+    disponibles."""
+
+
+class CargaGestorCampo(SQLModel, table=True):
+    """La carga de un gestor de la configuracion en un plan: su jornada en la fecha, su capacidad
+    efectiva, cuantas cuentas recibio, de cuantos microtramos y tramos, cuantas por spillover, y las
+    ventanas de su dia, para el ruteo de v0.13. Una fila por cada gestor de la configuracion."""
+
+    __tablename__ = "carga_gestor_campo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id"], ["ejecucion_campo_v2.id"], name="fk_carga_campo_ejecucion"
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestor_campo_id"], ["gestor_campo.id"], name="fk_carga_campo_gestor"
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id"], ["base_operativa.id"], name="fk_carga_campo_base"
+        ),
+        sa.CheckConstraint(
+            "estado_jornada IN ("
+            + ", ".join(f"'{e}'" for e in ESTADOS_JORNADA)
+            + f") AND (capacidad > 0) = (estado_jornada IN {JORNADAS_DISPONIBLES}) "
+            "AND capacidad >= 0 AND asignadas >= 0 AND asignadas <= capacidad "
+            "AND rebalanceadas >= 0 AND rebalanceadas <= asignadas "
+            "AND microtramos >= 0 AND tramos >= 0 AND tramos <= microtramos "
+            "AND (asignadas = 0) = (microtramos = 0) "
+            "AND (utilizacion IS NULL) = (capacidad = 0)",
+            name=conv("ck_carga_campo_conteos"),
+        ),
+    )
+
+    utilizacion: Decimal | None = Field(default=None, max_digits=5, decimal_places=4)
+    """asignadas / capacidad, de 0 a 1. NULL si no tenia capacidad ese dia."""
+    ejecucion_campo_v2_id: int = Field(primary_key=True)
+    gestor_campo_id: int = Field(primary_key=True)
+    base_operativa_id: int
+    estado_jornada: str = Field(max_length=24)
+    capacidad: int
+    """Su capacidad efectiva en la fecha: su cupo si esta disponible, 0 si no."""
+    asignadas: int
+    rebalanceadas: int
+    microtramos: int
+    tramos: int
+    ventanas: list[dict] = Field(sa_type=JSONB)
+    """Las ventanas de su jornada en la fecha: la hora local de inicio y de fin y los instantes que
+    les corresponden en la zona de la configuracion. Vacia si no esta disponible."""
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -3427,7 +4124,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'EVALUACION_PROMESAS') = (ejecucion_evaluacion_promesas_id IS NOT NULL) "
     "AND (tipo = 'DECISION_V2') = (ejecucion_decision_v2_id IS NOT NULL) "
     "AND (tipo = 'GEOGRAFIA') = (ejecucion_geografia_id IS NOT NULL) "
-    "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL)"
+    "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL) "
+    "AND (tipo = 'CAMPO_V2') = (ejecucion_campo_v2_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -3595,6 +4293,10 @@ class TipoTrabajo(StrEnum):
     geografia EXITOSA y una version de bases declaradas. Lo piden POST /territorial-v2 o
     asignar-territorial-v2. Corre en paralelo a territorial/v1, que sigue siendo la etapa
     TERRITORIAL."""
+    CAMPO_V2 = "CAMPO_V2"
+    """Desde la 0013: el plan de campo/v2 de una fecha, sobre una decision/v2, una territorial/v2 y
+    una configuracion de campo declaradas. Lo piden POST /campo-v2/planes, planificar-campo-v2 o
+    backfill-campo-v2. Corre en paralelo a territorial/v1 y ruteo/v1, que no lo esperan."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -3668,6 +4370,9 @@ class TrabajoOrquestacion(SQLModel, table=True):
             ["ejecucion_territorial_v2.id"],
             name="fk_trabajo_territorial_v2",
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id"], ["ejecucion_campo_v2.id"], name="fk_trabajo_campo_v2"
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -3680,6 +4385,7 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_decision_v2_id", name="uq_trabajo_decision_v2"),
         sa.UniqueConstraint("ejecucion_geografia_id", name="uq_trabajo_geografia"),
         sa.UniqueConstraint("ejecucion_territorial_v2_id", name="uq_trabajo_territorial_v2"),
+        sa.UniqueConstraint("ejecucion_campo_v2_id", name="uq_trabajo_campo_v2"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -3744,6 +4450,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo GEOGRAFIA, desde la 0012."""
     ejecucion_territorial_v2_id: int | None = None
     """El objetivo de un trabajo TERRITORIAL_V2, desde la 0012."""
+    ejecucion_campo_v2_id: int | None = None
+    """El objetivo de un trabajo CAMPO_V2, desde la 0013."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

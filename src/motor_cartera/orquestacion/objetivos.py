@@ -2,7 +2,7 @@
 
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
 una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
-una decision v2, a una geografia o a una ejecucion de territorial/v2.
+una decision v2, a una geografia, a una ejecucion de territorial/v2 o a un plan de campo/v2.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -21,6 +21,7 @@ from sqlmodel import Session, SQLModel, select
 from motor_cartera.db.modelos import (
     Corrida,
     EjecucionAtribucion,
+    EjecucionCampoV2,
     EjecucionDecision,
     EjecucionDecisionV2,
     EjecucionEvaluacionPromesas,
@@ -31,6 +32,7 @@ from motor_cartera.db.modelos import (
     EjecucionTerritorial,
     EjecucionTerritorialV2,
     EstadoAtribucion,
+    EstadoCampoV2,
     EstadoCorrida,
     EstadoDecision,
     EstadoDecisionV2,
@@ -44,6 +46,7 @@ from motor_cartera.db.modelos import (
     EstadoTerritorialV2,
     IngestaPagos,
     ResultadoAtribucion,
+    ResultadoEjecucionCampoV2,
     ResultadoEjecucionDecisionV2,
     ResultadoEjecucionGeografia,
     ResultadoEjecucionTerritorialV2,
@@ -167,6 +170,23 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
             "fuera_cobertura": 0,
             "ambiguas": 0,
             "resultado": ResultadoEjecucionTerritorialV2.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.CAMPO_V2: Objetivo(
+        EjecucionCampoV2,
+        EstadoCampoV2,
+        "ejecucion_campo_v2_id",
+        "campo_run_id",
+        {
+            "candidatas_campo": 0,
+            "asignadas": 0,
+            "revision_territorial": 0,
+            "sin_gestor": 0,
+            "sin_capacidad": 0,
+            "rebalanceadas": 0,
+            "capacidad_total": 0,
+            "capacidad_utilizada": 0,
+            "resultado": ResultadoEjecucionCampoV2.INTENTOS_AGOTADOS.value,
         },
     ),
 }

@@ -33,6 +33,8 @@ from uuid import UUID, uuid4
 from sqlmodel import Session, select
 
 from motor_cartera.atribucion.ejecuciones import AtribucionYaPublicada, ejecutar_atribucion
+from motor_cartera.campo_v2 import ejecuciones as campo_v2
+from motor_cartera.campo_v2.ejecuciones import CampoV2YaGenerado, ejecutar_campo_v2
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -40,6 +42,7 @@ from motor_cartera.db.modelos import (
     ArchivoCorrida,
     ArtefactoFuente,
     Corrida,
+    EjecucionCampoV2,
     EjecucionDecisionV2,
     EjecucionGeografia,
     EjecucionTerritorialV2,
@@ -95,6 +98,7 @@ PERDIO_LA_CARRERA = (
     DecisionV2YaGenerada,
     GeografiaYaGenerada,
     TerritorialV2YaGenerado,
+    CampoV2YaGenerado,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -160,6 +164,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.DECISION_V2: ejecutar_decision_v2,
     TipoTrabajo.GEOGRAFIA: ejecutar_geografia,
     TipoTrabajo.TERRITORIAL_V2: ejecutar_territorial_v2,
+    TipoTrabajo.CAMPO_V2: ejecutar_campo_v2,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -506,6 +511,47 @@ def asignar_territorial_v2_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(EjecucionTerritorialV2, ejecucion_id)
+
+
+def planificar_campo_v2_en_primer_plano(
+    corte_id: UUID,
+    decision_run_id: UUID,
+    territorial_run_id: UUID,
+    configuracion_campo_version_id: UUID,
+    fecha_operacion: date,
+    *,
+    version_politica: str | None = None,
+    config: Config | None = None,
+) -> EjecucionCampoV2:
+    """campo/v2 del CLI, como territorial/v2: su plan y su trabajo, tomado por este proceso, y el
+    plan en primer plano. Si el proceso muere, cualquier worker lo termina cuando vence el lease.
+    Propaga lo que levanta `campo_v2.abrir` sin registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = campo_v2.abrir(
+            s,
+            corte_id,
+            decision_run_id,
+            territorial_run_id,
+            configuracion_campo_version_id,
+            fecha_operacion,
+            version_politica=version_politica,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_campo_v2_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionCampoV2, ejecucion_id)
 
 
 def _cerrar(
