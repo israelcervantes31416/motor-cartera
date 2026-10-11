@@ -85,7 +85,7 @@ jobs:
   # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta. Y un
   # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360, con sus pagos
   # interpretados por el motor de pagos; y el corte oficial, con coordenadas sinteticas, pasa por
-  # geografia/v1, las bases operativas y territorial/v2.
+  # geografia/v1, las bases operativas, territorial/v2 y campo/v2.
   compose:
     runs-on: ubuntu-latest
 
@@ -132,12 +132,15 @@ jobs:
           docker compose exec -T api motor-cartera generar-escenario --destino datos/escenario
           --perfil XS --cortes 4 --primer-corte 2026-10-07 --semilla 7 --formato zip
 
+      # Con --campo tambien planea campo/v2 sobre el corte oficial, y deja en humo.txt la
+      # configuracion de campo y el plan que publico. Con pipefail, tee no oculta un fallo.
       - name: Prueba de humo por la API
-        run: >-
-          python3 scripts/prueba_de_humo.py datos/humo.xlsx
-          --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30
-          --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip
-          --escenario datos/escenario --geografia
+        run: |
+          set -o pipefail
+          python3 scripts/prueba_de_humo.py datos/humo.xlsx \
+            --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30 \
+            --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip \
+            --escenario datos/escenario --geografia --campo | tee humo.txt
 
       # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
       # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.
@@ -180,6 +183,25 @@ jobs:
           docker compose exec -T worker motor-cartera comparar-decisiones --corte 2026-09-30 \
             | tee sombra.txt
           grep -q "no un juicio de calidad" sombra.txt
+
+      # Y planeo campo/v2 para el dia siguiente al corte: el backfill, con la misma configuracion
+      # y la misma fecha declarada, lo encuentra ya planeado y no pide nada. El resumen y la
+      # exportacion del plan salen por la linea de comandos.
+      - name: Backfill, resumen y exportacion de campo/v2
+        run: |
+          set -o pipefail
+          configuracion=$(awk '/^configuracion_campo_version_id/ {print $2}' humo.txt)
+          plan=$(awk '/^campo_run_id/ {print $2}' humo.txt)
+          docker compose exec -T worker motor-cartera backfill-campo-v2 \
+            --configuracion "$configuracion" --fecha-operacion 2026-10-01 --dry-run | tee campo.txt
+          grep -q "ya planeados: 1" campo.txt
+          grep -q "Planes pendientes: 0" campo.txt
+          grep -q "cortes ambiguos (no se planean): 0" campo.txt
+          docker compose exec -T worker motor-cartera resumen-campo-v2 --plan "$plan" \
+            | tee resumen.txt
+          grep -q "no factibilidad vial" resumen.txt
+          docker compose exec -T worker motor-cartera exportar-plan-campo --plan "$plan" \
+            --destino datos/plan_campo.csv
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
