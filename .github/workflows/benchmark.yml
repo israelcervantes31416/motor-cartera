@@ -10,14 +10,17 @@ name: Benchmark de escala
 # cortes, la atribucion de sus pagos, la evaluacion de sus promesas y las consultas de una cuenta,
 # con su plan; con tipo=decision_v2, sobre ese mismo escenario con su lifecycle, decision/v1 y
 # decision/v2 de su ultimo corte por fase, una segunda decision comparada cuenta por cuenta, la
-# sombra y las consultas de una cuenta y de una pagina, con su plan.
+# sombra y las consultas de una cuenta y de una pagina, con su plan; con tipo=geografia, descarga el
+# Marco Geoestadistico Integrado 2025 del INEGI (y comprueba su SHA-256 contra el manifiesto), lo
+# importa, y mide geografia/v1 y territorial/v2 sobre un corte de unas 500,000 cuentas sinteticas
+# con coordenadas sinteticas, con el plan de cada consulta y el uso del indice espacial.
 on:
   workflow_dispatch:
     inputs:
       tipo:
         description: "Que se mide"
         type: choice
-        options: [escala, historia, motor_pagos, lifecycle, decision_v2]
+        options: [escala, historia, motor_pagos, lifecycle, decision_v2, geografia]
         default: escala
       cortes:
         description: "Cuantos cortes (con tipo=historia, motor_pagos, lifecycle o decision_v2)"
@@ -45,7 +48,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        image: postgis/postgis:16-3.5
         env:
           POSTGRES_USER: motor
           POSTGRES_PASSWORD: motor
@@ -192,3 +195,32 @@ jobs:
         env:
           MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen
           INTENSIDAD: ${{ inputs.intensidad }}
+
+      # El archivo oficial se descarga aqui, a mano y fuera del repositorio, y se comprueba contra
+      # el SHA-256 del manifiesto antes de importarlo. Las cuentas son sinteticas.
+      - name: Benchmark de geografia/v1 y territorial/v2
+        if: inputs.tipo == 'geografia'
+        run: |
+          mkdir -p "$RUNNER_TEMP/inegi"
+          url=$(python -c "import json; print(json.load(open('src/motor_cartera/geografia/referencias.json'))['referencias']['inegi-mg-2025-municipal']['url'])")
+          sha=$(python -c "import json; print(json.load(open('src/motor_cartera/geografia/referencias.json'))['referencias']['inegi-mg-2025-municipal']['sha256'])")
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/inegi/mg_2025_integrado.zip" "$url"
+          echo "$sha  $RUNNER_TEMP/inegi/mg_2025_integrado.zip" | sha256sum -c -
+          python scripts/benchmark_geografia.py --destino "$RUNNER_TEMP/geografia" \
+            --referencia "$RUNNER_TEMP/inegi/mg_2025_integrado.zip" \
+            | tee "$RUNNER_TEMP/benchmark_geografia.log"
+          {
+            echo "## Benchmark de geografia/v1 y territorial/v2"
+            echo
+            cat "$RUNNER_TEMP/geografia/benchmark_geografia.md"
+            echo
+            echo '<details><summary>Planes (EXPLAIN ANALYZE, BUFFERS)</summary>'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/geografia/planes_geografia_espaciales.txt"
+            cat "$RUNNER_TEMP/geografia/planes_geografia.txt"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MC_SOURCE_STORE_ROOT: ${{ runner.temp }}/almacen

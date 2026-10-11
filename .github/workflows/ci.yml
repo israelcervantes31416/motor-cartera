@@ -81,10 +81,11 @@ jobs:
         run: pytest --cov=motor_cartera --cov-report=term-missing
 
   # La definicion de terminado, en una maquina limpia: un solo comando levanta todo
-  # (PostgreSQL, migraciones, API y worker), se genera una cartera sintetica y su flujo
+  # (PostgreSQL con PostGIS, migraciones, API y worker), se genera una cartera sintetica y su flujo
   # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta. Y un
   # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360, con sus pagos
-  # interpretados por el motor de pagos.
+  # interpretados por el motor de pagos; y el corte oficial, con coordenadas sinteticas, pasa por
+  # geografia/v1, las bases operativas y territorial/v2.
   compose:
     runs-on: ubuntu-latest
 
@@ -101,12 +102,28 @@ jobs:
       - name: Generar una cartera sintetica
         run: docker compose exec -T api motor-cartera generar --destino datos/humo.xlsx
 
+      # Una referencia geografica SINTETICA (un rectangulo inventado por municipio, con su clave
+      # real para comparar la fuente), importada como cualquier otra, y una muestra de sus puntos:
+      # con ella la cartera oficial trae coordenadas sinteticas. El CI no descarga nada del INEGI.
+      - name: Importar una referencia geografica sintetica y muestrear sus puntos
+        run: |
+          docker compose exec -T api motor-cartera generar-geografia-sintetica \
+            --destino datos/geografia/municipios.zip
+          docker compose exec -T api motor-cartera importar-geografia datos/geografia/municipios.zip \
+            --proveedor SINTETICO --producto "Referencia sintetica de la prueba de humo" \
+            --edicion humo-v1 | tee importar.txt
+          grep -q ": PUBLICADA" importar.txt
+          version=$(awk '/^geografia_version_id/ {print $2}' importar.txt)
+          docker compose exec -T api motor-cartera muestrear-puntos --geografia-version "$version" \
+            --destino datos/geografia/puntos.json
+
       # La cartera oficial (cartera/v2, 93 columnas) con su hoja CARRIER, en el perfil mas pequeno,
-      # y los pagos (pagos/v1, 23 columnas) de la semana que termina en su corte.
+      # con coordenadas sinteticas en las proporciones de omision, y los pagos (pagos/v1, 23
+      # columnas) de la semana que termina en su corte.
       - name: Generar una cartera oficial sintetica y sus pagos
         run: >-
           docker compose exec -T api motor-cartera generar-oficial --destino datos --perfil XS
-          --formato zip --fecha-corte 2026-09-30
+          --formato zip --fecha-corte 2026-09-30 --puntos datos/geografia/puntos.json
 
       # Cuatro cortes semanales de una misma cartera y los pagos entre ellos, con otra semilla: sus
       # cuentas no son las de la cartera oficial, y sus cortes son posteriores al de ella.
@@ -120,7 +137,7 @@ jobs:
           python3 scripts/prueba_de_humo.py datos/humo.xlsx
           --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30
           --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip
-          --escenario datos/escenario
+          --escenario datos/escenario --geografia
 
       # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
       # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.
