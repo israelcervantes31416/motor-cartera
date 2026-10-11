@@ -11,8 +11,10 @@ Algunas decisiones para que lo sintetico no se confunda con algo real:
 - Los telefonos empiezan con 0: ningun numero nacional de Mexico empieza asi, asi que no se le puede
   marcar a nadie. La CLAVE_SPEI empieza con 000, que no es la clave de ningun banco.
 - Los nombres y las calles salen de listas genericas: no corresponden a ninguna persona.
-- LATITUD y LONGITUD van vacias. El catalogo no trae centroides municipales, y una coordenada al
-  azar seria incoherente con la poblacion del cliente. La geografia con coordenadas es posterior.
+- LATITUD y LONGITUD van vacias, salvo que se pida una muestra de puntos de una referencia
+  geografica importada (ver `generador.coordenadas`): entonces cada cuenta recibe una coordenada
+  sintetica dentro de su municipio, o vacia, incompleta, invalida, fuera de la referencia o de otro
+  municipio, en proporciones explicitas. Nunca una coordenada al azar sin municipio.
 
 Como escala. Cada cliente se describe con un estado compacto (arreglos de numpy) y sus atributos
 fijos (nombre, domicilio, telefonos, producto, municipio) se derivan de un hash de su identificador
@@ -26,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import zipfile
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
@@ -47,6 +50,7 @@ from motor_cartera.contratos.cartera_v2 import (
 from motor_cartera.contratos.fuente import ContratoFuente, Tipo
 from motor_cartera.contratos.pagos import CONTRATO_PAGOS
 from motor_cartera.fuentes.geografia import catalogo, normalizar_nombre
+from motor_cartera.generador.coordenadas import CATEGORIAS, Coordenadas, asignar
 from motor_cartera.segmentacion import TRAMOS_ATRASO
 
 PERFILES = {
@@ -377,12 +381,20 @@ class _Azar:
         return desde + self.indice(atributo, hasta - desde + 1)
 
 
-def tabla_cartera(estado: EstadoCartera, *, semilla: int, fecha_corte: date) -> pa.Table:
+def tabla_cartera(
+    estado: EstadoCartera,
+    *,
+    semilla: int,
+    fecha_corte: date,
+    coordenadas: Coordenadas | None = None,
+    conteo: Counter | None = None,
+) -> pa.Table:
     """Las 93 columnas de CARTERA, como texto y en el orden oficial, para las cuentas de `estado`.
 
-    Lo fijo de cada cliente (su nombre, su domicilio, sus telefonos, su producto, su municipio)
-    sale del hash de su numero y la semilla; lo que cambia de un corte a otro (saldo, atraso,
-    pagos), de `estado`.
+    Lo fijo de cada cliente (su nombre, su domicilio, sus telefonos, su producto, su municipio y,
+    con `coordenadas`, su coordenada) sale del hash de su numero y la semilla; lo que cambia de un
+    corte a otro (saldo, atraso, pagos), de `estado`. Con `conteo`, suma ahi cuantas cuentas cayeron
+    en cada categoria de coordenadas.
     """
     n = len(estado)
     c = estado.cliente
@@ -459,6 +471,12 @@ def tabla_cartera(estado: EstadoCartera, *, semilla: int, fecha_corte: date) -> 
     ultima_gestion = corte - azar.entero("ultima_gestion", 0, 30).astype("timedelta64[D]")
     nulos = pa.nulls(n, pa.string())
     gestion = _de_lista(GESTIONES, azar.indice("gestion", len(GESTIONES)))
+    latitud = longitud = nulos
+    if coordenadas is not None:
+        cvegeo = np.char.add(cve_ent.astype(str), geo.cve_municipio[municipio].astype(str))
+        latitud, longitud, categorias = asignar(cvegeo, azar, coordenadas)
+        if conteo is not None:
+            conteo.update(categorias.tolist())
 
     columnas: dict[str, pa.Array] = {
         "CLIENTE_UNICO": pc.binary_join_element_wise("CU", _digitos(c, 10), ""),
@@ -516,8 +534,8 @@ def tabla_cartera(estado: EstadoCartera, *, semilla: int, fecha_corte: date) -> 
         "POBLACION_AVAL": _o_nulo(poblacion, con_aval),
         "ESTADO_AVAL": _o_nulo(estado_cte, con_aval),
         "FIDIAPAGO": _de_lista(("S", "N"), (azar("fidiapago") >= 0.2).astype(np.int64)),
-        "LATITUD": nulos,
-        "LONGITUD": nulos,
+        "LATITUD": latitud,
+        "LONGITUD": longitud,
         "DESPACHO_GESTIONO": _o_nulo(_texto([NOMBRE_DESPACHO] * n), gestionada),
         "ULTIMA_GESTION": _o_nulo(_fechas(ultima_gestion), gestionada),
         "GESTION_DESC": _o_nulo(gestion, gestionada),
@@ -661,6 +679,8 @@ class Escrito:
     ruta: Path
     filas: int
     filas_carrier: int
+    coordenadas: dict[str, int] | None = None
+    """Cuantas cuentas cayeron en cada categoria de coordenadas, si se pidieron."""
 
 
 def bloques_cartera(
@@ -669,10 +689,18 @@ def bloques_cartera(
     semilla: int,
     fecha_corte: date,
     filas_por_bloque: int = FILAS_POR_BLOQUE,
+    coordenadas: Coordenadas | None = None,
+    conteo: Counter | None = None,
 ) -> Iterator[pa.Table]:
     for inicio in range(0, len(estado), filas_por_bloque):
         parte = estado.tomar(np.arange(inicio, min(inicio + filas_por_bloque, len(estado))))
-        yield tabla_cartera(parte, semilla=semilla, fecha_corte=fecha_corte)
+        yield tabla_cartera(
+            parte,
+            semilla=semilla,
+            fecha_corte=fecha_corte,
+            coordenadas=coordenadas,
+            conteo=conteo,
+        )
 
 
 def escribir_cartera(
@@ -684,31 +712,45 @@ def escribir_cartera(
     con_carrier: bool = True,
     filas_por_bloque: int = FILAS_POR_BLOQUE,
     tabla: pd.DataFrame | None = None,
+    coordenadas: Coordenadas | None = None,
 ) -> Escrito:
     """Escribe CARTERA (y CARRIER, salvo con_carrier=False) por bloques. El formato sale de la
     extension: xlsx (hojas CARTERA y CARRIER, mas una LEEME), csv (solo CARTERA) o zip (CARTERA.csv
-    y CARRIER.csv). Con `tabla`, escribe esas filas tal cual, para defectos a proposito."""
+    y CARRIER.csv). Con `tabla`, escribe esas filas tal cual, para defectos a proposito. Con
+    `coordenadas`, cada cuenta lleva su LATITUD y su LONGITUD sinteticas."""
     ruta = Path(destino)
     formato = ruta.suffix.lower()
     if formato not in (".xlsx", ".csv", ".zip"):
         raise ValueError(f"Formato no soportado: {ruta.name!r}. Usa .xlsx, .csv o .zip.")
     ruta.parent.mkdir(parents=True, exist_ok=True)
 
-    def carteras() -> Iterator[pa.Table]:
+    conteo: Counter = Counter()
+
+    def carteras(contar: bool = True) -> Iterator[pa.Table]:
         if tabla is not None:
             yield pa.Table.from_pandas(tabla.astype("string"), preserve_index=False)
             return
         yield from bloques_cartera(
-            estado, semilla=semilla, fecha_corte=fecha_corte, filas_por_bloque=filas_por_bloque
+            estado,
+            semilla=semilla,
+            fecha_corte=fecha_corte,
+            filas_por_bloque=filas_por_bloque,
+            coordenadas=coordenadas,
+            conteo=conteo if contar else None,
         )
 
     def carriers() -> Iterator[pa.Table]:
-        for bloque in carteras():
+        for bloque in carteras(contar=False):
             yield tabla_carrier(bloque)
+
+    def categorias() -> dict[str, int] | None:
+        if coordenadas is None or tabla is not None:
+            return None
+        return {c: conteo.get(c, 0) for c in CATEGORIAS}
 
     if formato == ".csv":
         filas = _escribir_csv(ruta.open("wb"), carteras())
-        return Escrito(ruta, filas, 0)
+        return Escrito(ruta, filas, 0, categorias())
     if formato == ".zip":
         with zipfile.ZipFile(
             ruta, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
@@ -722,8 +764,9 @@ def escribir_cartera(
                     _miembro(f"{HOJA_CARRIER}.csv"), "w", force_zip64=True
                 ) as miembro:
                     filas_carrier = _escribir_csv(miembro, carriers())
-        return Escrito(ruta, filas, filas_carrier)
-    return _escribir_xlsx(ruta, carteras(), carriers() if con_carrier else None)
+        return Escrito(ruta, filas, filas_carrier, categorias())
+    escrito = _escribir_xlsx(ruta, carteras(), carriers() if con_carrier else None)
+    return replace(escrito, coordenadas=categorias())
 
 
 def _miembro(nombre: str) -> zipfile.ZipInfo:
@@ -1175,6 +1218,7 @@ def generar_escenario(
     lifecycle: bool = False,
     intensidad_lifecycle: float = 1.0,
     hoy: date | None = None,
+    coordenadas: Coordenadas | None = None,
 ) -> Escenario:
     """Escribe `cortes` cortes de la misma cartera, cada `dias_entre_cortes` dias desde
     `primer_corte`, y los pagos de cada periodo entre un corte y el siguiente; y un manifiesto,
@@ -1187,6 +1231,10 @@ def generar_escenario(
     Con `lifecycle`, tambien los eventos operacionales de cada periodo (`generador.lifecycle`), en
     un JSONL comprimido por periodo. Exige que el escenario termine antes de `hoy`: un evento
     operacional no ocurre en el futuro.
+
+    Con `coordenadas`, cada cuenta lleva su LATITUD y su LONGITUD sinteticas, las mismas en todos
+    sus cortes; el manifiesto dice de que muestra salieron, con que proporciones y cuantas de cada
+    categoria trae cada corte.
     """
     if cortes < 1:
         raise ValueError("Un escenario tiene al menos un corte.")
@@ -1218,7 +1266,12 @@ def generar_escenario(
     for numero in range(cortes):
         ruta = directorio / f"cartera_oficial_{corte.isoformat()}.{extension}"
         escrito = escribir_cartera(
-            estado, ruta, semilla=semilla, fecha_corte=corte, con_carrier=con_carrier
+            estado,
+            ruta,
+            semilla=semilla,
+            fecha_corte=corte,
+            con_carrier=con_carrier,
+            coordenadas=coordenadas,
         )
         registro_cortes.append(
             {
@@ -1227,6 +1280,7 @@ def generar_escenario(
                 "sha256": _sha256(ruta),
                 "cuentas": escrito.filas,
                 "filas_carrier": escrito.filas_carrier,
+                **({"coordenadas": escrito.coordenadas} if escrito.coordenadas else {}),
                 **(asdict(evolucion) if evolucion is not None else {}),
             }
         )
@@ -1288,6 +1342,8 @@ def generar_escenario(
         "periodos": registro_periodos,
         "invariantes": list(INVARIANTES),
     }
+    if coordenadas is not None:
+        manifiesto["coordenadas"] = coordenadas.manifiesto()
     if periodos is not None:
         manifiesto["contratos"]["lifecycle"] = "lifecycle/v1"
         manifiesto["intensidad_lifecycle"] = intensidad_lifecycle

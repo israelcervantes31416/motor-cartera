@@ -28,6 +28,7 @@ from motor_cartera.api.esquemas import (
     Cuenta360Respuesta,
     CuentaEncontradaRespuesta,
     EventoRespuesta,
+    GeografiaResumenRespuesta,
     LifecycleResumenRespuesta,
     MovimientoDeCuentaRespuesta,
     Paginacion,
@@ -41,6 +42,7 @@ from motor_cartera.api.esquemas import (
     ResumenPagosRespuesta,
     SnapshotEnHistoriaRespuesta,
     SnapshotRespuesta,
+    TerritorialResumenRespuesta,
     UltimaAtribucionRespuesta,
     UltimaDecisionV2Respuesta,
     UltimaGestionRespuesta,
@@ -52,6 +54,9 @@ from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
 from motor_cartera.db.modelos import CuentaCanonica
 from motor_cartera.decision_v2 import consultas as decision_v2
+from motor_cartera.geografia import consultas as geografia
+from motor_cartera.geografia.consultas import GeografiaEnHistoria
+from motor_cartera.geografia.reglas import comparacion
 from motor_cartera.historia import cuenta360
 from motor_cartera.historia.cuenta360 import (
     CuentaNoEncontrada,
@@ -64,6 +69,7 @@ from motor_cartera.lifecycle import consultas as lifecycle
 from motor_cartera.lifecycle.reglas import VERSION_LIFECYCLE
 from motor_cartera.motor_pagos import consultas
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
+from motor_cartera.territorial_v2 import consultas as territorial_v2
 
 router = APIRouter(prefix="/cuentas", tags=["cuentas"])
 
@@ -174,7 +180,8 @@ def obtener_cuenta(
     ella: sus gestiones, sus contactos, sus promesas, sus convenios, sus visitas y la ultima
     atribucion disponible de sus pagos, que es asociacion operacional y no causalidad.
     `ultima_decision_v2` es la decision v2 mas reciente, en resumen: su ejecucion, su as_of, su
-    prioridad y su canal.
+    prioridad y su canal. `geografia_resumen` es su geografia vigente (geografia/v1) y su base
+    (territorial/v2), sin coordenadas.
 
     La historia, los eventos, los pagos observados, los movimientos, las gestiones, las promesas,
     los convenios, la linea de tiempo y las atribuciones son subrecursos paginados: `/historia`,
@@ -188,6 +195,7 @@ def obtener_cuenta(
     operacion = lifecycle.resumen_de_cuenta(s, cuenta, zona=config.zona_horaria_fuente, al=al)
     atribuida = atribucion.ultima_de_cuenta(s, cuenta, version_motor=VERSION_MOTOR_PAGOS, al=al)
     decidida = decision_v2.ultima(s, cuenta, al)
+    ubicada = geografia.vigente(s, cuenta, al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -240,6 +248,40 @@ def obtener_cuenta(
             as_of=decidida.ejecucion.as_of,
             prioridad=decidida.resultado.prioridad_final,
             canal=decidida.resultado.canal_recomendado,
+        ),
+        geografia_resumen=_geografia(s, cuenta, ubicada),
+    )
+
+
+def _geografia(
+    s: Session, cuenta: CuentaCanonica, ubicada: GeografiaEnHistoria | None
+) -> GeografiaResumenRespuesta | None:
+    """La geografia vigente y su asignacion, sin coordenadas."""
+    if ubicada is None:
+        return None
+    r = ubicada.resultado
+    asignada = territorial_v2.de_geografia(s, cuenta, ubicada.ejecucion.id)
+    return GeografiaResumenRespuesta(
+        geografia_run_id=ubicada.ejecucion.geografia_run_id,
+        corte_id=ubicada.corte_id,
+        fecha_corte=ubicada.fecha_corte,
+        geografia_version_id=ubicada.version.geografia_version_id,
+        referencia=f"{ubicada.version.producto} ({ubicada.version.edicion})",
+        estado_geografia=r.estado_geografia,
+        cvegeo=ubicada.cvegeo,
+        municipio=ubicada.nombre_oficial,
+        municipio_fuente=r.municipio_fuente_resuelto,
+        comparacion_municipio=comparacion(r.coincide_municipio).value,
+        territorial=None
+        if asignada is None
+        else TerritorialResumenRespuesta(
+            territorial_run_id=asignada.ejecucion.territorial_run_id,
+            bases_version_id=asignada.bases_version_id,
+            version_politica=asignada.ejecucion.version_politica,
+            estado_asignacion=asignada.vista.asignacion.estado_asignacion,
+            codigo_base=asignada.vista.codigo_base,
+            nombre_base=asignada.vista.nombre_base,
+            distancia_base_m=asignada.vista.asignacion.distancia_base_m,
         ),
     )
 
