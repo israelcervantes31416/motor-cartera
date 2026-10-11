@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import conv
 from sqlmodel import Field, SQLModel
 
 from motor_cartera.config import config
+from motor_cartera.db.espacial import Geometria
 from motor_cartera.fuentes.formatos import Formato
 from motor_cartera.lifecycle.reglas import (
     Canal,
@@ -2630,6 +2631,770 @@ class ResultadoDecisionV2(SQLModel, table=True):
     decision_hash: bytes = Field(sa_type=sa.LargeBinary)
 
 
+# --- la geografia real ----------------------------------------------------------------------------
+#
+# Desde la 0012, con PostGIS. Dos capas que no se mezclan. La GEOGRAFIA dice que ubicacion se
+# observo y en que municipio cae: una referencia publica versionada (VersionGeografia, con sus
+# MunicipioGeografico) y, por corte, que concluyo geografia/v1 de la coordenada de cada cuenta
+# (EjecucionGeografia, ResultadoGeografiaCuenta). Lo TERRITORIAL dice que base operativa la atiende
+# segun una politica: las bases son configuracion operacional versionada (VersionBasesOperativas,
+# BaseOperativa, CoberturaBaseMunicipio) y territorial/v2 asigna con una politica declarada
+# (EjecucionTerritorialV2, AsignacionTerritorialV2). Una politica nueva reutiliza la misma
+# geografia.
+#
+# Todo se guarda en EPSG:4326 (X = longitud, Y = latitud). La cartografia es referencia publica, no
+# una tercera fuente de negocio, y las bases no son datos de CARTERA. Lo publicado no se reescribe:
+# triggers de la 0012 rechazan cualquier UPDATE o DELETE sobre los municipios, los resultados, las
+# bases y las asignaciones. Las tablas por cuenta no tienen id propio: su llave es la natural.
+
+ESTADOS_GEOGRAFIA = (
+    "VALIDA",
+    "SIN_COORDENADAS",
+    "COORDENADAS_INCOMPLETAS",
+    "COORDENADAS_INVALIDAS",
+    "FUERA_DE_REFERENCIA",
+    "MUNICIPIO_AMBIGUO",
+    "DISCREPANCIA_MUNICIPIO",
+)
+"""El vocabulario de geografia/v1. La base lo exige, y con el la coherencia de cada resultado."""
+
+SIN_PUNTO = "('SIN_COORDENADAS', 'COORDENADAS_INCOMPLETAS', 'COORDENADAS_INVALIDAS')"
+CON_MUNICIPIO = "('VALIDA', 'DISCREPANCIA_MUNICIPIO')"
+
+COHERENCIA_DE_LA_GEOGRAFIA = (
+    "estado_geografia IN ("
+    + ", ".join(f"'{e}'" for e in ESTADOS_GEOGRAFIA)
+    + f") AND (punto IS NULL) = (estado_geografia IN {SIN_PUNTO}) "
+    f"AND (municipio_geografico_id IS NOT NULL) = (estado_geografia IN {CON_MUNICIPIO}) "
+    "AND (estado_geografia <> 'DISCREPANCIA_MUNICIPIO' OR coincide_municipio = false) "
+    "AND (estado_geografia <> 'VALIDA' OR coincide_municipio IS DISTINCT FROM false) "
+    f"AND (estado_geografia IN {CON_MUNICIPIO} OR coincide_municipio IS NULL)"
+)
+"""Un punto existe solo si las coordenadas son utilizables; un municipio, solo si el punto cae en
+exactamente uno; una VALIDA nunca discrepa de la fuente y una DISCREPANCIA_MUNICIPIO siempre."""
+
+OBSERVADAS_DE_LA_GEOGRAFIA = (
+    "(estado_geografia = 'SIN_COORDENADAS') = "
+    "(latitud_observada IS NULL AND longitud_observada IS NULL) "
+    "AND (estado_geografia = 'COORDENADAS_INCOMPLETAS') = "
+    "((latitud_observada IS NULL) <> (longitud_observada IS NULL))"
+)
+"""Lo observado se guarda tal como vino: sin coordenadas es sin las dos, incompletas es con una."""
+
+CONTEOS_DE_GEOGRAFIA = (
+    "validas",
+    "sin_coordenadas",
+    "incompletas",
+    "invalidas",
+    "fuera_cobertura",
+    "ambiguas",
+    "discrepantes",
+)
+"""Las cuentas de una ejecucion de geografia/v1, por estado: una columna por estado."""
+
+_SUMA_DE_GEOGRAFIA = " + ".join(CONTEOS_DE_GEOGRAFIA)
+PUBLICACION_DE_GEOGRAFIA = (
+    f"(estado = 'EXITOSA' AND cuentas_objetivo > 0 AND {_SUMA_DE_GEOGRAFIA} = cuentas_objetivo) "
+    f"OR (estado <> 'EXITOSA' AND {_SUMA_DE_GEOGRAFIA} = 0)"
+)
+"""Una EXITOSA clasifico cada cuenta de su corte en exactamente un estado; las demas, ninguna."""
+
+ESTADOS_ASIGNACION = (
+    "ASIGNADA",
+    "REVISION_GEOGRAFICA",
+    "FUERA_DE_COBERTURA",
+    "SIN_BASE_ELEGIBLE",
+    "AMBIGUA_BASE",
+)
+"""El vocabulario de territorial/v2."""
+
+COHERENCIA_DE_LA_ASIGNACION = (
+    "estado_asignacion IN ("
+    + ", ".join(f"'{e}'" for e in ESTADOS_ASIGNACION)
+    + ") AND (base_operativa_id IS NOT NULL) = (estado_asignacion = 'ASIGNADA') "
+    "AND (distancia_base_m IS NOT NULL) = (estado_asignacion = 'ASIGNADA') "
+    "AND (distancia_base_m IS NULL OR distancia_base_m >= 0) "
+    "AND (municipio_geografico_id IS NOT NULL) = "
+    "(estado_asignacion IN ('ASIGNADA', 'SIN_BASE_ELEGIBLE', 'AMBIGUA_BASE'))"
+)
+"""Solo una ASIGNADA tiene base y distancia; solo las que tenian geografia confiable, municipio."""
+
+CONTEOS_DE_TERRITORIAL_V2 = (
+    "asignadas",
+    "revision_geografica",
+    "sin_base",
+    "fuera_cobertura",
+    "ambiguas",
+)
+
+_SUMA_DE_TERRITORIAL_V2 = " + ".join(CONTEOS_DE_TERRITORIAL_V2)
+PUBLICACION_DE_TERRITORIAL_V2 = (
+    f"(estado = 'EXITOSA' AND cuentas_objetivo > 0 "
+    f"AND {_SUMA_DE_TERRITORIAL_V2} = cuentas_objetivo) "
+    f"OR (estado <> 'EXITOSA' AND {_SUMA_DE_TERRITORIAL_V2} = 0)"
+)
+
+PATRON_CVEGEO = "^[0-9]{5}$"
+"""La clave geoestadistica municipal concatenada del INEGI: entidad (2) y municipio (3)."""
+PATRON_CODIGO_BASE = "^[A-Z0-9_-]{1,32}$"
+
+
+class EstadoVersionGeografia(StrEnum):
+    """En que quedo la importacion de una referencia geografica. Solo una PUBLICADA se usa."""
+
+    EN_PROCESO = (
+        "EN_PROCESO"  # registrada; se estan leyendo, validando y escribiendo sus municipios
+    )
+    PUBLICADA = "PUBLICADA"  # sus municipios estan completos; ya no cambia
+    FALLIDA = "FALLIDA"  # no se importo: no tiene ningun municipio
+
+
+class NivelGeografia(StrEnum):
+    """El nivel geoestadistico de una referencia. v0.11 solo importa el municipal."""
+
+    MUNICIPAL = "MUNICIPAL"
+
+
+class VersionGeografia(SQLModel, table=True):
+    """Una version importada de una referencia geografica publica: de que producto y edicion salio,
+    de que archivo (por su SHA-256), en que sistema de coordenadas venia y como se importo.
+
+    Es REFERENCIA GEOGRAFICA PUBLICA, no una fuente de negocio: no es CARTERA ni PAGOS, y su archivo
+    no va al almacen de artefactos fuente, que es la evidencia del acreedor. El archivo oficial vive
+    fuera del repositorio; esta fila lo identifica por su SHA-256 y su manifiesto. Una version
+    PUBLICADA no cambia nunca (un trigger de la 0012 lo impide): si el INEGI publica otra edicion,
+    se importa otra version, y las ejecuciones viejas siguen apuntando a la suya.
+    """
+
+    __tablename__ = "version_geografia"
+    __table_args__ = (
+        # El mismo archivo y la misma capa se publican una sola vez, y a lo mas una importacion lo
+        # procesa a la vez. Una FALLIDA no cuenta: se puede volver a intentar.
+        sa.Index(
+            "ux_version_geografia_publicada",
+            "sha256",
+            "capa",
+            unique=True,
+            postgresql_where=sa.text("estado = 'PUBLICADA'"),
+        ),
+        sa.Index(
+            "ux_version_geografia_en_proceso",
+            "sha256",
+            "capa",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name=conv("ck_version_geografia_sha256")),
+        sa.CheckConstraint(
+            "srid = 4326 AND srid_origen > 0 AND tamano_bytes > 0",
+            name=conv("ck_version_geografia_origen"),
+        ),
+        sa.CheckConstraint(
+            "municipios >= 0 AND reparadas >= 0 AND reparadas <= municipios "
+            "AND (estado = 'PUBLICADA') = (municipios > 0)",
+            name=conv("ck_version_geografia_conteos"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (terminada_en IS NULL)",
+            name=conv("ck_version_geografia_terminada"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    geografia_version_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. El `id` es interno."""
+    proveedor: str = Field(max_length=64)
+    """Quien publica la referencia: INEGI, o SINTETICO en las pruebas."""
+    producto: str = Field(max_length=200)
+    """El nombre exacto del producto, como lo publica su proveedor."""
+    edicion: str = Field(max_length=64)
+    nivel: NivelGeografia = Field(
+        sa_type=sa.Enum(
+            NivelGeografia,
+            name="nivel_geografia",
+            native_enum=False,
+            create_constraint=True,
+            length=16,
+        )
+    )
+    capa: str = Field(max_length=255)
+    """La capa que se importo: el miembro del zip sin extension (`conjunto_de_datos/00mun`)."""
+    archivo: str = Field(max_length=255)
+    """El nombre del archivo que se leyo. Es metadata: lo identifica el SHA-256."""
+    sha256: str = Field(max_length=64)
+    """SHA-256 del archivo tal como se descargo. El archivo no se modifica nunca."""
+    tamano_bytes: int = Field(sa_type=sa.BigInteger)
+    srid: int = Field(default=4326)
+    """El sistema en que se guardaron sus geometrias: siempre EPSG:4326."""
+    srid_origen: int
+    """El sistema en que venia la capa, reconocido por su .prj: EPSG:6372 en el INEGI."""
+    estado: EstadoVersionGeografia = Field(
+        default=EstadoVersionGeografia.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoVersionGeografia,
+            name="estado_version_geografia",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    municipios: int = 0
+    """Cuantos municipios publico. Cero mientras no esta PUBLICADA."""
+    reparadas: int = 0
+    """Cuantas geometrias invalidas se repararon, de forma segura y registrada en `metadatos`."""
+    metadatos: dict = Field(sa_type=JSONB)
+    """Lo que dice de donde salio y como se importo: la URL oficial, la licencia, las fechas del
+    producto, el CRS de origen, la codificacion, las geometrias reparadas y por que."""
+    importada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class MunicipioGeografico(SQLModel, table=True):
+    """Un area geoestadistica municipal de una version de la referencia, con su geometria.
+
+    Se identifica por su CVEGEO dentro de su version, nunca por su nombre. El nombre oficial es el
+    del proveedor y se guarda aparte: no se compara con el que trae CARTERA, ni lo reescribe. La
+    geometria es un MultiPolygon en EPSG:4326, valido, con su indice espacial GiST.
+    """
+
+    __tablename__ = "municipio_geografico"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_geografia_id"], ["version_geografia.id"], name="fk_municipio_version"
+        ),
+        sa.UniqueConstraint("version_geografia_id", "cvegeo", name="uq_municipio_version_cvegeo"),
+        sa.Index("ix_municipio_geografico_geometria", "geometria", postgresql_using="gist"),
+        sa.CheckConstraint(
+            "cve_ent ~ '^[0-9]{2}$' AND cve_mun ~ '^[0-9]{3}$' AND cvegeo = cve_ent || cve_mun",
+            name=conv("ck_municipio_claves"),
+        ),
+        sa.CheckConstraint(
+            "ST_IsValid(geometria) AND NOT ST_IsEmpty(geometria)",
+            name=conv("ck_municipio_geometria"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    version_geografia_id: int
+    """Su version. La llave foranea, sin cascada, esta en __table_args__."""
+    registro_origen: int
+    """El numero de registro en la capa de origen, desde 1: su linaje dentro del archivo."""
+    cve_ent: str = Field(max_length=2)
+    cve_mun: str = Field(max_length=3)
+    cvegeo: str = Field(max_length=5)
+    nombre_oficial: str = Field(max_length=200)
+    """NOMGEO, tal como lo publica el proveedor."""
+    reparada: bool = False
+    """Si su geometria era invalida y se reparo al importar. El motivo esta en `metadatos` de su
+    version."""
+    geometria: str = Field(sa_type=Geometria("MULTIPOLYGON", 4326))
+
+
+class EstadoGeografia(StrEnum):
+    """En que quedo una ejecucion de geografia/v1. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEjecucionGeografia(StrEnum):
+    """Como termino una ejecucion de geografia/v1."""
+
+    GEOGRAFIA_PUBLICADA = "GEOGRAFIA_PUBLICADA"
+    """EXITOSA: publico la geografia de cada cuenta del corte."""
+    YA_GENERADA = "YA_GENERADA"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    REFERENCIA_NO_PUBLICADA = "REFERENCIA_NO_PUBLICADA"
+    """FALLIDA: la version de la referencia no esta PUBLICADA."""
+    ARTEFACTO_CORRUPTO = "ARTEFACTO_CORRUPTO"
+    """FALLIDA: los bytes del Parquet conformado ya no son los de su SHA-256."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    """FALLIDA: el dataset no es lo que su corte dice, o los conteos no cuadran."""
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionGeografia(SQLModel, table=True):
+    """Una ejecucion de geografia/v1: la geografia de cada cuenta de un corte canonico, con una
+    version declarada de la referencia.
+
+    Lee el dataset conformado (cartera/v2) del corte, nunca el archivo original, y guarda que
+    concluyo de la coordenada observada de cada cuenta: si es utilizable, en que municipio cae y si
+    coincide con el municipio que resolvio la fuente. Sus entradas son el corte, su dataset, la
+    version de la referencia y la del motor; su firma las resume, y la base garantiza a lo mas una
+    EXITOSA y una EN_PROCESO por firma.
+    """
+
+    __tablename__ = "ejecucion_geografia"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id"], ["corte_canonico.id"], name="fk_geografia_corte"
+        ),
+        sa.ForeignKeyConstraint(
+            ["dataset_conformado_id"], ["dataset_conformado.id"], name="fk_geografia_dataset"
+        ),
+        sa.ForeignKeyConstraint(
+            ["version_geografia_id"], ["version_geografia.id"], name="fk_geografia_version"
+        ),
+        # Lo que referencia cada resultado y cada ejecucion territorial: la ejecucion junto con su
+        # corte. Asi la base garantiza que un resultado es de una cuenta del corte de su ejecucion.
+        sa.UniqueConstraint("id", "corte_canonico_id", name="uq_geografia_id_corte"),
+        sa.Index(
+            "ux_geografia_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_geografia_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Las ejecuciones de un corte, en cualquier estado, la mas reciente primero.
+        sa.Index("ix_geografia_corte", "corte_canonico_id", "id"),
+        sa.CheckConstraint("firma_inputs ~ '^[0-9a-f]{64}$'", name=conv("ck_geografia_firma")),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_geografia_resultado")
+        ),
+        sa.CheckConstraint(
+            "cuentas_objetivo >= 0 AND " + " AND ".join(f"{c} >= 0" for c in CONTEOS_DE_GEOGRAFIA),
+            name=conv("ck_geografia_conteos"),
+        ),
+        sa.CheckConstraint(PUBLICACION_DE_GEOGRAFIA, name=conv("ck_geografia_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    geografia_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento."""
+    corte_canonico_id: int
+    dataset_conformado_id: int
+    """El dataset conformado de cartera/v2 que produjo el corte: de el se leen las coordenadas."""
+    version_geografia_id: int
+    version_motor: str = Field(max_length=32)
+    """geografia/v1."""
+    firma_inputs: str = Field(max_length=64)
+    """SHA-256 de sus entradas: el motor, la referencia (su id y su SHA-256), el corte y su dataset
+    con sus firmas de contenido. Las mismas entradas son la misma geografia."""
+    estado: EstadoGeografia = Field(
+        default=EstadoGeografia.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoGeografia,
+            name="estado_geografia_ejecucion",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_objetivo: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas del corte: sus snapshots. Se fija al abrir."""
+    validas: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_coordenadas: int = Field(default=0, sa_type=sa.BigInteger)
+    incompletas: int = Field(default=0, sa_type=sa.BigInteger)
+    invalidas: int = Field(default=0, sa_type=sa.BigInteger)
+    fuera_cobertura: int = Field(default=0, sa_type=sa.BigInteger)
+    """FUERA_DE_REFERENCIA: un punto valido que no cae en ningun municipio de la referencia."""
+    ambiguas: int = Field(default=0, sa_type=sa.BigInteger)
+    """MUNICIPIO_AMBIGUO: un punto que cae en mas de un municipio."""
+    discrepantes: int = Field(default=0, sa_type=sa.BigInteger)
+    """DISCREPANCIA_MUNICIPIO: el municipio espacial no es el que resolvio la fuente."""
+    distribucion: dict | None = Field(default=None, sa_type=JSONB)
+    """Lo que publico, contado en la transaccion que lo publico: por estado, por motivo y por
+    comparacion con la fuente. Sin coordenadas."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class ResultadoGeografiaCuenta(SQLModel, table=True):
+    """Lo que geografia/v1 concluyo de la coordenada observada de una cuenta en una ejecucion.
+
+    Guarda la coordenada tal como vino en la fuente (latitud y longitud observadas, que pueden ser
+    invalidas o faltar), el punto que se construyo con ella si era utilizable, el municipio espacial
+    si cae en exactamente uno, el municipio que resolvio la fuente y si coinciden, y los motivos. No
+    corrige nada: una coordenada invertida o discrepante se queda como vino, con su motivo. Las
+    coordenadas no salen por la API general. Ni se actualiza ni se borra.
+    """
+
+    __tablename__ = "resultado_geografia_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_geografia_id", "corte_canonico_id"],
+            ["ejecucion_geografia.id", "ejecucion_geografia.corte_canonico_id"],
+            name="fk_resultado_geografia_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "cuenta_canonica_id"],
+            ["snapshot_cuenta.corte_canonico_id", "snapshot_cuenta.cuenta_canonica_id"],
+            name="fk_resultado_geografia_snapshot",
+        ),
+        sa.ForeignKeyConstraint(
+            ["municipio_geografico_id"],
+            ["municipio_geografico.id"],
+            name="fk_resultado_geografia_municipio",
+        ),
+        # Una pagina de un estado o de un municipio, en el orden de la cuenta, sin recorrer los
+        # demas; y la geografia de una cuenta en todas las ejecuciones.
+        sa.Index(
+            "ix_resultado_geografia_estado",
+            "ejecucion_geografia_id",
+            "estado_geografia",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_resultado_geografia_municipio",
+            "ejecucion_geografia_id",
+            "municipio_geografico_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index("ix_resultado_geografia_cuenta", "cuenta_canonica_id", "ejecucion_geografia_id"),
+        sa.CheckConstraint(COHERENCIA_DE_LA_GEOGRAFIA, name=conv("ck_resultado_geografia_estado")),
+        sa.CheckConstraint(
+            OBSERVADAS_DE_LA_GEOGRAFIA, name=conv("ck_resultado_geografia_observadas")
+        ),
+        sa.CheckConstraint(
+            f"municipio_fuente_resuelto IS NULL OR municipio_fuente_resuelto ~ '{PATRON_CVEGEO}'",
+            name=conv("ck_resultado_geografia_fuente"),
+        ),
+    )
+
+    # Las columnas de 8 bytes primero.
+    latitud_observada: float | None = Field(default=None, sa_type=sa.Double)
+    longitud_observada: float | None = Field(default=None, sa_type=sa.Double)
+    source_row: int = Field(sa_type=sa.BigInteger)
+    """La fila del archivo original de la que salio, como `_source_row` en el Parquet."""
+    # La llave primaria es la natural: una cuenta, una vez por ejecucion.
+    ejecucion_geografia_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    corte_canonico_id: int
+    """El de su ejecucion: lo exigen sus dos llaves foraneas compuestas."""
+    municipio_geografico_id: int | None = None
+    """El municipio espacial, si el punto cae en exactamente uno."""
+    estado_geografia: str = Field(max_length=24)
+    municipio_fuente_resuelto: str | None = Field(default=None, max_length=5)
+    """El CVEGEO que resolvio la fuente con ESTADO_CTE y POBLACION_CTE (el de su snapshot)."""
+    coincide_municipio: bool | None = None
+    """True si el municipio espacial es el de la fuente (COINCIDE), False si no (DISCREPA), NULL si
+    no se pueden comparar (NO_COMPARABLE)."""
+    punto: str | None = Field(default=None, sa_type=Geometria("POINT", 4326))
+    """ST_MakePoint(longitud, latitud) en EPSG:4326, solo si las coordenadas son utilizables."""
+    source_sheet: str | None = Field(default=None, max_length=255)
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que salio asi, con codigos estables. Sin coordenadas."""
+
+
+class EstadoVersionBases(StrEnum):
+    """Una version de bases nace PUBLICADA, en la transaccion que la crea con sus bases y su
+    cobertura: no hay versiones a medias, ni se procesa en segundo plano."""
+
+    PUBLICADA = "PUBLICADA"
+
+
+class VersionBasesOperativas(SQLModel, table=True):
+    """Una version de la configuracion de bases operativas: que bases hay, donde estan, si estan
+    activas y que municipios puede atender cada una.
+
+    Es configuracion operacional versionada, no una fuente de negocio ni datos de CARTERA. Se
+    identifica por el SHA-256 de su configuracion en forma canonica: el mismo contenido es la misma
+    version, que se reutiliza. Una version publicada no cambia (un trigger lo impide): cambiar una
+    base es publicar otra version, y las ejecuciones viejas siguen con la suya.
+    """
+
+    __tablename__ = "version_bases_operativas"
+    __table_args__ = (
+        sa.UniqueConstraint("hash_configuracion", name="uq_version_bases_hash"),
+        sa.CheckConstraint(
+            "hash_configuracion ~ '^[0-9a-f]{64}$'", name=conv("ck_version_bases_hash")
+        ),
+        sa.CheckConstraint(
+            "bases > 0 AND activas >= 0 AND activas <= bases AND coberturas >= 0",
+            name=conv("ck_version_bases_conteos"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    bases_version_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    nombre: str = Field(max_length=120)
+    """Una etiqueta para personas. No entra en el hash: no cambia lo que la version dice."""
+    version_configuracion: str = Field(max_length=32)
+    """bases-operativas/v1: la forma canonica con que se calculo el hash."""
+    hash_configuracion: str = Field(max_length=64)
+    estado: EstadoVersionBases = Field(
+        default=EstadoVersionBases.PUBLICADA,
+        sa_type=sa.Enum(
+            EstadoVersionBases,
+            name="estado_version_bases",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    bases: int
+    activas: int
+    coberturas: int
+    """Cuantos pares (base, municipio) declara."""
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class BaseOperativa(SQLModel, table=True):
+    """Una base de una version: un punto desde el cual puede organizarse trabajo de campo.
+
+    No representa capacidad, gestores, jornadas ni rutas: eso es de v0.12 en adelante. El mismo
+    codigo en otra version es otra fila, con su propio base_id.
+    """
+
+    __tablename__ = "base_operativa"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_bases_operativas_id"],
+            ["version_bases_operativas.id"],
+            name="fk_base_version",
+        ),
+        sa.UniqueConstraint("version_bases_operativas_id", "codigo", name="uq_base_version_codigo"),
+        # Lo que referencia cada asignacion: la base junto con su version. Asi la base garantiza
+        # que una asignacion solo apunta a una base de la version que su ejecucion declaro.
+        sa.UniqueConstraint("id", "version_bases_operativas_id", name="uq_base_id_version"),
+        sa.CheckConstraint(f"codigo ~ '{PATRON_CODIGO_BASE}'", name=conv("ck_base_codigo")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    base_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    version_bases_operativas_id: int
+    codigo: str = Field(max_length=32)
+    nombre: str = Field(max_length=120)
+    activa: bool
+    punto: str = Field(sa_type=Geometria("POINT", 4326))
+    """Donde esta, en EPSG:4326."""
+
+
+class CoberturaBaseMunicipio(SQLModel, table=True):
+    """Que municipio puede atender una base: declarado, nunca inferido porque la base este cerca.
+
+    El municipio se nombra por su CVEGEO, no por la fila de una version de la referencia: la
+    configuracion de bases no depende de una edicion de la cartografia.
+    """
+
+    __tablename__ = "cobertura_base_municipio"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id"], ["base_operativa.id"], name="fk_cobertura_base"
+        ),
+        # Las bases que cubren un municipio.
+        sa.Index("ix_cobertura_cvegeo", "cvegeo", "base_operativa_id"),
+        sa.CheckConstraint(f"cvegeo ~ '{PATRON_CVEGEO}'", name=conv("ck_cobertura_cvegeo")),
+    )
+
+    base_operativa_id: int = Field(primary_key=True)
+    cvegeo: str = Field(primary_key=True, max_length=5)
+
+
+class EstadoTerritorialV2(StrEnum):
+    """En que quedo una ejecucion de territorial/v2. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEjecucionTerritorialV2(StrEnum):
+    """Como termino una ejecucion de territorial/v2."""
+
+    TERRITORIAL_PUBLICADO = "TERRITORIAL_PUBLICADO"
+    """EXITOSA: publico la asignacion de cada cuenta del corte."""
+    YA_GENERADO = "YA_GENERADO"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    GEOGRAFIA_NO_EXITOSA = "GEOGRAFIA_NO_EXITOSA"
+    """FALLIDA: la ejecucion de geografia que declara no esta EXITOSA."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionTerritorialV2(SQLModel, table=True):
+    """Una ejecucion de territorial/v2: a que base operativa se asigna cada cuenta de un corte, con
+    entradas declaradas.
+
+    Declara exactamente su corte, su ejecucion de geografia (EXITOSA y del mismo corte, lo garantiza
+    la base), su version de bases y su politica con su hash. Nunca usa la geografia mas nueva ni las
+    bases actuales: lo que se ejecuto se puede volver a ejecutar igual.
+    """
+
+    __tablename__ = "ejecucion_territorial_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_geografia_id", "corte_canonico_id"],
+            ["ejecucion_geografia.id", "ejecucion_geografia.corte_canonico_id"],
+            name="fk_territorial_v2_geografia",
+        ),
+        sa.ForeignKeyConstraint(
+            ["version_bases_operativas_id"],
+            ["version_bases_operativas.id"],
+            name="fk_territorial_v2_bases",
+        ),
+        # Lo que referencia cada asignacion: la ejecucion junto con su geografia y sus bases.
+        sa.UniqueConstraint(
+            "id",
+            "ejecucion_geografia_id",
+            "version_bases_operativas_id",
+            name="uq_territorial_v2_entradas",
+        ),
+        sa.Index(
+            "ux_territorial_v2_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_territorial_v2_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.Index("ix_territorial_v2_corte", "corte_canonico_id", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_territorial_v2_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)",
+            name=conv("ck_territorial_v2_resultado"),
+        ),
+        sa.CheckConstraint(
+            "cuentas_objetivo >= 0 AND "
+            + " AND ".join(f"{c} >= 0" for c in CONTEOS_DE_TERRITORIAL_V2),
+            name=conv("ck_territorial_v2_conteos"),
+        ),
+        sa.CheckConstraint(
+            PUBLICACION_DE_TERRITORIAL_V2, name=conv("ck_territorial_v2_publicacion")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    territorial_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico. No es el de territorial/v1, que vive en otra tabla."""
+    corte_canonico_id: int
+    ejecucion_geografia_id: int
+    version_bases_operativas_id: int
+    version_motor: str = Field(max_length=32)
+    """territorial/v2."""
+    version_politica: str = Field(max_length=40)
+    """territorial-public-v2."""
+    hash_politica: str = Field(max_length=64)
+    """SHA-256 de la definicion canonica de la politica, con su tolerancia de empate."""
+    firma_inputs: str = Field(max_length=64)
+    estado: EstadoTerritorialV2 = Field(
+        default=EstadoTerritorialV2.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoTerritorialV2,
+            name="estado_territorial_v2",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_objetivo: int = Field(default=0, sa_type=sa.BigInteger)
+    asignadas: int = Field(default=0, sa_type=sa.BigInteger)
+    revision_geografica: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_base: int = Field(default=0, sa_type=sa.BigInteger)
+    fuera_cobertura: int = Field(default=0, sa_type=sa.BigInteger)
+    ambiguas: int = Field(default=0, sa_type=sa.BigInteger)
+    """AMBIGUA_BASE: dos o mas bases a la misma distancia, dentro de la tolerancia."""
+    distribucion: dict | None = Field(default=None, sa_type=JSONB)
+    """Cuantas asignaciones por base y por motivo. Es diagnostico: v0.11 no balancea cargas."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class AsignacionTerritorialV2(SQLModel, table=True):
+    """Lo que territorial/v2 concluyo de una cuenta: a que base se asigna, o por que no.
+
+    Apunta a su resultado geografico por su llave natural (ejecucion de geografia, cuenta), y a su
+    base junto con la version de bases de su ejecucion: la base garantiza que la geografia y la base
+    son las que la ejecucion declaro. La distancia es geodesica, en metros. Ni se actualiza ni se
+    borra: una asignacion historica no se sobrescribe.
+    """
+
+    __tablename__ = "asignacion_territorial_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            [
+                "ejecucion_territorial_v2_id",
+                "ejecucion_geografia_id",
+                "version_bases_operativas_id",
+            ],
+            [
+                "ejecucion_territorial_v2.id",
+                "ejecucion_territorial_v2.ejecucion_geografia_id",
+                "ejecucion_territorial_v2.version_bases_operativas_id",
+            ],
+            name="fk_asignacion_v2_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_geografia_id", "cuenta_canonica_id"],
+            [
+                "resultado_geografia_cuenta.ejecucion_geografia_id",
+                "resultado_geografia_cuenta.cuenta_canonica_id",
+            ],
+            name="fk_asignacion_v2_geografia",
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id", "version_bases_operativas_id"],
+            ["base_operativa.id", "base_operativa.version_bases_operativas_id"],
+            name="fk_asignacion_v2_base",
+        ),
+        sa.ForeignKeyConstraint(
+            ["municipio_geografico_id"],
+            ["municipio_geografico.id"],
+            name="fk_asignacion_v2_municipio",
+        ),
+        # Una pagina de una base, de un estado o de un municipio, en el orden de la cuenta; y las
+        # asignaciones de una cuenta en todas las ejecuciones.
+        sa.Index(
+            "ix_asignacion_v2_base",
+            "ejecucion_territorial_v2_id",
+            "base_operativa_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_asignacion_v2_estado",
+            "ejecucion_territorial_v2_id",
+            "estado_asignacion",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_asignacion_v2_municipio",
+            "ejecucion_territorial_v2_id",
+            "municipio_geografico_id",
+            "cuenta_canonica_id",
+        ),
+        sa.Index("ix_asignacion_v2_cuenta", "cuenta_canonica_id", "ejecucion_territorial_v2_id"),
+        sa.CheckConstraint(COHERENCIA_DE_LA_ASIGNACION, name=conv("ck_asignacion_v2_estado")),
+    )
+
+    distancia_base_m: Decimal | None = Field(default=None, max_digits=12, decimal_places=2)
+    """Geodesica (PostGIS geography, elipsoide WGS 84) del punto de la cuenta a su base, en metros,
+    redondeada al centimetro. Solo en una ASIGNADA."""
+    ejecucion_territorial_v2_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    ejecucion_geografia_id: int
+    version_bases_operativas_id: int
+    municipio_geografico_id: int | None = None
+    base_operativa_id: int | None = None
+    estado_asignacion: str = Field(max_length=20)
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que salio asi: la geografia que no era confiable, las bases elegibles, la mas cercana o
+    el empate, con codigos estables. Sin coordenadas."""
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -2660,7 +3425,9 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'MOTOR_PAGOS') = (ejecucion_motor_pagos_id IS NOT NULL) "
     "AND (tipo = 'ATRIBUCION') = (ejecucion_atribucion_id IS NOT NULL) "
     "AND (tipo = 'EVALUACION_PROMESAS') = (ejecucion_evaluacion_promesas_id IS NOT NULL) "
-    "AND (tipo = 'DECISION_V2') = (ejecucion_decision_v2_id IS NOT NULL)"
+    "AND (tipo = 'DECISION_V2') = (ejecucion_decision_v2_id IS NOT NULL) "
+    "AND (tipo = 'GEOGRAFIA') = (ejecucion_geografia_id IS NOT NULL) "
+    "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -2819,6 +3586,15 @@ class TipoTrabajo(StrEnum):
     """Desde la 0011: decidir las cuentas de un corte canonico con decision/v2, a un as_of y con
     conocimiento hasta known_at. Lo piden POST /decisiones-v2 o decidir-v2. No es de ningun flujo:
     corre en paralelo a decision/v1, que sigue siendo la etapa DECISION."""
+    GEOGRAFIA = "GEOGRAFIA"
+    """Desde la 0012: resolver la geografia de las cuentas de un corte canonico con geografia/v1 y
+    una version declarada de la referencia. Lo piden POST /geografia/ejecuciones o geolocalizar. No
+    es de ningun flujo: no bloquea decision, territorial/v1 ni ruteo/v1."""
+    TERRITORIAL_V2 = "TERRITORIAL_V2"
+    """Desde la 0012: asignar las cuentas de un corte a sus bases con territorial/v2, sobre una
+    geografia EXITOSA y una version de bases declaradas. Lo piden POST /territorial-v2 o
+    asignar-territorial-v2. Corre en paralelo a territorial/v1, que sigue siendo la etapa
+    TERRITORIAL."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -2884,6 +3660,14 @@ class TrabajoOrquestacion(SQLModel, table=True):
             ["ejecucion_decision_v2.id"],
             name="fk_trabajo_decision_v2",
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_geografia_id"], ["ejecucion_geografia.id"], name="fk_trabajo_geografia"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_v2_id"],
+            ["ejecucion_territorial_v2.id"],
+            name="fk_trabajo_territorial_v2",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -2894,6 +3678,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_atribucion_id", name="uq_trabajo_atribucion"),
         sa.UniqueConstraint("ejecucion_evaluacion_promesas_id", name="uq_trabajo_evaluacion"),
         sa.UniqueConstraint("ejecucion_decision_v2_id", name="uq_trabajo_decision_v2"),
+        sa.UniqueConstraint("ejecucion_geografia_id", name="uq_trabajo_geografia"),
+        sa.UniqueConstraint("ejecucion_territorial_v2_id", name="uq_trabajo_territorial_v2"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -2954,6 +3740,10 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo EVALUACION_PROMESAS, desde la 0010."""
     ejecucion_decision_v2_id: int | None = None
     """El objetivo de un trabajo DECISION_V2, desde la 0011."""
+    ejecucion_geografia_id: int | None = None
+    """El objetivo de un trabajo GEOGRAFIA, desde la 0012."""
+    ejecucion_territorial_v2_id: int | None = None
+    """El objetivo de un trabajo TERRITORIAL_V2, desde la 0012."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

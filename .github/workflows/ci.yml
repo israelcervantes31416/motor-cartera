@@ -21,8 +21,11 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
+      # PostgreSQL 16 con PostGIS: la migracion 0012 crea la extension, y las pruebas de la
+      # geografia y de territorial/v2 la usan con referencias sinteticas diminutas. El CI no
+      # descarga nada del INEGI.
       postgres:
-        image: postgres:16
+        image: postgis/postgis:16-3.5
         env:
           POSTGRES_USER: motor
           POSTGRES_PASSWORD: motor
