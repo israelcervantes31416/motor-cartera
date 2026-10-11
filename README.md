@@ -65,6 +65,14 @@ promesa se evalúa a una fecha de corte explícita, y cada pago interpretado se 
 gestiones con contacto que lo antecedieron: **asociación operacional, no causalidad**. Todo está en
 [docs/lifecycle.md](docs/lifecycle.md) y [docs/atribucion.md](docs/atribucion.md).
 
+Desde v0.10.0, el **Decision Engine v2** decide cada cuenta de un corte también con su historia,
+sus pagos interpretados, lo que la cobranza hizo con ella y qué pagos siguieron a una gestión, y lo
+hace **point-in-time**: con dos relojes explícitos, `as_of` (el día que se decide) y `known_at` (lo
+que el sistema sabía), de modo que nada recibido después cambie una decisión ya tomada. Cada
+decisión guarda sus features, sus reglas y sus hashes, y se explica sola. Corre en paralelo a
+`decision/v1`, con una política pública y sintética que no predice nada
+([docs/decision_v2.md](docs/decision_v2.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -87,7 +95,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay nueve versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay diez versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -121,6 +129,12 @@ punta:
   de registro y una llave de idempotencia garantizada por PostgreSQL; las promesas se evalúan a una
   fecha de corte explícita, y cada pago interpretado se asocia con las gestiones con contacto que lo
   antecedieron, sin elegir entre varias y sin afirmar causalidad.
+- **v0.10.0 ✅ Decision Engine v2: Punto en el Tiempo y Explicabilidad**: cada cuenta de un corte se
+  decide con 43 features versionadas de su snapshot, su historia, su lifecycle, sus promesas, sus
+  convenios, sus pagos interpretados y sus asociaciones únicas, calculadas con lo que se conocía en
+  `known_at` de lo que pasó hasta el final de `as_of`; una política pública y sintética, con su
+  hash, ajusta la prioridad de v1 con cuatro modificadores, y cada decisión guarda sus features, sus
+  motivos y sus hashes, inmutables. Corre en paralelo a v1, en modo sombra.
 
 Lo que ya hace:
 
@@ -209,6 +223,12 @@ Lo que ya hace:
 - [x] `motor-cartera cargar-lifecycle` (JSONL por COPY y tablas temporales, todo o nada e
   idempotente), `generar-escenario --lifecycle` determinista por semilla, `backfill-lifecycle`, la
   Cuenta 360 con su `lifecycle_resumen`, y un benchmark del lifecycle sobre el XL fuera del CI
+- [x] Decision Engine v2 (`decision/v2`): point-in-time con `as_of` y `known_at`, 43 features
+  persistidas con su `feature_hash` (`features-decision/v1`), `decision-policy/public-v1` con su
+  `hash_politica`, motivos auditables y `decision_hash`, por conjuntos y todo o nada en un trabajo
+  durable `DECISION_V2`
+- [x] `motor-cartera decidir-v2` y `comparar-decisiones` (modo sombra contra `decision/v1`), la
+  Cuenta 360 con su `ultima_decision_v2`, y un benchmark de `decision/v2` sobre el XL fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -222,9 +242,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.7 Modelo histórico + Cuenta 360
 ✅ v0.8.0 — Motor de Pagos Canónico y Conciliación
 ✅ v0.9.0 — Lifecycle de Cobranza y Atribución Operativa
-➡️ v0.10 — Decision Engine v2
+✅ v0.10.0 — Decision Engine v2
+➡️ v0.11 — Geografía real + Territorial v2 + bases
 
-v0.11 Geografía real + Territorial v2
 v0.12 Campo v2
 v0.13 Ruteo vial v2
 v0.14 Collection Analytics
@@ -236,11 +256,10 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.10, el Decision Engine v2**: decidir cada cuenta también con lo que la
-cobranza ya hizo con ella (días desde la última gestión, intentos y contactos recientes, promesas y
-su cumplimiento, recuperación observada después de una gestión, canal, visitas y convenios), que v0.9
-deja como verdad operacional consultable. Sin adelantar la geografía real, la analítica ni los
-modelos predictivos.
+Lo que sigue es **v0.11, Geografía real + Territorial v2 + bases**: pasar de las claves
+municipales a una geografía real y pública (localidades, colonias, códigos postales y coordenadas)
+y, sobre ella, un Territorial v2 que organice el trabajo de campo desde sus bases. Sin adelantar la
+operación de campo, el ruteo vial, la analítica ni los modelos predictivos.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -653,6 +672,15 @@ comprueba la idempotencia de las escrituras, evalúa las promesas a la fecha del
 ventana de los pagos (una asociación única, una ambigua y una sin candidata por la anulación) y
 revisa la Cuenta 360, la línea de tiempo y los trabajos `EVALUACION_PROMESAS` y `ATRIBUCION`.
 
+Y decide el corte oficial con `decision/v2`: si el escenario ya trajo cortes posteriores, comprueba
+que un `OPERATIVO` de ese corte da `422 CORTE_NO_VIGENTE` y un `BACKTEST` sin `known_at`
+`422 KNOWN_AT_REQUERIDO`, y lo decide como `BACKTEST` con su `known_at` declarado. Revisa las
+versiones, el hash de la política, la firma y la disponibilidad; una cuenta con un modificador −1
+(un pago reciente), una con +1 (tres llamadas sin contacto) y una con los dos, cada una explicada
+regla por regla y verificada; la página por prioridad, la historia de la cuenta, las decisiones del
+corte, la Cuenta 360, el trabajo `DECISION_V2` y el `409` de las mismas entradas. El CI, después,
+compara en modo sombra esa decisión con la de `decision/v1`.
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -935,6 +963,61 @@ El núcleo de las reglas es puro: no lee la base, la configuración ni el reloj,
 cuenta con la misma versión da siempre la misma decisión. Guardar las decisiones de una corrida
 es trabajo de otra capa, que las publica todas o ninguna.
 
+## El Decision Engine v2
+
+`decision/v2` decide cada cuenta de un corte con lo que el sistema sabe de ella, no solo con lo que
+dice su cartera, y **point-in-time**: con lo que se conocía en `known_at` de lo que pasó hasta el
+final de `as_of`. Nada recibido después cambia en silencio una decisión ya tomada.
+
+- **El universo es un corte canónico**: sus snapshots, ni una cuenta más ni una menos. `as_of` es el
+  día del corte, y `known_at`, la frontera del conocimiento. En `OPERATIVO` se decide el corte más
+  reciente, y si `known_at` se omite es el reloj de la base al abrir; en `BACKTEST`, cualquier
+  corte, con `known_at` obligatorio.
+- **43 features versionadas** (`features-decision/v1`) del snapshot, la historia, las gestiones, las
+  promesas (evaluadas con `evaluacion-promesa/v1`), los convenios, los pagos interpretados y las
+  asociaciones únicas de la atribución, en ventanas de 7, 30 y 90 días. **NULL no es cero**: una
+  feature de pagos o de atribución cuya ventana no estaba disponible a `known_at` es NULL, y ninguna
+  regla se activa con ella.
+- **Una política pública y sintética** (`decision-policy/public-v1`, con su `hash_politica`): la
+  prioridad base de `decision/v1` por días de atraso, cuatro modificadores de −1 o +1
+  (`RECUPERACION_RECIENTE`, `PROMESA_VIGENTE`, `SATURACION_SIN_CONTACTO` y
+  `PROMESA_INCUMPLIDA_RECIENTE`) que se suman y se acotan de `BAJA` a `MUY_ALTA`, y el canal de v1.
+  **Demuestra la capacidad del motor; no representa una política real de un acreedor**, y no
+  predice nada: no hay probabilidades ni modelos.
+- **Cada decisión se explica sola**: sus features se guardan tal cual, con su `feature_hash`, y su
+  decisión, con sus motivos y su `decision_hash`. Nada se reescribe, y la consulta de una cuenta
+  verifica que la política, aplicada otra vez a sus features, da exactamente lo mismo.
+- **En paralelo a `decision/v1`**, que sigue alimentando el territorial y el ruteo:
+  `comparar-decisiones` las compara en modo sombra, como un diagnóstico de diferencias y no como un
+  juicio de calidad.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+curl -s -X POST -H "$K" -H "Content-Type: application/json" \
+  -d '{"corte_id":"<corte_id>","modo":"BACKTEST","known_at":"2026-10-01T08:00:00-06:00"}' \
+  http://localhost:8000/decisiones-v2
+curl -s -H "$K" "http://localhost:8000/decisiones-v2/<decision_run_id>/resultados?prioridad_final=MUY_ALTA"
+curl -s -H "$K" http://localhost:8000/decisiones-v2/<decision_run_id>/resultados/<cuenta_id>
+docker compose exec worker motor-cartera decidir-v2 --corte 2026-09-30 --backtest \
+  --known-at 2026-10-01T08:00:00-06:00
+docker compose exec worker motor-cartera comparar-decisiones --corte 2026-09-30
+```
+
+Todo está en [docs/decision_v2.md](docs/decision_v2.md), con el diccionario de cada feature: su
+tipo, su ventana, su fuente, su semántica, lo que significa su NULL y su filtro point-in-time. El
+porqué, en las decisiones 113 a 121.
+
+**Medido.** En la máquina de desarrollo, sobre los 12 cortes XL con sus 8,280,525 movimientos
+económicos, 2,573,729 eventos del lifecycle y 3,242,650 pagos atribuidos: decidir el corte más
+reciente, de **465,999 cuentas**, tomó **199 s** (2,341 cuentas por segundo) con 154 MiB de memoria
+pico, y escribió 513 MiB de features y decisiones; `decision/v1` sobre la misma corrida, 34.6 s.
+Decidirlo otra vez con un `known_at` en el que los datos elegibles eran los mismos dio, cuenta por
+cuenta, las mismas features, los mismos hashes y las mismas decisiones. En sombra, 399,661 cuentas
+tienen la misma prioridad en v1 y en v2, v2 la sube en 18,521 y la baja en 47,817. Cada sentencia de
+una consulta de una cuenta o de una página entra por un índice y se resuelve en menos de 0.8 ms
+dentro de PostgreSQL; por la API, de 9 a 45 ms (mediana). Los detalles, en
+[docs/decision_v2.md](docs/decision_v2.md).
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -1194,7 +1277,7 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /ruteos/{ruteo_run_id}/rutas` | La ruta de cada municipio con sus distancias, en orden de prioridad territorial y paginada; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas` | Las paradas de un municipio en orden de visita, con su punto sintético y su distancia, paginadas; solo de una ejecución `EXITOSA` | 200, 401, 404, 409, 422 |
 | `GET /cuentas?cliente_unico=…` | El `cuenta_id` de la cuenta canónica de ese `CLIENTE_UNICO` en la cartera del sistema | 200, 401, 404, 422 |
-| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados, snapshot actual, `resumen_pagos` (lo que interpreta el motor de pagos) y `lifecycle_resumen` (lo que hizo la cobranza y la última atribución); con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}` | La Cuenta 360: primera y última observación, presencia, ausencias, reingresos, pagos observados, snapshot actual, `resumen_pagos` (lo que interpreta el motor de pagos), `lifecycle_resumen` (lo que hizo la cobranza y la última atribución) y `ultima_decision_v2`; con `?al=AAAA-MM-DD`, como se veía ese día | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/historia` | Sus snapshots con continuidad, deltas y evidencia (`corte_id`, `dataset_id`, `source_row`, `source_sheet`), paginados; `orden=desc` por omisión | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/eventos` | Sus eventos de presencia, calculados al consultar, paginados | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/pagos-observados` | Sus movimientos de pagos/v1 tal como llegaron, sin deduplicar ni conciliar, del más reciente al más antiguo, paginados | 200, 401, 404, 422 |
@@ -1233,6 +1316,12 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /atribuciones/{atribucion_run_id}/resultados` | Lo que concluyó de cada pago, con sus candidatas; filtros `clasificacion` y `cliente_unico`, paginado | 200, 401, 404, 422 |
 | `GET /movimientos/{movimiento_id}/atribuciones` | Cada atribución de un pago: la vigente y las que la precedieron | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/atribuciones` | Los pagos de la cuenta, cada uno con su atribución vigente, paginados | 200, 401, 404, 422 |
+| `POST /decisiones-v2` | Pide decidir las cuentas de un corte con `decision/v2`, a un `as_of` y un `known_at`, en `OPERATIVO` o `BACKTEST`; la decide el worker | 201, 401, 404, 409, 422 |
+| `GET /decisiones-v2/{decision_run_id}` | Una decisión v2: sus entradas, versiones, hash de la política, firma, estado, disponibilidad, distribución y advertencias | 200, 401, 404, 422 |
+| `GET /decisiones-v2/{decision_run_id}/resultados` | Lo que decidió de cada cuenta, con sus motivos; filtros `prioridad_final` y `canal_recomendado`, paginado | 200, 401, 404, 422 |
+| `GET /decisiones-v2/{decision_run_id}/resultados/{cuenta_id}` | La decisión de una cuenta explicada: sus features, cada regla y si aplicó, sus motivos, sus hashes y su verificación | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/decisiones-v2` | Las decisiones v2 de la cuenta a través de los cortes y de las fronteras de conocimiento, paginadas | 200, 401, 404, 422 |
+| `GET /cartera/cortes/{corte_id}/decisiones-v2` | Las decisiones v2 de un corte, en cualquier estado, paginadas | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -1302,6 +1391,12 @@ Las reglas que un cliente tiene que conocer:
   `409 SIN_INTERPRETACION_DE_PAGOS`.
 - **Atribuido no es causado, y compatible no es atribuido.** Cada respuesta de la atribución y de la
   evaluación lo dice en su `aviso`.
+- **Una decisión v2 declara su frontera, y se pide.** Un `BACKTEST` sin `known_at` es
+  `422 KNOWN_AT_REQUERIDO`; un `known_at` futuro, `422 KNOWN_AT_FUTURO`; uno anterior a que el corte
+  existiera, `422 CORTE_NO_CONOCIDO`; un `OPERATIVO` sobre un corte que ya no es el más reciente,
+  `422 CORTE_NO_VIGENTE`. Las mismas entradas ya decididas dan `409 DECISION_V2_YA_GENERADA`, y un
+  corte que se está decidiendo, `409 DECISION_V2_EN_PROCESO`. Cada respuesta trae sus advertencias:
+  si es un backtest, si `known_at` es posterior al día y si faltaban pagos o atribuciones.
 - **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
   proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
   cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
@@ -1421,6 +1516,19 @@ del generador cuadra su `SALDO`, centavo por centavo, con los movimientos interp
 puras (`pytest tests/test_motor_pagos_reglas.py`) no necesitan base. El benchmark del motor no
 corre en el CI.
 
+El Decision Engine v2 también, contra PostgreSQL. Un escenario golden, con una cuenta por cada caso
+de la misión y una frontera de conocimiento después de la cual llegan, tarde, un corte, una
+gestión, una promesa y un evento posterior a `as_of`, fija cada feature, cada regla y cada
+decisión. Las pruebas sin fuga temporal agregan eventos, pagos, interpretaciones, atribuciones y
+cortes posteriores a `known_at` o a `as_of`, y ninguna feature cambia; una segunda decisión con un
+`known_at` posterior difiere de la primera exactamente en las cuentas con eventos tardíos, y la
+primera queda intacta; reconstruir la capa da los mismos hashes. Hay pruebas de la frontera que
+espera a un registro pausado a la mitad, de fallas inyectadas en cinco puntos, de dos workers, del
+lease perdido, de la firma que no deja publicar dos veces y del SQL contra el evaluador puro, cuenta
+por cuenta. La política y las features puras (`pytest tests/test_decision_v2_politica.py
+tests/test_decision_v2_features.py`) no necesitan base. El benchmark de `decision/v2` no corre en el
+CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1429,8 +1537,9 @@ idempotencia y la API del historial, incluidos resultados de otras versiones de 
 `docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
 prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
 de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos;
-comprueba que ni el backfill de la historia ni el del motor encuentran nada pendiente, baja los
-contenedores sin borrar los volúmenes, los vuelve a levantar
+comprueba que ni el backfill de la historia ni el del motor encuentran nada pendiente, compara en
+modo sombra la decisión v2 del corte oficial con su decisión v1, baja los contenedores sin borrar
+los volúmenes, los vuelve a levantar
 y verifica que cada artefacto siga en el almacén con sus mismos bytes. Los benchmarks de escala,
 del modelo histórico y del motor de pagos son un workflow aparte, que solo corre a mano.
 
@@ -1499,6 +1608,14 @@ src/motor_cartera/
 │   ├── ejecuciones.py La atribución de una ventana en PostgreSQL, por conjuntos y todo o nada
 │   ├── backfill.py    Las ventanas sin atribución al día (backfill-atribucion)
 │   └── consultas.py   Las ejecuciones, sus resultados con sus candidatas y la última de una cuenta
+├── decision_v2/
+│   ├── features.py    features-decision/v1: qué features hay, su tipo, su familia y su forma
+│   │                  canónica (feature_hash), sin base
+│   ├── politica.py    decision-policy/public-v1 como datos, su hash y su evaluador puro
+│   ├── ejecuciones.py decision/v2: abrir con as_of y known_at, asentar la frontera y decidir un
+│   │                  corte point-in-time en PostgreSQL, por conjuntos y todo o nada
+│   ├── consultas.py   Las ejecuciones, sus resultados, la decisión de una cuenta y su historia
+│   └── sombra.py      decision/v1 contra decision/v2, sin juzgar cuál es mejor
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1511,26 +1628,29 @@ src/motor_cartera/
 │                      modelo histórico (cuentas canónicas, cortes, snapshots, pagos observados
 │                      y sus ejecuciones), el motor de pagos (sus ejecuciones, un resultado por
 │                      observación y los movimientos canónicos), el lifecycle (eventos, gestiones,
-│                      visitas, promesas, convenios y cuotas), la evaluación de promesas y la
-│                      atribución (sus ejecuciones, sus resultados y sus candidatas)
+│                      visitas, promesas, convenios y cuotas), la evaluación de promesas, la
+│                      atribución (sus ejecuciones, sus resultados y sus candidatas) y decision/v2
+│                      (sus ejecuciones, las features y la decisión de cada cuenta)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
 │                      y el lifecycle sintético de cada periodo del escenario (lifecycle.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
-│                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones y
-│                      atribuciones; subidas, esquemas, errores y autenticación
+│                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
+│                      atribuciones y decisiones v2; subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
-                       backfill-motor-pagos, backfill-lifecycle, backfill-atribucion y worker
+                       backfill-motor-pagos, backfill-lifecycle, backfill-atribucion, decidir-v2,
+                       comparar-decisiones y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
-                       modelo histórico, del motor de pagos y del lifecycle, y actualización del
-                       catálogo del INEGI
+                       modelo histórico, del motor de pagos, del lifecycle y de decision/v2, y
+                       actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
-                       de promesas), atribucion.md (la atribución operativa), los diccionarios de
+                       de promesas), atribucion.md (la atribución operativa), decision_v2.md
+                       (el Decision Engine v2 y su diccionario de features), los diccionarios de
                        CARTERA y PAGOS, y carrier.md
 ```
 
@@ -1708,6 +1828,32 @@ ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.
   a 5,717 eventos por segundo según los checkpoints y el autovacuum. Se mide otra vez en producción
   (v0.18).
 
+**Del Decision Engine v2 (v0.10.0).** Lo que v0.10.0 deja a propósito para después:
+
+- **La política es sintética.** `decision-policy/public-v1` demuestra la capacidad del motor; no
+  representa la política de ningún acreedor real. Sus umbrales se fijaron antes de ver resultados y
+  no se ajustaron con el benchmark, y nada dice que una de sus prioridades sea mejor que la de v1.
+- **No predice ni mide efectividad.** No hay probabilidades de pago, recuperación esperada ni
+  modelos (v0.15), ni causalidad: una asociación única de la atribución no dice que la gestión
+  produjo el pago.
+- **No reemplaza a `decision/v1`.** El territorial y el ruteo siguen leyendo v1; v2 corre en sombra.
+- **No se abre sola.** Se pide por corte, con `POST /decisiones-v2` o `decidir-v2`: ningún corte,
+  pago ni gestión la dispara.
+- **La disponibilidad es de la cartera, no de cada cuenta.** Si a `known_at` falta interpretar un
+  mes de pagos, toda la cartera queda con esa ventana en NULL, aunque a una cuenta en particular no
+  le falte nada.
+- **La frontera depende de lo que PostgreSQL deja ver.** `pg_stat_activity` solo muestra el inicio
+  de la transacción de las sesiones del mismo rol; con varios roles, el del worker necesita
+  `pg_read_all_stats`. Y una transacción que se queda abierta en la base, de lo que sea, detiene
+  las decisiones con un `known_at` posterior a su inicio: cada intento espera 30 s y vuelve a la
+  cola, y si la transacción dura más que todos sus reintentos, la decisión termina `FALLIDA` con
+  `INTENTOS_AGOTADOS` y se vuelve a pedir.
+- **Cada decisión ocupa lo que ocupa.** Una decisión de un corte XL escribe 513 MiB (843 bytes
+  por resultado, la mayor parte sus motivos, y 311 por las features) y 879 MiB de WAL, y cada
+  frontera de conocimiento que se pida es otra decisión completa. No hay política de retención
+  (v0.18), ni particionado (decisión 121).
+- **Medido en una sola máquina, que no era dedicada.** Se mide otra vez en producción (v0.18).
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -1716,9 +1862,10 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Tres niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
-  los operacionales, después los `HISTORIA` y al final los `MOTOR_PAGOS`; dentro de cada nivel, en
-  el orden en que se crearon.
+- **Cinco niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+  los operacionales, después los `HISTORIA`, los `MOTOR_PAGOS`, los `ATRIBUCION` y
+  `EVALUACION_PROMESAS` y al final los `DECISION_V2`; dentro de cada nivel, en el orden en que se
+  crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
@@ -1762,9 +1909,9 @@ Y dos que son del diseño, no pendientes:
   existan, y el Motor Territorial agrupa por esas mismas claves. Y en cartera/v1 un saldo con más
   de dos decimales se redondea al guardarse en lugar de rechazarse. cartera/v2 resuelve sus claves
   con el catálogo y rechaza un importe con más de dos decimales.
-- **Los motores se miden con la cartera de la prueba de humo.** El Decision Engine, el Motor
-  Territorial y el Motor de Ruteo se prueban en el CI con sus 9,800 cuentas y no están medidos a
-  la escala de 500,000.
+- **Los motores territorial y de ruteo se miden con la cartera de la prueba de humo.** Se prueban
+  en el CI con sus 9,800 cuentas y no están medidos a la escala de 500,000. `decision/v1` sí: en el
+  benchmark de v0.10, decidió las 465,999 cuentas de un corte XL en 34.6 s.
 - **Una sola API key**, sin usuarios, permisos ni rotación.
 - **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se desarrolla el
   proyecto no tiene Docker, así que en Windows y macOS no está probado.
