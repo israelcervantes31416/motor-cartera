@@ -1259,6 +1259,24 @@ class GeografiaResumenRespuesta(BaseModel):
     territorial: TerritorialResumenRespuesta | None
 
 
+class CampoResumenRespuesta(BaseModel):
+    """El plan de campo/v2 mas reciente en que la cuenta fue candidata, en resumen. Sin
+    coordenadas ni jornada: su detalle esta en /cuentas/{cuenta_id}/campo-v2."""
+
+    fecha_plan: date = Field(description="La fecha de operacion del plan.")
+    campo_run_id: UUID
+    estado: str = Field(
+        description="ASIGNADA, REVISION_TERRITORIAL, SIN_GESTOR_DISPONIBLE o SIN_CAPACIDAD."
+    )
+    prioridad: str
+    base: str | None = Field(description="El codigo de su base territorial.")
+    gestor_codigo: str | None = Field(description="Solo si quedo ASIGNADA.")
+    zona_id: UUID | None
+    subzona_id: UUID | None
+    tramo_id: UUID | None
+    microtramo_id: UUID | None
+
+
 class LifecycleResumenRespuesta(BaseModel):
     """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
     de tiempo son subrecursos paginados: aqui no estan."""
@@ -1356,6 +1374,12 @@ class Cuenta360Respuesta(BaseModel):
         "(con `al`, de los cortes hasta ese dia), y la asignacion EXITOSA mas reciente sobre esa "
         "geografia. Todas estan en /cuentas/{cuenta_id}/geografia y "
         "/cuentas/{cuenta_id}/territorial-v2.",
+    )
+    campo_resumen: CampoResumenRespuesta | None = Field(
+        default=None,
+        description="El plan de campo/v2 EXITOSA mas reciente en que fue candidata de campo (con "
+        "`al`, el de fecha de operacion hasta ese dia): su estado, su base, su gestor y su "
+        "particion, sin coordenadas. Todos estan en /cuentas/{cuenta_id}/campo-v2.",
     )
 
 

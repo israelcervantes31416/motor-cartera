@@ -25,6 +25,7 @@ from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import (
     AVISO_MOVIMIENTOS,
     AVISO_PAGOS_OBSERVADOS,
+    CampoResumenRespuesta,
     Cuenta360Respuesta,
     CuentaEncontradaRespuesta,
     EventoRespuesta,
@@ -50,6 +51,7 @@ from motor_cartera.api.esquemas import (
 from motor_cartera.api.motor_pagos import contexto_respuesta, movimiento_respuesta
 from motor_cartera.atribucion import consultas as atribucion
 from motor_cartera.atribucion.consultas import ResultadoVisto
+from motor_cartera.campo_v2 import consultas as campo_v2
 from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
 from motor_cartera.db.modelos import CuentaCanonica
@@ -181,7 +183,8 @@ def obtener_cuenta(
     atribucion disponible de sus pagos, que es asociacion operacional y no causalidad.
     `ultima_decision_v2` es la decision v2 mas reciente, en resumen: su ejecucion, su as_of, su
     prioridad y su canal. `geografia_resumen` es su geografia vigente (geografia/v1) y su base
-    (territorial/v2), sin coordenadas.
+    (territorial/v2), sin coordenadas. `campo_resumen` es su plan de campo/v2 mas reciente: su
+    estado, su base, su gestor y su particion, sin coordenadas.
 
     La historia, los eventos, los pagos observados, los movimientos, las gestiones, las promesas,
     los convenios, la linea de tiempo y las atribuciones son subrecursos paginados: `/historia`,
@@ -196,6 +199,7 @@ def obtener_cuenta(
     atribuida = atribucion.ultima_de_cuenta(s, cuenta, version_motor=VERSION_MOTOR_PAGOS, al=al)
     decidida = decision_v2.ultima(s, cuenta, al)
     ubicada = geografia.vigente(s, cuenta, al)
+    planeada = campo_v2.ultima(s, cuenta, al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -250,6 +254,20 @@ def obtener_cuenta(
             canal=decidida.resultado.canal_recomendado,
         ),
         geografia_resumen=_geografia(s, cuenta, ubicada),
+        campo_resumen=None
+        if planeada is None
+        else CampoResumenRespuesta(
+            fecha_plan=planeada.ejecucion.fecha_operacion,
+            campo_run_id=planeada.ejecucion.campo_run_id,
+            estado=planeada.vista.asignacion.estado,
+            prioridad=planeada.vista.asignacion.prioridad,
+            base=planeada.vista.codigo_base,
+            gestor_codigo=planeada.vista.codigo_gestor,
+            zona_id=planeada.vista.asignacion.zona_id,
+            subzona_id=planeada.vista.asignacion.subzona_id,
+            tramo_id=planeada.vista.asignacion.tramo_id,
+            microtramo_id=planeada.vista.asignacion.microtramo_id,
+        ),
     )
 
 
