@@ -102,6 +102,11 @@ def test_una_cartera_metida_con_git_add_f_dice_por_que_no_debe_estar(repo, carte
         "respaldos/volcado.sql.gz",
         "locales/cartera.sqlite",
         "entregas/cartera.7z",
+        "geografia/00mun.shp",
+        "geografia/00mun.dbf",
+        "geografia/municipios.gpkg",
+        "geografia/municipios.geojson",
+        "geografia/municipios.kmz",
     ],
 )
 def test_nada_de_lo_que_el_gitignore_excluye_se_cuela(repo, ruta):
@@ -195,8 +200,23 @@ TEXTO = b"cliente_unico,saldo\nCU00000001,1.50\n"
         ("entrega.dat", lambda: b"7z\xbc\xaf\x27\x1c" + bytes(32), "un 7z"),
         ("entrega.bin", lambda: b"Rar!\x1a\x07\x01\x00" + bytes(32), "un rar"),
         ("base.dat", lambda: b"PGDMP\x01\x0e\x00" + bytes(32), "un volcado de pg_dump"),
+        ("capa.bin", lambda: b"\x00\x00\x27\x0a" + bytes(96), "un Shapefile (.shp o .shx)"),
+        ("capa.dat", lambda: b"fgb\x03fgb\x01" + bytes(32), "un FlatGeobuf"),
     ],
-    ids=["parquet", "feather", "gzip", "bzip2", "bzip2-vacio", "xz", "zstd", "7z", "rar", "pgdump"],
+    ids=[
+        "parquet",
+        "feather",
+        "gzip",
+        "bzip2",
+        "bzip2-vacio",
+        "xz",
+        "zstd",
+        "7z",
+        "rar",
+        "pgdump",
+        "shapefile",
+        "flatgeobuf",
+    ],
 )
 def test_un_formato_de_datos_un_comprimido_o_un_volcado_se_reconoce_por_dentro(
     repo, nombre, contenido, que_es

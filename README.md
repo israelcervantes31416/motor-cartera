@@ -73,6 +73,17 @@ decisión guarda sus features, sus reglas y sus hashes, y se explica sola. Corre
 `decision/v1`, con una política pública y sintética que no predice nada
 ([docs/decision_v2.md](docs/decision_v2.md)).
 
+Desde v0.11.0, el sistema usa por primera vez la **geografía real**. `geografia/v1` ubica la
+coordenada que trae cada cuenta en los municipios de una referencia oficial y pública, el Marco
+Geoestadístico 2025 del INEGI, importada y versionada en PostgreSQL con PostGIS, y la compara con
+el municipio que dice la fuente: un **hecho geográfico**, con su estado de calidad y sus motivos,
+que no corrige nada. Sobre él, `territorial/v2` asigna cada cuenta con geografía confiable a la
+**base operativa** activa más cercana entre las que cubren su municipio, por distancia geodésica,
+con bases versionadas e inmutables: **pertenencia territorial, no capacidad**. Corre en paralelo a
+`territorial/v1`, y ninguna respuesta lleva la coordenada de una cuenta
+([docs/geografia.md](docs/geografia.md), [docs/territorial_v2.md](docs/territorial_v2.md) y
+[docs/bases_operativas.md](docs/bases_operativas.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -82,12 +93,18 @@ Puebla; el resto son datos inventados con distribuciones parecidas a las reales:
 con cola larga, atraso por tramos y concentración geográfica desigual. El generador mete filas inválidas a
 propósito para que el contrato tenga de dónde agarrarse.
 
+La cartografía tampoco entra. La referencia municipal oficial (el Marco Geoestadístico Integrado
+2025 del INEGI, público) se descarga de su URL y se verifica contra el SHA-256 de un manifiesto del
+repositorio; las pruebas y la prueba de humo usan referencias sintéticas que escriben al vuelo. Y
+las coordenadas de las cuentas son sintéticas: puntos de la cartografía pública, en proporciones
+explícitas, no ubicaciones de nadie.
+
 El `.gitignore` lo cuida por nombre, pero solo frena lo que todavía no está trackeado. Lo
 trackeado lo revisa `scripts/verificar_archivos_trackeados.py` en el CI: falla si entró algo
 que el `.gitignore` excluye (con `git add -f`, o en mayúsculas donde git las distingue) o, con
 cualquier nombre, una hoja de cálculo, un zip, un Parquet o un Arrow, un archivo comprimido (gzip,
-bzip2, xz, zstd, 7z, rar), un volcado de `pg_dump` o una base SQLite, que reconoce por sus primeros
-bytes. Antes de un commit también se corre a mano:
+bzip2, xz, zstd, 7z, rar), un volcado de `pg_dump`, una base SQLite (un GeoPackage lo es), un
+Shapefile o un FlatGeobuf, que reconoce por sus primeros bytes. Antes de un commit también se corre a mano:
 
 ```bash
 python scripts/verificar_archivos_trackeados.py
@@ -95,7 +112,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay diez versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay once versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -135,6 +152,13 @@ punta:
   `known_at` de lo que pasó hasta el final de `as_of`; una política pública y sintética, con su
   hash, ajusta la prioridad de v1 con cuatro modificadores, y cada decisión guarda sus features, sus
   motivos y sus hashes, inmutables. Corre en paralelo a v1, en modo sombra.
+- **v0.11.0 ✅ Geografía Real, Territorial v2 y Bases Operativas**: la referencia municipal oficial
+  del INEGI se importa, valida y versiona con PostGIS (EPSG:4326, índices GiST); cada cuenta de un
+  corte se ubica en su municipio espacial, con siete estados de calidad, su comparación con el
+  municipio de la fuente y sus motivos, sin corregir nada; las bases operativas se publican en
+  versiones inmutables con su cobertura explícita, y `territorial/v2` asigna cada cuenta con
+  geografía confiable a la base activa inequívocamente más cercana, o dice por qué no. En paralelo
+  a `territorial/v1`, todo o nada y en trabajos durables.
 
 Lo que ya hace:
 
@@ -229,6 +253,18 @@ Lo que ya hace:
   durable `DECISION_V2`
 - [x] `motor-cartera decidir-v2` y `comparar-decisiones` (modo sombra contra `decision/v1`), la
   Cuenta 360 con su `ultima_decision_v2`, y un benchmark de `decision/v2` sobre el XL fuera del CI
+- [x] Geografía real (`geografia/v1`): la referencia municipal oficial del INEGI importada todo o
+  nada, validada, normalizada a EPSG:4326 y versionada con PostGIS; el municipio espacial de cada
+  cuenta con `ST_Covers`, sus estados de calidad, su comparación con la fuente y el posible orden
+  invertido, sin corregir nada, por conjuntos y todo o nada en un trabajo durable `GEOGRAFIA`
+- [x] Bases operativas versionadas, con su cobertura explícita y su hash canónico, y
+  `territorial/v2` (`territorial-public-v2`, con su `hash_politica`): la base activa inequívocamente
+  más cercana por distancia geodésica, con una tolerancia de empate de 100 m, en un trabajo durable
+  `TERRITORIAL_V2` y en paralelo a `territorial/v1`
+- [x] `importar-geografia`, `muestrear-puntos`, `geolocalizar`, `cargar-bases` y
+  `asignar-territorial-v2`; coordenadas sintéticas en el generador, en proporciones explícitas; la
+  Cuenta 360 con su `geografia_resumen`, sin coordenadas; y un benchmark de la geografía y de
+  `territorial/v2` sobre el XL, con la referencia oficial, fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -243,9 +279,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.8.0 — Motor de Pagos Canónico y Conciliación
 ✅ v0.9.0 — Lifecycle de Cobranza y Atribución Operativa
 ✅ v0.10.0 — Decision Engine v2
-➡️ v0.11 — Geografía real + Territorial v2 + bases
+✅ v0.11.0 — Geografía Real, Territorial v2 y Bases Operativas
+➡️ v0.12 — Campo v2
 
-v0.12 Campo v2
 v0.13 Ruteo vial v2
 v0.14 Collection Analytics
 v0.15 Predictive Intelligence
@@ -256,10 +292,9 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.11, Geografía real + Territorial v2 + bases**: pasar de las claves
-municipales a una geografía real y pública (localidades, colonias, códigos postales y coordenadas)
-y, sobre ella, un Territorial v2 que organice el trabajo de campo desde sus bases. Sin adelantar la
-operación de campo, el ruteo vial, la analítica ni los modelos predictivos.
+Lo que sigue es **v0.12, Campo v2**: sobre la pertenencia territorial de v0.11, la capacidad de
+campo: gestores, jornadas, cargas por base y la partición operacional del trabajo. Sin adelantar el
+ruteo vial, la analítica ni los modelos predictivos.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -270,7 +305,7 @@ Lo que está frágil o pendiente, sin maquillar, está en
 docker compose up --build
 ```
 
-Eso levanta PostgreSQL, aplica las migraciones y arranca la API en <http://localhost:8000> y el
+Eso levanta PostgreSQL (con PostGIS), aplica las migraciones y arranca la API en <http://localhost:8000> y el
 worker, cada uno en su contenedor, sin pasos manuales. La documentación interactiva está en
 <http://localhost:8000/docs>. La clave de desarrollo es `clave-local-de-desarrollo`; se cambia
 con la variable `MC_API_KEY`. Para correr varios workers: `docker compose up --scale worker=3`.
@@ -681,6 +716,24 @@ regla por regla y verificada; la página por prioridad, la historia de la cuenta
 corte, la Cuenta 360, el trabajo `DECISION_V2` y el `409` de las mismas entradas. El CI, después,
 compara en modo sombra esa decisión con la de `decision/v1`.
 
+Con `--geografia` (y `--oficial`), la referencia geográfica ya está importada y la cartera oficial
+trae coordenadas sintéticas: resuelve la geografía de su corte, revisa las anomalías por su índice,
+publica una versión de bases (y la reutiliza), asigna con `territorial/v2` y revisa la Cuenta 360 de
+una cuenta asignada, una sin coordenadas, una que discrepa de la fuente y una sin base, sin que
+ninguna respuesta lleve una coordenada:
+
+```bash
+docker compose exec api motor-cartera generar-geografia-sintetica --destino datos/geografia/municipios.zip
+docker compose exec api motor-cartera importar-geografia datos/geografia/municipios.zip \
+  --proveedor SINTETICO --producto "Referencia sintetica de la prueba de humo" --edicion humo-v1
+docker compose exec api motor-cartera muestrear-puntos --geografia-version <geografia_version_id> \
+  --destino datos/geografia/puntos.json
+docker compose exec api motor-cartera generar-oficial --destino datos --formato zip \
+  --fecha-corte 2026-09-30 --puntos datos/geografia/puntos.json
+python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial_2026-09-30.zip \
+  --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia
+```
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -1017,6 +1070,64 @@ tienen la misma prioridad en v1 y en v2, v2 la sube en 18,521 y la baja en 47,81
 una consulta de una cuenta o de una página entra por un índice y se resuelve en menos de 0.8 ms
 dentro de PostgreSQL; por la API, de 9 a 45 ms (mediana). Los detalles, en
 [docs/decision_v2.md](docs/decision_v2.md).
+
+## La geografía real y Territorial v2
+
+`geografia/v1` responde dónde cae la coordenada de cada cuenta de un corte, y `territorial/v2`, a
+qué base operativa pertenece. Las dos son trabajos durables que alguien pide, con entradas
+declaradas, por conjuntos en PostgreSQL y todo o nada.
+
+- **Una referencia oficial, versionada.** La capa municipal del Marco Geoestadístico Integrado 2025
+  del INEGI (2,478 municipios, EPSG:6372) se importa con `importar-geografia`, verificada contra el
+  SHA-256 de su manifiesto: su sistema de coordenadas se reconoce por sus parámetros, cada geometría
+  se valida, solo se repara lo seguro y queda registrado, y se publica todo o nada en EPSG:4326, con
+  un índice GiST. Una versión publicada no cambia; otra edición es otra versión.
+- **El municipio espacial de cada cuenta, sin corregir nada.** El punto es
+  `ST_MakePoint(longitud, latitud)`, y cae en un municipio si el municipio lo cubre (`ST_Covers`: el
+  borde cuenta). Cada cuenta queda `VALIDA`, `SIN_COORDENADAS`, `COORDENADAS_INCOMPLETAS`,
+  `COORDENADAS_INVALIDAS`, `FUERA_DE_REFERENCIA`, `MUNICIPIO_AMBIGUO` o `DISCREPANCIA_MUNICIPIO`,
+  con sus motivos y su comparación con el municipio que resolvió la fuente. Unas coordenadas que al
+  revés sí caerían en un municipio llevan el motivo `POSIBLE_ORDEN_INVERTIDO`, y se quedan como
+  vinieron.
+- **Bases operativas versionadas.** Cada versión trae sus bases, con su punto, si están activas y
+  los municipios que cubren, declarados: nunca se infiere una cobertura por cercanía. El mismo
+  contenido es la misma versión, y cambiar una base es publicar otra.
+- **`territorial-public-v2`.** Solo una geografía `VALIDA` se asigna: a la base activa que cubre su
+  municipio, la única o la inequívocamente más cercana por distancia geodésica; a no más de 100 m de
+  otra, es un empate (`AMBIGUA_BASE`) y no se elige ninguna. Lo demás queda en
+  `REVISION_GEOGRAFICA`, `FUERA_DE_COBERTURA` o `SIN_BASE_ELEGIBLE`, con sus motivos. Sin
+  capacidad, carga ni balanceo: eso es v0.12.
+- **Privacidad.** La coordenada observada se guarda como evidencia, pero no sale por la API, ni por
+  la bitácora, ni en un error o una métrica: la Cuenta 360 trae su `geografia_resumen` sin ella.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec api motor-cartera importar-geografia datos/referencias/inegi_mg_2025/mg_2025_integrado.zip \
+  --referencia inegi-mg-2025-municipal
+curl -s -H "$K" http://localhost:8000/geografia/versiones
+curl -s -X POST -H "$K" -H "Content-Type: application/json" \
+  -d '{"corte_id":"<corte_id>","geografia_version_id":"<geografia_version_id>"}' \
+  http://localhost:8000/geografia/ejecuciones
+curl -s -H "$K" "http://localhost:8000/geografia/ejecuciones/<geografia_run_id>/resultados?estado_geografia=DISCREPANCIA_MUNICIPIO"
+curl -s -X POST -H "$K" -H "Content-Type: application/json" -d @bases.json http://localhost:8000/bases/versiones
+curl -s -X POST -H "$K" -H "Content-Type: application/json" \
+  -d '{"corte_id":"<corte_id>","geografia_run_id":"<geografia_run_id>","bases_version_id":"<bases_version_id>"}' \
+  http://localhost:8000/territorial-v2
+curl -s -H "$K" "http://localhost:8000/territorial-v2/<territorial_run_id>/resultados?base=BASE_CENTRO"
+```
+
+Todo está en [docs/geografia.md](docs/geografia.md), [docs/territorial_v2.md](docs/territorial_v2.md)
+y [docs/bases_operativas.md](docs/bases_operativas.md). El porqué, en las decisiones 122 a 137.
+
+**Medido.** En la máquina de desarrollo, sobre la base del XL, con la referencia oficial (2,478
+municipios, importados en 19.4 s) y un corte de **500,000 cuentas sintéticas** con coordenadas
+sintéticas: la geografía tomó **90.6 s** (5,517 cuentas por segundo, 222 MiB de memoria pico) y dio
+exactamente las categorías que se generaron; `territorial/v2`, con 13 bases, **75.5 s** (421,548
+asignadas, 1,053 empates y 27,381 sin base). El punto en polígono recorre los municipios contra el
+índice GiST de los puntos: 8.8 s, contra 98.7 s de la alternativa punto por punto. Ninguna consulta
+de una cuenta, de un municipio, de una base ni de las anomalías hace un Seq Scan sobre los
+resultados; por la API, de 19 a 33 ms (mediana). Los detalles, en
+[docs/geografia.md](docs/geografia.md) y [docs/territorial_v2.md](docs/territorial_v2.md).
 
 ## El Motor Territorial
 
@@ -1408,8 +1519,8 @@ también nació con un `201`), y el resto de las decisiones, están en
 
 ## Sin Docker
 
-Hace falta un PostgreSQL 16 (el del compose sirve: `docker compose up -d postgres`, puerto
-5434) y [uv](https://docs.astral.sh/uv/).
+Hace falta un PostgreSQL 16 con PostGIS 3.5 (el del compose sirve: `docker compose up -d
+postgres`, puerto 5434; la migración 0012 crea la extensión) y [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
@@ -1529,6 +1640,18 @@ por cuenta. La política y las features puras (`pytest tests/test_decision_v2_po
 tests/test_decision_v2_features.py`) no necesitan base. El benchmark de `decision/v2` no corre en el
 CI.
 
+La geografía y `territorial/v2` también, contra PostgreSQL con PostGIS y con referencias
+sintéticas diminutas que las pruebas escriben al vuelo: el importador (cada sistema de coordenadas
+por sus parámetros, la reparación segura y la que no, cada rechazo, todo o nada, dos importaciones
+a la vez), un golden geográfico de tres municipios inventados y un caso por estado, uno territorial
+con sus bases, el orden longitud-latitud (falla si se invierte), el borde (`ST_Covers`), el
+versionado de la referencia y de las bases sin reescribir lo viejo, fallas inyectadas en seis
+puntos de cada motor, dos workers, el lease perdido, dos cortes a la vez, la reconstrucción
+idéntica, y el SQL contra el núcleo puro, cuenta por cuenta, con las distancias comparadas con la
+fórmula de Vincenty. La referencia oficial del INEGI solo se prueba si el archivo está en la máquina
+(`MC_REFERENCIA_INEGI`); el CI no la descarga. Las reglas puras (`pytest
+tests/test_geografia_reglas.py tests/test_territorial_v2_politica.py`) no necesitan base.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1536,12 +1659,14 @@ la agregación en la base, la transacción todo o nada, la concurrencia entre ej
 idempotencia y la API del historial, incluidos resultados de otras versiones de las reglas; y el
 `docker compose up` completo en un runner limpio, con PostgreSQL, migraciones, API y worker, y la
 prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
-de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos;
-comprueba que ni el backfill de la historia ni el del motor encuentran nada pendiente, compara en
-modo sombra la decisión v2 del corte oficial con su decisión v1, baja los contenedores sin borrar
-los volúmenes, los vuelve a levantar
-y verifica que cada artefacto siga en el almacén con sus mismos bytes. Los benchmarks de escala,
-del modelo histórico y del motor de pagos son un workflow aparte, que solo corre a mano.
+de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos,
+y el corte oficial, con coordenadas sintéticas sobre una referencia sintética, por la geografía,
+las bases y `territorial/v2`; comprueba que ni el backfill de la historia ni el del motor encuentran
+nada pendiente, compara en modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
+contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
+el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
+escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2` y de la geografía
+son un workflow aparte, que solo corre a mano.
 
 ## Arquitectura
 
@@ -1616,6 +1741,22 @@ src/motor_cartera/
 │   │                  corte point-in-time en PostgreSQL, por conjuntos y todo o nada
 │   ├── consultas.py   Las ejecuciones, sus resultados, la decisión de una cuenta y su historia
 │   └── sombra.py      decision/v1 contra decision/v2, sin juzgar cuál es mejor
+├── geografia/
+│   ├── reglas.py      geografia/v1: el vocabulario, la regla de una cuenta y la firma, sin base
+│   ├── crs.py         Reconocer el sistema de coordenadas de un .prj por sus parámetros
+│   ├── referencia.py  Importar una referencia pública, validada, en EPSG:4326 y todo o nada
+│   ├── referencias.json  El manifiesto de las referencias oficiales, con su SHA-256
+│   ├── ejecuciones.py La geografía de un corte en PostgreSQL con PostGIS, por conjuntos
+│   ├── consultas.py   Las versiones, las ejecuciones, sus resultados y la geografía de una cuenta
+│   ├── muestra.py     Puntos de una referencia, con PostGIS y una semilla, para el generador
+│   └── sintetica.py   Capas sintéticas: las de las pruebas y la cuadrícula de la prueba de humo
+├── bases/
+│   └── configuracion.py  Las bases operativas: validación fail-closed, forma canónica, hash y
+│                      publicación versionada
+├── territorial_v2/
+│   ├── politica.py    territorial-public-v2 como datos, su hash y su evaluador puro
+│   ├── ejecuciones.py La asignación de un corte en PostgreSQL, por conjuntos y todo o nada
+│   └── consultas.py   Las ejecuciones, sus asignaciones y las de una cuenta
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1629,29 +1770,35 @@ src/motor_cartera/
 │                      y sus ejecuciones), el motor de pagos (sus ejecuciones, un resultado por
 │                      observación y los movimientos canónicos), el lifecycle (eventos, gestiones,
 │                      visitas, promesas, convenios y cuotas), la evaluación de promesas, la
-│                      atribución (sus ejecuciones, sus resultados y sus candidatas) y decision/v2
-│                      (sus ejecuciones, las features y la decisión de cada cuenta)
+│                      atribución (sus ejecuciones, sus resultados y sus candidatas), decision/v2
+│                      (sus ejecuciones, las features y la decisión de cada cuenta), la geografía
+│                      (versiones de la referencia, municipios, ejecuciones y resultados), las
+│                      bases operativas y territorial/v2 (ejecuciones y asignaciones)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
 │                      y el lifecycle sintético de cada periodo del escenario (lifecycle.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
-│                      atribuciones y decisiones v2; subidas, esquemas, errores y autenticación
+│                      atribuciones, decisiones v2, geografía, bases y territorial v2; subidas,
+│                      esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
                        backfill-motor-pagos, backfill-lifecycle, backfill-atribucion, decidir-v2,
-                       comparar-decisiones y worker
+                       comparar-decisiones, generar-geografia-sintetica, importar-geografia,
+                       muestrear-puntos, geolocalizar, cargar-bases, asignar-territorial-v2 y
+                       worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
-                       modelo histórico, del motor de pagos, del lifecycle y de decision/v2, y
-                       actualización del catálogo del INEGI
+                       modelo histórico, del motor de pagos, del lifecycle, de decision/v2 y de la
+                       geografía, y actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
                        de promesas), atribucion.md (la atribución operativa), decision_v2.md
-                       (el Decision Engine v2 y su diccionario de features), los diccionarios de
-                       CARTERA y PAGOS, y carrier.md
+                       (el Decision Engine v2 y su diccionario de features), geografia.md (la
+                       geografía real), territorial_v2.md, bases_operativas.md, los diccionarios
+                       de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -1724,6 +1871,15 @@ y `→ MovimientoEconomicoCanonico → ResultadoPagoObservado → PagoObservado 
 ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.py`,
 `atribucion/reglas.py`) no saben de la base, y una prueba compara cada uno con su SQL.
 
+La geografía cuelga de un corte canónico y de una versión de la referencia, que es su otra entrada:
+`ResultadoGeografiaCuenta → EjecucionGeografia → (CorteCanonico, DatasetConformado,
+VersionGeografia)`, y cada resultado, de su `SnapshotCuenta` y de su `MunicipioGeografico`. Una
+asignación de `territorial/v2` cuelga del resultado geográfico de su cuenta, por su llave natural
+(ejecución de geografía, cuenta), y de la versión de bases de su ejecución:
+`AsignacionTerritorialV2 → EjecucionTerritorialV2 → (EjecucionGeografia, VersionBasesOperativas)` y
+`→ BaseOperativa → CoberturaBaseMunicipio`. Ningún motor anterior lee nada de esto: `territorial/v1`
+y `ruteo/v1` siguen como estaban.
+
 ## Limitaciones conocidas
 
 **De las fuentes oficiales (v0.6.0).** Lo que v0.6.0 deja a propósito para después:
@@ -1743,8 +1899,9 @@ ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.
   pagos los interpreta aparte; atribuir cada pago a una gestión queda para después del lifecycle
   de v0.9.
 - **La geografía es por municipio.** La proyección resuelve el estado y la población a claves
-  municipales del INEGI; localidades, colonias, códigos postales y coordenadas son de v0.11. El
-  catálogo es una foto (consultada el 2026-10-05) que se actualiza con su script.
+  municipales del INEGI, y desde v0.11 las coordenadas se ubican en la referencia municipal
+  (`geografia/v1`); localidades, colonias y códigos postales no se usan. El catálogo es una foto
+  (consultada el 2026-10-05) que se actualiza con su script.
 - **El escenario longitudinal no es un modelo financiero**: es coherencia básica y determinismo.
 - **La escala medida es la de la ingesta, la historia y el motor de pagos.** Un benchmark mide la
   ingesta de cartera/v2 y de pagos/v1 hasta 1,000,000 de cuentas; otro, la historia de 12 cortes XL
@@ -1812,7 +1969,7 @@ ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.
 - **No hay `GestorCanonico`**: quien hizo una gestión es un `actor_ref` opaco, sin catálogo ni
   relación con el `Gestor` de `pagos/v1`.
 - **Un convenio no es un ledger**: ningún pago se aplica a una cuota, y su estado no se evalúa.
-- **Las visitas no tienen geografía**: sin GPS, rutas, zonas ni geocercas (v0.11–v0.13).
+- **Las visitas no tienen geografía**: sin GPS, rutas, zonas ni geocercas (v0.12–v0.13).
 - **Lo que un corte dice de una promesa o de un plan no se vuelve un evento**: se muestra como
   `OBSERVACION_EN_CORTE`, y ninguna regla decide todavía si dos observaciones son la misma promesa.
 - **La evaluación y la atribución no se abren solas**: las piden la API o su backfill. Una gestión
@@ -1854,6 +2011,29 @@ ArtefactoFuente`. Los núcleos puros (`lifecycle/reglas.py`, `evaluacion/reglas.
   (v0.18), ni particionado (decisión 121).
 - **Medido en una sola máquina, que no era dedicada.** Se mide otra vez en producción (v0.18).
 
+**De la geografía real y territorial/v2 (v0.11.0).** Lo que v0.11.0 deja a propósito para después:
+
+- **No geocodifica direcciones.** Calle, colonia y código postal no se convierten en coordenadas,
+  ni con un servicio externo ni con uno propio: una cuenta sin coordenadas se queda sin ellas, y
+  ningún centroide hace las veces de una ubicación observada.
+- **No corrige coordenadas ni resuelve discrepancias.** Un orden invertido se señala y no se
+  invierte; cuando el punto y la fuente dicen municipios distintos, la cuenta va a revisión y nadie
+  decide cuál tiene razón.
+- **Una referencia, un nivel.** Solo la capa municipal, y solo el Marco Geoestadístico Integrado
+  2025 está en el manifiesto. Sus áreas son geoestadísticas, no la división político-administrativa
+  oficial, y 942 pares de municipios vecinos se enciman en astillas de 31.9 m² en total: un punto
+  ahí es `MUNICIPIO_AMBIGUO`.
+- **Pertenencia, no capacidad.** `territorial/v2` no conoce gestores, jornadas, cargas ni límites
+  por base, y no balancea: su distribución por base es un diagnóstico (v0.12). La distancia es
+  geodésica, en línea recta, no por calle (v0.13), y la tolerancia de empate de 100 m es un
+  parámetro de la política, sin evidencia empírica.
+- **No reemplaza a `territorial/v1`.** El flujo de cada corrida y `ruteo/v1` siguen con el
+  municipio de la fuente y su plano sintético.
+- **No se abren solas.** La geografía y `territorial/v2` se piden por corte, con sus entradas
+  declaradas: ni un corte nuevo, ni una referencia nueva, ni una versión de bases las disparan.
+- **Sin particionado** (decisión 137), y medido en una sola máquina, que no era dedicada. Se mide
+  otra vez en producción (v0.18).
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -1862,10 +2042,10 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Cinco niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+- **Seis niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
   los operacionales, después los `HISTORIA`, los `MOTOR_PAGOS`, los `ATRIBUCION` y
-  `EVALUACION_PROMESAS` y al final los `DECISION_V2`; dentro de cada nivel, en el orden en que se
-  crearon.
+  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, y al final los `TERRITORIAL_V2`; dentro de
+  cada nivel, en el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.

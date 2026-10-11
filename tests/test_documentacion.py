@@ -155,3 +155,76 @@ def test_la_documentacion_de_decision_v2_no_la_presenta_como_prediccion_ni_como_
     assert "No es una predicción." in texto
     for frase in ("predice que", "la predicción de", "probabilidad de que"):
         assert frase not in texto.lower(), frase
+
+
+def test_el_documento_de_la_geografia_define_cada_estado_motivo_y_resultado():
+    """Cada estado, motivo, comparacion y resultado de geografia/v1, y cada estado de una version de
+    la referencia, tiene su fila en geografia.md; y la referencia oficial que documenta es la del
+    manifiesto, con su SHA-256."""
+    from motor_cartera.db.modelos import EstadoVersionGeografia, ResultadoEjecucionGeografia
+    from motor_cartera.geografia import reglas
+    from motor_cartera.geografia.referencia import referencias
+
+    filas = _codigos_de_tablas("geografia.md")
+    texto = (DOCS / "geografia.md").read_text(encoding="utf-8")
+
+    for vocabulario in (
+        reglas.EstadoGeografia,
+        reglas.Motivo,
+        reglas.Comparacion,
+        ResultadoEjecucionGeografia,
+        EstadoVersionGeografia,
+    ):
+        assert {v.value for v in vocabulario} <= filas, vocabulario.__name__
+    inegi = referencias()["inegi-mg-2025-municipal"]
+    assert inegi.sha256 in texto
+    assert inegi.datos["url"] in texto
+    for regla in ("ST_MakePoint(longitud, latitud)", "ST_Covers", "EPSG:4326"):
+        assert regla in texto
+
+
+def test_el_documento_de_territorial_v2_define_cada_estado_motivo_y_resultado():
+    """Cada estado, motivo y resultado de territorial/v2 tiene su fila en territorial_v2.md, y la
+    politica que documenta, con su tolerancia y su hash, es la que aplica el servicio."""
+    from motor_cartera.db.modelos import ResultadoEjecucionTerritorialV2
+    from motor_cartera.territorial_v2.politica import (
+        PUBLIC_V2,
+        EstadoAsignacion,
+        MotivoAsignacion,
+    )
+    from motor_cartera.territorial_v2.politica import hash_politica as hash_territorial
+
+    filas = _codigos_de_tablas("territorial_v2.md")
+    texto = (DOCS / "territorial_v2.md").read_text(encoding="utf-8")
+
+    for vocabulario in (EstadoAsignacion, MotivoAsignacion, ResultadoEjecucionTerritorialV2):
+        assert {v.value for v in vocabulario} <= filas, vocabulario.__name__
+    assert hash_territorial() in texto
+    assert f"{PUBLIC_V2.tolerancia_empate_m} m" in texto
+    assert "pertenencia territorial, no capacidad" in texto
+
+
+def test_el_documento_de_las_bases_define_cada_campo_de_una_base():
+    from motor_cartera.bases.configuracion import LLAVES_DE_UNA_BASE, VERSION_CONFIGURACION
+
+    texto = (DOCS / "bases_operativas.md").read_text(encoding="utf-8")
+    campos = {
+        nombre.strip()
+        for linea in texto.splitlines()
+        if linea.startswith("| `")
+        for nombre in linea.split(" | ")[0].strip("| ").replace("`", "").split(",")
+    }
+
+    assert set(LLAVES_DE_UNA_BASE) <= campos
+    assert VERSION_CONFIGURACION in texto
+    assert "La cobertura se declara, nunca se infiere." in texto
+
+
+def test_ninguna_documentacion_de_la_geografia_promete_geocodificar_ni_corregir():
+    for archivo in ("geografia.md", "territorial_v2.md", "bases_operativas.md"):
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for frase in ("se geocodifica", "geocodificamos", "se corrige la coordenada"):
+            assert frase not in texto, (archivo, frase)
+    texto = " ".join((DOCS / "geografia.md").read_text(encoding="utf-8").split())
+    assert "No geocodifica direcciones." in texto
+    assert "No corrige coordenadas." in texto

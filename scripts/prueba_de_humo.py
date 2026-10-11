@@ -31,13 +31,21 @@ gestion, promesa, movimiento, evaluacion de la promesa a una fecha explicita, at
 y los trabajos EVALUACION_PROMESAS y ATRIBUCION. Y decision/v2 sobre el corte oficial: una decision
 a su as_of con su known_at declarado (un BACKTEST, si el escenario ya trajo cortes posteriores), sus
 features, una cuenta con un modificador -1, una con +1 y una con los dos, cada una explicada y
-verificada, su historia, la Cuenta 360 y su trabajo DECISION_V2. Solo usa la biblioteca estandar,
-para correr igual en el CI, dentro del contenedor o en una laptop:
+verificada, su historia, la Cuenta 360 y su trabajo DECISION_V2.
+
+Con --geografia (y --oficial), la referencia geografica ya esta importada y la cartera oficial trae
+coordenadas sinteticas (generar-oficial --puntos): recorre geografia/v1 sobre su corte (el
+municipio de cada cuenta, las anomalias por su indice), publica una version de bases operativas y
+la reutiliza, asigna con territorial/v2, y revisa la Cuenta 360 de una cuenta asignada, una sin
+coordenadas, una que discrepa de la fuente y una sin base, sin que ninguna respuesta lleve una
+coordenada. Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o
+en una laptop:
 
     python scripts/prueba_de_humo.py datos/cartera_sintetica.xlsx
     python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/oficial.zip --corte 2026-09-30
     python scripts/prueba_de_humo.py datos/humo.xlsx --pagos datos/pagos.zip
     python scripts/prueba_de_humo.py datos/humo.xlsx --escenario datos/escenario
+    python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30 --geografia
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -1021,12 +1029,287 @@ def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteri
     )
 
 
+# --- la geografia real, las bases operativas y territorial/v2 -----------------------------------
+
+LLAVES_DE_COORDENADAS = ('"latitud', '"longitud', '"lat"', '"lon"', '"punto"')
+
+
+def _sin_coordenadas(cuerpo, donde: str) -> None:
+    """La coordenada observada de una cuenta no sale por la API: ninguna llave que la lleve."""
+    texto = json.dumps(cuerpo)
+    esperar(not any(llave in texto for llave in LLAVES_DE_COORDENADAS), f"{donde}: sin coordenadas")
+
+
+def _corte_canonico(corte: str) -> dict:
+    """El corte canonico de esa fecha, cuando su historia ya lo publico."""
+    limite = time.monotonic() + ESPERA_HISTORIA
+    while True:
+        estado, _, cortes = pedir("GET", "/cartera/cortes?por_pagina=500")
+        del_dia = next((c for c in cortes.get("elementos", []) if c["fecha_corte"] == corte), None)
+        if del_dia is not None or time.monotonic() > limite:
+            esperar(
+                estado == 200 and del_dia is not None,
+                f"GET /cartera/cortes: el corte canonico del {corte}, con "
+                f"{del_dia and del_dia['cuentas']} cuentas",
+            )
+            return del_dia
+        time.sleep(1)
+
+
+def la_geografia(corte: str) -> None:
+    """geografia/v1 y territorial/v2 de punta a punta sobre el corte de la cartera oficial, que trae
+    coordenadas sinteticas: la referencia importada, la geografia del corte con el municipio de cada
+    cuenta, una version de bases operativas, la asignacion de territorial/v2 y la Cuenta 360. Con
+    una cuenta asignada, una sin coordenadas, una que discrepa de la fuente y una sin base, y sin
+    que ninguna respuesta lleve una coordenada."""
+    print(f"Geografia y territorial/v2 sobre el corte {corte}")
+    estado, _, versiones = pedir("GET", "/geografia/versiones?por_pagina=100")
+    publicada = next(
+        (v for v in versiones.get("elementos", []) if v["estado"] == "PUBLICADA"), None
+    )
+    esperar(
+        estado == 200 and publicada is not None and '"geometria"' not in json.dumps(versiones),
+        f"GET /geografia/versiones: la referencia {publicada and publicada['producto']} "
+        f"({publicada and publicada['edicion']}), {publicada and publicada['municipios']} "
+        "municipios, sin geometrias",
+    )
+    del_dia = _corte_canonico(corte)
+
+    pedida = {
+        "corte_id": del_dia["corte_id"],
+        "geografia_version_id": publicada["geografia_version_id"],
+    }
+    estado, encabezados, abierta = enviar("/geografia/ejecuciones", pedida)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and ubicacion_de(encabezados) == f"/geografia/ejecuciones/{abierta['geografia_run_id']}",
+        f"POST /geografia/ejecuciones: {estado} {abierta.get('estado')}",
+    )
+    geografia = seguir(ubicacion_de(encabezados))
+    conteos = geografia.get("conteos", {})
+    por_estado = {k: v for k, v in conteos.items() if k != "cuentas_objetivo"}
+    esperar(
+        geografia.get("estado") == "EXITOSA"
+        and conteos["cuentas_objetivo"] == del_dia["cuentas"] == sum(por_estado.values()),
+        f"la geografia termino {geografia.get('estado')}: "
+        + ", ".join(f"{k} {v}" for k, v in por_estado.items()),
+    )
+    esperar(
+        conteos["validas"] > 0 and conteos["sin_coordenadas"] > 0 and conteos["discrepantes"] > 0,
+        "con cuentas validas, sin coordenadas y que discrepan de la fuente",
+    )
+    _sin_coordenadas(geografia, "GET /geografia/ejecuciones/{geografia_run_id}")
+    estado, _, error = enviar("/geografia/ejecuciones", pedida)
+    esperar(
+        estado == 409 and error["codigo"] == "GEOGRAFIA_YA_GENERADA",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+
+    ruta = f"/geografia/ejecuciones/{geografia['geografia_run_id']}/resultados"
+
+    def primeras(estado_geografia: str, cuantas: int) -> dict:
+        estado, _, pagina = pedir(
+            "GET", f"{ruta}?estado_geografia={estado_geografia}&por_pagina={cuantas}"
+        )
+        esperar(
+            estado == 200
+            and bool(pagina["elementos"])
+            and {r["estado_geografia"] for r in pagina["elementos"]} == {estado_geografia},
+            f"GET {{resultados}}?estado_geografia={estado_geografia}: {pagina.get('total')}, por "
+            "su indice",
+        )
+        _sin_coordenadas(pagina, f"los resultados {estado_geografia}")
+        return pagina
+
+    discrepantes = primeras("DISCREPANCIA_MUNICIPIO", 5)
+    esperar(
+        discrepantes["total"] == conteos["discrepantes"]
+        and all(
+            r["municipio"]["cvegeo"] != r["municipio_fuente"]
+            and r["comparacion_municipio"] == "DISCREPA"
+            for r in discrepantes["elementos"]
+        ),
+        "las que discrepan: el municipio espacial no es el de la fuente, y nada se corrigio",
+    )
+    discrepante = discrepantes["elementos"][0]
+    print(
+        f"      {discrepante['cliente_unico']}: la fuente dice {discrepante['municipio_fuente']}, "
+        f"el punto cae en {discrepante['municipio']['cvegeo']}"
+    )
+    sin_coordenadas = primeras("SIN_COORDENADAS", 1)["elementos"][0]
+    validas = primeras("VALIDA", 100)["elementos"]
+    cubierto = validas[0]["municipio"]["cvegeo"]
+    sin_base = next(r for r in validas if r["municipio"]["cvegeo"] != cubierto)
+    estado, _, del_municipio = pedir("GET", f"{ruta}?municipio={cubierto}&por_pagina=5")
+    esperar(
+        estado == 200
+        and all(r["municipio"]["cvegeo"] == cubierto for r in del_municipio["elementos"]),
+        f"GET {{resultados}}?municipio={cubierto}: {del_municipio.get('total')} cuentas en "
+        f"{validas[0]['municipio']['nombre_oficial']}",
+    )
+
+    # Una base activa que cubre el municipio de una cuenta valida, y una inactiva que cubre el de
+    # otra: la primera queda ASIGNADA, la segunda SIN_BASE_ELEGIBLE. Puntos sinteticos.
+    bases = {
+        "nombre": f"Bases de la prueba de humo del {corte}",
+        "bases": [
+            {
+                "codigo": "BASE_HUMO",
+                "nombre": "Base de la prueba de humo (sintetica)",
+                "lat": 18.5,
+                "lon": -99.5,
+                "activa": True,
+                "municipios": [cubierto],
+            },
+            {
+                "codigo": "BASE_INACTIVA",
+                "nombre": "Base inactiva de la prueba de humo (sintetica)",
+                "lat": 18.6,
+                "lon": -99.4,
+                "activa": False,
+                "municipios": [sin_base["municipio"]["cvegeo"]],
+            },
+        ],
+    }
+    estado, _, version_bases = enviar("/bases/versiones", bases)
+    esperar(
+        estado in (200, 201)
+        and (version_bases["bases"], version_bases["activas"], version_bases["coberturas"])
+        == (2, 1, 2),
+        f"POST /bases/versiones: {estado}, 2 bases (1 activa), hash "
+        f"{version_bases.get('hash_configuracion', '')[:12]}...",
+    )
+    estado, _, otra_vez = enviar("/bases/versiones", {**bases, "nombre": "Otra etiqueta"})
+    esperar(
+        estado == 200
+        and otra_vez["reutilizada"]
+        and otra_vez["bases_version_id"] == version_bases["bases_version_id"],
+        "el mismo contenido con otro nombre: 200, la misma version reutilizada",
+    )
+    estado, _, detalle = pedir("GET", f"/bases/versiones/{version_bases['bases_version_id']}")
+    esperar(
+        estado == 200 and detalle["hash_verificado"] is True,
+        "GET /bases/versiones/{bases_version_id}: su hash, vuelto a calcular, es el que se guardo",
+    )
+
+    pedida_v2 = {
+        "corte_id": del_dia["corte_id"],
+        "geografia_run_id": geografia["geografia_run_id"],
+        "bases_version_id": version_bases["bases_version_id"],
+    }
+    estado, encabezados, abierta = enviar("/territorial-v2", pedida_v2)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and ubicacion_de(encabezados) == f"/territorial-v2/{abierta['territorial_run_id']}",
+        f"POST /territorial-v2: {estado} {abierta.get('estado')}",
+    )
+    territorial = seguir(ubicacion_de(encabezados))
+    asignaciones = territorial.get("conteos", {})
+    por_asignacion = {k: v for k, v in asignaciones.items() if k != "cuentas_objetivo"}
+    esperar(
+        territorial.get("estado") == "EXITOSA"
+        and sum(por_asignacion.values()) == del_dia["cuentas"]
+        and asignaciones["asignadas"] > 0
+        and asignaciones["revision_geografica"] > 0
+        and asignaciones["sin_base"] > 0,
+        f"territorial/v2 termino {territorial.get('estado')}: "
+        + ", ".join(f"{k} {v}" for k, v in por_asignacion.items()),
+    )
+    esperar(
+        territorial["version_politica"] == "territorial-public-v2"
+        and territorial["tolerancia_empate_m"] == "100.00"
+        and len(territorial["hash_politica"]) == len(territorial["firma_inputs"]) == 64
+        and "capacidad" in territorial["aviso"],
+        f"territorial-public-v2 (hash {territorial['hash_politica'][:12]}...), tolerancia de "
+        "empate 100.00 m, sin capacidad",
+    )
+    ruta_v2 = f"/territorial-v2/{territorial['territorial_run_id']}/resultados"
+    estado, _, de_la_base = pedir("GET", f"{ruta_v2}?base=BASE_HUMO&por_pagina=5")
+    esperar(
+        estado == 200
+        and de_la_base["total"] == asignaciones["asignadas"]
+        and all(
+            a["estado_asignacion"] == "ASIGNADA"
+            and a["base"]["codigo"] == "BASE_HUMO"
+            and a["distancia_base_m"] is not None
+            for a in de_la_base["elementos"]
+        ),
+        f"GET {{asignaciones}}?base=BASE_HUMO: {de_la_base.get('total')} cuentas, con su "
+        "distancia geodesica",
+    )
+    _sin_coordenadas(de_la_base, "las asignaciones")
+    asignada = de_la_base["elementos"][0]
+    print(
+        f"      {asignada['cliente_unico']}: {asignada['base']['codigo']} a "
+        f"{asignada['distancia_base_m']} m"
+    )
+    estado, _, sin_bases = pedir(
+        "GET",
+        f"{ruta_v2}?estado=SIN_BASE_ELEGIBLE&municipio={sin_base['municipio']['cvegeo']}"
+        "&por_pagina=1",
+    )
+    esperar(
+        estado == 200
+        and sin_bases["elementos"][0]["motivos"][-1]
+        == {"codigo": "BASES_INACTIVAS", "bases": ["BASE_INACTIVA"]},
+        "SIN_BASE_ELEGIBLE en el municipio que solo cubre una base inactiva, y lo dice",
+    )
+
+    # La Cuenta 360 de cada una: su geografia vigente y su base, sin coordenadas.
+    for elegida, geografia_esperada, asignacion, base in (
+        (asignada, "VALIDA", "ASIGNADA", "BASE_HUMO"),
+        (sin_coordenadas, "SIN_COORDENADAS", "REVISION_GEOGRAFICA", None),
+        (discrepante, "DISCREPANCIA_MUNICIPIO", "REVISION_GEOGRAFICA", None),
+        (sin_base, "VALIDA", "SIN_BASE_ELEGIBLE", None),
+    ):
+        estado, _, resumen = pedir("GET", f"/cuentas/{elegida['cuenta_id']}")
+        g = resumen.get("geografia_resumen") or {}
+        t = g.get("territorial") or {}
+        esperar(
+            estado == 200
+            and g.get("geografia_run_id") == geografia["geografia_run_id"]
+            and g.get("estado_geografia") == geografia_esperada
+            and t.get("territorial_run_id") == territorial["territorial_run_id"]
+            and t.get("estado_asignacion") == asignacion
+            and t.get("codigo_base") == base,
+            f"GET /cuentas/{{cuenta_id}} de {elegida['cliente_unico']}: {geografia_esperada} en "
+            f"{g.get('cvegeo')}, {asignacion} {base or ''}".rstrip(),
+        )
+        _sin_coordenadas(resumen, "la Cuenta 360")
+    estado, _, de_la_cuenta = pedir("GET", f"/cuentas/{asignada['cuenta_id']}/geografia")
+    estado_t, _, asignaciones_de_la_cuenta = pedir(
+        "GET", f"/cuentas/{asignada['cuenta_id']}/territorial-v2"
+    )
+    esperar(
+        estado == estado_t == 200
+        and de_la_cuenta["total"] >= 1
+        and asignaciones_de_la_cuenta["elementos"][0]["territorial_run_id"]
+        == territorial["territorial_run_id"],
+        "GET /cuentas/{cuenta_id}/geografia y /territorial-v2: su historia, sin coordenadas",
+    )
+    _sin_coordenadas(de_la_cuenta, "la geografia de una cuenta")
+    for recurso, tipo in ((geografia, "GEOGRAFIA"), (territorial, "TERRITORIAL_V2")):
+        estado, _, trabajo = pedir("GET", f"/trabajos/{recurso['trabajo_id']}")
+        esperar(
+            estado == 200 and (trabajo["tipo"], trabajo["estado"]) == (tipo, "COMPLETADO"),
+            f"su trabajo {tipo}: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+        )
+    estado, _, error = enviar("/territorial-v2", pedida_v2)
+    esperar(
+        estado == 409 and error["codigo"] == "TERRITORIAL_V2_YA_GENERADO",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+
+
 def main(
     archivo: Path,
     oficial: Path | None = None,
     corte: str | None = None,
     pagos: Path | None = None,
     escenario: Path | None = None,
+    geografia: bool = False,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
@@ -1408,6 +1691,18 @@ def main(
         "/decisiones-v2/{decision_run_id}/resultados/{cuenta_id}",
         "/cuentas/{cuenta_id}/decisiones-v2",
         "/cartera/cortes/{corte_id}/decisiones-v2",
+        "/geografia/versiones",
+        "/geografia/versiones/{geografia_version_id}",
+        "/geografia/ejecuciones",
+        "/geografia/ejecuciones/{geografia_run_id}",
+        "/geografia/ejecuciones/{geografia_run_id}/resultados",
+        "/cuentas/{cuenta_id}/geografia",
+        "/bases/versiones",
+        "/bases/versiones/{bases_version_id}",
+        "/territorial-v2",
+        "/territorial-v2/{territorial_run_id}",
+        "/territorial-v2/{territorial_run_id}/resultados",
+        "/cuentas/{cuenta_id}/territorial-v2",
     )
     esperar(
         estado == 200
@@ -1415,7 +1710,7 @@ def main(
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
         "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
-        "la atribucion y decision/v2",
+        "la atribucion, decision/v2, la geografia, las bases y territorial/v2",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -1427,6 +1722,8 @@ def main(
     if oficial is not None and pagos is not None:
         el_lifecycle(pagos, corte)
         la_decision_v2(oficial, pagos, corte, hay_cortes_posteriores=escenario is not None)
+    if geografia:
+        la_geografia(corte)
     print("Todo en orden.")
 
 
@@ -1439,7 +1736,22 @@ if __name__ == "__main__":
     argumentos.add_argument(
         "--escenario", type=Path, help="El directorio de un escenario de generar-escenario."
     )
+    argumentos.add_argument(
+        "--geografia",
+        action="store_true",
+        help="La referencia ya esta importada y la cartera oficial trae coordenadas: recorre "
+        "geografia/v1, las bases y territorial/v2 sobre su corte.",
+    )
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
-    main(leidos.archivo, leidos.oficial, leidos.corte, leidos.pagos, leidos.escenario)
+    if leidos.geografia and leidos.oficial is None:
+        argumentos.error("--geografia va con --oficial y --corte.")
+    main(
+        leidos.archivo,
+        leidos.oficial,
+        leidos.corte,
+        leidos.pagos,
+        leidos.escenario,
+        geografia=leidos.geografia,
+    )

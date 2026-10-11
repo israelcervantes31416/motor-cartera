@@ -21,7 +21,9 @@ x-app: &app
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # PostgreSQL 16 con PostGIS 3.5: la geografia (v0.11) guarda los municipios y los puntos con
+    # sus indices GiST. La misma version mayor de PostgreSQL de siempre: el volumen de datos sirve.
+    image: postgis/postgis:16-3.5-alpine
     container_name: motor-cartera-postgres
     environment:
       POSTGRES_USER: motor

@@ -67,6 +67,23 @@ def generar_oficial(
         bool,
         typer.Option(help="Tambien los pagos (pagos/v1) de la semana que termina en el corte."),
     ] = True,
+    puntos: Annotated[
+        str | None,
+        typer.Option(
+            "--puntos",
+            help="Una muestra de puntos de una referencia importada (muestrear-puntos): con ella "
+            "cada cuenta lleva LATITUD y LONGITUD sinteticas. Sin ella, van vacias.",
+        ),
+    ] = None,
+    proporciones: Annotated[
+        str | None,
+        typer.Option(
+            "--proporciones",
+            help="Con --puntos: validas=0.9,faltantes=0.04,incompletas=0.01,invalidas=0.01,"
+            "fuera=0.02,discrepantes=0.02 (estas son las de omision; las que no se nombran valen "
+            "0).",
+        ),
+    ] = None,
 ) -> None:
     """Genera la cartera oficial sintetica (cartera/v2, 93 columnas) en un archivo: en xlsx, las
     hojas CARTERA y CARRIER; en zip, CARTERA.csv y CARRIER.csv; en csv, solo CARTERA. Y, aparte,
@@ -76,6 +93,10 @@ def generar_oficial(
     Por omision es pequena (XS): una cartera grande se pide con su perfil, nunca por accidente. Se
     arma y se escribe por bloques, asi que XL y XXL no se cargan enteras en memoria; para ellas
     conviene csv o zip, porque escribir un xlsx de ese tamano es lento por el formato.
+
+    Con --puntos, LATITUD y LONGITUD llevan coordenadas sinteticas en las proporciones que se
+    pidan: validas, faltantes, incompletas, invalidas (0, 0), fuera de la referencia y
+    discrepantes.
     """
     from motor_cartera.config import config
     from motor_cartera.generador.oficial import (
@@ -92,16 +113,26 @@ def generar_oficial(
     cuantas = n if n is not None else PERFILES[perfil.upper()]
     corte = fecha_corte.date() if fecha_corte else date.today()
     semilla = config.semilla if semilla is None else semilla
+    coordenadas = _coordenadas(puntos, proporciones)
     estado = estado_inicial(cuantas, semilla=semilla, fecha_corte=corte)
     ruta = Path(destino) / f"cartera_oficial_{corte.isoformat()}.{formato.lower().lstrip('.')}"
     escrito = escribir_cartera(
-        estado, ruta, semilla=semilla, fecha_corte=corte, con_carrier=carrier
+        estado,
+        ruta,
+        semilla=semilla,
+        fecha_corte=corte,
+        con_carrier=carrier,
+        coordenadas=coordenadas,
     )
     typer.echo(
         f"Escrito: {escrito.ruta} ({escrito.filas:,} cuentas"
         + (f", {escrito.filas_carrier:,} filas de CARRIER" if escrito.filas_carrier else "")
         + f"; fecha de corte {corte.isoformat()}, que se declara al cargarla)"
     )
+    if escrito.coordenadas:
+        typer.echo(
+            "  coordenadas: " + ", ".join(f"{c} {n:,}" for c, n in escrito.coordenadas.items())
+        )
     if pagos:
         desde = corte - timedelta(days=6)
         movimientos = tabla_pagos(estado, semilla=semilla, desde=desde, hasta=corte)
@@ -146,6 +177,23 @@ def generar_escenario(
         float,
         typer.Option(min=0.01, max=5.0, help="Escala cuantas gestiones hay por periodo."),
     ] = 1.0,
+    puntos: Annotated[
+        str | None,
+        typer.Option(
+            "--puntos",
+            help="Una muestra de puntos de una referencia importada (muestrear-puntos): con ella "
+            "cada cuenta lleva LATITUD y LONGITUD sinteticas. Sin ella, van vacias.",
+        ),
+    ] = None,
+    proporciones: Annotated[
+        str | None,
+        typer.Option(
+            "--proporciones",
+            help="Con --puntos: validas=0.9,faltantes=0.04,incompletas=0.01,invalidas=0.01,"
+            "fuera=0.02,discrepantes=0.02 (estas son las de omision; las que no se nombran valen "
+            "0).",
+        ),
+    ] = None,
 ) -> None:
     """Genera un escenario longitudinal: varios cortes de la misma cartera (cartera/v2) y los pagos
     de cada periodo entre un corte y el siguiente (pagos/v1), con un manifiesto, escenario.json.
@@ -167,6 +215,7 @@ def generar_escenario(
         typer.echo(f"Perfil desconocido: {perfil}. Usa {', '.join(PERFILES)}.", err=True)
         raise typer.Exit(code=2)
     inicio = primer_corte.date() if primer_corte else date.today()
+    coordenadas = _coordenadas(puntos, proporciones)
     try:
         escenario = escribir_escenario(
             destino,
@@ -180,6 +229,7 @@ def generar_escenario(
             tasa_retiros=tasa_retiros,
             lifecycle=lifecycle,
             intensidad_lifecycle=intensidad_lifecycle,
+            coordenadas=coordenadas,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -857,6 +907,328 @@ def comparar_decisiones(
     for fila, columnas in c.matriz.items():
         typer.echo(f"  v1 {fila:>8} -> " + ", ".join(f"{p} {n:,}" for p, n in columnas.items()))
     typer.echo("Es un diagnostico de diferencias, no un juicio de calidad.")
+
+
+def _coordenadas(puntos: str | None, proporciones: str | None):
+    """Lo que el generador necesita para dar coordenadas, o None si no se pidio una muestra."""
+    from motor_cartera.generador.coordenadas import Coordenadas, MuestraDePuntos, Proporciones
+
+    if puntos is None:
+        if proporciones is not None:
+            typer.echo("--proporciones se usa con --puntos.", err=True)
+            raise typer.Exit(code=2)
+        return None
+    try:
+        reparto = Proporciones() if proporciones is None else Proporciones.de_texto(proporciones)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    return Coordenadas(MuestraDePuntos.leer(puntos), reparto)
+
+
+@app.command("importar-geografia")
+def importar_geografia(
+    archivo: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False, help="El zip oficial, o un .shp.")
+    ],
+    referencia: Annotated[
+        str | None,
+        typer.Option(
+            "--referencia",
+            help="Una referencia del manifiesto (inegi-mg-2025-municipal): el archivo tiene que "
+            "tener su SHA-256, y de ahi salen su producto, su edicion y su capa.",
+        ),
+    ] = None,
+    capa: Annotated[
+        str | None,
+        typer.Option(help="El miembro del zip sin extension, como conjunto_de_datos/00mun."),
+    ] = None,
+    proveedor: Annotated[
+        str | None, typer.Option(help="Sin --referencia: INEGI, SINTETICO...")
+    ] = None,
+    producto: Annotated[
+        str | None, typer.Option(help="Sin --referencia: el nombre exacto.")
+    ] = None,
+    edicion: Annotated[str | None, typer.Option(help="Sin --referencia: la edicion.")] = None,
+    url: Annotated[str | None, typer.Option(help="De donde se descargo.")] = None,
+    licencia: Annotated[str | None, typer.Option(help="Sus condiciones de uso.")] = None,
+) -> None:
+    """Importa una referencia geografica publica (la capa de municipios de un Shapefile) como una
+    version nueva: valida su sistema de coordenadas por su .prj, normaliza a EPSG:4326, comprueba
+    cada geometria, repara solo lo seguro (y lo registra), y publica todo o nada. El archivo no se
+    modifica ni se copia al almacen: se identifica por su SHA-256. Termina con codigo 1 si no
+    publico."""
+    from motor_cartera.geografia import referencia as importador
+    from motor_cartera.geografia.referencia import Metadatos
+
+    metadatos = None
+    if referencia is None:
+        if not (proveedor and producto and edicion):
+            typer.echo(
+                "Sin --referencia, una importacion declara --proveedor, --producto y --edicion.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        adicionales = {k: v for k, v in (("url", url), ("licencia", licencia)) if v}
+        metadatos = Metadatos(proveedor, producto, edicion, adicionales=adicionales)
+    try:
+        version = importador.importar(
+            archivo, capa=capa, referencia=referencia, metadatos=metadatos
+        )
+    except importador.GeografiaYaImportada as exc:
+        typer.echo(f"{exc}", err=True)
+        typer.echo(f"geografia_version_id {exc.previa.geografia_version_id}")
+        raise typer.Exit(code=1) from exc
+    except (
+        importador.ImportacionRechazada,
+        importador.GeografiaEnImportacion,
+        importador.ImportacionFallida,
+    ) as exc:
+        typer.echo(f"{type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Referencia {version.geografia_version_id}: {version.estado}")
+    typer.echo(f"  {version.proveedor}, {version.producto} ({version.edicion}), {version.capa}")
+    typer.echo(f"  sha256 {version.sha256} ({version.tamano_bytes:,} bytes)")
+    typer.echo(f"  {version.detalle}")
+    typer.echo(f"geografia_version_id {version.geografia_version_id}")
+
+
+@app.command("generar-geografia-sintetica")
+def generar_geografia_sintetica(
+    destino: Annotated[
+        str, typer.Option(help="El zip que se escribe.")
+    ] = "datos/geografia/municipios_sinteticos.zip",
+    entidades: Annotated[
+        str,
+        typer.Option(
+            help="Las entidades cuyos municipios lleva, separadas por comas. Por omision, las del "
+            "generador de carteras."
+        ),
+    ] = "",
+) -> None:
+    """Escribe una referencia geografica SINTETICA: un rectangulo por municipio de esas entidades,
+    en una cuadricula inventada, con su clave real del catalogo (para que la fuente se pueda
+    comparar) y una geometria que no es ningun limite real. Para la prueba de humo y el CI, que no
+    descargan nada del INEGI."""
+    from motor_cartera.fuentes.geografia import catalogo
+    from motor_cartera.generador.oficial import PESO_ENTIDAD
+    from motor_cartera.geografia.sintetica import referencia_de_humo
+
+    elegidas = [e.strip() for e in entidades.split(",") if e.strip()] or list(PESO_ENTIDAD)
+    claves = [
+        e.cve_entidad + m.cve_municipio
+        for e in catalogo().entidades
+        if e.cve_entidad in elegidas
+        for m in e.municipios
+    ]
+    ruta = referencia_de_humo(destino, claves)
+    typer.echo(f"Escrito: {ruta} ({len(claves):,} municipios sinteticos de {', '.join(elegidas)})")
+
+
+@app.command("muestrear-puntos")
+def muestrear_puntos(
+    geografia_version: Annotated[
+        str, typer.Option("--geografia-version", help="La version PUBLICADA, por su UUID.")
+    ],
+    destino: Annotated[
+        str, typer.Option(help="El JSON que se escribe.")
+    ] = "datos/geografia/puntos.json",
+    por_municipio: Annotated[int, typer.Option(min=1, help="Puntos por municipio.")] = 20,
+    fuera: Annotated[int, typer.Option(min=1, help="Puntos fuera de la referencia.")] = 200,
+    semilla: Annotated[int, typer.Option(min=1)] = 7,
+) -> None:
+    """Escribe una muestra de puntos dentro de cada municipio de una version importada, y fuera de
+    ella, con PostGIS y una semilla: el insumo de --puntos en generar-oficial y generar-escenario.
+    Son puntos de la cartografia, no ubicaciones de nadie."""
+    from uuid import UUID
+
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.geografia import consultas, muestra
+
+    with sesion() as s:
+        try:
+            version = consultas.version(s, UUID(geografia_version))
+        except consultas.VersionNoEncontrada as exc:
+            typer.echo(f"No existe la version {geografia_version}.", err=True)
+            raise typer.Exit(code=1) from exc
+        try:
+            datos = muestra.muestrear(
+                s, version, por_municipio=por_municipio, fuera=fuera, semilla=semilla
+            )
+        except muestra.MuestraImposible as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+    ruta = muestra.escribir(datos, destino)
+    puntos = sum(len(p) for p in datos["municipios"].values())
+    typer.echo(
+        f"Escrito: {ruta} ({puntos:,} puntos en {len(datos['municipios']):,} municipios, "
+        f"{len(datos['fuera']):,} fuera; semilla {semilla})"
+    )
+
+
+@app.command("cargar-bases")
+def cargar_bases(
+    archivo: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False, help="Un JSON, o un JSONL con --nombre.")
+    ],
+    nombre: Annotated[
+        str | None,
+        typer.Option(help="El nombre de la version; obligatorio en un JSONL (una base por linea)."),
+    ] = None,
+) -> None:
+    """Publica una version de la configuracion de bases operativas: cada base con su codigo, su
+    nombre, su punto, si esta activa y los municipios que puede atender. El mismo contenido es la
+    misma version: si ya existe, la reutiliza. Termina con codigo 1 si la configuracion no es
+    valida."""
+    import json
+
+    from motor_cartera.bases.configuracion import (
+        ConfiguracionInvalida,
+        leer,
+        leer_jsonl,
+        publicar,
+    )
+    from motor_cartera.db.sesion import sesion
+
+    texto = archivo.read_text(encoding="utf-8")
+    try:
+        if archivo.suffix.lower() == ".jsonl":
+            if not nombre:
+                typer.echo("Un JSONL de bases necesita --nombre.", err=True)
+                raise typer.Exit(code=2)
+            configuracion = leer_jsonl(texto, nombre)
+        else:
+            documento = json.loads(texto)
+            if nombre and isinstance(documento, dict):
+                documento = {**documento, "nombre": nombre}
+            configuracion = leer(documento)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"{archivo.name} no es JSON: {exc.msg}.", err=True)
+        raise typer.Exit(code=1) from exc
+    except ConfiguracionInvalida as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    with sesion() as s:
+        publicada = publicar(s, configuracion)
+        s.commit()
+        v = publicada.version
+        s.refresh(v)
+        accion = "publicada" if publicada.creada else "ya existia: se reutiliza"
+        typer.echo(f"Bases {v.bases_version_id}: {accion}")
+        typer.echo(
+            f"  {v.nombre}: {v.bases} bases ({v.activas} activas), {v.coberturas} coberturas"
+        )
+        typer.echo(f"  hash {v.hash_configuracion} ({v.version_configuracion})")
+        typer.echo(f"bases_version_id {v.bases_version_id}")
+
+
+def _corte_por_fecha(fecha):
+    """El corte_id del corte de esa fecha en la cartera del sistema; si no hay, codigo 1."""
+    from sqlmodel import select
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import CorteCanonico
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        corte_id = s.exec(
+            select(CorteCanonico.corte_id).where(
+                CorteCanonico.despacho_id == config.despacho_id,
+                CorteCanonico.cartera_id == config.cartera_id,
+                CorteCanonico.fecha_corte == fecha,
+            )
+        ).first()
+    if corte_id is None:
+        typer.echo(
+            f"No hay un corte canonico del {fecha.isoformat()} en "
+            f"{config.despacho_id}/{config.cartera_id}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return corte_id
+
+
+@app.command()
+def geolocalizar(
+    corte: Annotated[
+        datetime, typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte.")
+    ],
+    geografia_version: Annotated[
+        str,
+        typer.Option(
+            "--geografia-version", help="La version PUBLICADA de la referencia, por su UUID."
+        ),
+    ],
+) -> None:
+    """Resuelve la geografia de las cuentas de un corte con geografia/v1 y una version declarada
+    de la referencia, en primer plano y sin la API. Pasa por la cola durable, con el trabajo de
+    este proceso. No imprime ninguna coordenada. Termina con codigo 1 si no publico."""
+    from uuid import UUID
+
+    from motor_cartera.db.modelos import EstadoGeografia
+    from motor_cartera.geografia.ejecuciones import (
+        EntradaNoGeolocalizable,
+        GeografiaEnProceso,
+        GeografiaYaGenerada,
+    )
+    from motor_cartera.orquestacion.worker import geolocalizar_en_primer_plano
+
+    corte_id = _corte_por_fecha(corte.date())
+    try:
+        e = geolocalizar_en_primer_plano(corte_id, UUID(geografia_version))
+    except (EntradaNoGeolocalizable, GeografiaEnProceso, GeografiaYaGenerada) as exc:
+        codigo = getattr(exc, "codigo", type(exc).__name__)
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Geografia {e.geografia_run_id}: {e.estado}")
+    typer.echo(f"  firma de entrada {e.firma_inputs}")
+    typer.echo(f"  {e.detalle}")
+    typer.echo(f"geografia_run_id {e.geografia_run_id}")
+    if e.estado != EstadoGeografia.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("asignar-territorial-v2")
+def asignar_territorial_v2(
+    corte: Annotated[
+        datetime, typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte.")
+    ],
+    geografia_run: Annotated[
+        str, typer.Option("--geografia-run", help="Una geografia EXITOSA de ese corte.")
+    ],
+    bases: Annotated[str, typer.Option("--bases", help="La version de bases, por su UUID.")],
+    politica: Annotated[
+        str | None, typer.Option("--politica", help="Por omision, territorial-public-v2.")
+    ] = None,
+) -> None:
+    """Asigna las cuentas de un corte a sus bases operativas con territorial/v2, en primer plano y
+    sin la API, con entradas declaradas: el corte, su geografia y la version de bases. Corre en
+    paralelo a territorial/v1. Termina con codigo 1 si no publico."""
+    from uuid import UUID
+
+    from motor_cartera.db.modelos import EstadoTerritorialV2
+    from motor_cartera.orquestacion.worker import asignar_territorial_v2_en_primer_plano
+    from motor_cartera.territorial_v2.ejecuciones import (
+        EntradaNoAsignable,
+        TerritorialV2EnProceso,
+        TerritorialV2YaGenerado,
+    )
+
+    corte_id = _corte_por_fecha(corte.date())
+    try:
+        e = asignar_territorial_v2_en_primer_plano(
+            corte_id, UUID(geografia_run), UUID(bases), version_politica=politica
+        )
+    except (EntradaNoAsignable, TerritorialV2EnProceso, TerritorialV2YaGenerado) as exc:
+        codigo = getattr(exc, "codigo", type(exc).__name__)
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"territorial/v2 {e.territorial_run_id}: {e.estado}")
+    typer.echo(f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}")
+    typer.echo(f"  {e.detalle}")
+    typer.echo(f"territorial_run_id {e.territorial_run_id}")
+    if e.estado != EstadoTerritorialV2.EXITOSA:
+        raise typer.Exit(code=1)
 
 
 def _ventana_atribuible(ventana) -> str:

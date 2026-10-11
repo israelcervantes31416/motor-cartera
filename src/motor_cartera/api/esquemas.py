@@ -1226,6 +1226,39 @@ class UltimaDecisionV2Respuesta(BaseModel):
     canal: str
 
 
+class TerritorialResumenRespuesta(BaseModel):
+    """La asignacion de territorial/v2 que acompana a la geografia vigente de una cuenta."""
+
+    territorial_run_id: UUID
+    bases_version_id: UUID
+    version_politica: str
+    estado_asignacion: str
+    codigo_base: str | None = Field(description="La base asignada; null si no se asigno.")
+    nombre_base: str | None
+    distancia_base_m: Decimal | None = Field(
+        description="Geodesica, en metros, al centimetro; solo en una ASIGNADA."
+    )
+
+
+class GeografiaResumenRespuesta(BaseModel):
+    """La geografia vigente de una cuenta, en resumen. Sin coordenadas: la coordenada observada no
+    sale por la API general."""
+
+    geografia_run_id: UUID
+    corte_id: UUID
+    fecha_corte: date
+    geografia_version_id: UUID
+    referencia: str = Field(description="El producto y la edicion de la referencia.")
+    estado_geografia: str
+    cvegeo: str | None = Field(description="El municipio espacial, si el punto cae en uno solo.")
+    municipio: str | None = Field(description="Su nombre oficial, el del proveedor.")
+    municipio_fuente: str | None = Field(
+        description="El CVEGEO que resolvio la fuente con ESTADO_CTE y POBLACION_CTE."
+    )
+    comparacion_municipio: str = Field(description="COINCIDE, DISCREPA o NO_COMPARABLE.")
+    territorial: TerritorialResumenRespuesta | None
+
+
 class LifecycleResumenRespuesta(BaseModel):
     """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
     de tiempo son subrecursos paginados: aqui no estan."""
@@ -1314,6 +1347,15 @@ class Cuenta360Respuesta(BaseModel):
         "dia): su ejecucion, su as_of, su prioridad y su canal. Sus features y sus motivos estan "
         "en /decisiones-v2/{decision_run_id}/resultados/{cuenta_id}, y todas, en "
         "/cuentas/{cuenta_id}/decisiones-v2.",
+    )
+    geografia_resumen: GeografiaResumenRespuesta | None = Field(
+        default=None,
+        description="La geografia vigente de la cuenta (geografia/v1) y su asignacion territorial "
+        "(territorial/v2), en resumen y sin coordenadas: el estado, el municipio y la base. Es la "
+        "de la ejecucion de geografia EXITOSA mas reciente de su corte mas reciente que tenga una "
+        "(con `al`, de los cortes hasta ese dia), y la asignacion EXITOSA mas reciente sobre esa "
+        "geografia. Todas estan en /cuentas/{cuenta_id}/geografia y "
+        "/cuentas/{cuenta_id}/territorial-v2.",
     )
 
 

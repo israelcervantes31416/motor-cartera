@@ -16,12 +16,14 @@ from motor_cartera import __version__
 from motor_cartera.api import (
     acuerdos,
     atribuciones,
+    bases,
     cartera,
     corridas,
     cuentas,
     decisiones,
     decisiones_v2,
     evaluaciones,
+    geografia,
     gestiones,
     historia,
     lifecycle,
@@ -32,6 +34,7 @@ from motor_cartera.api import (
     ruteo,
     salud,
     territorial,
+    territorial_v2,
 )
 from motor_cartera.api.errores import registrar_manejadores
 from motor_cartera.api.seguridad import exigir_api_key
@@ -190,6 +193,39 @@ acreedor**, y no es una prediccion: no hay probabilidades ni modelos. Corre en p
 Una feature de pagos o de atribucion cuya ventana no estaba disponible a `known_at` es `null`, no
 cero, y no activa ninguna regla.
 
+**La geografia real** (`geografia/v1`) separa el hecho geografico de la politica territorial. La
+referencia es cartografia publica oficial (el Marco Geoestadistico del INEGI), versionada e
+importada con `motor-cartera importar-geografia`: no es una tercera fuente de negocio. En PostGIS,
+en EPSG:4326 (X longitud, Y latitud), la coordenada observada de cada cuenta (LATITUD y LONGITUD de
+cartera/v2) se clasifica, se ubica con `ST_Covers` en los municipios de una version declarada y se
+compara con el municipio que resolvio la fuente. Nada se corrige: una coordenada dudosa no se
+reemplaza por un centroide.
+
+34. `GET /geografia/versiones` y `/geografia/versiones/{geografia_version_id}`: cada version
+    importada, con su producto, su edicion, el SHA-256 de su archivo y sus municipios.
+35. `POST /geografia/ejecuciones` con el `corte_id` y la `geografia_version_id`: la geografia del
+    corte, en un trabajo `GEOGRAFIA`. `GET /geografia/ejecuciones/{geografia_run_id}` y
+    `/resultados`, filtrables por `estado_geografia` y `municipio`: el estado de cada cuenta, su
+    municipio y sus motivos, sin coordenadas.
+36. `GET /cuentas/{cuenta_id}/geografia`: su geografia a traves de los cortes.
+
+**Las bases operativas** son configuracion operacional versionada: cada base con su punto, si esta
+activa y los municipios que puede atender, declarados. **`territorial/v2`** asigna cada cuenta con
+geografia confiable a la base activa mas cercana entre las que cubren su municipio
+(`territorial-public-v2`, con distancia geodesica y una tolerancia de empate explicita); una
+geografia dudosa queda en revision y un empate no se resuelve al azar. Corre en paralelo a
+territorial/v1, que sigue alimentando el ruteo.
+
+37. `POST /bases/versiones`, `GET /bases/versiones` y `/bases/versiones/{bases_version_id}`: el
+    mismo contenido es la misma version.
+38. `POST /territorial-v2` con el `corte_id`, su `geografia_run_id` EXITOSA y la
+    `bases_version_id`, en un trabajo `TERRITORIAL_V2`. `GET /territorial-v2/{territorial_run_id}`
+    y `/resultados`, filtrables por `base`, `municipio` y `estado`.
+39. `GET /cuentas/{cuenta_id}/territorial-v2`; `GET /cuentas/{cuenta_id}` trae su
+    `geografia_resumen`.
+
+Es pertenencia territorial, no capacidad: sin zonas, jornadas, gestores ni rutas (v0.12 y v0.13).
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -288,6 +324,23 @@ ETIQUETAS = [
         "versionadas, sus motivos y sus hashes. Una politica publica y sintetica, no una "
         "prediccion; corre en paralelo a decision/v1.",
     },
+    {
+        "name": "geografia",
+        "description": "La geografia real (geografia/v1): las versiones importadas de la "
+        "referencia publica y, por corte, el estado y el municipio de la coordenada observada de "
+        "cada cuenta, comparado con el de la fuente. Sin coordenadas en las respuestas.",
+    },
+    {
+        "name": "bases",
+        "description": "Las bases operativas: configuracion operacional versionada, con su punto, "
+        "si estan activas y su cobertura declarada por municipio. No es una fuente de negocio.",
+    },
+    {
+        "name": "territorial-v2",
+        "description": "territorial/v2: a que base operativa se asigna cada cuenta de un corte, "
+        "sobre una geografia EXITOSA y una version de bases declaradas, con "
+        "territorial-public-v2. Pertenencia territorial, no capacidad.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -327,5 +380,8 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(evaluaciones.router, dependencies=protegidas)
     app.include_router(atribuciones.router, dependencies=protegidas)
     app.include_router(decisiones_v2.router, dependencies=protegidas)
+    app.include_router(geografia.router, dependencies=protegidas)
+    app.include_router(bases.router, dependencies=protegidas)
+    app.include_router(territorial_v2.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

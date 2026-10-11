@@ -39,3 +39,21 @@ datos/*
 *.sqlite
 *.sqlite3
 *.db
+
+# Ni cartografia: la referencia geografica oficial se descarga de su URL y se verifica contra el
+# manifiesto (src/motor_cartera/geografia/referencias.json), y las pruebas escriben sus capas
+# sinteticas diminutas al vuelo. El CI tambien reconoce un Shapefile por sus primeros bytes.
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.qix
+*.sbn
+*.sbx
+*.gpkg
+*.geojson
+*.topojson
+*.kml
+*.kmz
+*.fgb
