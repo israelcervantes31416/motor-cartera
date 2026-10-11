@@ -1,0 +1,36 @@
+{
+  "version": "referencias-geograficas/v1",
+  "descripcion": "Las referencias geograficas publicas que importar-geografia reconoce por su SHA-256. Los archivos no viven en el repositorio: se descargan de su URL oficial y se verifican contra este manifiesto.",
+  "referencias": {
+    "inegi-mg-2025-municipal": {
+      "proveedor": "INEGI",
+      "producto": "Marco Geoestad\u00edstico Integrado, 2025",
+      "producto_inegi": "Marco Geoestad\u00edstico 2025",
+      "upc": "794551163061",
+      "edicion": "2025",
+      "nivel": "MUNICIPAL",
+      "capa": "conjunto_de_datos/00mun",
+      "contenido_capa": "\u00c1reas geoestad\u00edsticas municipales (AGEM)",
+      "archivo": "mg_2025_integrado.zip",
+      "url": "https://www.inegi.org.mx/contenidos/productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/marcogeo/794551163061/mg_2025_integrado.zip",
+      "ficha": "https://www.inegi.org.mx/app/biblioteca/ficha.html?upc=794551163061",
+      "sha256": "f1335bab72d5582adab06e9e3b5d49b7c42da8f8d82e588f484ad6a7c7871d1b",
+      "tamano_bytes": 257341599,
+      "actualizacion_cartografica": "julio 2025 (metadato Modified: 2025-07-31)",
+      "fecha_de_los_archivos": "2025-12-03",
+      "crs_origen": "EPSG:6372 (MEXICO_ITRF_2008_LCC, ITRF2008, GRS80)",
+      "codificacion": "ISO-8859-1 (.cpg 88591)",
+      "municipios": 2478,
+      "envolvente": [
+        -118.6,
+        14.3,
+        -86.5,
+        32.9
+      ],
+      "licencia": "T\u00e9rminos de Libre Uso de la Informaci\u00f3n del INEGI",
+      "licencia_url": "https://www.inegi.org.mx/inegi/terminos.html",
+      "cita": "Fuente: INEGI, Marco Geoestad\u00edstico Integrado, 2025.",
+      "aviso": "Las \u00e1reas geoestad\u00edsticas del Marco Geoestad\u00edstico referencian geogr\u00e1ficamente la informaci\u00f3n estad\u00edstica del INEGI y no deben asumirse como la fuente oficial de la divisi\u00f3n pol\u00edtico-administrativa del pa\u00eds. El producto declara hasta 1 metro de tolerancia entre sus elementos."
+    }
+  }
+}

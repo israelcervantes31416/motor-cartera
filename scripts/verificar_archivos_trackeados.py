@@ -9,11 +9,12 @@ sus archivos:
   - Lo excluiria sin distinguir mayusculas. `CARTERA.XLSX` es tan cartera como
     `cartera.xlsx` (el lector del motor no las distingue), pero en Linux, WSL y el CI git si
     las distingue, y ahi `*.xlsx` no lo detiene.
-  - Es por dentro una hoja de calculo, un archivo comprimido, un formato de datos o un
-    volcado de una base, con cualquier nombre: un xlsx renombrado, un xlsm o un ods (que son un
-    zip), un xls (un documento OLE2), un Parquet, un Arrow, un gzip, un 7z, un rar, un bzip2,
-    un xz, un zstd, un volcado de pg_dump o una base SQLite. Un csv o un volcado en SQL plano no
-    tienen firma, asi que a esos solo los detiene su nombre.
+  - Es por dentro una hoja de calculo, un archivo comprimido, un formato de datos, un
+    volcado de una base o cartografia, con cualquier nombre: un xlsx renombrado, un xlsm o un
+    ods (que son un zip), un xls (un documento OLE2), un Parquet, un Arrow, un gzip, un 7z, un
+    rar, un bzip2, un xz, un zstd, un volcado de pg_dump, una base SQLite (un GeoPackage lo es),
+    un Shapefile o un FlatGeobuf. Un csv, un GeoJSON o un volcado en SQL plano no tienen firma,
+    asi que a esos solo los detiene su nombre.
 
 Solo usa git y la biblioteca estandar, para correr igual en el CI que en una laptop, donde
 antes de un commit revisa tambien lo que ya esta en stage:
@@ -43,6 +44,9 @@ FIRMAS = {
     b"\x28\xb5\x2f\xfd": "un zstd",
     b"PGDMP": "un volcado de pg_dump",
     b"SQLite format 3\x00": "una base SQLite",
+    # El codigo de archivo 9994, en big-endian, con que empiezan el .shp y el .shx.
+    b"\x00\x00\x27\x0a": "un Shapefile (.shp o .shx)",
+    b"fgb\x03fgb": "un FlatGeobuf",
 }
 # bzip2: BZh, el nivel (1 a 9) y la marca de su primer bloque, o la del final si esta vacio.
 for _nivel in "123456789":
@@ -149,7 +153,7 @@ def main() -> int:
     if not problemas:
         print(
             f"{total} archivos trackeados: ninguno lo excluye el .gitignore ni es por dentro "
-            "una hoja de calculo, un comprimido, un formato de datos o un volcado."
+            "una hoja de calculo, un comprimido, un formato de datos, un volcado o cartografia."
         )
         return 0
 
