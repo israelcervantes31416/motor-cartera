@@ -1,23 +1,26 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2 y Geografía Real
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real y Campo v2
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
 Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
 Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0), el Decision
-Engine v2 (v0.10.0) y la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0) están hechos
-como están, y qué haría distinto o cuándo cambiaría cada decisión.
+Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0) y Campo v2:
+Capacidad, Partición y Asignación Operativa (v0.12.0) están hechos como están, y qué haría
+distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [decision_v2.md](decision_v2.md), en [geografia.md](geografia.md), en
-[territorial_v2.md](territorial_v2.md) y en [bases_operativas.md](bases_operativas.md); aquí va el
-porqué.
+[territorial_v2.md](territorial_v2.md), en [bases_operativas.md](bases_operativas.md), en
+[campo_v2.md](campo_v2.md), en [configuracion_campo.md](configuracion_campo.md) y en
+[particion_campo.md](particion_campo.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
-v2, y las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas.
+v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas, y las 138 a 153,
+de Campo v2.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde v0.10.0*.
@@ -3355,3 +3358,278 @@ VRP y VRPTW (v0.13); el Decision Engine v3, analítica, ML y dashboards (v0.14 e
 multitenancy y multi-despacho (v0.18); geocodificar direcciones; corregir coordenadas; otros niveles
 de la cartografía (localidades, AGEB, manzanas); reemplazar a `territorial/v1` o `ruteo/v1`; y
 abrir la geografía o `territorial/v2` sin que alguien las pida.
+
+## 138. Campo v2 consume `decision/v2`: el universo es el canal `CAMPO`, con su prioridad
+
+**Decisión.** Las candidatas de un plan son exactamente los resultados de la `decision/v2` declarada
+con `canal_recomendado = CAMPO`, y la prioridad de cada una es su `prioridad_final`. `campo/v2` no
+vuelve a decidir el canal ni la prioridad, no calcula otro puntaje y no lee la cartera, los pagos ni
+el lifecycle por su cuenta. La decisión se declara por su `decision_run_id` (nunca "la más
+reciente"), tiene que estar `EXITOSA` y ser del corte del plan, y su firma entra en la del plan. La
+fecha de operación también se declara: ni la API ni la línea de comandos la infieren.
+
+**Por qué.** Una sola autoridad para cada pregunta: qué cuentas van a campo y con qué urgencia es de
+`decision/v2`, que ya lo explica con sus motivos y es reproducible a su `known_at`. Si `campo/v2`
+recalculara la prioridad, una cuenta podría ser `ALTA` en la decisión y `MEDIA` en el plan, y nadie
+sabría cuál vale. Declarar la decisión y la fecha hace que un plan histórico se pueda reconstruir:
+con otra decisión u otro día es otro plan, con otra firma, y el anterior no cambia.
+
+## 139. Campo v2 consume `territorial/v2`: la base es la suya, y la duda va a revisión
+
+**Decisión.** La base de una candidata es la de su asignación en la `territorial/v2` declarada, que
+tiene que estar `EXITOSA`, ser del corte del plan y usar la misma versión de bases que la
+configuración de campo (las dos cosas se exigen en la base con llaves foráneas compuestas). Una
+candidata cuya asignación no es `ASIGNADA` (geografía dudosa, fuera de cobertura, sin base elegible o
+empatada) queda `REVISION_TERRITORIAL`, con el estado y los motivos territoriales, sin base, sin
+unidades y sin gestor. Su punto es el de su geografía publicada: no se vuelve a calcular.
+
+**Por qué.** Pertenencia y capacidad son dos preguntas (decisión 134), y `territorial/v2` ya
+contestó la primera con su política, su hash y sus motivos. Mandar a campo una cuenta cuya ubicación
+es dudosa, o elegirle una base que `territorial/v2` no eligió, sería inventar una pertenencia. La
+cuenta en revisión no se pierde: sale en el plan, con su motivo, para que alguien la resuelva.
+
+## 140. El canal no es la capacidad
+
+**Decisión.** Una candidata sin gestor disponible o sin capacidad sigue siendo de canal `CAMPO`:
+queda `SIN_GESTOR_DISPONIBLE` o `SIN_CAPACIDAD`, con su motivo, y no se manda a otro canal, ni se
+mueve a otro día, ni se le baja la prioridad.
+
+**Por qué.** Que hoy no haya quien la visite no cambia que la cuenta necesite una visita: esa es una
+conclusión de `decision/v2`, con sus motivos. Si el plan la cambiara de canal, el déficit de
+capacidad desaparecería de los números y la operación no sabría cuántas cuentas de campo se quedan
+sin atender. Contarlas por base, con su motivo, es lo que dice cuántos gestores faltan y dónde.
+
+## 141. Capacidad declarada, no factibilidad vial
+
+**Decisión.** La capacidad de un gestor es su cupo declarado (`capacidad_cuentas_dia`, entre 1 y
+1,000) si está disponible en la fecha, y 0 si no; una cuenta es una unidad de capacidad, y una media
+jornada no reduce el cupo. El plan no usa distancias, tiempos de traslado, la red vial, la duración
+de una visita ni pesos por tipo de cuenta, y cada respuesta lo dice (`aviso`).
+
+**Por qué.** Lo que se puede declarar y auditar hoy es cuántas cuentas atiende un gestor en un día
+típico: es lo que una operación ya sabe. Derivar el cupo de las horas de la jornada, o de la
+distancia entre cuentas, exigiría un modelo de traslado que el proyecto todavía no tiene, y
+presentarlo como factibilidad sería falso. v0.13 (Ruteo vial v2) tomará estos planes y dirá si cada
+carga cabe en una ruta; mientras tanto, el plan es una carga diaria limitada por capacidad, no una
+ruta.
+
+## 142. La configuración de campo es versionada, inmutable y con hash
+
+**Decisión.** Una versión de la configuración de campo (`campo-configuracion/v1`) trae, sobre una
+versión de bases declarada, todos sus calendarios (con sus ventanas y sus excepciones) y todos sus
+gestores. Se valida entera y **fail-closed**, con todos sus problemas juntos, antes de escribir nada;
+se lleva a una forma canónica (el hash de la versión de bases, la zona, los calendarios por código
+con los siete días, las excepciones por fecha y los gestores por código, sin el nombre de la
+versión) y su SHA-256 es su `hash_configuracion`. El mismo contenido es la misma versión
+(`reutilizada`); cambiar un cupo, un calendario o un gestor es otra versión; triggers rechazan
+cualquier `UPDATE` o `DELETE` de lo publicado, y dos ventanas encimadas de un calendario.
+
+**Por qué.** Como con las bases (decisión 131): un plan de ayer tiene que seguir diciendo con qué
+gestores y qué cupos se hizo, aunque hoy sean otros. Usar el hash de la versión de bases, y no su
+identificador, hace que la misma configuración sobre las mismas bases tenga el mismo hash en
+cualquier base de datos. Cambiar la configuración entre dos planes es una entrada declarada distinta,
+y su efecto se puede medir: las pruebas comparan un plan viejo y uno nuevo después de agregar un
+gestor, de cambiar un cupo y de cambiar un calendario.
+
+## 143. El gestor operacional no es el `Gestor` de la fuente
+
+**Decisión.** Un gestor de campo (`GestorCampo`) es un código opaco de la configuración
+(`GESTOR_001`), sin nombre, teléfono, correo, CURP, RFC ni número de empleado: ninguna llave del
+documento los admite. No se liga a la columna `Gestor` de un pago observado, ni al `actor_ref` de un
+evento del lifecycle, ni a ningún dato de una persona. El generador sintético inventa sus códigos.
+
+**Por qué.** Son tres vocabularios de tres fuentes: el `Gestor` de un pago es lo que el archivo del
+acreedor dice, el `actor_ref` de un evento es quién lo registró, y el gestor de campo es una unidad
+de capacidad que declara quien opera. Ligarlos sin evidencia (por un nombre parecido, por ejemplo)
+inventaría una identidad, y guardar datos de personas en una configuración operativa los expondría
+en cada plan, exportación y respuesta de la API sin ninguna necesidad: el reparto solo necesita un
+código, un cupo y un calendario.
+
+## 144. Ventanas de jornada en hora local, con zona explícita, y excepciones que reemplazan la semana
+
+**Decisión.** Un calendario tiene, para cada día de la semana, cero o más ventanas `HH:MM` en hora
+local, sin encimarse, y excepciones por fecha (`CERRADO`, o `VENTANAS_ESPECIALES`). La jornada de un
+gestor en una fecha es, en orden: `INACTIVO`; la excepción de la fecha, si la hay
+(`CERRADO_POR_EXCEPCION` o `VENTANAS_ESPECIALES`); las ventanas de ese día ISO de la semana
+(`JORNADA_SEMANAL`), o `SIN_JORNADA`. La zona horaria es una zona IANA explícita de la versión, que
+Python y PostgreSQL tienen que conocer; nunca la del servidor. Los instantes UTC de cada ventana los
+calcula PostgreSQL con su base de zonas.
+
+**Por qué.** Una jornada se declara como la vive la operación: "de 9 a 2 y de 4 a 7, de lunes a
+viernes", con varios turnos por día y festivos. Una excepción reemplaza a la semana completa, en vez
+de sumarse, para que un día especial se lea en un solo lugar. La zona explícita evita que el mismo
+plan dé otro resultado en un servidor con otra zona, y dejar el cambio de horario a la base de zonas
+de PostgreSQL evita una tabla de horarios mantenida a mano. Las ventanas no reducen el cupo
+(decisión 141): dicen cuándo, no cuánto.
+
+## 145. La partición es una cuadrícula fija, no un agrupamiento
+
+**Decisión.** Cada candidata asignada a una base cae en cuatro unidades anidadas: zona (base y
+entidad), subzona (base y municipio), tramo (la celda de 5 km de una cuadrícula fija, dentro de su
+municipio y su base) y microtramo (la celda de 1 km, dentro de su tramo). La celda de una coordenada
+es `floor(round(numeric(x), 3) / T)`: el intervalo [k·T, (k+1)·T), con la coordenada al milímetro.
+Cada unidad tiene un UUIDv5 de la política, el nivel, el **código** de la base y su clave. Un plan
+publica solo las unidades que ocupó.
+
+**Por qué.** Un agrupamiento (k-means, densidad, polígonos dibujados) movería las fronteras con cada
+cuenta nueva, y la misma cuenta cambiaría de unidad de un día a otro sin haberse movido: nada sería
+comparable entre planes. Una cuadrícula fija da a cada punto siempre la misma unidad, en cualquier
+orden, máquina o reconstrucción, y se calcula sin mirar a las demás cuentas. Que un tramo no cruce un
+municipio ni una base mantiene la jerarquía (cada unidad tiene un solo padre). El redondeo al
+milímetro hace que PostgreSQL y Python den la misma celda en cada frontera, y usar el código de la
+base en el identificador hace que una base tenga las mismas unidades en otra versión de bases.
+
+## 146. EPSG:6372 para la cuadrícula métrica
+
+**Decisión.** La cuadrícula se calcula en EPSG:6372 (México ITRF2008 / LCC), en metros: cada punto
+guardado en EPSG:4326 se transforma una vez con PostGIS. Nunca se usan grados como metros, ni la
+latitud y la longitud directamente como cuadrícula.
+
+**Por qué.** Una celda de grados no tiene un tamaño fijo: a la latitud de Puebla un grado de
+longitud mide unos 105 km y en Tijuana unos 94, así que "una celda de 0.01°" sería otro tamaño en
+cada estado. EPSG:6372 es la proyección cónica conforme oficial para México en metros, con un solo
+sistema para todo el país: una celda de 1,000 m mide lo mismo en Mérida que en Tijuana, salvo la
+distorsión de escala de una proyección conforme entre dos paralelos (menos de 1 % en el territorio
+nacional), y no hay que elegir una zona UTM por cuenta (que partiría el país en franjas con
+coordenadas incompatibles).
+
+## 147. Tramos de 5 km y microtramos de 1 km
+
+**Decisión.** El tramo mide 5,000 m por lado y el microtramo 1,000 m: un tramo tiene exactamente
+5 × 5 microtramos. Los dos tamaños son parte de `campo-public-v2` y de su hash; cambiarlos es otra
+política, con otros identificadores.
+
+**Por qué.** Un microtramo es lo que un gestor recorre a pie o en pocos minutos: la unidad que no
+conviene partir entre dos gestores. Un kilómetro cuadrado agrupa las cuentas cercanas de una colonia
+sin juntar barrios lejanos; uno más chico partiría las cuadras de una misma visita, y uno más grande
+juntaría en un bloque cuentas que nadie visitaría juntas. El tramo de 5 km es la escala de un
+recorrido de medio día, útil para leer la carga y para la v0.13. Que el tramo sea múltiplo exacto del
+microtramo garantiza que un microtramo nunca quede en dos tramos. No se calibraron con el benchmark:
+se declararon antes.
+
+## 148. El propietario preferido de un microtramo, por Rendezvous
+
+**Decisión.** El propietario preferido de un microtramo es el gestor disponible de su base con el
+mayor SHA-256 de `microtramo_id|codigo` (hashing de mayor peso aleatorio, Rendezvous), sin pesos; un
+empate se decide por código. El ranking completo, en ese orden, es el orden en que el bloque busca
+gestor.
+
+**Por qué.** Hace falta un dueño estable por microtramo que no dependa del orden de las filas ni de
+cuántas cuentas haya. Un reparto por turnos o por módulo (`hash % n`) cambia el dueño de casi todos
+los microtramos al agregar un gestor; Rendezvous solo cambia los microtramos en los que el nuevo
+queda primero (en promedio 1 de cada n), y quitar un gestor solo mueve los suyos. Los planes de dos
+días con un gestor de diferencia se parecen, que es lo que necesita un equipo de campo. Es
+determinista (SHA-256, nunca el `hash()` de Python, que cambia entre procesos) y no necesita estado:
+no hay una tabla de dueños que mantener. Sin pesos por cupo, porque un cambio de cupo movería
+microtramos de todos los gestores; la capacidad ya se respeta con el spillover.
+
+## 149. La prioridad antes que el spillover, y un microtramo entero cuando cabe
+
+**Decisión.** En cada base, la capacidad se reparte por prioridad (`MUY_ALTA` primero) y, dentro de
+cada prioridad, por bloques de un mismo microtramo: primero los de más cuentas, y entre iguales, el
+de identificador menor. Cada bloque va completo a su propietario preferido; si no le cabe, completo
+al primero del ranking al que sí le cabe (spillover: la cuenta queda **rebalanceada**); si no cabe
+completo en ninguno, se divide en el orden del ranking, cuenta por cuenta en el orden de su
+`cuenta_id`; lo que no cabe en nadie queda `SIN_CAPACIDAD`.
+
+**Por qué.** La prioridad es la conclusión de `decision/v2`, y la capacidad es escasa: una cuenta
+`BAJA` nunca debe recibir gestor mientras una `MUY_ALTA` de su misma base se queda fuera, y así sale
+del orden (una cuenta queda sin capacidad solo cuando la base ya no tiene cupo). Dentro de una misma
+prioridad, los bloques más densos primero, porque un gestor atiende más cuentas de una vez en un
+mismo kilómetro cuadrado. Mover un bloque entero antes de partirlo conserva juntos los microtramos
+que caben, y dividir solo cuando no hay otra deja el mínimo de microtramos partidos. El orden por
+`cuenta_id` en una división hace que la misma entrada dé siempre la misma división. Es una regla
+voraz y explicable, no una optimización matemática: cada asignación dice en su motivo si fue su
+propietario preferido o el spillover, con qué lugar del ranking y si el bloque se dividió.
+
+## 150. Sin rebalanceo entre bases
+
+**Decisión.** Una candidata solo recibe un gestor de su base. Si su base no tiene gestores
+disponibles queda `SIN_GESTOR_DISPONIBLE`, y si se le acabó la capacidad, `SIN_CAPACIDAD`, aunque
+otra base tenga cupo libre. Las llaves foráneas compuestas de la asignación exigen en la base que el
+gestor sea de la base de la cuenta.
+
+**Por qué.** La base de una cuenta es una conclusión de `territorial/v2`, con su cobertura declarada
+(decisión 132): mandar una cuenta a otra base porque tiene cupo libre violaría esa cobertura (puede
+no tener permiso, ni seguridad, ni conocer la zona) y haría que la pertenencia dependiera de la
+carga. El déficit de una base y el sobrante de otra quedan a la vista en la distribución del plan,
+para que la operación decida (más gestores, otra cobertura) con una nueva versión de la
+configuración o de las bases.
+
+## 151. Sin rutas, ni orden de visita
+
+**Decisión.** `campo/v2` no implementa rutas, ni las disfraza: no hay OSRM ni red vial, matrices de
+distancia, tiempos de traslado, vecino más cercano, 2-opt, TSP, VRP, ETA ni orden de visitas, y no
+usa la distancia entre cuentas para nada. Una asignación no tiene `orden_visita`: tiene
+`orden_prioridad`, que es su lugar en la cola de capacidad de su base, no el orden en que se visita.
+La geometría solo ubica cada punto en su celda.
+
+**Por qué.** El orden de las visitas depende de la red vial, del tráfico y de la jornada de cada
+gestor: es otro problema, con otras entradas y otra validación, y es la v0.13 (Ruteo vial v2), que
+leerá estos planes por sus identificadores. Un orden aproximado con distancias en línea recta
+parecería una ruta sin serlo, y la operación lo usaría como si lo fuera.
+
+## 152. Privacidad: ni coordenadas, ni celdas, ni datos de personas
+
+**Decisión.** Ninguna respuesta de la API, bitácora, error, exportación ni la Cuenta 360 lleva el
+punto de una cuenta, su coordenada métrica, el índice de su celda, el recuadro ni el centroide de una
+unidad: solo identificadores opacos. Las tablas de paso que tienen el punto son temporales de la
+transacción del plan (`ON COMMIT DROP`), y un error se registra con su tipo, su SQLSTATE y sus
+marcos, nunca con su mensaje. `campo/v2` no carga el nombre, la dirección ni los teléfonos del
+cliente, y la configuración no tiene datos de personas (decisión 143). Las pruebas buscan llaves de
+coordenadas en cada respuesta y una coordenada en la bitácora de un plan que falla.
+
+**Por qué.** El reparto no necesita nada de eso, y lo que no se guarda ni se publica no se filtra. Los
+identificadores de las unidades son deterministas, y por eso **opacos pero no secretos**: quien
+conozca la política, el código de una base y su municipio podría probar celdas hasta encontrar el
+kilómetro cuadrado de un microtramo. Se acepta: es la granularidad de una unidad operativa, no la
+ubicación de una cuenta, a cambio de identificadores reproducibles sin un secreto que administrar. Si
+un despacho necesitara otra cosa, sería otra política con identificadores con llave.
+
+## 153. Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.12.0
+
+**Decisión.** Un plan se resuelve por conjuntos, en una transacción y en un `SAVEPOINT`, en un
+trabajo durable `CAMPO_V2` (el nivel 6 de la cola, después de `TERRITORIAL_V2`) que solo publica su
+dueño vigente. PostgreSQL selecciona las candidatas por el índice de la decisión, les une su
+asignación territorial y su punto, calcula la celda de cada punto en EPSG:6372 y agrupa los bloques;
+Python solo recibe los bloques (uno por base, municipio, celda y prioridad), les da sus
+identificadores y los reparte, y lo que decide vuelve a la base por `COPY`; cada asignación, cada
+unidad y cada carga se publican con un `INSERT ... SELECT`. Ninguna fase recorre las cuentas desde
+Python ni hace una consulta por cuenta, por gestor o por calendario. Los índices son los de sus
+consultas: en las asignaciones, la llave (plan, cuenta) y (plan, estado, cuenta), (plan, base,
+cuenta), (plan, gestor, cuenta), (plan, prioridad, cuenta), (plan, microtramo, cuenta) y (cuenta,
+plan); en las unidades, (plan, unidad) y (plan, padre); en las cargas, (plan, gestor); en los
+gestores, (configuración, base, activo), y en las ventanas, (calendario, día). No hay
+particionado.
+
+**Por qué así.** En el benchmark XL, el plan de las 132,529 candidatas de un corte de 500,000
+cuentas, con 6,129 gestores, tomó 65.5 s con 182 MiB de memoria pico y 557 MiB de WAL; casi tres
+cuartas partes son escribir (la publicación, 47.9 s), y el reparto en Python de los bloques de doce
+bases, 11.7 s. Una página de asignaciones de un gestor, de una base, de un estado, de un microtramo,
+de un tramo o de una zona tarda de 0.6 a 3.6 ms dentro de PostgreSQL, y los planes de una cuenta,
+0.4 ms; ninguna consulta hace un Seq Scan sobre las asignaciones. Las zonas, subzonas y tramos no
+tienen índice propio: entran por el de la base de su unidad (una zona, 0.7 ms; un tramo, 1.3 ms).
+Agregar un gestor
+cambió el propietario preferido de 2 de 8,603 microtramos; un reparto por turnos habría cambiado 796
+de los 798 de su base.
+
+El índice de las ventanas salió de la revisión, no del benchmark: con 46 ventanas no se nota,
+pero cada versión de la configuración agrega todas las suyas (cambiar un cupo ya es otra
+versión), y sin él las ventanas de cada carga recorrían la tabla una vez por gestor, y el
+trigger, una vez por ventana insertada.
+
+**Por qué sin particionado.** Cada asignación ocupa 617 bytes con sus índices, unos 78 MiB por plan
+de un corte XL, y crece con cada fecha y cada configuración que se planeen. Ninguna consulta lo
+necesita: todas entran por índices que empiezan por el plan o por la cuenta. Las cargas y las
+unidades de un plan se leen con un Seq Scan mientras la tabla tiene pocos planes, porque es más
+rápido (9.1 contra 13.6 ms y 4.1 contra 5.8 ms por la llave del plan), y la llave entra cuando la
+tabla crece. Donde el particionado podría pagar es en la retención de planes viejos, y eso es una
+política de la operación, con datos de producción (v0.18).
+
+**Lo que v0.12.0 no hace**, a propósito: rutas por calle, OSRM, matrices de distancia, tiempos de
+traslado, ETA, el orden de las visitas, TSP, VRP y VRPTW (v0.13, Ruteo vial v2); pesos por visita,
+habilidades, vehículos o costos; rebalancear cuentas entre bases; emparejar cargas entre gestores u
+optimizar el reparto; ligar un gestor de campo a una persona, a un `actor_ref` o al `Gestor` de los
+pagos, y comparar el plan con lo que la cobranza hizo (analítica, v0.14); el Decision Engine v3, ML
+y dashboards (v0.14 en adelante); cloud, multitenancy y multi-despacho (v0.18); y abrir un plan sin
+que alguien lo pida.
