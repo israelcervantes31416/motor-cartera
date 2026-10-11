@@ -1,20 +1,23 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza y Decision Engine v2
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2 y Geografía Real
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
 Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
-Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0) y el Decision
-Engine v2 (v0.10.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
+Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0), el Decision
+Engine v2 (v0.10.0) y la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0) están hechos
+como están, y qué haría distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
-en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md) y en
-[decision_v2.md](decision_v2.md); aquí va el porqué.
+en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
+[decision_v2.md](decision_v2.md), en [geografia.md](geografia.md), en
+[territorial_v2.md](territorial_v2.md) y en [bases_operativas.md](bases_operativas.md); aquí va el
+porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
-99 a 112, del Lifecycle de Cobranza y la Atribución Operativa, y las 113 a 121, del Decision Engine
-v2.
+99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
+v2, y las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde v0.10.0*.
@@ -140,6 +143,22 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde
 119. [Por conjuntos, todo o nada, en un trabajo durable que alguien pide](#119-por-conjuntos-todo-o-nada-en-un-trabajo-durable-que-alguien-pide)
 120. [En paralelo a `decision/v1`, en modo sombra](#120-en-paralelo-a-decisionv1-en-modo-sombra)
 121. [Índices medidos, sin particionado; y qué no resuelve v0.10.0](#121-índices-medidos-sin-particionado-y-qué-no-resuelve-v0100)
+122. [La cartografía pública es una referencia, no una fuente de negocio](#122-la-cartografía-pública-es-una-referencia-no-una-fuente-de-negocio)
+123. [PostGIS en la misma PostgreSQL, y la capa leída con pyshp](#123-postgis-en-la-misma-postgresql-y-la-capa-leída-con-pyshp)
+124. [EPSG:4326 para guardar, y el sistema de origen reconocido por sus parámetros](#124-epsg4326-para-guardar-y-el-sistema-de-origen-reconocido-por-sus-parámetros)
+125. [El punto es longitud, latitud](#125-el-punto-es-longitud-latitud)
+126. [La fuente y el espacio son dos hechos que se comparan, no se mezclan](#126-la-fuente-y-el-espacio-son-dos-hechos-que-se-comparan-no-se-mezclan)
+127. [Ninguna coordenada se corrige, y ninguna sale](#127-ninguna-coordenada-se-corrige-y-ninguna-sale)
+128. [Fail-closed: solo una geografía `VALIDA` es confiable](#128-fail-closed-solo-una-geografía-valida-es-confiable)
+129. [El borde cuenta: `ST_Covers`](#129-el-borde-cuenta-st_covers)
+130. [Una referencia se importa todo o nada, y solo se repara lo seguro](#130-una-referencia-se-importa-todo-o-nada-y-solo-se-repara-lo-seguro)
+131. [Las bases operativas son configuración versionada, inmutable y con hash](#131-las-bases-operativas-son-configuración-versionada-inmutable-y-con-hash)
+132. [La cobertura se declara, nunca se infiere](#132-la-cobertura-se-declara-nunca-se-infiere)
+133. [La base elegible inequívocamente más cercana, con una tolerancia de empate versionada](#133-la-base-elegible-inequívocamente-más-cercana-con-una-tolerancia-de-empate-versionada)
+134. [Pertenencia territorial, no capacidad, y en paralelo a `territorial/v1`](#134-pertenencia-territorial-no-capacidad-y-en-paralelo-a-territorialv1)
+135. [Sin geocodificación de direcciones](#135-sin-geocodificación-de-direcciones)
+136. [Una asignación apunta a su resultado geográfico por su llave natural](#136-una-asignación-apunta-a-su-resultado-geográfico-por-su-llave-natural)
+137. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.11.0](#137-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0110)
 
 ---
 
@@ -3059,3 +3078,280 @@ esperada y cualquier ML (v0.15); optimización matemática (v0.16); el Territori
 real, polígonos, bases, zonas, subzonas, tramos territoriales, capacidad y jornadas (v0.11 a v0.13);
 OSRM y VRP (v0.13); dashboards (v0.17); cloud, multitenancy y multi-despacho (v0.18); reemplazar a
 `decision/v1` en el flujo operacional; abrir `decision/v2` sola; y una política real de un acreedor.
+
+## 122. La cartografía pública es una referencia, no una fuente de negocio
+
+**Decisión.** La geografía se resuelve contra una **referencia geográfica pública** declarada: la
+capa municipal del Marco Geoestadístico Integrado 2025 del INEGI. No es una tercera fuente oficial
+del acreedor: no pasa por la API, ni por el almacén de artefactos, ni por un contrato de archivo, no
+se descarga en runtime y no vive en el repositorio. Se descarga una vez de su URL, se verifica
+contra el SHA-256 de un manifiesto del repositorio (`geografia/referencias.json`, con su producto,
+edición, nivel, capa, licencia y fechas) y se importa con `importar-geografia` como una
+**versión**, identificada por ese SHA-256 y su capa. Cada ejecución declara la versión que usa.
+
+**Por qué.** Las dos fuentes de negocio, la cartera y los pagos, son evidencia de lo que pasó con
+cada cuenta: se guardan enteras, para siempre, y su linaje llega a la fila. La cartografía es otra
+cosa: un dato público, de un tercero, que cambia por ediciones y no por cortes. Meterla al almacén
+la mezclaría con la evidencia, y leerla en runtime ataría cada geografía a la disponibilidad de un
+sitio ajeno. El manifiesto hace que la versión importada sea exactamente la publicada: un archivo
+con otro SHA-256 no es esa referencia, aunque se llame igual. Y como cada ejecución apunta a su
+versión, una edición nueva no cambia ninguna geografía ya calculada.
+
+## 123. PostGIS en la misma PostgreSQL, y la capa leída con pyshp
+
+**Decisión.** Las geometrías viven en PostgreSQL con **PostGIS 3.5** (la imagen
+`postgis/postgis:16-3.5`, la misma versión mayor de PostgreSQL de siempre): los municipios como
+`MultiPolygon` y los puntos como `Point`, con índices GiST, y todo lo espacial (transformar,
+validar, reparar, punto en polígono, distancia) lo hace PostGIS. La migración 0012 crea la
+extensión, y bajar a la 0011 la deja instalada. El Shapefile se lee con **pyshp** (Python puro,
+licencia MIT): sus geometrías se convierten a WKB en Python y se copian con `COPY` a una tabla
+temporal; no hay GDAL, Fiona, Shapely ni GeoPandas.
+
+**Por qué.** El motor ya resuelve todo por conjuntos en PostgreSQL; con PostGIS, el punto en
+polígono de 500,000 cuentas también, sin sacar una coordenada a Python. Una base aparte, o un
+servicio espacial, partiría la transacción todo o nada en dos. Leer la capa no necesita más que
+sus bytes: GDAL traería una dependencia nativa pesada a la imagen, al CI y a cada laptop para
+hacer lo que PostGIS ya hace mejor dentro de la transacción. pyshp lee el formato y nada más.
+Quitar una extensión al bajar no es de una migración del proyecto: otra cosa de la base podría
+usarla, y quitarla (con su `spatial_ref_sys`) es una decisión de quien administra la base.
+
+## 124. EPSG:4326 para guardar, y el sistema de origen reconocido por sus parámetros
+
+**Decisión.** Todo se guarda en **EPSG:4326** (WGS 84, en grados): los municipios, el punto de cada
+cuenta y el de cada base. El sistema de origen de una capa se reconoce **por los parámetros** de su
+`.prj` (proyección, paralelos, origen, meridiano central, falsos este y norte, elipsoide y unidad),
+no por su nombre, y solo se aceptan los que el importador sabe transformar: EPSG:6372 (la
+Lambert del Marco Geoestadístico) y EPSG:4326. Uno que no se reconoce se rechaza; no se adivina.
+La transformación la hace PostGIS al importar, y la versión guarda su sistema de origen.
+
+**Por qué.** Las coordenadas de la cartera vienen en grados WGS 84, y la distancia geodésica de
+`territorial/v2` se calcula sobre el elipsoide desde grados: guardar en 4326 evita transformar en
+cada consulta. La diferencia entre ITRF2008 y WGS 84 es de menos de un metro. Los nombres de un
+WKT cambian de un programa a otro (`MEXICO_ITRF_2008_LCC`, `Mexico ITRF2008 / LCC`...), y sus
+parámetros no: reconocer por nombre aceptaría un sistema distinto con un nombre parecido, o
+rechazaría el correcto escrito de otra forma. Un sistema adivinado movería cada municipio sin que
+nadie lo notara.
+
+## 125. El punto es longitud, latitud
+
+**Decisión.** Un punto es `ST_MakePoint(longitud, latitud)`: X es la longitud y Y la latitud, en
+todo el código. Una prueba construye una cuenta cuyo punto cae en su municipio con ese orden y
+fuera de la referencia con el contrario, y otra exige que el SQL lo diga así.
+
+**Por qué.** Es el error más común de cualquier sistema con coordenadas, y es silencioso: un punto
+invertido en México cae en la Antártida o en el océano, y la cuenta parecería fuera de la
+referencia, no mal construida. Una prueba que falla si alguien invierte el orden convierte una
+convención en una garantía.
+
+## 126. La fuente y el espacio son dos hechos que se comparan, no se mezclan
+
+**Decisión.** Cada cuenta tiene dos municipios: el que resolvió la fuente (`ESTADO_CTE` y
+`POBLACION_CTE` con el catálogo del INEGI, el de su snapshot) y el **espacial** (donde cae su
+coordenada). `geografia/v1` guarda los dos y su comparación: `COINCIDE`, `DISCREPA` o
+`NO_COMPARABLE`. Cuando discrepan, la cuenta queda `DISCREPANCIA_MUNICIPIO`, con los dos CVEGEO y si
+la clave de la fuente existe en la referencia; ninguno de los dos se impone.
+
+**Por qué.** Los dos son observaciones de la misma fuente con errores distintos: una dirección
+capturada a mano puede tener la población equivocada, y una coordenada, el GPS de otro lugar. Elegir
+uno por regla sería inventar cuál falló. Guardar la comparación hace medible la calidad geográfica
+de una cartera (cuántas cuentas discrepan, en qué municipios) y la deja a la vista de quien puede
+corregir el dato en su origen.
+
+## 127. Ninguna coordenada se corrige, y ninguna sale
+
+**Decisión.** `geografia/v1` no corrige nada: no intercambia latitud y longitud, no redondea, no
+mueve un punto al municipio más cercano y no usa el centroide del municipio de la fuente como
+ubicación de una cuenta. Unas coordenadas que no dieron un punto en la referencia, y que al revés sí
+caerían en un municipio, llevan el motivo `POSIBLE_ORDEN_INVERTIDO` con ese municipio, y se quedan
+en su estado. La coordenada observada se guarda tal como vino, como evidencia, pero no sale: ni por
+la API, ni por la bitácora, ni en un error, una métrica o el detalle de una ejecución.
+
+**Por qué.** Una corrección automática convertiría una sospecha en un hecho: un orden invertido es
+probable, no seguro, y un punto corregido mal enviaría una visita a otro lugar con la apariencia de
+un dato observado. Un centroide no es una ubicación: dos cuentas del mismo municipio quedarían en el
+mismo punto, y una distancia a una base mediría la distancia al centro del municipio. La
+coordenada de una cuenta es la ubicación de una persona: guardarla sirve para auditar lo que vino en
+la fuente; publicarla no le sirve a ninguna consulta de v0.11.
+
+## 128. Fail-closed: solo una geografía `VALIDA` es confiable
+
+**Decisión.** Siete estados: `VALIDA`, `SIN_COORDENADAS`, `COORDENADAS_INCOMPLETAS`,
+`COORDENADAS_INVALIDAS` (no finitas, fuera de rango o exactamente (0, 0)), `FUERA_DE_REFERENCIA`,
+`MUNICIPIO_AMBIGUO` y `DISCREPANCIA_MUNICIPIO`. Solo `VALIDA` es geografía confiable: coordenadas
+utilizables, un solo municipio y ninguna discrepancia conocida con la fuente. `territorial/v2` solo
+asigna esas; un punto fuera de la referencia queda `FUERA_DE_COBERTURA`, y lo demás,
+`REVISION_GEOGRAFICA`. `geografia/v1` revisa los rangos aunque cartera/v2 ya los haya revisado.
+
+**Por qué.** Enviar a campo una cuenta con una ubicación dudosa cuesta un viaje, y no enviarla
+cuesta una espera: con un dato que no se sabe si es bueno, lo conservador es revisarlo. Es el mismo
+principio de la ingesta (decisión 2): es preferible no producir salida a producir salida
+incorrecta. (0, 0) pasa cualquier contrato de rangos y es lo que deja un sistema que no capturó la
+coordenada; un punto del Golfo de Guinea no es la ubicación de ninguna cuenta de una cartera
+mexicana. Revisar los rangos otra vez es defensa en profundidad: la geografía no depende de que
+otro componente haya hecho su trabajo.
+
+## 129. El borde cuenta: `ST_Covers`
+
+**Decisión.** Un punto cae en un municipio si el municipio lo **cubre** (`ST_Covers`: su interior y
+su borde). Un punto sobre el límite común de dos municipios cae en los dos y queda
+`MUNICIPIO_AMBIGUO`, con sus dos CVEGEO; uno sobre el borde exterior de un municipio, en ese. Nunca
+se elige uno: ni el primero, ni el de menor clave, ni el más grande. Una prueba fija los dos casos
+con un punto exactamente sobre un límite.
+
+**Por qué.** Con `ST_Contains`, que excluye el borde, un punto sobre un límite no caería en ninguno
+y parecería fuera de la referencia: un falso `FUERA_DE_REFERENCIA` es peor que un `AMBIGUO`, que dice
+la verdad. En el Marco Geoestadístico de 2025 hay además 942 pares de municipios vecinos cuyos
+polígonos se enciman en astillas de 31.9 m² en total (el producto declara hasta un metro de
+tolerancia): un punto ahí está en dos municipios, y elegir uno sería elegir por un artefacto de la
+digitalización.
+
+## 130. Una referencia se importa todo o nada, y solo se repara lo seguro
+
+**Decisión.** Una importación registra su versión `EN_PROCESO`, copia los polígonos a una tabla
+temporal, comprueba las claves (`CVEGEO` es `CVE_ENT` y `CVE_MUN`, sin repetir), que ninguno venga
+sin geometría, transforma a EPSG:4326 y valida cada geometría con `ST_IsValid`. Una inválida se
+repara solo si es seguro: `ST_MakeValid` con su método de omisión (el que tienen todas las versiones
+de GEOS que se usan), quedándose con sus polígonos, y solo si queda válida y su área cambia menos de
+0.01 %; cada reparación queda registrada en la versión. Si una no se puede reparar así, la
+importación se rechaza. Los municipios se publican y la versión queda `PUBLICADA` en la misma
+transacción; si algo falla, queda `FALLIDA` y sin ningún municipio. Un candado consultivo por
+archivo y capa impide dos importaciones a la vez, y una versión publicada o fallida ya no cambia
+(un trigger lo garantiza). Las versiones de PostGIS, GEOS y PROJ se leen en una conexión propia:
+en PostGIS 3.5 con PROJ 8, `postgis_proj_version()` invalida las transformaciones que esa conexión
+tenía en caché, y el siguiente `ST_Transform` falla.
+
+**Por qué.** Una referencia a medias haría que unas cuentas cayeran fuera de un municipio que
+existe. Reparar en silencio cambiaría un límite sin que nadie lo supiera; reparar sin límite de área
+podría quedarse con un pedazo del municipio. El tope de 0.01 % deja pasar lo que es ruido de
+digitalización (un anillo que se toca a sí mismo) y rechaza lo que cambiaría el territorio. La capa
+del INEGI de 2025 no tiene ninguna geometría inválida, y las pruebas cubren las dos ramas con capas
+sintéticas.
+
+## 131. Las bases operativas son configuración versionada, inmutable y con hash
+
+**Decisión.** Una versión de bases (`bases-operativas/v1`) trae todas las bases: código, nombre,
+punto, si están activas y su cobertura. Se valida entera y **fail-closed**, con todos sus problemas
+juntos, antes de escribir nada; se lleva a una forma canónica (ordenada, en Unicode NFC, con las
+coordenadas a 7 decimales) y su SHA-256 es su `hash_configuracion`. El mismo contenido es la misma
+versión: publicarlo otra vez la reutiliza (`200`, `reutilizada`), y el nombre de la versión no entra
+en el hash. Cambiar una base es publicar otra versión, y un trigger rechaza cualquier `UPDATE` o
+`DELETE` de lo publicado. Las bases no son una fuente externa: las declara quien opera.
+
+**Por qué.** Si las bases se editaran en su lugar, una asignación de ayer apuntaría a la base de
+hoy, y nadie podría reconstruir por qué una cuenta quedó donde quedó. Versionar convierte cada
+cambio de la operación en una entrada declarada de cada ejecución (`bases_version_id` y su hash en
+la firma). El hash canónico hace que dos documentos iguales en otro orden sean la misma versión, y
+que cualquier cambio, aun de un decimal, sea otra. Validar todo antes de escribir hace imposible una
+versión a medias.
+
+## 132. La cobertura se declara, nunca se infiere
+
+**Decisión.** Una base atiende los municipios (CVEGEO) que su configuración declara, y nada más. No
+se infiere una cobertura de que el punto de la base esté cerca, ni de que caiga dentro de un
+municipio, ni de un radio. Las bases inactivas siguen en su versión, con su cobertura, pero no son
+elegibles: si solo una inactiva cubre un municipio, la cuenta queda `SIN_BASE_ELEGIBLE` y sus motivos
+lo dicen.
+
+**Por qué.** Qué municipios atiende una base es una decisión de la operación (contratos, permisos,
+seguridad, costumbre), no de la geometría: la base más cercana a un municipio puede no atenderlo. Una
+cobertura inferida cambiaría al moverse una base y asignaría cuentas a quien no las puede atender.
+La cercanía solo decide entre las que ya cubren el municipio. Declarar las inactivas, en vez de
+borrarlas, hace explicable un `SIN_BASE_ELEGIBLE`: había una base, y no está activa.
+
+## 133. La base elegible inequívocamente más cercana, con una tolerancia de empate versionada
+
+**Decisión.** `territorial-public-v2`: con geografía confiable, las elegibles son las bases activas
+de la versión que cubren el municipio espacial de la cuenta. Ninguna: `SIN_BASE_ELEGIBLE`; una: esa;
+varias: la **inequívocamente más cercana** por **distancia geodésica** (`ST_Distance` sobre
+`geography`, el elipsoide WGS 84, en metros, al centímetro). Si otra queda a no más de la
+**tolerancia de empate, 100.00 m**, de la más cercana, son indistinguibles: `AMBIGUA_BASE`, con las
+bases empatadas, y no se elige ninguna. La política es una estructura de datos con su hash
+(`hash_politica`), que incluye la tolerancia y entra en la firma de cada ejecución.
+
+**Por qué.** Lo simple y explicable: una cuenta pertenece a la base más cercana entre las que pueden
+atenderla, y el motivo dice a cuántos metros estaba y cuál era la siguiente. La distancia en grados
+no sirve: a la latitud de Puebla un grado de longitud mide unos 105 km y uno de latitud unos 111, y
+la diferencia cambiaría qué base está más cerca. La tolerancia existe porque ni la coordenada de una
+cuenta ni el punto de una base son exactos: dos bases a 1,000 y 1,040 m no se distinguen con un GPS
+de teléfono, y elegir entre ellas por su código, su nombre o el orden de las filas sería elegir por
+algo que no es geografía (y cambiaría al renombrar una base). Cien metros no se calibró con
+resultados: es un parámetro declarado y versionado, y cambiarlo es otra política con otro hash. Las
+pruebas comparan cada distancia con la fórmula de Vincenty, un cálculo independiente del de PostGIS.
+
+## 134. Pertenencia territorial, no capacidad, y en paralelo a `territorial/v1`
+
+**Decisión.** `territorial/v2` responde a qué base pertenece cada cuenta, no si la base puede
+atenderla: no usa carga, capacidad, gestores, rutas, promesas, saldo, prioridad ni `decision/v2`, y
+una base puede recibir cualquier número de cuentas. La distribución por base de una ejecución
+(cuántas cuentas y su distancia mediana) es un diagnóstico, no un balanceo. Corre en paralelo a
+`territorial/v1`, que sigue siendo la etapa `TERRITORIAL` del flujo de cada corrida y la que lee
+`ruteo/v1`; los dos contratos se conservan.
+
+**Por qué.** Pertenencia y capacidad son dos preguntas, y mezclarlas haría que una cuenta cambiara
+de base porque otra base se llenó, sin que la geografía hubiera cambiado. Separadas, v0.12 puede
+construir la capacidad de campo (gestores, jornadas, cargas y partición operacional) sobre una
+pertenencia estable y explicable. Reemplazar a `territorial/v1` en el flujo cambiaría el trabajo de
+campo de cada corrida sin evidencia: en paralelo, `territorial/v2` produce asignaciones auditables
+mientras la operación sigue como estaba, como hizo `decision/v2` con `decision/v1` (decisión 120).
+
+## 135. Sin geocodificación de direcciones
+
+**Decisión.** v0.11 no convierte calle, colonia ni código postal en coordenadas, ni con un servicio
+externo ni con uno propio. Una cuenta sin coordenadas queda `SIN_COORDENADAS`, y nada la ubica.
+
+**Por qué.** Geocodificar mandaría las direcciones de personas a un tercero, o exigiría un catálogo
+de calles que el proyecto no tiene; y el resultado sería otra coordenada, con su propio error y su
+propia calidad, que habría que distinguir de la observada. Una dirección capturada a mano en una
+cartera de cobranza es, además, la parte menos confiable del registro. Si un día se geocodifica,
+será una fuente nueva, versionada y con su calidad medida, no un relleno silencioso de las
+coordenadas faltantes.
+
+## 136. Una asignación apunta a su resultado geográfico por su llave natural
+
+**Decisión.** `ResultadoGeografiaCuenta` no tiene un identificador propio: su llave es la natural,
+(ejecución de geografía, cuenta). `AsignacionTerritorialV2` apunta a él por esa misma llave, con una
+llave foránea compuesta (`ejecucion_geografia_id`, `cuenta_canonica_id`), en vez de un
+`resultado_geografia_id`. Otras llaves compuestas obligan a que la asignación sea de la geografía y
+de la versión de bases de su ejecución, y a que su base sea de esa versión.
+
+**Por qué.** Es la misma identidad: una cuenta tiene exactamente un resultado en cada ejecución de
+geografía. Un identificador propio costaría un entero y un índice más en cada una de las 500,000
+filas de cada ejecución, sin responder ninguna consulta que la llave natural no responda; la llave
+primaria ya es la geografía de una cuenta en una ejecución. Las llaves compuestas hacen imposible,
+en la base y no solo en el código, una asignación que mezcle la geografía de una ejecución con las
+bases de otra.
+
+## 137. Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.11.0
+
+**Decisión.** Las dos ejecuciones se resuelven por conjuntos, en una transacción y en un
+`SAVEPOINT`, en trabajos durables (`GEOGRAFIA` y `TERRITORIAL_V2`, en los niveles 4 y 5 de la cola)
+que solo publica su dueño vigente: el Parquet conformado del corte se copia por `COPY` (solo cinco
+columnas), el punto en polígono **recorre los municipios y entra por el índice GiST de los puntos**
+(PostGIS prepara cada polígono una vez y lo prueba contra todos sus puntos), y cada resultado se
+publica con un `INSERT ... SELECT`. Los índices son los de sus consultas: el GiST de los municipios;
+en los resultados y las asignaciones, la llave (ejecución, cuenta), (ejecución, estado, cuenta),
+(ejecución, municipio, cuenta), (ejecución, base, cuenta) y (cuenta, ejecución). No hay
+particionado.
+
+**Por qué así.** En el benchmark XL, la geografía de 500,000 cuentas con la referencia oficial tomó
+90.6 s, con 222 MiB de memoria pico, y `territorial/v2`, 75.5 s con 154 MiB; en las dos, la mayor
+parte es escribir: publicar 500,000 filas con sus índices y sus llaves foráneas (60 y 49 s).
+Recorrer los municipios contra el GiST de los puntos resolvió los 460,061 puntos del corte en 8.8 s;
+cada punto contra el GiST de los municipios, en 98.7 s, porque PostGIS no prepara un polígono que
+encuentra una vez por punto. Cada sentencia de la geografía o de las asignaciones de una cuenta tarda
+menos de 0.3 ms dentro de PostgreSQL, y ninguna consulta hace un Seq Scan sobre los resultados ni
+sobre las asignaciones. El total de una página de una ejecución publicada sale de lo que contó al
+publicar: contar las 202,756 asignaciones de una base en cada página costaba 84 ms.
+
+**Por qué sin particionado.** Cada geografía de un corte XL ocupa 173.5 MiB (364 bytes por cuenta)
+y cada asignación, 212.5 MiB (446), y crecen con cada corte, cada referencia y cada versión de
+bases que se pida. Pero ninguna consulta lo necesita: todas entran por índices que empiezan por la
+ejecución o por la cuenta. Donde podría pagar es en la retención, para soltar ejecuciones viejas
+sin borrar fila por fila, y eso es una política de la operación, con datos de producción (v0.18).
+
+**Lo que v0.11.0 no hace**, a propósito: zonas, subzonas, tramos y microtramos de campo; capacidad
+diaria, gestores, calendarios, horarios y balanceo de cargas (v0.12); rutas por calle, OSRM, TSP,
+VRP y VRPTW (v0.13); el Decision Engine v3, analítica, ML y dashboards (v0.14 en adelante); cloud,
+multitenancy y multi-despacho (v0.18); geocodificar direcciones; corregir coordenadas; otros niveles
+de la cartografía (localidades, AGEB, manzanas); reemplazar a `territorial/v1` o `ruteo/v1`; y
+abrir la geografía o `territorial/v2` sin que alguien las pida.
