@@ -1,8 +1,8 @@
 """Lo que la cola necesita saber de cada recurso que ejecuta un trabajo.
 
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
-una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas o
-a una decision v2.
+una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
+una decision v2, a una geografia o a una ejecucion de territorial/v2.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -24,23 +24,29 @@ from motor_cartera.db.modelos import (
     EjecucionDecision,
     EjecucionDecisionV2,
     EjecucionEvaluacionPromesas,
+    EjecucionGeografia,
     EjecucionHistoria,
     EjecucionMotorPagos,
     EjecucionRuteo,
     EjecucionTerritorial,
+    EjecucionTerritorialV2,
     EstadoAtribucion,
     EstadoCorrida,
     EstadoDecision,
     EstadoDecisionV2,
     EstadoEvaluacionPromesas,
+    EstadoGeografia,
     EstadoHistoria,
     EstadoIngestaPagos,
     EstadoMotorPagos,
     EstadoRuteo,
     EstadoTerritorial,
+    EstadoTerritorialV2,
     IngestaPagos,
     ResultadoAtribucion,
     ResultadoEjecucionDecisionV2,
+    ResultadoEjecucionGeografia,
+    ResultadoEjecucionTerritorialV2,
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
@@ -131,6 +137,36 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         {
             "cuentas_decididas": 0,
             "resultado": ResultadoEjecucionDecisionV2.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.GEOGRAFIA: Objetivo(
+        EjecucionGeografia,
+        EstadoGeografia,
+        "ejecucion_geografia_id",
+        "geografia_run_id",
+        {
+            "validas": 0,
+            "sin_coordenadas": 0,
+            "incompletas": 0,
+            "invalidas": 0,
+            "fuera_cobertura": 0,
+            "ambiguas": 0,
+            "discrepantes": 0,
+            "resultado": ResultadoEjecucionGeografia.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.TERRITORIAL_V2: Objetivo(
+        EjecucionTerritorialV2,
+        EstadoTerritorialV2,
+        "ejecucion_territorial_v2_id",
+        "territorial_run_id",
+        {
+            "asignadas": 0,
+            "revision_geografica": 0,
+            "sin_base": 0,
+            "fuera_cobertura": 0,
+            "ambiguas": 0,
+            "resultado": ResultadoEjecucionTerritorialV2.INTENTOS_AGOTADOS.value,
         },
     ),
 }

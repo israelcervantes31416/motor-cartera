@@ -343,21 +343,25 @@ def _reclamable():
 
 def _prioridad():
     """0 para lo operacional, 1 para la historia, 2 para el motor de pagos, 3 para la atribucion y
-    la evaluacion de promesas y 4 para decision/v2. La historia y la interpretacion de los pagos son
-    proyecciones paralelas: ninguna etapa del flujo las espera, y con un solo worker tampoco espera
-    detras de ellas. Un backfill de cientos de trabajos HISTORIA no retrasa la decision de la
-    cartera de hoy. El motor de pagos va despues porque interpreta lo que la historia publica: con
-    los HISTORIA pendientes primero, una ventana se interpreta una vez con todos sus archivos, y no
-    una vez por archivo. La atribucion y la evaluacion van despues porque leen lo que el motor de
-    pagos publica, y decision/v2 al final porque lee todo lo anterior. No cambia que se ejecuta ni
-    como (decision/v2 decide con lo que se conocia en su known_at, se ejecute cuando se ejecute):
-    solo cual de los que ya se pueden tomar va primero."""
+    la evaluacion de promesas, 4 para decision/v2 y la geografia, y 5 para territorial/v2. La
+    historia y la interpretacion de los pagos son proyecciones paralelas: ninguna etapa del flujo
+    las espera, y con un solo worker tampoco espera detras de ellas. Un backfill de cientos de
+    trabajos HISTORIA no retrasa la decision de la cartera de hoy. El motor de pagos va despues
+    porque interpreta lo que la historia publica: con los HISTORIA pendientes primero, una ventana
+    se interpreta una vez con todos sus archivos, y no una vez por archivo. La atribucion y la
+    evaluacion van despues porque leen lo que el motor de pagos publica, y decision/v2 despues
+    porque lee todo lo anterior. La geografia lee un corte ya publicado, y territorial/v2, una
+    geografia ya publicada. No cambia que se ejecuta ni como (decision/v2 decide con lo que se
+    conocia en su known_at, se ejecute cuando se ejecute): solo cual de los que ya se pueden tomar
+    va primero."""
     return case(
         (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
         (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
         (TrabajoOrquestacion.tipo == TipoTrabajo.ATRIBUCION, 3),
         (TrabajoOrquestacion.tipo == TipoTrabajo.EVALUACION_PROMESAS, 3),
         (TrabajoOrquestacion.tipo == TipoTrabajo.DECISION_V2, 4),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.GEOGRAFIA, 4),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.TERRITORIAL_V2, 5),
         else_=0,
     )
 

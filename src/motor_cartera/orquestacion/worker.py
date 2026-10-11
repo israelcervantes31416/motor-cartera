@@ -41,6 +41,8 @@ from motor_cartera.db.modelos import (
     ArtefactoFuente,
     Corrida,
     EjecucionDecisionV2,
+    EjecucionGeografia,
+    EjecucionTerritorialV2,
     EstadoCorrida,
     EstadoIngestaPagos,
     EstadoTrabajo,
@@ -61,6 +63,8 @@ from motor_cartera.decision_v2.ejecuciones import (
 from motor_cartera.evaluacion.ejecuciones import EvaluacionYaPublicada, ejecutar_evaluacion
 from motor_cartera.fuentes.almacen import ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de, guardar_artefacto
+from motor_cartera.geografia import ejecuciones as geografia
+from motor_cartera.geografia.ejecuciones import GeografiaYaGenerada, ejecutar_geografia
 from motor_cartera.historia.ejecuciones import HistoriaYaMaterializada, ejecutar_historia
 from motor_cartera.ingesta.corridas import procesar_corrida, verificar_declaracion
 from motor_cartera.ingesta.pagos import procesar_ingesta_pagos
@@ -72,6 +76,11 @@ from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
 from motor_cartera.territorial.ejecuciones import TerritorialYaGenerado, ejecutar_territorial
+from motor_cartera.territorial_v2 import ejecuciones as territorial_v2
+from motor_cartera.territorial_v2.ejecuciones import (
+    TerritorialV2YaGenerado,
+    ejecutar_territorial_v2,
+)
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +93,8 @@ PERDIO_LA_CARRERA = (
     AtribucionYaPublicada,
     EvaluacionYaPublicada,
     DecisionV2YaGenerada,
+    GeografiaYaGenerada,
+    TerritorialV2YaGenerado,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -147,6 +158,8 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.ATRIBUCION: ejecutar_atribucion,
     TipoTrabajo.EVALUACION_PROMESAS: ejecutar_evaluacion,
     TipoTrabajo.DECISION_V2: ejecutar_decision_v2,
+    TipoTrabajo.GEOGRAFIA: ejecutar_geografia,
+    TipoTrabajo.TERRITORIAL_V2: ejecutar_territorial_v2,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -425,6 +438,74 @@ def decidir_v2_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(EjecucionDecisionV2, ejecucion_id)
+
+
+def geolocalizar_en_primer_plano(
+    corte_id: UUID, geografia_version_id: UUID, *, config: Config | None = None
+) -> EjecucionGeografia:
+    """La geografia del CLI: en una transaccion, su ejecucion y su trabajo, ya tomado por este
+    proceso; despues, la geografia en primer plano, con su latido. Si el proceso muere, cualquier
+    worker la termina cuando vence el lease. Propaga lo que levanta `geografia.abrir` sin registrar
+    nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = geografia.abrir(
+            s,
+            corte_id,
+            geografia_version_id,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_geografia_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionGeografia, ejecucion_id)
+
+
+def asignar_territorial_v2_en_primer_plano(
+    corte_id: UUID,
+    geografia_run_id: UUID,
+    bases_version_id: UUID,
+    *,
+    version_politica: str | None = None,
+    config: Config | None = None,
+) -> EjecucionTerritorialV2:
+    """territorial/v2 del CLI, como la geografia: su ejecucion y su trabajo, tomado por este
+    proceso, y la asignacion en primer plano. Propaga lo que levanta `territorial_v2.abrir` sin
+    registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = territorial_v2.abrir(
+            s,
+            corte_id,
+            geografia_run_id,
+            bases_version_id,
+            version_politica=version_politica,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_territorial_v2_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionTerritorialV2, ejecucion_id)
 
 
 def _cerrar(
