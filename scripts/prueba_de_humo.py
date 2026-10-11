@@ -867,10 +867,11 @@ def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteri
     sin_pagos = sorted(set(_clientes(oficial)) - set(veces))
     esperar(len(sin_pagos) > 0, f"{len(sin_pagos)} cuentas del corte sin pagos en el archivo")
     mas = sin_pagos[0]
+    registradas = []
     for cliente in (mas, cancelan):
         cuenta_id = _cuenta_de(cliente)
         for dia in (27, 28, 29):
-            estado, _, _ = enviar(
+            estado, _, gestion = enviar(
                 f"/cuentas/{cuenta_id}/gestiones",
                 {
                     "ocurrido_en": f"{corte[:8]}{dia}T10:00:00-06:00",
@@ -882,6 +883,7 @@ def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteri
                 llave=f"humo-{uuid.uuid4().hex}",
             )
             esperar(estado == 201, f"{cliente}: una llamada sin contacto el {dia} ({estado})")
+            registradas.append(datetime.fromisoformat(gestion["registrado_en"]))
 
     pedida = {"corte_id": del_dia["corte_id"]}
     if hay_cortes_posteriores:
@@ -898,7 +900,10 @@ def la_decision_v2(oficial: Path, pagos: Path, corte: str, *, hay_cortes_posteri
             estado == 422 and error["codigo"] == "KNOWN_AT_REQUERIDO",
             f"un BACKTEST sin known_at: {estado} {error.get('codigo')}",
         )
-        known_at = (datetime.now().astimezone() - timedelta(seconds=1)).isoformat()
+        # La frontera es la de la ultima llamada registrada, con el reloj de la base que la
+        # registro: el cliente no tiene que adivinar su desfase con el servidor, y cualquier cosa
+        # registrada despues no existe para esta decision.
+        known_at = max(registradas).isoformat()
         pedida.update(modo="BACKTEST", known_at=known_at)
     estado, encabezados, abierta = enviar("/decisiones-v2", pedida)
     esperar(
