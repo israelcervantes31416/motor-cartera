@@ -10,11 +10,12 @@ sus archivos:
     `cartera.xlsx` (el lector del motor no las distingue), pero en Linux, WSL y el CI git si
     las distingue, y ahi `*.xlsx` no lo detiene.
   - Es por dentro una hoja de calculo, un archivo comprimido, un formato de datos, un
-    volcado de una base o cartografia, con cualquier nombre: un xlsx renombrado, un xlsm o un
-    ods (que son un zip), un xls (un documento OLE2), un Parquet, un Arrow, un gzip, un 7z, un
-    rar, un bzip2, un xz, un zstd, un volcado de pg_dump, una base SQLite (un GeoPackage lo es),
-    un Shapefile o un FlatGeobuf. Un csv, un GeoJSON o un volcado en SQL plano no tienen firma,
-    asi que a esos solo los detiene su nombre.
+    volcado de una base, cartografia o una red vial, con cualquier nombre: un xlsx renombrado,
+    un xlsm o un ods (que son un zip), un xls (un documento OLE2), un Parquet, un Arrow, un
+    gzip, un 7z, un rar, un bzip2, un xz, un zstd, un tar (cada archivo que prepara OSRM lo
+    es), un volcado de pg_dump, una base SQLite (un GeoPackage lo es), un Shapefile, un
+    FlatGeobuf o un extracto de OpenStreetMap (.osm.pbf). Un csv, un GeoJSON, un OSM XML o un
+    volcado en SQL plano no tienen firma, asi que a esos solo los detiene su nombre.
 
 Solo usa git y la biblioteca estandar, para correr igual en el CI que en una laptop, donde
 antes de un commit revisa tambien lo que ya esta en stage:
@@ -53,7 +54,19 @@ for _nivel in "123456789":
     FIRMAS[f"BZh{_nivel}".encode() + b"1AY&SY"] = "un bzip2"
     FIRMAS[f"BZh{_nivel}".encode() + b"\x17rE8P\x90"] = "un bzip2"
 
-LARGO_FIRMA = max(len(firma) for firma in FIRMAS)
+# Las que no estan al principio: (desde que byte, firma).
+FIRMAS_ADENTRO = {
+    # Un .osm.pbf empieza con el largo de su primer encabezado (4 bytes) y ese encabezado, con el
+    # tipo de su bloque: el campo 1, de 9 bytes, OSMHeader.
+    (4, b"\x0a\x09OSMHeader"): "un extracto de OpenStreetMap (.osm.pbf)",
+    # Un tar POSIX dice ustar en el byte 257: asi es cada archivo que prepara OSRM (.osrm.*).
+    (257, b"ustar"): "un tar (como los archivos que prepara OSRM)",
+}
+
+LARGO_FIRMA = max(
+    *(len(firma) for firma in FIRMAS),
+    *(desde + len(firma) for desde, firma in FIRMAS_ADENTRO),
+)
 REGULARES = (b"100644", b"100755")  # los enlaces y los submodulos no tienen contenido propio
 
 
@@ -148,12 +161,16 @@ def main() -> int:
         for firma, que_es in FIRMAS.items():
             if cabeza.startswith(firma):
                 problemas.setdefault(ruta, []).append(f"por dentro es {que_es}")
+        for (desde, firma), que_es in FIRMAS_ADENTRO.items():
+            if cabeza[desde : desde + len(firma)] == firma:
+                problemas.setdefault(ruta, []).append(f"por dentro es {que_es}")
 
     total = len({ruta for _, _, ruta in entradas})
     if not problemas:
         print(
             f"{total} archivos trackeados: ninguno lo excluye el .gitignore ni es por dentro "
-            "una hoja de calculo, un comprimido, un formato de datos, un volcado o cartografia."
+            "una hoja de calculo, un comprimido, un formato de datos, un volcado, cartografia o "
+            "una red vial."
         )
         return 0
 
