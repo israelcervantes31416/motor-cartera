@@ -192,7 +192,8 @@ jobs:
 
       # Con --campo tambien planea campo/v2 sobre el corte oficial, y con --ruteo rutea por la red
       # vial un plan propio en la base de la red; deja en humo.txt la configuracion de campo, el plan
-      # y la ejecucion de ruteo/v2. Con pipefail, tee no oculta un fallo.
+      # y la ejecucion de ruteo/v2. Con pipefail, tee no oculta un fallo. La base va unida a su
+      # opcion: su longitud es negativa, y separada, argparse la toma por otra opcion.
       - name: Prueba de humo por la API
         run: |
           set -o pipefail
@@ -202,7 +203,7 @@ jobs:
             --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30 \
             --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip \
             --escenario datos/escenario --geografia --campo \
-            --ruteo "$red" --base-ruteo "$base" | tee humo.txt
+            --ruteo "$red" --base-ruteo="$base" | tee humo.txt
 
       # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
       # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.

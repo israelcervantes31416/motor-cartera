@@ -409,3 +409,14 @@ def test_ninguna_documentacion_de_ruteo_promete_el_optimo_ni_publica_una_coorden
             assert frase not in texto, (archivo, frase)
     texto = " ".join((DOCS / "ruteo_v2.md").read_text(encoding="utf-8").split())
     assert "no publica coordenadas, geometrías ni polilíneas" in texto
+
+
+def test_la_base_de_ruteo_va_unida_a_su_opcion():
+    # En Mexico la longitud de una base es negativa. Separada de su opcion, el argparse de Python
+    # 3.12 la toma por otra opcion, y la prueba de humo termina con "expected one argument".
+    raiz = DOCS.parent
+    separada = re.compile(r"--base-ruteo\s+[\"'<$\d-]")
+    for archivo in (".github/workflows/ci.yml", "README.md", "scripts/prueba_de_humo.py"):
+        assert not separada.search((raiz / archivo).read_text(encoding="utf-8")), archivo
+    ci = (raiz / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert '--base-ruteo="$base"' in ci

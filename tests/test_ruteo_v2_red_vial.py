@@ -135,7 +135,12 @@ def test_el_guion_de_docker_usa_la_imagen_fijada_y_los_comandos_de_la_huella(fue
     ):
         assert f"sh -c '{comando}" in guion
         assert f" > {bitacora}.log 2>&1'\n" in guion
-    assert guion.count('docker run --rm -v "$PWD:/datos" -w /datos "$IMAGEN" sh -c') == 3
+    contenedor = 'docker run --rm -v "$PWD:/datos" -w /datos "$IMAGEN" sh -c'
+    assert guion.count(f"{contenedor} 'osrm-") == 3
+    # Y al final, el mismo contenedor los deja legibles para todos: OSRM crea el .fileIndex solo
+    # para su dueno (root), y quien registra la red o la sirve puede ser otro usuario.
+    assert guion.count(contenedor) == 4
+    assert guion.endswith(f"{contenedor} 'chmod a+r red.osrm*'\n")
     assert "latest" not in guion
     assert red_vial.comandos("red_sintetica.osm", p.huella)[0][-1] == "fuente/red_sintetica.osm"
 

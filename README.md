@@ -812,7 +812,7 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
   --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia --campo
 ```
 
-Con `--ruteo <red_vial_version_id>` y `--base-ruteo <lon>,<lat>` (y `--campo`), recorre además
+Con `--ruteo <red_vial_version_id>` y `--base-ruteo=<lon>,<lat>` (y `--campo`), recorre además
 `ruteo/v2` sobre una red vial ya publicada que un OSRM sirve al worker: la red sintética que
 `generar-red-sintetica` dibuja dentro de un municipio de la referencia, con sus puntos en la muestra
 de la cartera oficial (que por eso se genera después), y una base en el cruce que imprime. Publica
@@ -833,8 +833,11 @@ docker compose exec api motor-cartera registrar-red-vial datos/red_vial/<huella>
 MC_RED_VIAL_HUELLA=<huella> docker compose --profile ruteo up -d --wait osrm
 python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial_2026-09-30.zip \
   --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia --campo \
-  --ruteo <red_vial_version_id> --base-ruteo <lon>,<lat>
+  --ruteo <red_vial_version_id> --base-ruteo=<lon>,<lat>
 ```
+
+La base va unida a su opción, con `=`: en México su longitud es negativa, y separada, el `argparse`
+de Python 3.12 la toma por otra opción.
 
 ## Fuentes oficiales
 

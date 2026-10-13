@@ -278,7 +278,9 @@ def _guion_docker(directorio: Path, archivo_fuente: str, h: str) -> Path:
     """`preparar.sh`: los mismos comandos, con la imagen fijada por su digest. Se corre en el
     anfitrion de Docker, desde cualquier lugar; el directorio de la red se monta en /datos. La
     bitacora de cada comando la escribe el contenedor, no el anfitrion: el directorio puede ser de
-    otro usuario (del de la API, si ella lo creo)."""
+    otro usuario (del de la API, si ella lo creo). Al final, el contenedor deja los archivos
+    preparados legibles para todos: OSRM crea el .fileIndex solo para su dueno, root en el
+    contenedor, y quien registra la red o la sirve puede ser otro usuario."""
     lineas = [
         "#!/bin/sh",
         f"# Prepara la red vial {h} con OSRM {VERSION_OSRM} (MLD), con la imagen fijada.",
@@ -297,6 +299,11 @@ def _guion_docker(directorio: Path, archivo_fuente: str, h: str) -> Path:
             f'docker run --rm -v "$PWD:/datos" -w /datos "$IMAGEN" '
             f"sh -c '{' '.join(comando)} > {bitacora}.log 2>&1'"
         )
+    lineas += [
+        "# Legibles para quien registre o sirva la red: OSRM crea el .fileIndex solo para root.",
+        f'docker run --rm -v "$PWD:/datos" -w /datos "$IMAGEN" '
+        f"sh -c 'chmod a+r {NOMBRE_RED}.osrm*'",
+    ]
     ruta = directorio / "preparar.sh"
     ruta.write_bytes(("\n".join(lineas) + "\n").encode())
     ruta.chmod(0o755)

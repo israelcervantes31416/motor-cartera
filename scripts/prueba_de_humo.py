@@ -69,7 +69,10 @@ laptop:
         --pagos pagos.zip --geografia --campo
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
         --pagos pagos.zip --geografia --campo --ruteo <red_vial_version_id>
-        --base-ruteo <lon>,<lat>
+        --base-ruteo=<lon>,<lat>
+
+La base va unida a su opcion: en Mexico su longitud es negativa, y separada, argparse la toma por
+otra opcion.
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.

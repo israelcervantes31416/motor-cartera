@@ -100,6 +100,11 @@ publica. Si algo no cuadra, la versión queda `FALLIDA` con el motivo y el coman
 código 1. Con `--verificar-backend`, además comprueba que el OSRM de `MC_OSRM_URL` declara esta red,
 sin enviarle ningún punto.
 
+`preparar.sh` corre cada comando en un contenedor de la imagen fijada, con su bitácora. Al final,
+el mismo contenedor deja legibles para todos los archivos preparados. OSRM crea el `.fileIndex`
+solo para su dueño, que en el contenedor es root, y quien registra la red o la sirve puede ser otro
+usuario: sin ese paso, `registrar-red-vial` no podría calcular su SHA-256.
+
 En el compose, el servicio `osrm` (en el perfil `ruteo`, con la misma imagen) sirve la red de
 `MC_RED_VIAL_HUELLA`, **sin puerto publicado**: solo la API y el worker lo ven. Arranca con
 `--verbosity WARNING` porque su bitácora de accesos (INFO) repite cada petición con sus
