@@ -331,3 +331,81 @@ def test_ninguna_documentacion_de_campo_promete_una_ruta_ni_publica_una_coordena
     texto = " ".join((DOCS / "campo_v2.md").read_text(encoding="utf-8").split())
     assert "No usa distancias, tiempos de traslado, rutas ni la duración de una visita" in texto
     assert "Ninguna respuesta lleva una coordenada, el índice de una celda, un recuadro" in texto
+
+
+def test_el_documento_de_ruteo_v2_define_cada_resultado_y_dice_que_es_una_heuristica():
+    """Cada resultado de una ejecucion de ruteo/v2 tiene su fila en ruteo_v2.md, cada estado se
+    nombra, y el documento dice lo que la ruta no es: un optimo, ni una hora con trafico."""
+    from motor_cartera.db.modelos import EstadoRuteoV2, ResultadoEjecucionRuteoV2
+
+    filas = _codigos_de_tablas("ruteo_v2.md")
+    texto = " ".join((DOCS / "ruteo_v2.md").read_text(encoding="utf-8").split())
+
+    assert {r.value for r in ResultadoEjecucionRuteoV2} <= filas
+    assert {e.value for e in EstadoRuteoV2} <= set(re.findall(r"`([A-Z_]+)`", texto))
+    assert "heurística determinista, no una ruta óptima" in texto
+    assert "sin tráfico" in texto
+
+
+def test_el_documento_de_la_politica_de_ruteo_define_cada_estado_motivo_y_parametro():
+    """Cada estado de una ruta y de una parada tiene su fila en politica_ruteo.md, cada motivo se
+    nombra, y la politica que documenta, con su hash y sus parametros, es la que aplica el
+    servicio."""
+    from motor_cartera.ruteo_v2.politica import (
+        ALGORITMO,
+        PUBLIC_V2,
+        EstadoParada,
+        EstadoRuta,
+        MotivoParada,
+        hash_politica,
+    )
+
+    filas = _codigos_de_tablas("politica_ruteo.md")
+    texto = (DOCS / "politica_ruteo.md").read_text(encoding="utf-8")
+
+    assert {e.value for e in EstadoRuta} <= filas
+    assert {e.value for e in EstadoParada} <= filas
+    for motivo in MotivoParada:
+        assert f"`{motivo.value}`" in texto, motivo
+    assert hash_politica(PUBLIC_V2) in texto
+    assert ALGORITMO in texto
+    for parametro in ("max_snap_distancia_m", "duracion_servicio_s", "bloque_matriz"):
+        assert f"| `{parametro}` | `{getattr(PUBLIC_V2, parametro)}` |" in texto
+    assert f"| `max_mejoras_2opt` | `{PUBLIC_V2.max_mejoras_2opt}` |" in texto
+
+
+def test_el_documento_de_la_red_vial_fija_la_imagen_los_comandos_y_la_atribucion():
+    """La imagen de OSRM, su version, los comandos de la preparacion, el prefijo con que el backend
+    declara su red, los estados de una version y la atribucion de OpenStreetMap que documenta
+    red_vial.md son los del codigo."""
+    from motor_cartera.api.esquemas_ruteo_v2 import ATRIBUCION_OSM
+    from motor_cartera.db.modelos import EstadoVersionRedVial
+    from motor_cartera.ruteo_v2 import red_vial
+    from motor_cartera.ruteo_v2.proveedor import PREFIJO_DATA_VERSION
+
+    texto = (DOCS / "red_vial.md").read_text(encoding="utf-8")
+
+    assert red_vial.IMAGEN_OSRM in texto
+    assert red_vial.VERSION_OSRM in texto
+    assert ATRIBUCION_OSM in " ".join(texto.split())
+    assert PREFIJO_DATA_VERSION in texto
+    for comando in red_vial.comandos("<archivo>", "<huella>"):
+        assert " ".join(comando) in texto, comando
+    for estado in EstadoVersionRedVial:
+        assert f"`{estado.value}`" in texto, estado
+    assert ":latest" not in texto
+    assert "Nunca se usa el servidor público de OSRM" in " ".join(texto.split())
+
+
+def test_ninguna_documentacion_de_ruteo_promete_el_optimo_ni_publica_una_coordenada():
+    for archivo in ("ruteo_v2.md", "politica_ruteo.md", "red_vial.md"):
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for frase in (
+            "la ruta óptima",
+            "la ruta más corta",
+            "tráfico en tiempo real",
+            "garantiza la llegada",
+        ):
+            assert frase not in texto, (archivo, frase)
+    texto = " ".join((DOCS / "ruteo_v2.md").read_text(encoding="utf-8").split())
+    assert "no publica coordenadas, geometrías ni polilíneas" in texto
