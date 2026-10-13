@@ -76,6 +76,31 @@ jobs:
           alembic downgrade base
           alembic upgrade head
 
+      # Las pruebas de integracion de ruteo/v2 contra OSRM de verdad: la red vial SINTETICA (19 nodos
+      # inventados; no se descarga nada de OpenStreetMap) se prepara con la imagen fijada de OSRM
+      # v26.9.0 y la sirve un osrm-routed en este runner. tests/test_ruteo_v2_osrm.py la usa por
+      # MC_OSRM_URL_PRUEBAS y MC_RED_VIAL_PRUEBAS.
+      - name: Red vial sintetica servida por OSRM
+        run: |
+          set -o pipefail
+          motor-cartera generar-red-sintetica --destino datos/red_vial_pruebas/fuente/red_sintetica.osm
+          motor-cartera preparar-red-vial datos/red_vial_pruebas/fuente/red_sintetica.osm \
+            --region "Red sintetica de las pruebas" --proveedor-datos SINTETICO \
+            --licencia sintetica --destino datos/red_vial_pruebas --docker | tee red.txt
+          huella=$(awk '/^huella/ {print $2}' red.txt)
+          sh "datos/red_vial_pruebas/$huella/preparar.sh"
+          docker run -d --name osrm-pruebas -p 5005:5000 \
+            -v "$PWD/datos/red_vial_pruebas/$huella:/red:ro" \
+            ghcr.io/project-osrm/osrm-backend:v26.9.0-debian@sha256:8a1b1bc938412f15f9b5b32d794c4ec6bf4a85dfbbabfa0a014b70b187edb53b \
+            osrm-routed --algorithm mld --verbosity WARNING --max-nearest-locations 100 /red/red.osrm
+          for _ in $(seq 1 30); do
+            curl -sf "http://localhost:5005/nearest/v1/driving/0,0?number=1" > /dev/null && break
+            sleep 1
+          done
+          curl -sf "http://localhost:5005/nearest/v1/driving/0,0?number=1" | grep -q "red-vial/v1:$huella"
+          echo "MC_OSRM_URL_PRUEBAS=http://localhost:5005" >> "$GITHUB_ENV"
+          echo "MC_RED_VIAL_PRUEBAS=datos/red_vial_pruebas/$huella" >> "$GITHUB_ENV"
+
       # Contra la PostgreSQL de servicio, no contra una base simulada.
       - name: Pruebas
         run: pytest --cov=motor_cartera --cov-report=term-missing
@@ -85,7 +110,8 @@ jobs:
   # automatico la lleva de la ingesta al ruteo: la API la registra y el worker la ejecuta. Y un
   # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360, con sus pagos
   # interpretados por el motor de pagos; y el corte oficial, con coordenadas sinteticas, pasa por
-  # geografia/v1, las bases operativas, territorial/v2 y campo/v2.
+  # geografia/v1, las bases operativas, territorial/v2, campo/v2 y ruteo/v2, sobre una red vial
+  # sintetica que prepara y sirve OSRM v26.9.0 con su imagen fijada.
   compose:
     runs-on: ubuntu-latest
 
@@ -117,6 +143,38 @@ jobs:
           docker compose exec -T api motor-cartera muestrear-puntos --geografia-version "$version" \
             --destino datos/geografia/puntos.json
 
+      # Una red vial SINTETICA (19 nodos y 9 vias inventadas) dibujada dentro del municipio 21114 de
+      # esa referencia, con sus puntos en la muestra: las cuentas de ese municipio caen junto a sus
+      # calles, una a mas de 500 m de ellas y otra junto a un tramo sin camino. Imprime la base.
+      - name: Generar una red vial sintetica en un municipio
+        run: |
+          set -o pipefail
+          version=$(awk '/^geografia_version_id/ {print $2}' importar.txt)
+          docker compose exec -T api motor-cartera generar-red-sintetica \
+            --geografia-version "$version" --municipio 21114 --puntos datos/geografia/puntos.json \
+            --destino datos/red_vial/fuente/red_sintetica.osm | tee red.txt
+          grep -q "18 puntos de 21114" red.txt
+
+      # La version de la red nace EN_PROCESO con su huella; preparar.sh la prepara con la imagen
+      # fijada (extract, partition y customize), se publica con su manifiesto verificado, y el
+      # servicio osrm (perfil ruteo) la sirve, sin puerto publicado. El worker solo toma trabajos
+      # RUTEO_V2 cuando su OSRM responde, y la red que declara es la publicada.
+      - name: Preparar, publicar y servir la red vial
+        run: |
+          set -o pipefail
+          docker compose exec -T api motor-cartera preparar-red-vial \
+            datos/red_vial/fuente/red_sintetica.osm --region "Red sintetica de la prueba de humo" \
+            --proveedor-datos SINTETICO --licencia sintetica --docker | tee preparar.txt
+          huella=$(awk '/^huella/ {print $2}' preparar.txt)
+          sh "datos/red_vial/$huella/preparar.sh"
+          docker compose exec -T api motor-cartera registrar-red-vial "datos/red_vial/$huella" \
+            | tee registrar.txt
+          grep -q ": PUBLICADA" registrar.txt
+          MC_RED_VIAL_HUELLA="$huella" docker compose --profile ruteo up -d --wait osrm
+          docker compose exec -T worker motor-cartera registrar-red-vial "datos/red_vial/$huella" \
+            --verificar-backend | tee backend.txt
+          grep -q "el backend declara esta red" backend.txt
+
       # La cartera oficial (cartera/v2, 93 columnas) con su hoja CARRIER, en el perfil mas pequeno,
       # con coordenadas sinteticas en las proporciones de omision, y los pagos (pagos/v1, 23
       # columnas) de la semana que termina en su corte.
@@ -132,15 +190,19 @@ jobs:
           docker compose exec -T api motor-cartera generar-escenario --destino datos/escenario
           --perfil XS --cortes 4 --primer-corte 2026-10-07 --semilla 7 --formato zip
 
-      # Con --campo tambien planea campo/v2 sobre el corte oficial, y deja en humo.txt la
-      # configuracion de campo y el plan que publico. Con pipefail, tee no oculta un fallo.
+      # Con --campo tambien planea campo/v2 sobre el corte oficial, y con --ruteo rutea por la red
+      # vial un plan propio en la base de la red; deja en humo.txt la configuracion de campo, el plan
+      # y la ejecucion de ruteo/v2. Con pipefail, tee no oculta un fallo.
       - name: Prueba de humo por la API
         run: |
           set -o pipefail
+          red=$(awk '/^red_vial_version_id/ {print $2}' registrar.txt)
+          base=$(awk '/^base/ {print $2","$3}' red.txt)
           python3 scripts/prueba_de_humo.py datos/humo.xlsx \
             --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30 \
             --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip \
-            --escenario datos/escenario --geografia --campo | tee humo.txt
+            --escenario datos/escenario --geografia --campo \
+            --ruteo "$red" --base-ruteo "$base" | tee humo.txt
 
       # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
       # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.
@@ -203,13 +265,34 @@ jobs:
           docker compose exec -T worker motor-cartera exportar-plan-campo --plan "$plan" \
             --destino datos/plan_campo.csv
 
+      # Y ruteo por la red vial el plan de su base: el resumen sale por la linea de comandos. El
+      # backfill sobre la misma red, con la fecha declarada, lo encuentra ya ruteado; el plan de la
+      # seccion de campo (con bases lejos de la red) sigue pendiente: se encola una vez, y despues
+      # ya no falta nada.
+      - name: Resumen y backfill de ruteo/v2
+        run: |
+          set -o pipefail
+          red=$(awk '/^red_vial_version_id/ {print $2}' registrar.txt)
+          ruteo=$(awk '/^ruteo_run_id/ {print $2}' humo.txt)
+          docker compose exec -T worker motor-cartera resumen-ruteo-v2 --ejecucion "$ruteo" \
+            | tee ruteo.txt
+          grep -q "no una ruta optima" ruteo.txt
+          backfill="motor-cartera backfill-ruteo-v2 --red-vial-version $red --fecha-operacion 2026-10-01"
+          docker compose exec -T worker $backfill --dry-run | tee backfill_ruteo.txt
+          grep -q "ya ruteados: 1" backfill_ruteo.txt
+          grep -q "Ejecuciones pendientes: 1" backfill_ruteo.txt
+          docker compose exec -T worker $backfill | tee encolar_ruteo.txt
+          grep -q "Se encolaron 1 trabajos RUTEO_V2" encolar_ruteo.txt
+          docker compose exec -T worker $backfill --dry-run | tee backfill_ruteo_2.txt
+          grep -q "Ejecuciones pendientes: 0" backfill_ruteo_2.txt
+
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
       # base registra tiene que seguir en el almacen con sus mismos bytes: las dos carteras, los
       # pagos y los dos Parquet conformados.
       - name: Persistencia del almacen de artefactos
         run: |
-          docker compose down
+          docker compose --profile ruteo down
           docker compose up -d
           docker compose exec -T worker motor-cartera verificar-fuentes --minimo 5
 
@@ -220,8 +303,8 @@ jobs:
 
       - name: Bitacora de los contenedores
         if: failure()
-        run: docker compose logs
+        run: docker compose --profile ruteo logs
 
       - name: Apagar
         if: always()
-        run: docker compose down -v
+        run: docker compose --profile ruteo down -v

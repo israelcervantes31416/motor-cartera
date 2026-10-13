@@ -48,6 +48,15 @@ rebalanceada por capacidad, SIN_CAPACIDAD, SIN_GESTOR_DISPONIBLE (un gestor cerr
 festivo y uno inactivo) y REVISION_TERRITORIAL; sus cargas, sus unidades y la Cuenta 360, sin
 coordenadas ni celdas.
 
+Con --ruteo (y --campo), recorre ruteo/v2 sobre una red vial ya PUBLICADA y servida por OSRM: la red
+sintetica que generar-red-sintetica dibujo en el municipio 21114 (con sus puntos en la muestra de
+la cartera oficial), con una base en el cruce que imprimio (--base-ruteo). Publica esas bases, las
+asigna con territorial/v2, publica una configuracion de campo con un gestor de dia completo, uno
+con turno partido y uno de 40 minutos, planea el dia siguiente al corte y lo rutea: rutas COMPLETA y
+PARCIAL, paradas PROGRAMADA, SIN_TIEMPO y NO_ENRUTABLE (por un snap de mas de 500 m y por un tramo
+sin camino), la espera en la pausa del turno partido sin manejar en ella, el regreso a la base, la
+Cuenta 360 y su trabajo RUTEO_V2, sin una sola coordenada.
+
 Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
 laptop:
 
@@ -58,6 +67,9 @@ laptop:
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30 --geografia
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
         --pagos pagos.zip --geografia --campo
+    python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
+        --pagos pagos.zip --geografia --campo --ruteo <red_vial_version_id>
+        --base-ruteo <lon>,<lat>
 
 Lee MC_URL_API (por omision http://localhost:8000) y MC_API_KEY. Termina con codigo 1 en
 cuanto algo no sale como debe.
@@ -1682,6 +1694,348 @@ def el_campo(corte: str, del_dia: dict, decision: dict, geografia: dict) -> None
     print(f"campo_run_id {plan['campo_run_id']}")
 
 
+# --- ruteo/v2: la red vial ------------------------------------------------------------------------
+
+MUNICIPIO_DE_LA_RED = "21114"
+"""El municipio sintetico donde generar-red-sintetica dibujo la red y sus puntos."""
+COORDENADA = re.compile(r"(?<![\d:.])-?\d{1,3}\.\d{5,}")
+"""Un numero con cinco o mas decimales: una coordenada, en cualquier llave. No los segundos de un
+instante (12:00:31.665064Z), que van despues de dos puntos."""
+PAUSA = ("09:45:00", "11:00:00")
+"""La pausa del calendario PARTIDO: en ella nadie maneja ni atiende; se espera donde se esta."""
+
+
+def _sin_geometria(cuerpo, donde: str, *grados: str) -> None:
+    """Ni una coordenada (de una cuenta, de una base o de un snap) ni una geometria salen por la
+    API, en ninguna llave ni en ningun valor."""
+    texto = json.dumps(cuerpo)
+    esperar(
+        not any(llave in texto for llave in LLAVES_DE_UBICACION)
+        and not any(
+            llave in texto for llave in ('"geometry"', '"polyline"', '"coordinates"', '"location"')
+        )
+        and not COORDENADA.search(texto)
+        and not any(g in texto for g in grados),
+        f"{donde}: sin coordenadas ni geometrias",
+    )
+
+
+def _hora(instante: str) -> str:
+    """La hora local de un instante con su desfase, como HH:MM:SS."""
+    return datetime.fromisoformat(instante).strftime("%H:%M:%S")
+
+
+def _fuera_de_la_pausa(desde: str, hasta: str) -> bool:
+    """Si un tramo o un servicio, de `desde` a `hasta`, no toca la pausa del turno partido."""
+    return _hora(hasta) <= PAUSA[0] or _hora(desde) >= PAUSA[1]
+
+
+def la_ruta_vial(
+    corte: str, del_dia: dict, decision: dict, geografia: dict, red_vial: str, base: str
+) -> None:
+    """ruteo/v2 de punta a punta sobre la red vial sintetica, servida por OSRM: la version de la
+    red declarada, bases con una base en un cruce de la red (la que imprimio
+    generar-red-sintetica), territorial/v2 y una configuracion de campo con tres gestores (uno de
+    dia completo, uno con turno partido y uno de 40 minutos), el plan del dia siguiente al corte y
+    su ruteo. Cada cosa sale: rutas COMPLETA y PARCIAL, paradas PROGRAMADA, SIN_TIEMPO y
+    NO_ENRUTABLE (por un snap de mas de 500 m y por un tramo sin camino), la espera en la pausa del
+    turno partido sin manejar en ella, el regreso a la base, la Cuenta 360 y su trabajo RUTEO_V2;
+    sin una sola coordenada."""
+    print(f"ruteo/v2 sobre la red vial {red_vial}")
+    fecha_operacion = (datetime.fromisoformat(corte) + timedelta(days=1)).date().isoformat()
+    lon, lat = (g.strip() for g in base.split(","))
+
+    estado, _, red = pedir("GET", f"/ruteo-v2/redes/{red_vial}")
+    esperar(
+        estado == 200
+        and red["estado"] == "PUBLICADA"
+        and (red["motor_ruteo"], red["version_motor_ruteo"], red["algoritmo_motor"])
+        == ("OSRM", "v26.9.0", "MLD")
+        and red["perfil"] == "car"
+        and red["cobertura"].get("aristas", 0) > 0
+        and len(red["comandos"]) == 3
+        and len(red["artefactos"]) >= 20,
+        f"GET /ruteo-v2/redes/{{id}}: {red.get('estado')}, OSRM {red.get('version_motor_ruteo')} "
+        f"{red.get('algoritmo_motor')}, perfil {red.get('perfil')}, huella "
+        f"{red.get('huella', '')[:12]}..., {len(red.get('artefactos', []))} archivos con su "
+        "SHA-256",
+    )
+    _sin_geometria(red, "la red vial", lon, lat)
+
+    # Las candidatas de campo de la decision/v2 con coordenadas validas en el municipio de la red.
+    candidatas = {
+        r["cuenta_id"]
+        for r in _todas(
+            f"/decisiones-v2/{decision['decision_run_id']}/resultados?canal_recomendado=CAMPO"
+        )
+    }
+    en_la_red = {
+        r["cuenta_id"]
+        for r in _todas(
+            f"/geografia/ejecuciones/{geografia['geografia_run_id']}/resultados"
+            "?estado_geografia=VALIDA"
+        )
+        if r["municipio"]["cvegeo"] == MUNICIPIO_DE_LA_RED
+    } & candidatas
+    esperar(
+        len(en_la_red) >= 10,
+        f"{len(en_la_red)} candidatas de campo con coordenadas validas en {MUNICIPIO_DE_LA_RED}",
+    )
+    estado, _, version_bases = enviar(
+        "/bases/versiones",
+        {
+            "nombre": f"Bases de ruteo de la prueba de humo del {corte}",
+            "bases": [
+                {
+                    "codigo": "BASE_RUTEO",
+                    "nombre": "Base de ruteo (sintetica, en un cruce de la red)",
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "activa": True,
+                    "municipios": [MUNICIPIO_DE_LA_RED],
+                }
+            ],
+        },
+    )
+    esperar(estado == 201, f"POST /bases/versiones: {estado}, BASE_RUTEO en la red")
+    estado, encabezados, _ = enviar(
+        "/territorial-v2",
+        {
+            "corte_id": del_dia["corte_id"],
+            "geografia_run_id": geografia["geografia_run_id"],
+            "bases_version_id": version_bases["bases_version_id"],
+        },
+    )
+    territorial = seguir(ubicacion_de(encabezados))
+    esperar(
+        territorial.get("estado") == "EXITOSA",
+        f"territorial/v2 con BASE_RUTEO: {territorial.get('estado')}, "
+        f"{territorial.get('conteos', {}).get('asignadas')} asignadas",
+    )
+    todo_el_dia = [{"inicio": "09:00", "fin": "19:00"}]
+    partido = [{"inicio": "09:00", "fin": PAUSA[0][:5]}, {"inicio": PAUSA[1][:5], "fin": "14:00"}]
+    corto = [{"inicio": "09:00", "fin": "09:40"}]
+    estado, _, configuracion = enviar(
+        "/campo/configuraciones",
+        {
+            "nombre": "Campo de ruteo de la prueba de humo",
+            "bases_version_id": version_bases["bases_version_id"],
+            "zona_horaria": "America/Mexico_City",
+            "calendarios": [
+                {"codigo": codigo, "semana": {dia: ventanas for dia in SEMANA}}
+                for codigo, ventanas in (
+                    ("TODO_EL_DIA", todo_el_dia),
+                    ("PARTIDO", partido),
+                    ("CORTO", corto),
+                )
+            ],
+            "gestores": [
+                {
+                    "codigo": codigo,
+                    "base": "BASE_RUTEO",
+                    "calendario": calendario,
+                    "capacidad_cuentas_dia": cupo,
+                    "activo": True,
+                }
+                for codigo, calendario, cupo in (
+                    ("GESTOR_RUTA_001", "TODO_EL_DIA", 3),
+                    ("GESTOR_RUTA_002", "PARTIDO", 6),
+                    ("GESTOR_RUTA_003", "CORTO", 40),
+                )
+            ],
+        },
+    )
+    esperar(estado == 201, f"POST /campo/configuraciones: {estado}, tres gestores en BASE_RUTEO")
+    estado, encabezados, _ = enviar(
+        "/campo-v2/planes",
+        {
+            "corte_id": del_dia["corte_id"],
+            "decision_run_id": decision["decision_run_id"],
+            "territorial_run_id": territorial["territorial_run_id"],
+            "configuracion_campo_version_id": configuracion["configuracion_campo_version_id"],
+            "fecha_operacion": fecha_operacion,
+        },
+    )
+    plan = seguir(ubicacion_de(encabezados))
+    asignadas = plan.get("conteos", {}).get("asignadas", 0)
+    esperar(
+        plan.get("estado") == "EXITOSA" and asignadas >= 10,
+        f"campo/v2 del {fecha_operacion} en BASE_RUTEO: {plan.get('estado')}, {asignadas} "
+        "asignadas",
+    )
+
+    # El ruteo: la API no rutea; el worker, con su OSRM, si.
+    pedida = {"campo_run_id": plan["campo_run_id"], "red_vial_version_id": red_vial}
+    for cambios, codigo_http, codigo in (
+        ({"red_vial_version_id": str(uuid.uuid4())}, 404, "RED_VIAL_NO_ENCONTRADA"),
+        ({"campo_run_id": str(uuid.uuid4())}, 404, "CAMPO_V2_NO_ENCONTRADO"),
+        ({"version_politica": "ruteo-public-v9"}, 422, "POLITICA_NO_SOPORTADA"),
+    ):
+        estado, _, error = enviar("/ruteo-v2/ejecuciones", {**pedida, **cambios})
+        esperar(
+            estado == codigo_http and error.get("codigo") == codigo,
+            f"POST /ruteo-v2/ejecuciones con {next(iter(cambios))} que no aplica: {estado} "
+            f"{error.get('codigo')}",
+        )
+    estado, encabezados, abierta = enviar("/ruteo-v2/ejecuciones", pedida)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and ubicacion_de(encabezados) == f"/ruteo-v2/ejecuciones/{abierta['ruteo_run_id']}",
+        f"POST /ruteo-v2/ejecuciones: {estado} {abierta.get('estado')}",
+    )
+    ejecucion = seguir(ubicacion_de(encabezados))
+    c = ejecucion.get("conteos", {})
+    motivos = (ejecucion.get("distribucion") or {}).get("motivos", {})
+    esperar(
+        ejecucion.get("estado") == "EXITOSA"
+        and ejecucion["resultado"] == "RUTAS_PUBLICADAS"
+        and c["paradas_objetivo"] == asignadas
+        and c["programadas"] + c["sin_tiempo"] + c["no_enrutables"] + c["no_enrutables_base"]
+        == asignadas
+        and c["gestores_objetivo"] == 3,
+        f"ruteo/v2 termino {ejecucion.get('estado')}: "
+        + ", ".join(f"{k} {v}" for k, v in c.items()),
+    )
+    esperar(
+        c["rutas_completas"] >= 1
+        and c["rutas_parciales"] >= 1
+        and c["programadas"] >= 3
+        and c["sin_tiempo"] >= 1
+        and motivos.get("SNAP_EXCESIVO", 0) >= 1
+        and motivos.get("RED_DESCONECTADA", 0) >= 1,
+        "rutas COMPLETA y PARCIAL; paradas PROGRAMADA, SIN_TIEMPO y NO_ENRUTABLE, por un snap de "
+        "mas de 500 m y por un tramo sin camino: "
+        + ", ".join(f"{m} {n}" for m, n in sorted(motivos.items())),
+    )
+    politica = ejecucion["politica"]
+    esperar(
+        (ejecucion["version_motor"], ejecucion["version_politica"])
+        == ("ruteo/v2", "ruteo-public-v2")
+        and politica["algoritmo"] == "PRIORITY_NEAREST_NEIGHBOR_2OPT/v1"
+        and (politica["max_snap_distancia_m"], politica["duracion_servicio_s"]) == (500, 900)
+        and ejecucion["red"]["huella"] == red["huella"]
+        and "sin trafico" in ejecucion["aviso"]
+        and "no una ruta optima" in ejecucion["aviso"],
+        f"ruteo-public-v2 (hash {ejecucion['hash_politica'][:12]}...): {politica['algoritmo']}, "
+        "snap de hasta 500 m, 900 s de servicio, sobre la red declarada; heuristica, sin trafico",
+    )
+    _sin_geometria(ejecucion, "GET /ruteo-v2/ejecuciones/{ruteo_run_id}", lon, lat)
+
+    estado, _, rutas = pedir(
+        "GET", f"/ruteo-v2/ejecuciones/{ejecucion['ruteo_run_id']}/rutas?por_pagina=10"
+    )
+    por_gestor = {r["gestor"]["codigo"]: r for r in rutas.get("elementos", [])}
+    esperar(
+        estado == 200
+        and sorted(por_gestor) == ["GESTOR_RUTA_001", "GESTOR_RUTA_002", "GESTOR_RUTA_003"],
+        f"GET {{rutas}}: {estado}, una ruta por gestor, en el orden de su codigo",
+    )
+    for codigo, r in sorted(por_gestor.items()):
+        regreso = r["regreso"] or {}
+        esperar(
+            r["duracion_total_s"]
+            == r["duracion_traslado_s"] + r["duracion_servicio_s"] + r["duracion_espera_s"]
+            and r["salida_base"] is not None
+            and r["jornada_inicio"] <= r["salida_base"]
+            and regreso.get("llegada", "") <= r["jornada_fin"]
+            and r["hash_matriz"] is not None,
+            f"{codigo}: {r['estado_ruta']}, {r['conteos']['programadas']} de "
+            f"{r['conteos']['paradas_campo']} paradas, sale {_hora(r['salida_base'])} y regresa "
+            f"a la base {_hora(regreso['llegada'])} ({r['distancia_total_m']:,} m por calle)",
+        )
+    _sin_geometria(rutas, "las rutas", lon, lat)
+
+    # El turno partido: en la pausa no se maneja ni se atiende; se espera donde se esta.
+    partida = por_gestor["GESTOR_RUTA_002"]
+    estado, _, paradas = pedir("GET", f"/ruteo-v2/rutas/{partida['ruta_id']}/paradas?por_pagina=50")
+    programadas = [p for p in paradas.get("elementos", []) if p["estado"] == "PROGRAMADA"]
+    tarde = [p for p in programadas if _hora(p["inicio_servicio"]) >= PAUSA[1]]
+    regreso = partida["regreso"]
+    esperar(
+        estado == 200
+        and [p["orden_visita"] for p in programadas] == list(range(1, len(programadas) + 1))
+        and all(
+            _fuera_de_la_pausa(p["salida_anterior"], p["llegada_estimada"])
+            and _fuera_de_la_pausa(p["inicio_servicio"], p["fin_servicio"])
+            for p in programadas
+        )
+        and _fuera_de_la_pausa(regreso["salida"], regreso["llegada"])
+        and bool(tarde)
+        and tarde[0]["espera_s"] > 0
+        and partida["duracion_espera_s"] > 0,
+        f"GESTOR_RUTA_002, turno partido: {len(programadas)} paradas en orden; nadie maneja ni "
+        f"atiende entre las {PAUSA[0][:5]} y las {PAUSA[1][:5]}; la primera de la tarde empieza a "
+        f"las {tarde and _hora(tarde[0]['inicio_servicio'])}, tras "
+        f"{tarde and tarde[0]['espera_s']} s de espera donde estaba",
+    )
+    _sin_geometria(paradas, "las paradas de una ruta", lon, lat)
+
+    # Las paradas por su estado, cada una con su motivo.
+    ruta_paradas = f"/ruteo-v2/ejecuciones/{ejecucion['ruteo_run_id']}/paradas"
+
+    def de_estado(estado_parada: str) -> list[dict]:
+        elementos = _todas(f"{ruta_paradas}?estado={estado_parada}")
+        esperar(
+            {p["estado"] for p in elementos} <= {estado_parada},
+            f"GET {{paradas}}?estado={estado_parada}: {len(elementos)}, por su indice",
+        )
+        return elementos
+
+    sin_tiempo = de_estado("SIN_TIEMPO")
+    no_enrutables = de_estado("NO_ENRUTABLE")
+    programadas_todas = de_estado("PROGRAMADA")
+    esperar(
+        len(sin_tiempo) == c["sin_tiempo"]
+        and len(no_enrutables) == c["no_enrutables"]
+        and len(programadas_todas) == c["programadas"]
+        and all(p["motivo"] and p["llegada_estimada"] is None for p in sin_tiempo + no_enrutables)
+        and all(p["llegada_estimada"].endswith("-06:00") for p in programadas_todas),
+        "cada parada sin programar con su motivo y sin hora; cada programada con su ETA "
+        "planificada en la hora de la Ciudad de Mexico",
+    )
+    excesiva = next(p for p in no_enrutables if p["motivo"] == "SNAP_EXCESIVO")
+    esperar(
+        float(excesiva["snap_distancia_m"]) > 500,
+        f"{excesiva['cliente_unico']}: NO_ENRUTABLE, a {excesiva['snap_distancia_m']} m de la "
+        "calle mas cercana",
+    )
+
+    # La Cuenta 360 de una programada, de una sin tiempo y de una no enrutable; y su trabajo.
+    for elegida in (programadas_todas[0], sin_tiempo[0], excesiva):
+        estado, _, resumen = pedir("GET", f"/cuentas/{elegida['cuenta_id']}")
+        r = resumen.get("ruteo_resumen") or {}
+        esperar(
+            estado == 200
+            and r.get("ruteo_run_id") == ejecucion["ruteo_run_id"]
+            and r.get("estado") == elegida["estado"]
+            and r.get("motivo") == elegida["motivo"]
+            and r.get("llegada_estimada") == elegida["llegada_estimada"],
+            f"GET /cuentas/{{cuenta_id}} de {elegida['cliente_unico']}: ruteo_resumen "
+            f"{elegida['estado']} {elegida['motivo'] or _hora(elegida['llegada_estimada'])}",
+        )
+        _sin_geometria(resumen, "la Cuenta 360", lon, lat)
+    estado, _, de_la_cuenta = pedir("GET", f"/cuentas/{programadas_todas[0]['cuenta_id']}/ruteo-v2")
+    esperar(
+        estado == 200
+        and de_la_cuenta["total"] == 1
+        and de_la_cuenta["elementos"][0]["ruteo_run_id"] == ejecucion["ruteo_run_id"],
+        "GET /cuentas/{cuenta_id}/ruteo-v2: la parada de la cuenta",
+    )
+    estado, _, trabajo = pedir("GET", f"/trabajos/{ejecucion['trabajo_id']}")
+    esperar(
+        estado == 200 and (trabajo["tipo"], trabajo["estado"]) == ("RUTEO_V2", "COMPLETADO"),
+        f"su trabajo RUTEO_V2: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+    )
+    estado, _, error = enviar("/ruteo-v2/ejecuciones", pedida)
+    esperar(
+        estado == 409 and error["codigo"] == "RUTEO_V2_YA_GENERADO",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+    print(f"ruteo_plan_campo {plan['campo_run_id']}")
+    print(f"ruteo_run_id {ejecucion['ruteo_run_id']}")
+
+
 def main(
     archivo: Path,
     oficial: Path | None = None,
@@ -1690,6 +2044,8 @@ def main(
     escenario: Path | None = None,
     geografia: bool = False,
     campo: bool = False,
+    red_vial: str | None = None,
+    base_ruteo: str | None = None,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
@@ -2091,6 +2447,15 @@ def main(
         "/campo-v2/planes/{campo_run_id}/cargas",
         "/campo-v2/planes/{campo_run_id}/unidades",
         "/cuentas/{cuenta_id}/campo-v2",
+        "/ruteo-v2/redes",
+        "/ruteo-v2/redes/{red_vial_version_id}",
+        "/ruteo-v2/ejecuciones",
+        "/ruteo-v2/ejecuciones/{ruteo_run_id}",
+        "/ruteo-v2/ejecuciones/{ruteo_run_id}/rutas",
+        "/ruteo-v2/ejecuciones/{ruteo_run_id}/paradas",
+        "/ruteo-v2/rutas/{ruta_id}",
+        "/ruteo-v2/rutas/{ruta_id}/paradas",
+        "/cuentas/{cuenta_id}/ruteo-v2",
     )
     esperar(
         estado == 200
@@ -2098,7 +2463,8 @@ def main(
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
         "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
-        "la atribucion, decision/v2, la geografia, las bases, territorial/v2 y campo/v2",
+        "la atribucion, decision/v2, la geografia, las bases, territorial/v2, campo/v2 y "
+        "ruteo/v2",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -2117,6 +2483,8 @@ def main(
         del_dia, geografia_del_corte = la_geografia(corte)
         if campo:
             el_campo(corte, del_dia, decision, geografia_del_corte)
+        if red_vial is not None:
+            la_ruta_vial(corte, del_dia, decision, geografia_del_corte, red_vial, base_ruteo)
     print("Todo en orden.")
 
 
@@ -2141,6 +2509,16 @@ if __name__ == "__main__":
         help="Recorre campo/v2 sobre el corte oficial: bases de campo, una configuracion de "
         "campo sintetica y el plan del dia siguiente, con cada estado.",
     )
+    argumentos.add_argument(
+        "--ruteo",
+        metavar="RED_VIAL_VERSION_ID",
+        help="Recorre ruteo/v2 sobre esa red vial PUBLICADA, que un OSRM ya sirve al worker.",
+    )
+    argumentos.add_argument(
+        "--base-ruteo",
+        metavar="LON,LAT",
+        help="La base de ruteo: el cruce de la red que imprimio generar-red-sintetica.",
+    )
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
@@ -2148,6 +2526,10 @@ if __name__ == "__main__":
         argumentos.error("--geografia va con --oficial y --corte.")
     if leidos.campo and not (leidos.geografia and leidos.pagos is not None):
         argumentos.error("--campo va con --geografia y --pagos.")
+    if (leidos.ruteo is None) != (leidos.base_ruteo is None):
+        argumentos.error("--ruteo y --base-ruteo van juntos.")
+    if leidos.ruteo is not None and not leidos.campo:
+        argumentos.error("--ruteo va con --campo.")
     main(
         leidos.archivo,
         leidos.oficial,
@@ -2156,4 +2538,6 @@ if __name__ == "__main__":
         leidos.escenario,
         geografia=leidos.geografia,
         campo=leidos.campo,
+        red_vial=leidos.ruteo,
+        base_ruteo=leidos.base_ruteo,
     )
