@@ -2,7 +2,8 @@
 
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
 una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
-una decision v2, a una geografia, a una ejecucion de territorial/v2 o a un plan de campo/v2.
+una decision v2, a una geografia, a una ejecucion de territorial/v2, a un plan de campo/v2 o
+a una ejecucion de ruteo/v2.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -29,6 +30,7 @@ from motor_cartera.db.modelos import (
     EjecucionHistoria,
     EjecucionMotorPagos,
     EjecucionRuteo,
+    EjecucionRuteoV2,
     EjecucionTerritorial,
     EjecucionTerritorialV2,
     EstadoAtribucion,
@@ -42,6 +44,7 @@ from motor_cartera.db.modelos import (
     EstadoIngestaPagos,
     EstadoMotorPagos,
     EstadoRuteo,
+    EstadoRuteoV2,
     EstadoTerritorial,
     EstadoTerritorialV2,
     IngestaPagos,
@@ -49,6 +52,7 @@ from motor_cartera.db.modelos import (
     ResultadoEjecucionCampoV2,
     ResultadoEjecucionDecisionV2,
     ResultadoEjecucionGeografia,
+    ResultadoEjecucionRuteoV2,
     ResultadoEjecucionTerritorialV2,
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
@@ -187,6 +191,30 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
             "capacidad_total": 0,
             "capacidad_utilizada": 0,
             "resultado": ResultadoEjecucionCampoV2.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.RUTEO_V2: Objetivo(
+        EjecucionRuteoV2,
+        EstadoRuteoV2,
+        "ejecucion_ruteo_v2_id",
+        "ruteo_run_id",
+        {
+            "gestores_objetivo": 0,
+            "rutas_completas": 0,
+            "rutas_parciales": 0,
+            "rutas_sin_paradas": 0,
+            "bases_no_enrutables": 0,
+            "rutas_sin_jornada": 0,
+            "paradas_objetivo": 0,
+            "programadas": 0,
+            "sin_tiempo": 0,
+            "no_enrutables": 0,
+            "no_enrutables_base": 0,
+            "distancia_total_m": 0,
+            "duracion_vial_total_s": 0,
+            "duracion_servicio_total_s": 0,
+            "duracion_espera_total_s": 0,
+            "resultado": ResultadoEjecucionRuteoV2.INTENTOS_AGOTADOS.value,
         },
     ),
 }

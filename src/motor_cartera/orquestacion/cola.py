@@ -129,8 +129,15 @@ def reclamo_de(trabajo: TrabajoOrquestacion) -> Reclamo:
     )
 
 
-def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
-    """Toma un trabajo para `worker_id`, o None si no hay ninguno que tomar.
+def reclamar(
+    worker_id: str,
+    lease_segundos: float,
+    *,
+    excluir: frozenset[TipoTrabajo] = frozenset(),
+) -> Reclamo | None:
+    """Toma un trabajo para `worker_id`, o None si no hay ninguno que tomar. Con `excluir`, no
+    toma los de esos tipos: un worker cuyo proveedor de ruteo no responde no toma un RUTEO_V2,
+    y sigue con los demas; ese trabajo no gasta intentos mientras espera.
 
     Se puede tomar un trabajo PENDIENTE que ya este disponible, o uno EJECUTANDO cuyo lease vencio:
     su worker dejo de latir. De los que se pueden tomar, primero los del flujo operacional y las
@@ -145,9 +152,12 @@ def reclamar(worker_id: str, lease_segundos: float) -> Reclamo | None:
     worker muere despues, la base ya sabe que lo tenia, y hasta cuando.
     """
     with sesion() as s:
+        condiciones = [_reclamable()]
+        if excluir:
+            condiciones.append(TrabajoOrquestacion.tipo.notin_(sorted(excluir)))
         trabajo = s.exec(
             select(TrabajoOrquestacion)
-            .where(_reclamable())
+            .where(*condiciones)
             .order_by(_prioridad(), TrabajoOrquestacion.id)
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -343,17 +353,18 @@ def _reclamable():
 
 def _prioridad():
     """0 para lo operacional, 1 para la historia, 2 para el motor de pagos, 3 para la atribucion y
-    la evaluacion de promesas, 4 para decision/v2 y la geografia, 5 para territorial/v2 y 6 para
-    campo/v2. La historia y la interpretacion de los pagos son proyecciones paralelas: ninguna etapa
-    del flujo las espera, y con un solo worker tampoco espera detras de ellas. Un backfill de
-    cientos de trabajos HISTORIA no retrasa la decision de la cartera de hoy. El motor de pagos va
-    despues porque interpreta lo que la historia publica: con los HISTORIA pendientes primero, una
-    ventana se interpreta una vez con todos sus archivos, y no una vez por archivo. La atribucion y
-    la evaluacion van despues porque leen lo que el motor de pagos publica, y decision/v2 despues
-    porque lee todo lo anterior. La geografia lee un corte ya publicado; territorial/v2, una
-    geografia ya publicada; y campo/v2, una decision/v2 y una territorial/v2 ya publicadas. No
-    cambia que se ejecuta ni como (decision/v2 decide con lo que se conocia en su known_at, se
-    ejecute cuando se ejecute): solo cual de los que ya se pueden tomar va primero."""
+    la evaluacion de promesas, 4 para decision/v2 y la geografia, 5 para territorial/v2, 6 para
+    campo/v2 y 7 para ruteo/v2. La historia y la interpretacion de los pagos son proyecciones
+    paralelas: ninguna etapa del flujo las espera, y con un solo worker tampoco espera detras de
+    ellas. Un backfill de cientos de trabajos HISTORIA no retrasa la decision de la cartera de hoy.
+    El motor de pagos va despues porque interpreta lo que la historia publica: con los HISTORIA
+    pendientes primero, una ventana se interpreta una vez con todos sus archivos, y no una vez por
+    archivo. La atribucion y la evaluacion van despues porque leen lo que el motor de pagos publica,
+    y decision/v2 despues porque lee todo lo anterior. La geografia lee un corte ya publicado;
+    territorial/v2, una geografia ya publicada; campo/v2, una decision/v2 y una territorial/v2 ya
+    publicadas; y ruteo/v2, un plan de campo/v2 ya publicado. No cambia que se ejecuta ni como
+    (decision/v2 decide con lo que se conocia en su known_at, se ejecute cuando se ejecute): solo
+    cual de los que ya se pueden tomar va primero."""
     return case(
         (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
         (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
@@ -363,6 +374,7 @@ def _prioridad():
         (TrabajoOrquestacion.tipo == TipoTrabajo.GEOGRAFIA, 4),
         (TrabajoOrquestacion.tipo == TipoTrabajo.TERRITORIAL_V2, 5),
         (TrabajoOrquestacion.tipo == TipoTrabajo.CAMPO_V2, 6),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.RUTEO_V2, 7),
         else_=0,
     )
 

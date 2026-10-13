@@ -811,8 +811,8 @@ def test_un_error_inesperado_del_ciclo_no_detiene_el_worker(monkeypatch, caplog)
     detener = threading.Event()
     vueltas = []
 
-    def falla_y_despues_se_detiene(worker_id, config):
-        vueltas.append(worker_id)
+    def falla_y_despues_se_detiene(worker_id, config, salud):
+        vueltas.append((worker_id, salud))
         if len(vueltas) == 1:
             raise ConnectionError("la base no contesta")
         detener.set()
@@ -820,12 +820,14 @@ def test_un_error_inesperado_del_ciclo_no_detiene_el_worker(monkeypatch, caplog)
     monkeypatch.setattr(worker, "procesar_un_trabajo", falla_y_despues_se_detiene)
 
     assert ejecutar_worker(Config(worker_poll_segundos=0.01), detener=detener) is None
-    assert len(vueltas) == 2 and len(set(vueltas)) == 1  # el mismo worker, que siguio
+    # El mismo worker, que siguio, con la misma salud de ruteo: la que recuerda su ultima pregunta.
+    (primero, salud), (segundo, misma) = vueltas
+    assert primero == segundo and misma is salud
     assert any("error inesperado; espera y sigue" in r.getMessage() for r in caplog.records)
 
 
 def test_una_vez_no_oculta_un_error_del_ciclo(monkeypatch):
-    def revienta(worker_id, config):
+    def revienta(worker_id, config, salud):
         raise ConnectionError("la base no contesta")
 
     monkeypatch.setattr(worker, "procesar_un_trabajo", revienta)

@@ -45,6 +45,7 @@ from motor_cartera.db.modelos import (
     EjecucionCampoV2,
     EjecucionDecisionV2,
     EjecucionGeografia,
+    EjecucionRuteoV2,
     EjecucionTerritorialV2,
     EstadoCorrida,
     EstadoIngestaPagos,
@@ -78,6 +79,8 @@ from motor_cartera.motor_pagos.ejecuciones import (
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
+from motor_cartera.ruteo_v2 import ejecuciones as ruteo_v2
+from motor_cartera.ruteo_v2.ejecuciones import RuteoV2YaGenerado, SaludRuteo, ejecutar_ruteo_v2
 from motor_cartera.territorial.ejecuciones import TerritorialYaGenerado, ejecutar_territorial
 from motor_cartera.territorial_v2 import ejecuciones as territorial_v2
 from motor_cartera.territorial_v2.ejecuciones import (
@@ -99,6 +102,7 @@ PERDIO_LA_CARRERA = (
     GeografiaYaGenerada,
     TerritorialV2YaGenerado,
     CampoV2YaGenerado,
+    RuteoV2YaGenerado,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -165,6 +169,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.GEOGRAFIA: ejecutar_geografia,
     TipoTrabajo.TERRITORIAL_V2: ejecutar_territorial_v2,
     TipoTrabajo.CAMPO_V2: ejecutar_campo_v2,
+    TipoTrabajo.RUTEO_V2: ejecutar_ruteo_v2,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -235,10 +240,21 @@ class _Latido:
                 return
 
 
-def procesar_un_trabajo(worker_id: str, config: Config | None = None) -> TrabajoProcesado | None:
-    """Toma un trabajo, lo ejecuta y lo cierra. None si no habia ninguno que tomar."""
+def salud_de_ruteo(config: Config) -> SaludRuteo:
+    """Si el proveedor de ruteo de este proceso responde: sin uno (MC_OSRM_URL), nunca."""
+    return SaludRuteo(ruteo_v2.proveedor_configurado(config), config.osrm_salud_segundos)
+
+
+def procesar_un_trabajo(
+    worker_id: str, config: Config | None = None, salud: SaludRuteo | None = None
+) -> TrabajoProcesado | None:
+    """Toma un trabajo, lo ejecuta y lo cierra. None si no habia ninguno que tomar. Un trabajo
+    RUTEO_V2 solo se toma si el proveedor de ruteo de este proceso responde: si no, se queda en
+    la cola, sin gastar intentos, y el worker sigue con los demas."""
     config = config or config_del_entorno
-    reclamo = cola.reclamar(worker_id, config.worker_lease_segundos)
+    salud = salud or salud_de_ruteo(config)
+    excluir = frozenset() if salud.disponible() else frozenset({TipoTrabajo.RUTEO_V2})
+    reclamo = cola.reclamar(worker_id, config.worker_lease_segundos, excluir=excluir)
     if reclamo is None:
         return None
     return procesar_reclamo(reclamo, worker_id, config)
@@ -302,6 +318,7 @@ def ejecutar_worker(
     detener = detener or threading.Event()
     worker_id = identificador_worker()
     previos = _escuchar_senales(detener)
+    salud = salud_de_ruteo(config)
     ultimo = None
     log.info(
         "worker %s: arranca (lease %ss, latido %ss, %s intentos, espera base %ss)",
@@ -314,7 +331,7 @@ def ejecutar_worker(
     try:
         while not detener.is_set():
             try:
-                procesado = procesar_un_trabajo(worker_id, config)
+                procesado = procesar_un_trabajo(worker_id, config, salud)
             except Exception:
                 if una_vez:
                     raise
@@ -552,6 +569,42 @@ def planificar_campo_v2_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(EjecucionCampoV2, ejecucion_id)
+
+
+def rutear_v2_en_primer_plano(
+    campo_run_id: UUID,
+    red_vial_version_id: UUID,
+    *,
+    version_politica: str | None = None,
+    config: Config | None = None,
+) -> EjecucionRuteoV2:
+    """ruteo/v2 del CLI, como campo/v2: su ejecucion y su trabajo, tomado por este proceso, y el
+    ruteo en primer plano con el proveedor de este proceso. Si el proceso muere, o el proveedor
+    no responde, cualquier worker con proveedor la termina cuando vence el lease. Propaga lo que
+    levanta `ruteo_v2.abrir` sin registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = ruteo_v2.abrir(
+            s,
+            campo_run_id,
+            red_vial_version_id,
+            version_politica=version_politica,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_ruteo_v2_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionRuteoV2, ejecucion_id)
 
 
 def _cerrar(
