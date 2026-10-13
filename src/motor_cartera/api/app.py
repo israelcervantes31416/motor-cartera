@@ -34,6 +34,7 @@ from motor_cartera.api import (
     orquestacion,
     pagos,
     ruteo,
+    ruteo_v2,
     salud,
     territorial,
     territorial_v2,
@@ -376,6 +377,14 @@ ETIQUETAS = [
         "candidata de campo quedo con que gestor de su base, en que zona, subzona, tramo y "
         "microtramo, bajo la capacidad declarada; capacidad, no factibilidad vial.",
     },
+    {
+        "name": "ruteo-v2",
+        "description": "ruteo/v2: las versiones de la red vial (OpenStreetMap, ODbL) y las "
+        "rutas por calle de los gestores de un plan de campo/v2, con ruteo-public-v2 y un "
+        "OSRM autoalojado: el orden de visita, las ETA planificadas sin trafico, las distancias "
+        "y las duraciones, y que no cabe en la jornada o no es enrutable. Una heuristica, no una "
+        "ruta optima; sin coordenadas ni geometrias.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -420,5 +429,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(territorial_v2.router, dependencies=protegidas)
     app.include_router(campo.router, dependencies=protegidas)
     app.include_router(campo_v2.router, dependencies=protegidas)
+    app.include_router(ruteo_v2.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

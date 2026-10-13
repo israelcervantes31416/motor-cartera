@@ -1277,6 +1277,24 @@ class CampoResumenRespuesta(BaseModel):
     microtramo_id: UUID | None
 
 
+class RuteoResumenRespuesta(BaseModel):
+    """La parada de la cuenta en la ejecucion de ruteo/v2 EXITOSA mas reciente, en resumen. Sin
+    coordenadas ni geometria: su detalle esta en /cuentas/{cuenta_id}/ruteo-v2."""
+
+    ruteo_run_id: UUID
+    ruta_id: UUID
+    fecha_operacion: date = Field(description="La fecha de operacion de su plan de campo/v2.")
+    gestor_codigo: str
+    estado: str = Field(description="PROGRAMADA, SIN_TIEMPO, NO_ENRUTABLE o NO_ENRUTABLE_BASE.")
+    motivo: str | None
+    orden_visita: int | None
+    llegada_estimada: datetime | None = Field(
+        description="Una ETA planificada, sin trafico, en la zona de la configuracion de campo."
+    )
+    distancia_desde_anterior_m: int | None
+    duracion_desde_anterior_s: int | None
+
+
 class LifecycleResumenRespuesta(BaseModel):
     """El lifecycle de la cuenta en numeros. Las gestiones, las promesas, los convenios y la linea
     de tiempo son subrecursos paginados: aqui no estan."""
@@ -1380,6 +1398,12 @@ class Cuenta360Respuesta(BaseModel):
         description="El plan de campo/v2 EXITOSA mas reciente en que fue candidata de campo (con "
         "`al`, el de fecha de operacion hasta ese dia): su estado, su base, su gestor y su "
         "particion, sin coordenadas. Todos estan en /cuentas/{cuenta_id}/campo-v2.",
+    )
+    ruteo_resumen: RuteoResumenRespuesta | None = Field(
+        default=None,
+        description="Su parada en la ejecucion de ruteo/v2 EXITOSA mas reciente (con `al`, la de "
+        "fecha de operacion hasta ese dia): su ruta, su gestor, su estado, su orden y su ETA, sin "
+        "coordenadas. Todas estan en /cuentas/{cuenta_id}/ruteo-v2.",
     )
 
 

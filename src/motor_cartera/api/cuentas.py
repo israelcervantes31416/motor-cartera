@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query, Request
 from sqlmodel import Session
@@ -41,6 +42,7 @@ from motor_cartera.api.esquemas import (
     ParametrosHistoria,
     ParametrosMovimientosDeCuenta,
     ResumenPagosRespuesta,
+    RuteoResumenRespuesta,
     SnapshotEnHistoriaRespuesta,
     SnapshotRespuesta,
     TerritorialResumenRespuesta,
@@ -71,6 +73,7 @@ from motor_cartera.lifecycle import consultas as lifecycle
 from motor_cartera.lifecycle.reglas import VERSION_LIFECYCLE
 from motor_cartera.motor_pagos import consultas
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
+from motor_cartera.ruteo_v2 import consultas as ruteo_v2
 from motor_cartera.territorial_v2 import consultas as territorial_v2
 
 router = APIRouter(prefix="/cuentas", tags=["cuentas"])
@@ -184,7 +187,9 @@ def obtener_cuenta(
     `ultima_decision_v2` es la decision v2 mas reciente, en resumen: su ejecucion, su as_of, su
     prioridad y su canal. `geografia_resumen` es su geografia vigente (geografia/v1) y su base
     (territorial/v2), sin coordenadas. `campo_resumen` es su plan de campo/v2 mas reciente: su
-    estado, su base, su gestor y su particion, sin coordenadas.
+    estado, su base, su gestor y su particion, sin coordenadas. `ruteo_resumen` es su parada en
+    la ejecucion de ruteo/v2 mas reciente: su ruta, su gestor, su estado, su orden y su ETA
+    planificada, sin coordenadas.
 
     La historia, los eventos, los pagos observados, los movimientos, las gestiones, las promesas,
     los convenios, la linea de tiempo y las atribuciones son subrecursos paginados: `/historia`,
@@ -200,6 +205,7 @@ def obtener_cuenta(
     decidida = decision_v2.ultima(s, cuenta, al)
     ubicada = geografia.vigente(s, cuenta, al)
     planeada = campo_v2.ultima(s, cuenta, al)
+    ruteada = ruteo_v2.ultima(s, cuenta, al)
     p = vista.presencia
     return Cuenta360Respuesta(
         cuenta_id=cuenta.cuenta_id,
@@ -268,6 +274,27 @@ def obtener_cuenta(
             tramo_id=planeada.vista.asignacion.tramo_id,
             microtramo_id=planeada.vista.asignacion.microtramo_id,
         ),
+        ruteo_resumen=None if ruteada is None else _ruteo(ruteada),
+    )
+
+
+def _ruteo(ruteada) -> RuteoResumenRespuesta:
+    """La ultima parada de ruteo/v2, con su ETA en la zona de la configuracion de campo."""
+    parada = ruteada.vista.parada
+    llegada = parada.llegada_estimada
+    return RuteoResumenRespuesta(
+        ruteo_run_id=ruteada.ejecucion.ruteo_run_id,
+        ruta_id=ruteada.vista.ruta_id,
+        fecha_operacion=ruteada.ejecucion.fecha_operacion,
+        gestor_codigo=ruteada.vista.codigo_gestor,
+        estado=parada.estado,
+        motivo=parada.motivo,
+        orden_visita=parada.orden_visita,
+        llegada_estimada=None
+        if llegada is None
+        else llegada.astimezone(ZoneInfo(ruteada.zona_horaria)),
+        distancia_desde_anterior_m=parada.distancia_desde_anterior_m,
+        duracion_desde_anterior_s=parada.duracion_desde_anterior_s,
     )
 
 

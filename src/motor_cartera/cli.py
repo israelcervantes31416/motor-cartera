@@ -1627,6 +1627,458 @@ def exportar_plan_campo(
     typer.echo(f"Escrito: {ruta} ({v.ejecucion.candidatas_campo:,} candidatas del plan {plan})")
 
 
+# --- ruteo/v2 -------------------------------------------------------------------------------------
+
+
+@app.command("generar-red-sintetica")
+def generar_red_sintetica(
+    destino: Annotated[
+        str, typer.Option(help="El .osm que se escribe.")
+    ] = "datos/red_vial/fuente/red_sintetica.osm",
+    origen: Annotated[
+        str | None,
+        typer.Option(
+            "--origen", help="LON,LAT de la esquina suroeste de la red, con decimales sinteticos."
+        ),
+    ] = None,
+    geografia_version: Annotated[
+        str | None,
+        typer.Option(
+            "--geografia-version",
+            help="Con --municipio: la red se dibuja dentro de ese municipio de esa referencia.",
+        ),
+    ] = None,
+    municipio: Annotated[
+        str | None, typer.Option("--municipio", help="El CVEGEO de ese municipio.")
+    ] = None,
+    puntos: Annotated[
+        str | None,
+        typer.Option(
+            "--puntos",
+            help="Con --municipio: una muestra de puntos (muestrear-puntos) en la que los del "
+            "municipio se reemplazan por los de la red sintetica, para la prueba de humo.",
+        ),
+    ] = None,
+) -> None:
+    """Escribe una red vial SINTETICA diminuta en OSM XML (19 nodos y 9 vias inventadas: una
+    cuadricula, una calle de un solo sentido y un tramo aislado), para las pruebas, la prueba de
+    humo y el CI, que no descargan nada de OpenStreetMap. La misma entrada, los mismos bytes.
+    Imprime su origen y la base de ruteo de la prueba de humo."""
+    import json
+    from decimal import Decimal
+
+    from motor_cartera.ruteo_v2.sintetica import (
+        BASE_DE_HUMO,
+        ORIGEN_PRUEBAS,
+        PUNTOS_DE_HUMO,
+        Origen,
+        escribir,
+    )
+
+    if puntos is not None and municipio is None:
+        typer.echo("--puntos necesita --municipio.", err=True)
+        raise typer.Exit(code=2)
+    if origen is not None:
+        lon, lat = (Decimal(v.strip()) for v in origen.split(","))
+        o = Origen(lon, lat)
+    elif geografia_version is not None and municipio is not None:
+        o = _origen_en_municipio(geografia_version, municipio)
+    else:
+        o = Origen(*ORIGEN_PRUEBAS)
+    ruta = escribir(destino, o)
+    typer.echo(f"Escrito: {ruta} (red vial sintetica, 19 nodos y 9 vias)")
+    typer.echo(f"origen {o.lon},{o.lat}")
+    lon_base, lat_base = o.coordenada(*BASE_DE_HUMO)
+    typer.echo(f"base {lon_base} {lat_base}")
+    if puntos is not None:
+        from motor_cartera.geografia.muestra import escribir as escribir_muestra
+
+        muestra = json.loads(Path(puntos).read_text(encoding="ascii"))
+        muestra["municipios"][municipio] = [
+            [float(c) for c in o.coordenada(x, y)] for x, y in PUNTOS_DE_HUMO
+        ]
+        escribir_muestra(muestra, puntos)
+        typer.echo(f"Reemplazados en {puntos}: {len(PUNTOS_DE_HUMO)} puntos de {municipio}")
+
+
+def _origen_en_municipio(geografia_version: str, municipio: str):
+    """El origen de la red dentro de un municipio de una referencia: 1.5 km al este y 3 km al norte
+    de su esquina suroeste. La red ocupa 7 km por 4 km: el municipio tiene que ser mas grande."""
+    from decimal import Decimal
+    from uuid import UUID
+
+    from sqlalchemy import text
+
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.ruteo_v2.sintetica import Origen
+
+    with sesion() as s:
+        fila = s.execute(
+            text(
+                "SELECT ST_XMin(m.geometria), ST_YMin(m.geometria), ST_XMax(m.geometria), "
+                "ST_YMax(m.geometria) FROM municipio_geografico m JOIN version_geografia v "
+                "ON v.id = m.version_geografia_id WHERE v.geografia_version_id = :v "
+                "AND m.cvegeo = :m"
+            ),
+            {"v": UUID(geografia_version), "m": municipio},
+        ).one_or_none()
+    if fila is None:
+        typer.echo(f"No esta el municipio {municipio} en esa referencia.", err=True)
+        raise typer.Exit(code=1)
+    xmin, ymin, xmax, ymax = (Decimal(repr(v)) for v in fila)
+    esquina = Origen(xmin, ymin)
+    lon, lat = esquina.grados(1_500, 3_000)
+    fin_lon, fin_lat = esquina.grados(9_000, 7_500)
+    if fin_lon > xmax or fin_lat > ymax:
+        typer.echo(f"El municipio {municipio} es mas chico que la red sintetica.", err=True)
+        raise typer.Exit(code=1)
+    return Origen(lon, lat)
+
+
+@app.command("preparar-red-vial")
+def preparar_red_vial(
+    fuente: Annotated[Path, typer.Argument(help="El .osm.pbf o el .osm de la red.")],
+    region: Annotated[str, typer.Option(help="Lo que cubre, como se declara.")],
+    proveedor_datos: Annotated[str, typer.Option(help="De quien son los datos.")] = "OpenStreetMap",
+    licencia: Annotated[str, typer.Option(help="La licencia de los datos.")] = "ODbL-1.0",
+    proveedor_extracto: Annotated[
+        str | None, typer.Option(help="Quien recorto el extracto, si aplica.")
+    ] = None,
+    fecha_snapshot: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%d"], help="La fecha de los datos del extracto."),
+    ] = None,
+    url_fuente: Annotated[str | None, typer.Option(help="De donde se descargo.")] = None,
+    destino: Annotated[
+        str, typer.Option(help="La raiz de las redes: un directorio por huella.")
+    ] = "datos/red_vial",
+    osrm_bin: Annotated[
+        Path | None,
+        typer.Option("--osrm-bin", help="El directorio de los binarios nativos de OSRM v26.9.0."),
+    ] = None,
+    docker: Annotated[
+        bool,
+        typer.Option(
+            "--docker",
+            help="Solo escribe preparar.sh, con la imagen fijada, para correrlo donde haya Docker.",
+        ),
+    ] = False,
+) -> None:
+    """Prepara una version de la red vial con OSRM v26.9.0 (MLD, perfil car fijado): su huella sale
+    de su fuente, del motor y su distribucion, del perfil y de los comandos, y la red la declara en
+    cada respuesta (--data_version). La version nace EN_PROCESO; con --osrm-bin corre extract,
+    partition y customize y la publica con su manifiesto verificado (o la deja FALLIDA). Con
+    --docker escribe preparar.sh y se publica despues con registrar-red-vial. Una red ya publicada
+    con la misma huella se reutiliza."""
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.ruteo_v2 import red_vial
+
+    if (osrm_bin is None) == (not docker):
+        typer.echo("Declara como se prepara: --osrm-bin o --docker, uno de los dos.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        descripcion = red_vial.Descripcion(
+            proveedor_datos=proveedor_datos,
+            licencia=licencia,
+            region=region,
+            fecha_snapshot=None if fecha_snapshot is None else fecha_snapshot.date(),
+            proveedor_extracto=proveedor_extracto,
+            url_fuente=url_fuente,
+        )
+        distribucion = (
+            red_vial.distribucion_docker() if docker else red_vial.distribucion_nativa(osrm_bin)
+        )
+        preparacion = red_vial.preparar_directorio(fuente, descripcion, distribucion, Path(destino))
+    except red_vial.RedVialInvalida as exc:
+        typer.echo(f"RED_VIAL_INVALIDA: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    with sesion() as s:
+        registro = red_vial.abrir_preparacion(s, preparacion)
+        s.commit()
+        version_id = registro.version.red_vial_version_id
+        estado = registro.version.estado
+    typer.echo(f"huella {preparacion.huella}")
+    typer.echo(f"directorio {preparacion.directorio}")
+    typer.echo(f"red_vial_version_id {version_id}")
+    if registro.reutilizada:
+        typer.echo(f"Esa red ya estaba {estado}: se reutiliza, sin prepararla otra vez.")
+        return
+    if docker:
+        typer.echo(
+            f"EN_PROCESO. Prepara la red con Docker (sh {preparacion.directorio / 'preparar.sh'}) "
+            "y publicala con registrar-red-vial."
+        )
+        return
+    try:
+        red_vial.ejecutar_nativa(preparacion, osrm_bin)
+        with sesion() as s:
+            publicada = red_vial.registrar(s, preparacion.directorio)
+            s.commit()
+            typer.echo(
+                f"PUBLICADA, manifiesto {publicada.version.hash_manifest[:12]}...: "
+                f"{publicada.version.metadatos.get('cobertura', {})}"
+            )
+    except red_vial.RedVialInvalida as exc:
+        with sesion() as s:
+            red_vial.fallar(s, registro.version, str(exc))
+            s.commit()
+        typer.echo(f"FALLIDA: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("registrar-red-vial")
+def registrar_red_vial(
+    directorio: Annotated[Path, typer.Argument(help="El directorio de la red, el de su huella.")],
+    verificar_backend: Annotated[
+        bool,
+        typer.Option(
+            "--verificar-backend",
+            help="Ademas, que el OSRM de MC_OSRM_URL declara esta red. Sin enviar ningun punto.",
+        ),
+    ] = False,
+) -> None:
+    """Publica una red preparada (con preparar-red-vial --docker y su preparar.sh), despues de
+    verificar su manifiesto: el SHA-256 de su fuente, el hash de su perfil, su huella y cada archivo
+    que necesita osrm-routed. No confia en el nombre de ningun archivo. Si no es valida, su version
+    EN_PROCESO queda FALLIDA y termina con codigo 1."""
+    import json
+
+    from sqlmodel import select
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import EstadoVersionRedVial, VersionRedVial
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.ruteo_v2 import red_vial
+    from motor_cartera.ruteo_v2.proveedor import (
+        FallaProveedorRuteo,
+        data_version,
+        proveedor_configurado,
+    )
+
+    try:
+        with sesion() as s:
+            registro = red_vial.registrar(s, directorio)
+            s.commit()
+            s.refresh(registro.version)
+            version = registro.version
+            s.expunge(version)
+    except red_vial.RedVialInvalida as exc:
+        huella = None
+        declaracion = Path(directorio) / "identidad.json"
+        if declaracion.exists():
+            huella = json.loads(declaracion.read_bytes()).get("huella")
+        if huella is not None:
+            with sesion() as s:
+                en_curso = s.exec(
+                    select(VersionRedVial).where(
+                        VersionRedVial.huella == huella,
+                        VersionRedVial.estado == EstadoVersionRedVial.EN_PROCESO,
+                    )
+                ).one_or_none()
+                if en_curso is not None:
+                    red_vial.fallar(s, en_curso, str(exc))
+                    s.commit()
+        typer.echo(f"RED_VIAL_INVALIDA: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"red vial {version.red_vial_version_id}: {version.estado}")
+    typer.echo(f"  {'reutilizada' if registro.reutilizada else 'nueva'}, huella {version.huella}")
+    if registro.misma_preparacion is False:
+        typer.echo(
+            "  Este directorio es OTRA preparacion de la misma red (su manifiesto no es el "
+            f"publicado, {version.hash_manifest[:12]}...): da los mismos snaps y las mismas "
+            "duraciones, pero una distancia puede diferir en un metro. Para reconstruir una "
+            "ejecucion exacta, sirve la preparacion publicada."
+        )
+    typer.echo(
+        f"  {version.motor_ruteo} {version.version_motor_ruteo} ({version.algoritmo_motor}), "
+        f"perfil {version.perfil} {version.hash_perfil[:12]}..., fuente {version.archivo_fuente} "
+        f"{version.sha256_fuente[:12]}..."
+    )
+    typer.echo(f"  {version.region}; {version.proveedor_datos}, {version.licencia}")
+    typer.echo(f"red_vial_version_id {version.red_vial_version_id}")
+    if verificar_backend:
+        proveedor = proveedor_configurado(config)
+        if proveedor is None:
+            typer.echo("Sin MC_OSRM_URL no hay backend que verificar.", err=True)
+            raise typer.Exit(code=1)
+        try:
+            declarada = proveedor.data_version()
+        except FallaProveedorRuteo as exc:
+            typer.echo(f"{exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if declarada != data_version(version.huella):
+            typer.echo(f"RED_VIAL_BACKEND_INCOMPATIBLE: el backend declara {declarada}.", err=True)
+            raise typer.Exit(code=1)
+        typer.echo("  el backend declara esta red")
+
+
+@app.command("rutear-v2")
+def rutear_v2(
+    plan: Annotated[str, typer.Option("--plan", help="El campo_run_id de un plan EXITOSA.")],
+    red_vial_version: Annotated[
+        str,
+        typer.Option(
+            "--red-vial-version", help="La version PUBLICADA de la red vial, por su UUID."
+        ),
+    ],
+    politica: Annotated[
+        str | None, typer.Option("--politica", help="Por omision, ruteo-public-v2.")
+    ] = None,
+) -> None:
+    """Rutea por la red vial los gestores de un plan de campo/v2, en primer plano y sin la API, con
+    sus entradas declaradas: el plan y la version de la red. Necesita el OSRM de MC_OSRM_URL. Pasa
+    por la cola durable, con el trabajo de este proceso. Termina con codigo 1 si no publico."""
+    from uuid import UUID
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import EstadoRuteoV2
+    from motor_cartera.orquestacion.worker import rutear_v2_en_primer_plano
+    from motor_cartera.ruteo_v2.ejecuciones import (
+        EntradaNoRuteable,
+        RuteoV2EnProceso,
+        RuteoV2YaGenerado,
+    )
+
+    if not config.osrm_url:
+        typer.echo("rutear-v2 necesita un proveedor de ruteo: define MC_OSRM_URL.", err=True)
+        raise typer.Exit(code=2)
+    # Los mismos codigos que responde la API.
+    codigos = {RuteoV2EnProceso: "RUTEO_V2_EN_PROCESO", RuteoV2YaGenerado: "RUTEO_V2_YA_GENERADO"}
+    try:
+        e = rutear_v2_en_primer_plano(UUID(plan), UUID(red_vial_version), version_politica=politica)
+    except (EntradaNoRuteable, RuteoV2EnProceso, RuteoV2YaGenerado) as exc:
+        codigo = exc.codigo if isinstance(exc, EntradaNoRuteable) else codigos[type(exc)]
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"ruteo/v2 {e.ruteo_run_id}: {e.estado}")
+    typer.echo(f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}")
+    typer.echo(f"  {e.detalle or 'Sigue EN_PROCESO: la termina un worker con proveedor.'}")
+    typer.echo(f"ruteo_run_id {e.ruteo_run_id}")
+    if e.estado != EstadoRuteoV2.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("resumen-ruteo-v2")
+def resumen_ruteo_v2(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="El ruteo_run_id.")],
+) -> None:
+    """Resume una ejecucion de ruteo/v2: sus entradas, la red, la politica, sus rutas y paradas por
+    estado, sus totales, cada base, los motivos y lo que costo la red. Sin coordenadas."""
+    from uuid import UUID
+
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.ruteo_v2 import consultas
+
+    with sesion() as s:
+        try:
+            v = consultas.obtener(s, UUID(ejecucion))
+        except consultas.EjecucionNoEncontrada as exc:
+            typer.echo(f"No existe la ejecucion {ejecucion}.", err=True)
+            raise typer.Exit(code=1) from exc
+    e = v.ejecucion
+    typer.echo(f"ruteo/v2 {e.ruteo_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(
+        f"  plan de campo {v.campo_run_id}, fecha de operacion {e.fecha_operacion.isoformat()} "
+        f"({v.zona_horaria})"
+    )
+    typer.echo(
+        f"  red {v.red.red_vial_version_id}: {v.red.region}; {v.red.motor_ruteo} "
+        f"{v.red.version_motor_ruteo}, huella {v.red.huella[:12]}..."
+    )
+    typer.echo(f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}")
+    typer.echo(
+        f"  {e.gestores_objetivo:,} rutas: {e.rutas_completas:,} completas, "
+        f"{e.rutas_parciales:,} parciales, {e.rutas_sin_paradas:,} sin paradas enrutables, "
+        f"{e.bases_no_enrutables:,} con la base no enrutable, {e.rutas_sin_jornada:,} sin jornada"
+    )
+    typer.echo(
+        f"  {e.paradas_objetivo:,} paradas: {e.programadas:,} programadas, {e.sin_tiempo:,} sin "
+        f"tiempo, {e.no_enrutables:,} no enrutables, {e.no_enrutables_base:,} sin base enrutable"
+    )
+    typer.echo(
+        f"  {e.distancia_total_m:,} m por calle; {e.duracion_vial_total_s:,} s de traslado, "
+        f"{e.duracion_servicio_total_s:,} de servicio y {e.duracion_espera_total_s:,} de espera"
+    )
+    distribucion = e.distribucion or {}
+    if distribucion.get("motivos"):
+        typer.echo(
+            "  motivos: " + ", ".join(f"{m} {c:,}" for m, c in distribucion["motivos"].items())
+        )
+    for codigo, b in distribucion.get("por_base", {}).items():
+        typer.echo(
+            f"  {codigo}: {b['rutas']:,} rutas ({b['completas']:,} completas), "
+            f"{b['programadas']:,} de {b['paradas']:,} paradas programadas, "
+            f"{b['sin_tiempo']:,} sin tiempo, {b['no_enrutables']:,} no enrutables, "
+            f"{b['distancia_m']:,} m"
+        )
+    matrices = distribucion.get("matrices", {})
+    if matrices.get("matrices"):
+        puntos = matrices["puntos"]
+        typer.echo(
+            f"  matrices: {matrices['matrices']:,} en {matrices['bloques']:,} bloques; puntos por "
+            f"matriz: media {puntos['media']}, p95 {puntos['p95']}, maximo {puntos['maximo']}"
+        )
+    typer.echo(
+        "Una heuristica determinista, no una ruta optima; ETA planificadas sin trafico, con un "
+        "servicio de 900 s por visita."
+    )
+
+
+@app.command("backfill-ruteo-v2")
+def backfill_ruteo_v2(
+    red_vial_version: Annotated[
+        str,
+        typer.Option(
+            "--red-vial-version",
+            help="La version PUBLICADA de la red vial: obligatoria, nunca la ultima.",
+        ),
+    ],
+    fecha_operacion: Annotated[
+        datetime | None,
+        typer.Option("--fecha-operacion", formats=["%Y-%m-%d"], help="Solo los planes de ese dia."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que falta; no encola nada.")
+    ] = False,
+) -> None:
+    """Las ejecuciones de ruteo/v2 que faltan sobre una version declarada de la red vial: cada plan
+    de campo/v2 EXITOSA (de esa fecha, si se declara) sin una ejecucion EXITOSA o EN_PROCESO con la
+    misma firma. Es idempotente."""
+    from uuid import UUID
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import EstadoVersionRedVial
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.ruteo_v2 import consultas
+    from motor_cartera.ruteo_v2.backfill import encolar, revisar
+
+    with sesion() as s:
+        try:
+            red = consultas.red(s, UUID(red_vial_version))
+        except consultas.RedNoEncontrada as exc:
+            typer.echo(f"No existe la red vial {red_vial_version}.", err=True)
+            raise typer.Exit(code=1) from exc
+        if red.estado != EstadoVersionRedVial.PUBLICADA:
+            typer.echo(f"La red vial {red_vial_version} esta {red.estado}.", err=True)
+            raise typer.Exit(code=1)
+        revision = revisar(s, red, None if fecha_operacion is None else fecha_operacion.date())
+        typer.echo(
+            f"Ejecuciones de ruteo/v2 sobre la red {red.red_vial_version_id} ({red.region}):"
+        )
+        typer.echo(f"  ya ruteados: {revision.ruteados}; en proceso: {revision.en_proceso}")
+        typer.echo(f"  Ejecuciones pendientes: {len(revision.pendientes)}")
+        for plan in revision.pendientes:
+            typer.echo(f"    {plan.fecha_operacion.isoformat()}: plan {plan.campo_run_id}")
+        if dry_run:
+            typer.echo("Con --dry-run no se encolo nada.")
+            return
+        abiertas = encolar(s, revision.pendientes, red, config=config)
+        s.commit()
+        typer.echo(f"Se encolaron {len(abiertas)} trabajos RUTEO_V2; los ejecuta un worker.")
+        for e in abiertas:
+            typer.echo(f"  ruteo_run_id {e.ruteo_run_id}")
+
+
 def _ventana_atribuible(ventana) -> str:
     """Una ventana de la atribucion, como la lee una persona."""
     return (
