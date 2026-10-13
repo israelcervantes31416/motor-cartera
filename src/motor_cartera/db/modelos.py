@@ -4062,6 +4062,13 @@ class CargaGestorCampo(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["base_operativa_id"], ["base_operativa.id"], name="fk_carga_campo_base"
         ),
+        # Desde la 0014, lo que referencia cada ruta de ruteo/v2: la carga junto con su base.
+        sa.UniqueConstraint(
+            "ejecucion_campo_v2_id",
+            "gestor_campo_id",
+            "base_operativa_id",
+            name="uq_carga_campo_base",
+        ),
         sa.CheckConstraint(
             "estado_jornada IN ("
             + ", ".join(f"'{e}'" for e in ESTADOS_JORNADA)
@@ -4090,6 +4097,490 @@ class CargaGestorCampo(SQLModel, table=True):
     ventanas: list[dict] = Field(sa_type=JSONB)
     """Las ventanas de su jornada en la fecha: la hora local de inicio y de fin y los instantes que
     les corresponden en la zona de la configuracion. Vacia si no esta disponible."""
+
+
+# --- ruteo/v2: la red vial, las ejecuciones, las rutas y las paradas ------------------------------
+
+ESTADOS_VERSION_RED_VIAL = ("EN_PROCESO", "PUBLICADA", "FALLIDA")
+MOTORES_RUTEO = ("OSRM", "SINTETICO")
+ESTADOS_PARADA_RUTEO = ("PROGRAMADA", "SIN_TIEMPO", "NO_ENRUTABLE", "NO_ENRUTABLE_BASE")
+MOTIVOS_SIN_TIEMPO = (
+    "JORNADA_AGOTADA",
+    "PRIORIDAD_SUPERIOR_AGOTO_JORNADA",
+    "EXCEDE_JORNADA",
+    "SIN_JORNADA",
+)
+MOTIVOS_NO_ENRUTABLE = ("SIN_SNAP", "SNAP_EXCESIVO", "RED_DESCONECTADA")
+ESTADOS_RUTA = ("COMPLETA", "PARCIAL", "SIN_PARADAS_ENRUTABLES", "BASE_NO_ENRUTABLE", "SIN_JORNADA")
+CONTEOS_DE_PARADAS = ("programadas", "sin_tiempo", "no_enrutables", "no_enrutables_base")
+"""Las paradas de una ruta y de una ejecucion, por estado: una columna por estado."""
+CONTEOS_DE_RUTAS = (
+    "rutas_completas",
+    "rutas_parciales",
+    "rutas_sin_paradas",
+    "bases_no_enrutables",
+    "rutas_sin_jornada",
+)
+"""Las rutas de una ejecucion, por estado: una columna por estado."""
+
+
+def _en(valores: tuple[str, ...]) -> str:
+    return "(" + ", ".join(f"'{v}'" for v in valores) + ")"
+
+
+_INSTANTES_DE_LA_PARADA = (
+    "salida_anterior_at",
+    "llegada_estimada",
+    "inicio_servicio",
+    "fin_servicio",
+    "distancia_desde_anterior_m",
+    "duracion_desde_anterior_s",
+    "espera_s",
+    "orden_visita",
+)
+COHERENCIA_DE_LA_PARADA = (
+    f"estado IN {_en(ESTADOS_PARADA_RUTEO)} AND prioridad IN {_en(PRIORIDADES)} "
+    "AND (motivo IS NULL) = (estado = 'PROGRAMADA') "
+    f"AND (estado <> 'SIN_TIEMPO' OR motivo IN {_en(MOTIVOS_SIN_TIEMPO)}) "
+    f"AND (estado <> 'NO_ENRUTABLE' OR motivo IN {_en(MOTIVOS_NO_ENRUTABLE)}) "
+    "AND (estado <> 'NO_ENRUTABLE_BASE' OR motivo = 'BASE_NO_ENRUTABLE') "
+    + " ".join(f"AND ({c} IS NOT NULL) = (estado = 'PROGRAMADA')" for c in _INSTANTES_DE_LA_PARADA)
+    + " AND (orden_visita IS NULL OR orden_visita >= 1) "
+    "AND (llegada_estimada IS NULL OR (salida_anterior_at <= llegada_estimada "
+    "AND llegada_estimada <= inicio_servicio AND inicio_servicio <= fin_servicio)) "
+    "AND (distancia_desde_anterior_m IS NULL OR distancia_desde_anterior_m >= 0) "
+    "AND (duracion_desde_anterior_s IS NULL OR duracion_desde_anterior_s >= 0) "
+    "AND (espera_s IS NULL OR espera_s >= 0) "
+    "AND (snap_distancia_m IS NULL OR snap_distancia_m >= 0) "
+    "AND (motivo IS DISTINCT FROM 'SIN_SNAP' OR snap_distancia_m IS NULL) "
+    "AND (motivo IS DISTINCT FROM 'SNAP_EXCESIVO' OR snap_distancia_m IS NOT NULL) "
+    "AND (estado <> 'PROGRAMADA' OR snap_distancia_m IS NOT NULL)"
+)
+"""Solo una PROGRAMADA tiene orden, instantes y tramo desde la anterior, y no tiene motivo; las
+demas tienen uno de los de su estado. Una PROGRAMADA tiene snap; una SIN_SNAP, ninguno."""
+
+_SUMA_DE_PARADAS = " + ".join(CONTEOS_DE_PARADAS)
+COHERENCIA_DE_LA_RUTA = (
+    f"estado_ruta IN {_en(ESTADOS_RUTA)} "
+    f"AND paradas_campo >= 1 AND paradas_campo = {_SUMA_DE_PARADAS} "
+    + " ".join(f"AND {c} >= 0" for c in CONTEOS_DE_PARADAS)
+    + " AND (estado_ruta <> 'COMPLETA' OR programadas = paradas_campo) "
+    "AND (estado_ruta <> 'PARCIAL' OR (programadas < paradas_campo AND no_enrutables < "
+    "paradas_campo AND no_enrutables_base = 0)) "
+    "AND (estado_ruta <> 'SIN_PARADAS_ENRUTABLES' OR no_enrutables = paradas_campo) "
+    "AND (estado_ruta <> 'BASE_NO_ENRUTABLE' OR no_enrutables_base = paradas_campo) "
+    "AND (estado_ruta <> 'SIN_JORNADA' OR sin_tiempo = paradas_campo) "
+    "AND (motivo_base IS NOT NULL) = (estado_ruta = 'BASE_NO_ENRUTABLE') "
+    "AND (motivo_base IS NULL OR motivo_base IN ('SIN_SNAP', 'SNAP_EXCESIVO')) "
+    "AND (programadas > 0) = (salida_base_at IS NOT NULL) "
+    "AND (salida_base_at IS NULL) = (regreso_base_at IS NULL) "
+    "AND (salida_base_at IS NULL) = (salida_regreso_at IS NULL) "
+    "AND (salida_base_at IS NULL) = (distancia_regreso_m IS NULL) "
+    "AND (salida_base_at IS NULL) = (duracion_regreso_s IS NULL) "
+    "AND (salida_base_at IS NULL) = (espera_regreso_s IS NULL) "
+    "AND (jornada_inicio_at IS NULL) = (estado_ruta = 'SIN_JORNADA') "
+    "AND (jornada_inicio_at IS NULL) = (jornada_fin_at IS NULL) "
+    "AND distancia_total_m >= 0 AND duracion_traslado_s >= 0 AND duracion_servicio_s >= 0 "
+    "AND duracion_espera_s >= 0 AND mejoras_2opt >= 0 "
+    "AND duracion_total_s = duracion_traslado_s + duracion_servicio_s + duracion_espera_s "
+    "AND (salida_base_at IS NULL OR (jornada_inicio_at <= salida_base_at "
+    "AND salida_base_at <= salida_regreso_at AND salida_regreso_at <= regreso_base_at "
+    "AND regreso_base_at <= jornada_fin_at "
+    "AND regreso_base_at = salida_base_at + make_interval(secs => duracion_total_s))) "
+    "AND (salida_base_at IS NOT NULL OR (distancia_total_m = 0 AND duracion_total_s = 0)) "
+    "AND (base_snap_distancia_m IS NULL OR base_snap_distancia_m >= 0)"
+)
+"""Cada parada de la ruta en exactamente un estado, cada estado de la ruta con lo que lo define, y
+la jornada que cuadra: salida, regreso y total, con el regreso a la base dentro de la jornada."""
+
+_SUMA_DE_RUTAS = " + ".join(CONTEOS_DE_RUTAS)
+PUBLICACION_DE_RUTEO_V2 = (
+    f"(estado = 'EXITOSA' AND {_SUMA_DE_RUTAS} = gestores_objetivo "
+    f"AND {_SUMA_DE_PARADAS} = paradas_objetivo AND paradas_objetivo >= gestores_objetivo "
+    "AND (paradas_objetivo = 0) = (gestores_objetivo = 0)) "
+    f"OR (estado <> 'EXITOSA' AND gestores_objetivo = 0 AND {_SUMA_DE_RUTAS} = 0 "
+    f"AND paradas_objetivo = 0 AND {_SUMA_DE_PARADAS} = 0 AND distancia_total_m = 0 "
+    "AND duracion_vial_total_s = 0 AND duracion_servicio_total_s = 0 "
+    "AND duracion_espera_total_s = 0)"
+)
+"""Una ejecucion EXITOSA puso cada ruta y cada parada en exactamente un estado, y cada parada es
+de la ruta de un gestor (sin gestores, sin paradas); las demas no publicaron nada."""
+
+
+class EstadoVersionRedVial(StrEnum):
+    """Una version de la red vial nace EN_PROCESO al empezar su preparacion, y queda PUBLICADA (con
+    su manifiesto verificado) o FALLIDA. Publicada, ya no cambia."""
+
+    EN_PROCESO = "EN_PROCESO"
+    PUBLICADA = "PUBLICADA"
+    FALLIDA = "FALLIDA"
+
+
+class VersionRedVial(SQLModel, table=True):
+    """Una version de la red vial: de que datos publicos salio (OpenStreetMap, ODbL), con que motor
+    de ruteo, perfil y parametros se preparo, y su huella.
+
+    Es referencia vial publica, no una fuente de negocio: no es CARTERA ni PAGOS. La huella es el
+    SHA-256 de su identidad (la fuente por su SHA-256, el motor y su distribucion exacta, el
+    algoritmo, el perfil con su hash y los comandos), y el backend que la sirve la declara en cada
+    respuesta: el worker solo rutea contra la red que pidio la ejecucion. Publicada, no cambia (un
+    trigger lo impide); otra red es otra version.
+    """
+
+    __tablename__ = "version_red_vial"
+    __table_args__ = (
+        sa.Index(
+            "ux_red_vial_publicada",
+            "huella",
+            unique=True,
+            postgresql_where=sa.text("estado = 'PUBLICADA'"),
+        ),
+        sa.Index(
+            "ux_red_vial_en_proceso",
+            "huella",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.CheckConstraint(
+            "huella ~ '^[0-9a-f]{64}$' AND sha256_fuente ~ '^[0-9a-f]{64}$' "
+            "AND hash_perfil ~ '^[0-9a-f]{64}$' "
+            "AND (hash_manifest IS NULL OR hash_manifest ~ '^[0-9a-f]{64}$')",
+            name=conv("ck_red_vial_hashes"),
+        ),
+        sa.CheckConstraint(
+            f"motor_ruteo IN {_en(MOTORES_RUTEO)} "
+            "AND (estado = 'PUBLICADA') = (hash_manifest IS NOT NULL) "
+            "AND (estado = 'PUBLICADA') = (manifiesto IS NOT NULL) "
+            "AND (estado = 'PUBLICADA') = (publicada_en IS NOT NULL) "
+            "AND (estado = 'FALLIDA') = (detalle IS NOT NULL)",
+            name=conv("ck_red_vial_publicacion"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    red_vial_version_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    huella: str = Field(max_length=64)
+    """SHA-256 de su identidad: la misma red logica, la misma huella. El backend la declara."""
+    proveedor_datos: str = Field(max_length=40)
+    """De quien son los datos: OpenStreetMap, o SINTETICO."""
+    proveedor_extracto: str | None = Field(default=None, max_length=120)
+    """Quien recorto el extracto (OpenStreetMap France, Geofabrik...), si aplica."""
+    licencia: str = Field(max_length=40)
+    """ODbL-1.0 para OpenStreetMap."""
+    fecha_snapshot: date | None = None
+    """La fecha de los datos del extracto, como la declara su proveedor."""
+    region: str = Field(max_length=120)
+    """Lo que cubre, como se declara: una region, nunca un recuadro de coordenadas."""
+    archivo_fuente: str = Field(max_length=255)
+    url_fuente: str | None = Field(default=None, max_length=500)
+    sha256_fuente: str = Field(max_length=64)
+    motor_ruteo: str = Field(max_length=16)
+    """OSRM, o SINTETICO para un modelo de pruebas que no es una red vial."""
+    version_motor_ruteo: str = Field(max_length=32)
+    distribucion_motor: str = Field(max_length=300)
+    """La imagen de Docker por su digest, o los binarios nativos por su SHA-256."""
+    algoritmo_motor: str = Field(max_length=16)
+    """MLD."""
+    perfil: str = Field(max_length=32)
+    hash_perfil: str = Field(max_length=64)
+    identidad: dict = Field(sa_type=JSONB)
+    """Lo que entra en la huella."""
+    hash_manifest: str | None = Field(default=None, max_length=64)
+    """SHA-256 del manifiesto con que se publico: la identidad, los comandos, el SHA-256 de cada
+    archivo preparado y la cobertura."""
+    manifiesto: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """NULL de SQL (no el JSON null) mientras no se publica: la restriccion lo exige."""
+    estado: EstadoVersionRedVial = Field(
+        default=EstadoVersionRedVial.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoVersionRedVial,
+            name="estado_version_red_vial",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    metadatos: dict = Field(sa_type=JSONB)
+    """Lo que dice de si misma: su cobertura (nodos, vias, aristas) y el tamano de sus archivos. Sin
+    coordenadas ni recuadros."""
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    publicada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class EstadoRuteoV2(StrEnum):
+    """En que quedo una ejecucion de ruteo/v2. Solo una EXITOSA publica algo."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEjecucionRuteoV2(StrEnum):
+    """Como termino una ejecucion de ruteo/v2."""
+
+    RUTAS_PUBLICADAS = "RUTAS_PUBLICADAS"
+    """EXITOSA: publico la ruta de cada gestor y cada parada, con sus resultados negativos."""
+    YA_GENERADO = "YA_GENERADO"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    ENTRADAS_NO_EXITOSAS = "ENTRADAS_NO_EXITOSAS"
+    """FALLIDA: el plan de campo/v2 ya no esta EXITOSA, o la red ya no esta PUBLICADA."""
+    RED_VIAL_BACKEND_INCOMPATIBLE = "RED_VIAL_BACKEND_INCOMPATIBLE"
+    """FALLIDA: el backend de ruteo sirve otra red que la de la version pedida. Falla cerrado."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    """FALLIDA: una asignacion sin punto, una carga sin su base, o conteos que no cuadran."""
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+    """FALLIDA: la cola agoto sus intentos; por ejemplo, porque el proveedor de ruteo no respondio
+    en ninguno."""
+
+
+class EjecucionRuteoV2(SQLModel, table=True):
+    """Una ejecucion de ruteo/v2: las rutas de los gestores de un plan de campo/v2, sobre una
+    version declarada de la red vial.
+
+    Declara exactamente su plan de campo/v2 (EXITOSA) y su red vial (PUBLICADA), con la politica y
+    su hash. Nunca toma "el ultimo plan" ni "la ultima red".
+    """
+
+    __tablename__ = "ejecucion_ruteo_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id"], ["ejecucion_campo_v2.id"], name="fk_ruteo_v2_campo"
+        ),
+        sa.ForeignKeyConstraint(
+            ["version_red_vial_id"], ["version_red_vial.id"], name="fk_ruteo_v2_red"
+        ),
+        # Lo que referencia cada ruta: la ejecucion junto con su plan de campo.
+        sa.UniqueConstraint("id", "ejecucion_campo_v2_id", name="uq_ruteo_v2_campo"),
+        sa.Index(
+            "ux_ruteo_v2_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_ruteo_v2_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Las ejecuciones de un plan de campo, en cualquier estado, la mas reciente primero.
+        sa.Index("ix_ruteo_v2_campo", "ejecucion_campo_v2_id", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_ruteo_v2_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_ruteo_v2_resultado")
+        ),
+        sa.CheckConstraint(
+            "gestores_objetivo >= 0 AND paradas_objetivo >= 0 AND distancia_total_m >= 0 "
+            "AND duracion_vial_total_s >= 0 AND duracion_servicio_total_s >= 0 "
+            "AND duracion_espera_total_s >= 0 AND "
+            + " AND ".join(f"{c} >= 0" for c in (*CONTEOS_DE_RUTAS, *CONTEOS_DE_PARADAS)),
+            name=conv("ck_ruteo_v2_conteos"),
+        ),
+        sa.CheckConstraint(PUBLICACION_DE_RUTEO_V2, name=conv("ck_ruteo_v2_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    ruteo_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento."""
+    ejecucion_campo_v2_id: int
+    version_red_vial_id: int
+    fecha_operacion: date
+    """La de su plan de campo/v2: el dia que se rutea."""
+    version_motor: str = Field(max_length=32)
+    """ruteo/v2."""
+    version_politica: str = Field(max_length=40)
+    """ruteo-public-v2."""
+    hash_politica: str = Field(max_length=64)
+    firma_inputs: str = Field(max_length=64)
+    estado: EstadoRuteoV2 = Field(
+        default=EstadoRuteoV2.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoRuteoV2,
+            name="estado_ruteo_v2",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    gestores_objetivo: int = 0
+    """Los gestores con al menos una cuenta ASIGNADA en el plan: una ruta cada uno."""
+    rutas_completas: int = 0
+    rutas_parciales: int = 0
+    rutas_sin_paradas: int = 0
+    """SIN_PARADAS_ENRUTABLES."""
+    bases_no_enrutables: int = 0
+    """Las rutas BASE_NO_ENRUTABLE."""
+    rutas_sin_jornada: int = 0
+    paradas_objetivo: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas ASIGNADA del plan: una parada cada una."""
+    programadas: int = Field(default=0, sa_type=sa.BigInteger)
+    sin_tiempo: int = Field(default=0, sa_type=sa.BigInteger)
+    no_enrutables: int = Field(default=0, sa_type=sa.BigInteger)
+    no_enrutables_base: int = Field(default=0, sa_type=sa.BigInteger)
+    distancia_total_m: int = Field(default=0, sa_type=sa.BigInteger)
+    duracion_vial_total_s: int = Field(default=0, sa_type=sa.BigInteger)
+    duracion_servicio_total_s: int = Field(default=0, sa_type=sa.BigInteger)
+    duracion_espera_total_s: int = Field(default=0, sa_type=sa.BigInteger)
+    distribucion: dict | None = Field(default=None, sa_type=JSONB)
+    """Lo que publico, contado en la transaccion que lo publico: por estado, por motivo, por base y
+    por prioridad, y las matrices (cuantas, de que tamano, en cuantos bloques). Sin coordenadas."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class RutaGestorV2(SQLModel, table=True):
+    """La ruta de un gestor en una ejecucion: sale de su base, visita sus paradas PROGRAMADA en
+    orden y regresa a la base, dentro de su jornada; o por que no hay ruta.
+
+    Apunta a la carga del gestor en el plan de campo/v2 de su ejecucion, con su base: la base
+    garantiza que la ruta es de un gestor de ese plan y sale de la base que campo/v2 le dio. No
+    guarda geometria, polilinea ni coordenadas: el orden, los instantes, las distancias y las
+    duraciones. Ni se actualiza ni se borra.
+    """
+
+    __tablename__ = "ruta_gestor_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_v2_id", "ejecucion_campo_v2_id"],
+            ["ejecucion_ruteo_v2.id", "ejecucion_ruteo_v2.ejecucion_campo_v2_id"],
+            name="fk_ruta_v2_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id", "gestor_campo_id", "base_operativa_id"],
+            [
+                "carga_gestor_campo.ejecucion_campo_v2_id",
+                "carga_gestor_campo.gestor_campo_id",
+                "carga_gestor_campo.base_operativa_id",
+            ],
+            name="fk_ruta_v2_carga",
+        ),
+        # Lo que referencia cada parada: la ruta junto con el plan de campo de su ejecucion.
+        sa.UniqueConstraint(
+            "ejecucion_ruteo_v2_id",
+            "gestor_campo_id",
+            "ejecucion_campo_v2_id",
+            name="uq_ruta_v2_campo",
+        ),
+        sa.CheckConstraint(COHERENCIA_DE_LA_RUTA, name=conv("ck_ruta_v2_coherencia")),
+        sa.CheckConstraint(
+            "(hash_matriz IS NULL OR hash_matriz ~ '^[0-9a-f]{64}$') "
+            "AND hash_secuencia ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_ruta_v2_hashes"),
+        ),
+    )
+
+    ejecucion_ruteo_v2_id: int = Field(primary_key=True)
+    gestor_campo_id: int = Field(primary_key=True)
+    ruta_id: UUID = Field(unique=True)
+    """Identificador publico: UUIDv5 de la firma de la ejecucion y del gestor."""
+    ejecucion_campo_v2_id: int
+    base_operativa_id: int
+    """La de campo/v2: la ruta sale de ella y regresa a ella."""
+    fecha_operacion: date
+    estado_ruta: str = Field(max_length=24)
+    motivo_base: str | None = Field(default=None, max_length=24)
+    """Solo en BASE_NO_ENRUTABLE: SIN_SNAP o SNAP_EXCESIVO."""
+    paradas_campo: int
+    programadas: int
+    sin_tiempo: int
+    no_enrutables: int
+    no_enrutables_base: int
+    base_snap_distancia_m: Decimal | None = Field(default=None, max_digits=12, decimal_places=2)
+    """De la base a su segmento de la red, al centimetro."""
+    jornada_inicio_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    jornada_fin_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    salida_base_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    salida_regreso_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    """Cuando sale de la ultima parada hacia la base."""
+    regreso_base_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    distancia_regreso_m: int | None = Field(default=None, sa_type=sa.BigInteger)
+    duracion_regreso_s: int | None = None
+    espera_regreso_s: int | None = None
+    distancia_total_m: int = Field(sa_type=sa.BigInteger)
+    """Por calle, de la base a la base, con el regreso."""
+    duracion_traslado_s: int
+    duracion_servicio_s: int
+    duracion_espera_s: int
+    duracion_total_s: int
+    """Del momento en que sale de la base al momento en que regresa: traslado, servicio y espera."""
+    mejoras_2opt: int
+    hash_matriz: str | None = Field(default=None, max_length=64)
+    """SHA-256 de la matriz canonica de la ruta (duraciones y distancias enteras, sin
+    coordenadas). La matriz no se guarda."""
+    hash_secuencia: str = Field(max_length=64)
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+
+
+class ParadaRutaV2(SQLModel, table=True):
+    """Una parada de una ruta: una cuenta ASIGNADA del plan de campo/v2, con su estado, su motivo y,
+    si quedo PROGRAMADA, su orden y sus instantes planificados (ETA estaticas, sin trafico).
+
+    Apunta a la asignacion de su cuenta en el plan de campo por su llave natural, y a su ruta junto
+    con ese plan. No guarda coordenadas, ni la del punto ni la de su snap: la distancia del snap, al
+    centimetro. Ni se actualiza ni se borra.
+    """
+
+    __tablename__ = "parada_ruta_v2"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_v2_id", "gestor_campo_id", "ejecucion_campo_v2_id"],
+            [
+                "ruta_gestor_v2.ejecucion_ruteo_v2_id",
+                "ruta_gestor_v2.gestor_campo_id",
+                "ruta_gestor_v2.ejecucion_campo_v2_id",
+            ],
+            name="fk_parada_v2_ruta",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id", "cuenta_canonica_id"],
+            [
+                "asignacion_campo_cuenta.ejecucion_campo_v2_id",
+                "asignacion_campo_cuenta.cuenta_canonica_id",
+            ],
+            name="fk_parada_v2_asignacion",
+        ),
+        # Las paradas de una ruta en su orden de visita: una por lugar.
+        sa.UniqueConstraint(
+            "ejecucion_ruteo_v2_id", "gestor_campo_id", "orden_visita", name="uq_parada_v2_orden"
+        ),
+        # Una pagina de un estado de la ejecucion, en el orden de la cuenta; y las paradas de una
+        # cuenta en todas las ejecuciones.
+        sa.Index("ix_parada_v2_estado", "ejecucion_ruteo_v2_id", "estado", "cuenta_canonica_id"),
+        sa.Index("ix_parada_v2_cuenta", "cuenta_canonica_id", "ejecucion_ruteo_v2_id"),
+        sa.CheckConstraint(COHERENCIA_DE_LA_PARADA, name=conv("ck_parada_v2_coherencia")),
+    )
+
+    snap_distancia_m: Decimal | None = Field(default=None, max_digits=12, decimal_places=2)
+    """Del punto de la cuenta a su segmento de la red, al centimetro. NULL sin snap."""
+    salida_anterior_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    """Cuando sale de la base o de la parada anterior hacia esta."""
+    llegada_estimada: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    inicio_servicio: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    fin_servicio: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    distancia_desde_anterior_m: int | None = Field(default=None, sa_type=sa.BigInteger)
+    ejecucion_ruteo_v2_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    gestor_campo_id: int
+    ejecucion_campo_v2_id: int
+    """El de su ejecucion: lo exigen sus dos llaves foraneas compuestas."""
+    orden_visita: int | None = None
+    duracion_desde_anterior_s: int | None = None
+    espera_s: int | None = None
+    """Lo que espero, sin el traslado, desde que termino lo anterior hasta empezar su servicio: la
+    pausa entre ventanas, si la hubo."""
+    prioridad: str = Field(max_length=12)
+    """La de campo/v2, la de decision/v2, tal cual."""
+    estado: str = Field(max_length=20)
+    motivo: str | None = Field(default=None, max_length=40)
 
 
 # --- la orquestacion durable ----------------------------------------------------------------------
@@ -4125,7 +4616,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'DECISION_V2') = (ejecucion_decision_v2_id IS NOT NULL) "
     "AND (tipo = 'GEOGRAFIA') = (ejecucion_geografia_id IS NOT NULL) "
     "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL) "
-    "AND (tipo = 'CAMPO_V2') = (ejecucion_campo_v2_id IS NOT NULL)"
+    "AND (tipo = 'CAMPO_V2') = (ejecucion_campo_v2_id IS NOT NULL) "
+    "AND (tipo = 'RUTEO_V2') = (ejecucion_ruteo_v2_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -4297,6 +4789,11 @@ class TipoTrabajo(StrEnum):
     """Desde la 0013: el plan de campo/v2 de una fecha, sobre una decision/v2, una territorial/v2 y
     una configuracion de campo declaradas. Lo piden POST /campo-v2/planes, planificar-campo-v2 o
     backfill-campo-v2. Corre en paralelo a territorial/v1 y ruteo/v1, que no lo esperan."""
+    RUTEO_V2 = "RUTEO_V2"
+    """Desde la 0014: las rutas por la red vial de los gestores de un plan de campo/v2 EXITOSA,
+    sobre una version declarada de la red vial. Lo piden POST /ruteo-v2/ejecuciones, rutear-v2 o
+    backfill-ruteo-v2. Corre en paralelo a ruteo/v1, que sigue siendo la etapa RUTEO; un worker sin
+    proveedor de ruteo, o con uno que no responde, no lo toma."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -4373,6 +4870,9 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ejecucion_campo_v2_id"], ["ejecucion_campo_v2.id"], name="fk_trabajo_campo_v2"
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_v2_id"], ["ejecucion_ruteo_v2.id"], name="fk_trabajo_ruteo_v2"
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -4386,6 +4886,7 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_geografia_id", name="uq_trabajo_geografia"),
         sa.UniqueConstraint("ejecucion_territorial_v2_id", name="uq_trabajo_territorial_v2"),
         sa.UniqueConstraint("ejecucion_campo_v2_id", name="uq_trabajo_campo_v2"),
+        sa.UniqueConstraint("ejecucion_ruteo_v2_id", name="uq_trabajo_ruteo_v2"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -4452,6 +4953,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo TERRITORIAL_V2, desde la 0012."""
     ejecucion_campo_v2_id: int | None = None
     """El objetivo de un trabajo CAMPO_V2, desde la 0013."""
+    ejecucion_ruteo_v2_id: int | None = None
+    """El objetivo de un trabajo RUTEO_V2, desde la 0014."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

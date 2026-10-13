@@ -1,29 +1,32 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real y Campo v2
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2 y Ruteo Vial v2
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
 Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
 Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0), el Decision
-Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0) y Campo v2:
-Capacidad, Partición y Asignación Operativa (v0.12.0) están hechos como están, y qué haría
-distinto o cuándo cambiaría cada decisión.
+Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0), Campo v2:
+Capacidad, Partición y Asignación Operativa (v0.12.0) y el Ruteo Vial v2: Red Vial, Secuenciación y
+Factibilidad de Jornada (v0.13.0) están hechos como están, y qué haría distinto o cuándo cambiaría
+cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [decision_v2.md](decision_v2.md), en [geografia.md](geografia.md), en
 [territorial_v2.md](territorial_v2.md), en [bases_operativas.md](bases_operativas.md), en
-[campo_v2.md](campo_v2.md), en [configuracion_campo.md](configuracion_campo.md) y en
-[particion_campo.md](particion_campo.md); aquí va el porqué.
+[campo_v2.md](campo_v2.md), en [configuracion_campo.md](configuracion_campo.md), en
+[particion_campo.md](particion_campo.md), en [ruteo_v2.md](ruteo_v2.md), en
+[red_vial.md](red_vial.md) y en [politica_ruteo.md](politica_ruteo.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
-v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas, y las 138 a 153,
-de Campo v2.
+v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
+de Campo v2, y las 154 a 174, del Ruteo Vial v2.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
-v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde v0.10.0*.
+v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
+*Desde v0.13.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -162,6 +165,43 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0* o *Desde
 135. [Sin geocodificación de direcciones](#135-sin-geocodificación-de-direcciones)
 136. [Una asignación apunta a su resultado geográfico por su llave natural](#136-una-asignación-apunta-a-su-resultado-geográfico-por-su-llave-natural)
 137. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.11.0](#137-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0110)
+138. [Campo v2 consume `decision/v2`: el universo es el canal `CAMPO`, con su prioridad](#138-campo-v2-consume-decisionv2-el-universo-es-el-canal-campo-con-su-prioridad)
+139. [Campo v2 consume `territorial/v2`: la base es la suya, y la duda va a revisión](#139-campo-v2-consume-territorialv2-la-base-es-la-suya-y-la-duda-va-a-revisión)
+140. [El canal no es la capacidad](#140-el-canal-no-es-la-capacidad)
+141. [Capacidad declarada, no factibilidad vial](#141-capacidad-declarada-no-factibilidad-vial)
+142. [La configuración de campo es versionada, inmutable y con hash](#142-la-configuración-de-campo-es-versionada-inmutable-y-con-hash)
+143. [El gestor operacional no es el `Gestor` de la fuente](#143-el-gestor-operacional-no-es-el-gestor-de-la-fuente)
+144. [Ventanas de jornada en hora local, con zona explícita, y excepciones que reemplazan la semana](#144-ventanas-de-jornada-en-hora-local-con-zona-explícita-y-excepciones-que-reemplazan-la-semana)
+145. [La partición es una cuadrícula fija, no un agrupamiento](#145-la-partición-es-una-cuadrícula-fija-no-un-agrupamiento)
+146. [EPSG:6372 para la cuadrícula métrica](#146-epsg6372-para-la-cuadrícula-métrica)
+147. [Tramos de 5 km y microtramos de 1 km](#147-tramos-de-5-km-y-microtramos-de-1-km)
+148. [El propietario preferido de un microtramo, por Rendezvous](#148-el-propietario-preferido-de-un-microtramo-por-rendezvous)
+149. [La prioridad antes que el spillover, y un microtramo entero cuando cabe](#149-la-prioridad-antes-que-el-spillover-y-un-microtramo-entero-cuando-cabe)
+150. [Sin rebalanceo entre bases](#150-sin-rebalanceo-entre-bases)
+151. [Sin rutas, ni orden de visita](#151-sin-rutas-ni-orden-de-visita)
+152. [Privacidad: ni coordenadas, ni celdas, ni datos de personas](#152-privacidad-ni-coordenadas-ni-celdas-ni-datos-de-personas)
+153. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.12.0](#153-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0120)
+154. [La red vial pública es una referencia vial, no una fuente de negocio](#154-la-red-vial-pública-es-una-referencia-vial-no-una-fuente-de-negocio)
+155. [OSRM autoalojado: ninguna coordenada sale de la red propia](#155-osrm-autoalojado-ninguna-coordenada-sale-de-la-red-propia)
+156. [OSRM v26.9.0, fijado por su digest, con MLD y el perfil `car` tal cual](#156-osrm-v2690-fijado-por-su-digest-con-mld-y-el-perfil-car-tal-cual)
+157. [La versión de la red es su huella; los archivos preparados son evidencia](#157-la-versión-de-la-red-es-su-huella-los-archivos-preparados-son-evidencia)
+158. [El backend declara su red, y se verifica antes de enviar un punto](#158-el-backend-declara-su-red-y-se-verifica-antes-de-enviar-un-punto)
+159. [Un snap que no depende de la petición: `--small-component-size 1`](#159-un-snap-que-no-depende-de-la-petición---small-component-size-1)
+160. [El snap hasta 500.00 m, al centímetro, sin calibrar](#160-el-snap-hasta-50000-m-al-centímetro-sin-calibrar)
+161. [Sin línea recta: lo que la red no dice no se inventa](#161-sin-línea-recta-lo-que-la-red-no-dice-no-se-inventa)
+162. [Un fallo técnico no es una parada no enrutable](#162-un-fallo-técnico-no-es-una-parada-no-enrutable)
+163. [Una matriz por gestor, en bloques, con puntos únicos y sin guardar sus celdas](#163-una-matriz-por-gestor-en-bloques-con-puntos-únicos-y-sin-guardar-sus-celdas)
+164. [Un servicio fijo de 900 s, como hipótesis pública](#164-un-servicio-fijo-de-900-s-como-hipótesis-pública)
+165. [La ruta es cerrada en la base, y el regreso se reserva](#165-la-ruta-es-cerrada-en-la-base-y-el-regreso-se-reserva)
+166. [Ventanas `[inicio, fin)`, actividades enteras y la espera en el lugar](#166-ventanas-inicio-fin-actividades-enteras-y-la-espera-en-el-lugar)
+167. [La prioridad manda, y lo que no cabe ni solo no bloquea](#167-la-prioridad-manda-y-lo-que-no-cabe-ni-solo-no-bloquea)
+168. [Una heurística determinista, no un óptimo; el 2-opt, acotado y después](#168-una-heurística-determinista-no-un-óptimo-el-2-opt-acotado-y-después)
+169. [ETA planificadas, sin tráfico](#169-eta-planificadas-sin-tráfico)
+170. [Sin geometrías ni polilíneas, y un transporte que no filtra coordenadas](#170-sin-geometrías-ni-polilíneas-y-un-transporte-que-no-filtra-coordenadas)
+171. [Ni rebalanceo entre gestores ni optimización global](#171-ni-rebalanceo-entre-gestores-ni-optimización-global)
+172. [Sin una tabla de tramos](#172-sin-una-tabla-de-tramos)
+173. [Una ruta por gestor con al menos una cuenta `ASIGNADA`](#173-una-ruta-por-gestor-con-al-menos-una-cuenta-asignada)
+174. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.13.0](#174-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0130)
 
 ---
 
@@ -3413,6 +3453,11 @@ presentarlo como factibilidad sería falso. v0.13 (Ruteo vial v2) tomará estos 
 carga cabe en una ruta; mientras tanto, el plan es una carga diaria limitada por capacidad, no una
 ruta.
 
+*Desde v0.13.0*, `ruteo/v2` toma un plan por su `campo_run_id` y dice, por calle, si la carga de
+cada gestor cabe en su jornada, sin cambiar el plan (decisiones 154 a 174). En el benchmark de
+Puebla, con bases que cubren todo un estado, hay rutas de cientos de kilómetros y cuentas que no
+caben ni solas en la jornada: es justo lo que esta decisión dejaba fuera.
+
 ## 142. La configuración de campo es versionada, inmutable y con hash
 
 **Decisión.** Una versión de la configuración de campo (`campo-configuracion/v1`) trae, sobre una
@@ -3569,6 +3614,9 @@ gestor: es otro problema, con otras entradas y otra validación, y es la v0.13 (
 leerá estos planes por sus identificadores. Un orden aproximado con distancias en línea recta
 parecería una ruta sin serlo, y la operación lo usaría como si lo fuera.
 
+*Desde v0.13.0*, el orden de las visitas es de `ruteo/v2`, por la red vial (decisiones 154 a 174);
+`orden_prioridad` sigue siendo el lugar en la cola de capacidad, no el orden de visita.
+
 ## 152. Privacidad: ni coordenadas, ni celdas, ni datos de personas
 
 **Decisión.** Ninguna respuesta de la API, bitácora, error, exportación ni la Cuenta 360 lleva el
@@ -3633,3 +3681,315 @@ optimizar el reparto; ligar un gestor de campo a una persona, a un `actor_ref` o
 pagos, y comparar el plan con lo que la cobranza hizo (analítica, v0.14); el Decision Engine v3, ML
 y dashboards (v0.14 en adelante); cloud, multitenancy y multi-despacho (v0.18); y abrir un plan sin
 que alguien lo pida.
+
+## 154. La red vial pública es una referencia vial, no una fuente de negocio
+
+**Decisión.** La red por la que se rutea sale de OpenStreetMap (ODbL 1.0) y es una **referencia
+vial**, como la cartografía municipal del INEGI (decisión 122): no es cartera ni pagos, no entra al
+almacén de artefactos y ningún motor de negocio la lee; solo la consulta el proveedor de ruteo. Una
+red se declara en cada ejecución por su versión, con de dónde salieron sus datos, su licencia, su
+fecha, su región y el SHA-256 de su fuente, y toda red de OpenStreetMap lleva su atribución en la
+API. Las redes grandes y sus archivos preparados no entran al repositorio: el `.gitignore` los
+excluye por nombre y el control de archivos trackeados los reconoce por sus primeros bytes (un
+`.osm.pbf`, y un tar, que es cada archivo que prepara OSRM).
+
+**Por qué.** Una calle no es un dato de una cuenta: es el terreno sobre el que se mide una ruta, y
+cambia con cada extracto. Tratarla como una fuente de negocio la mezclaría con la evidencia de la
+cobranza, y sin una versión declarada, una ruta histórica no se podría reconstruir ni explicar. La
+licencia obliga a atribuir, y es lo correcto.
+
+## 155. OSRM autoalojado: ninguna coordenada sale de la red propia
+
+**Decisión.** El proveedor de ruteo es un `osrm-routed` autoalojado: en el compose, un servicio sin
+puerto publicado que solo ven la API y el worker; fuera de él, uno que la operación levanta en su
+red. Nunca el servidor público de OSRM, Google Maps ni otro servicio externo, y el motor no tiene un
+modo que los use. Las peticiones van por `POST` con un cuerpo JSON, con las coordenadas en el
+cuerpo y nunca en la URL; el cliente no registra URLs ni cuerpos, y sus errores no llevan la
+petición ni su causa original. `osrm-routed` corre con `--verbosity WARNING`, porque su bitácora de
+accesos repite cada petición.
+
+**Por qué.** El punto de una cuenta es la ubicación de una persona: mandarlo a un tercero para
+calcular una ruta sería entregarle la cartera, y un servidor público además limita el uso y no
+garantiza versión ni disponibilidad. Autoalojado, el costo es preparar la red y mantener un
+servicio, y se acepta. Las URLs con coordenadas son lo que más fácil se filtra (bitácoras de
+proxies, trazas de excepciones, historiales): por eso no existen.
+
+## 156. OSRM v26.9.0, fijado por su digest, con MLD y el perfil `car` tal cual
+
+**Decisión.** El motor de ruteo es OSRM `v26.9.0`, con la imagen fijada por su digest en
+`preparar.sh`, en el compose y en el CI (una prueba comprueba que es la misma en los tres lados), o
+con sus binarios nativos, identificados por su SHA-256; nunca `latest`. El algoritmo es MLD
+(`extract`, `partition` y `customize`), y el perfil es el `car.lua` de esa versión copiado tal cual,
+con su licencia, y verificado contra un hash fijado en el código.
+
+**Por qué.** Una ruta depende del motor y del perfil tanto como de la red: con otra versión, otra
+velocidad por tipo de vía o otro manejo de los giros dan otra ruta, y la reconstrucción ya no sería
+exacta. v26.9.0 porque acepta peticiones `POST` con JSON (decisión 155) y porque `--data_version`
+deja que el backend declare su red (decisión 158). MLD porque prepara más rápido que CH y permite
+cambiar los pesos con otra personalización; CH respondería algo más rápido, y no hace falta. El
+perfil se copia y no se edita: cambiarlo sería otra versión de la red.
+
+## 157. La versión de la red es su huella; los archivos preparados son evidencia
+
+**Decisión.** Una versión de la red la identifica su **huella**: el SHA-256 de su identidad (el
+SHA-256 de la fuente, el motor, su versión y su distribución exacta, el algoritmo, el perfil y su
+hash, y los comandos de la preparación). El SHA-256 de cada archivo preparado va al **manifiesto**,
+y el hash del manifiesto entra en la firma de cada ejecución, pero no en la huella. Una versión nace
+`EN_PROCESO`, queda `PUBLICADA` o `FALLIDA`, y ya no cambia ni se borra; una huella se publica una
+sola vez.
+
+**Por qué.** OSRM no produce los mismos bytes en dos preparaciones de la misma fuente (con el
+extracto de Puebla, 12 de sus 26 archivos cambian, entre ellos `.osrm.partition`, aun con un solo
+hilo). Si la identidad fueran los archivos, la misma red tendría una versión por preparación. Lo que
+responde la red es lo mismo en lo que la política usa: con 300 puntos al azar en Puebla, dos
+preparaciones dieron los mismos snaps, la misma conectividad y las mismas duraciones en las 30,000
+celdas de sus tablas; las distancias difirieron en 0.1 m en 214 celdas, y al redondear a metros eso
+puede cambiar un metro de un tramo. Por eso la huella es de las entradas (la misma red es la misma
+versión en cualquier máquina), el manifiesto conserva qué se preparó, su hash entra en la firma, y
+`registrar-red-vial` dice si un directorio es la preparación publicada u otra de la misma red: la
+secuencia, las horas y los estados se reconstruyen con cualquiera, y byte por byte, con la
+publicada.
+
+## 158. El backend declara su red, y se verifica antes de enviar un punto
+
+**Decisión.** La preparación graba la huella en la red (`osrm-extract --data_version
+motor-cartera/red-vial/v1:<huella>`), y `osrm-routed` la declara en cada respuesta. Antes de enviar
+el punto de una cuenta o de una base, el motor consulta `nearest` de (0, 0), un punto que no es de
+nadie: si el backend declara otra red, la ejecución queda `FALLIDA` por
+`RED_VIAL_BACKEND_INCOMPATIBLE` sin haber enviado nada. Cada respuesta posterior se verifica igual.
+
+**Por qué.** La red declarada en la ejecución y la que sirve el backend son dos cosas, y la segunda
+la decide quien levanta el servicio. Sin esta verificación, un backend con otra red respondería con
+toda normalidad, y la ejecución publicaría rutas sobre una red que no es la que dice. Verificar con
+un punto que no es de nadie evita mandarle la ubicación de una cuenta a un backend equivocado.
+
+## 159. Un snap que no depende de la petición: `--small-component-size 1`
+
+**Decisión.** La red se prepara con `--small-component-size 1`.
+
+**Por qué.** Con el valor por omisión (1,000), OSRM distingue los componentes chicos de la red, y
+en una petición `table` prefiere ajustar cada punto a un componente grande si alguno de los demás
+puntos lo está: el snap de un punto depende de qué otros puntos van en la petición. La matriz de un
+gestor cambiaría según cómo se parta en bloques, o según quién más va en su ruta, y la
+reconstrucción dejaría de ser exacta. Con 1, cada componente cuenta como grande y cada punto tiene
+el mismo snap en cualquier petición; se comprobó que la matriz de la red sintética es la misma en un
+bloque que en bloques de 2 × 2. El costo es que un punto puede quedar en un componente aislado, y
+eso es justo lo que `RED_DESCONECTADA` dice (decisión 161).
+
+## 160. El snap hasta 500.00 m, al centímetro, sin calibrar
+
+**Decisión.** Una parada o una base se acepta si el segmento de la red más cercano está a no más de
+500.00 m, redondeado al centímetro (`ROUND_HALF_UP`): 500.00 m sí, 500.01 m no. Más lejos, o sin
+segmento, es `NO_ENRUTABLE` (`SNAP_EXCESIVO` o `SIN_SNAP`), con su distancia; una base así no tiene
+ruta. El umbral es parte de la política y de su hash.
+
+**Por qué.** Un punto a cientos de metros de cualquier calle no se puede visitar «en coche hasta la
+puerta», y su ruta mediría un lugar que no es el de la cuenta. 500 m no se calibró con resultados:
+es lo que se puede caminar desde el coche en unos minutos. En el benchmark de Puebla, con puntos
+sintéticos al azar dentro de cada municipio (no domicilios), la mediana del snap fue de 84 m y el
+22 % de las paradas quedó a más de 500 m, en el monte: es lo que esos puntos son, y el umbral no se
+movió por eso. Redondear al centímetro antes de comparar quita la duda de un flotante en el borde.
+Con datos de una operación, otro umbral sería otra política.
+
+## 161. Sin línea recta: lo que la red no dice no se inventa
+
+**Decisión.** Si la red no tiene camino de la base a una parada o de la parada a la base, la parada
+es `NO_ENRUTABLE` por `RED_DESCONECTADA`. Una celda vacía de la matriz nunca se rellena con la
+distancia en línea recta, una velocidad supuesta ni otro tramo, y las duraciones y distancias de
+OSRM se redondean a enteros una sola vez, al leerlas.
+
+**Por qué.** Una ruta con un tramo inventado parece factible sin serlo: el gestor llegaría a una
+calle sin salida, o a un río. Si la red no lo sabe, la respuesta honesta es que no es enrutable, y
+el motivo dice dónde mirar (un punto mal ubicado, o una red incompleta).
+
+## 162. Un fallo técnico no es una parada no enrutable
+
+**Decisión.** Si el proveedor no responde, responde un error del servidor, corta la conexión o
+manda una respuesta incompleta, el cliente reintenta con espera exponencial y un tope; si sigue
+fallando, la ejecución no publica nada y queda `EN_PROCESO`, para que la cola la reintente con su
+espera hasta agotar sus intentos (`INTENTOS_AGOTADOS`). Un error de configuración (la petición o el
+servidor no son los esperados) no se reintenta. Un worker cuyo proveedor no responde no toma
+trabajos `RUTEO_V2`.
+
+**Por qué.** `NO_ENRUTABLE` es lo que la red dice de un punto. Si una caída de OSRM se publicara
+como paradas no enrutables, una ejecución quedaría `EXITOSA` con miles de cuentas sin ruta, y nadie
+distinguiría un punto en el monte de un servicio caído. Mejor no publicar y reintentar: las
+entradas son las mismas, y la ejecución dará lo mismo cuando el servicio vuelva.
+
+Una conexión persistente que OSRM ya cerró por inactividad no es una falla: se reabre una vez, sin
+gastar un intento. El benchmark encontró que en Windows esa conexión cerrada a veces se ve como
+`ConnectionAbortedError` (WinError 10053), no como un reset; el cliente no la reconocía y gastaba un
+intento con su espera. Ya la reconoce, y una prueba cubre cada forma en que se ve.
+
+## 163. Una matriz por gestor, en bloques, con puntos únicos y sin guardar sus celdas
+
+**Decisión.** Cada gestor tiene su matriz: su base y los puntos de sus cuentas con snap válido, una
+sola vez cada coordenada repetida, pedida por bloques de a lo más 100 × 100 (el tope de `table` de
+`osrm-routed` por omisión). Las matrices de los gestores siguientes se piden en paralelo mientras
+se planea la del actual, hasta 4 a la vez. Una matriz vive solo mientras se planea su ruta: se
+guarda su hash (`hash_matriz`), nunca sus celdas.
+
+**Por qué.** Las rutas de dos gestores no comparten paradas (decisión 171), así que una matriz
+global sería cuadrática en todas las cuentas para usar solo bloques diagonales. Por gestor, la
+matriz es chica (en el benchmark XL, de 2 a 22 puntos, porque las cuentas con la misma coordenada
+son un solo punto) y cabe en una petición. Los bloques existen
+para que un gestor con más de 100 puntos no rompa el tope del servidor, y se probó que dan la misma
+matriz. Guardar las celdas sería guardar, en otra forma, la ubicación relativa de las cuentas; el
+hash basta para saber si dos ejecuciones vieron la misma red.
+
+## 164. Un servicio fijo de 900 s, como hipótesis pública
+
+**Decisión.** Cada visita dura 900 s (15 min), todas igual, y la política lo declara como una
+hipótesis operacional, no una medición. La API lo dice en su `aviso`.
+
+**Por qué.** El proyecto no tiene la duración real de una visita (la sabría el lifecycle, con
+visitas registradas, y una analítica que todavía no existe: v0.14). Inventar duraciones por tipo de
+cuenta sería falsa precisión. Un valor fijo y público deja ver cuánto pesa en la jornada: si una
+operación mide otro, es otra versión de la política, y cada ruta dice con cuál se calculó.
+
+## 165. La ruta es cerrada en la base, y el regreso se reserva
+
+**Decisión.** La ruta sale de la base del gestor en `campo/v2` y regresa a ella; una parada solo se
+programa si, después de su servicio, el regreso a la base también cabe en su jornada. El regreso es
+parte de la ruta (su salida, su llegada, su distancia, su duración y su espera).
+
+**Por qué.** Un gestor termina su día donde empezó, y una ruta que lo deja a una hora de su base al
+cerrar la jornada no es factible, aunque la última visita termine a tiempo. Reservar el regreso es lo
+que distingue «cabe» de «cabe si nadie vuelve».
+
+## 166. Ventanas `[inicio, fin)`, actividades enteras y la espera en el lugar
+
+**Decisión.** Las ventanas de la jornada son intervalos `[inicio, fin)`; dos que se tocan son una.
+Cada traslado y cada servicio caben enteros en una ventana; si no, esperan a la siguiente en el
+último lugar donde está el gestor. En los huecos no se maneja ni se atiende. El gestor sale de la
+base al abrir su primera ventana (lo que espera ahí no es espera de la ruta), y la espera de una
+parada es la de antes de salir hacia ella más la de antes de empezar su servicio.
+
+**Por qué.** Un turno partido tiene una pausa que es del gestor: manejar en ella sería trabajar en
+la comida. Partir un servicio entre dos ventanas no existe en la operación, y partir un traslado
+tampoco. Esperar donde se está es lo que hace una persona, y no inventa un lugar de espera.
+
+## 167. La prioridad manda, y lo que no cabe ni solo no bloquea
+
+**Decisión.** Se programa por prioridad (`MUY_ALTA`, `ALTA`, `MEDIA`, `BAJA`, la de `campo/v2`, que
+es la de `decision/v2`): si una parada enrutable de un nivel no cabe (`JORNADA_AGOTADA`), ninguna de
+un nivel inferior se programa (`PRIORIDAD_SUPERIOR_AGOTO_JORNADA`), aunque alguna cupiera. La
+excepción es la parada que no cabe ni sola en la jornada vacía (`EXCEDE_JORNADA`): no bloquea a
+nadie.
+
+**Por qué.** La prioridad es una conclusión de `decision/v2`, con sus motivos (decisión 138); si una
+cuenta `BAJA` cercana le quitara el lugar a una `MUY_ALTA` lejana, la ruta contradiría a la
+decisión para ahorrar kilómetros. Pero una parada que no cabe ni sola no se va a atender ese día
+con o sin las demás: dejar que bloqueara a las de prioridad inferior sería perder el día entero por
+una cuenta imposible. Las que se quedan fuera salen con su motivo, para que la operación sepa
+cuántas faltan y por qué.
+
+## 168. Una heurística determinista, no un óptimo; el 2-opt, acotado y después
+
+**Decisión.** La secuencia es `PRIORITY_NEAREST_NEIGHBOR_2OPT/v1`: el vecino más cercano por
+duración dentro de cada nivel (un empate, por `cuenta_id`), y después, sobre la secuencia construida,
+un 2-opt dentro de cada segmento de una misma prioridad que acepta un cambio solo si reduce
+estrictamente el traslado y la ruta sigue cabiendo, la mayor reducción primero, hasta 100 mejoras
+por segmento. Cada respuesta dice que no es una ruta óptima.
+
+**Por qué.** Un óptimo (TSP con ventanas, VRPTW) es otro problema, con otro costo de cómputo y otra
+validación: es la v0.16. La heurística es explicable, determinista y rápida (en el benchmark XL, la
+secuenciación de 99,720 paradas tomó 1 s y el 2-opt 0.3 s), y lo que no logra queda a la vista. El
+2-opt va después de construir porque construir decide qué entra y en qué orden de prioridad, y
+mejorar dentro de un segmento no cambia ninguna de las dos cosas. Desempatar por `cuenta_id` y no
+por un id interno hace que la ruta no dependa del orden en que se insertaron las cuentas.
+
+## 169. ETA planificadas, sin tráfico
+
+**Decisión.** Las horas de llegada son **planificadas**: las duraciones estáticas del perfil `car`
+sobre la red, sin tráfico, clima, incidentes ni estacionamiento. Se guardan en UTC y salen en la
+zona de la configuración de campo, con su desfase.
+
+**Por qué.** No hay datos de tráfico autoalojados ni una forma de reconstruirlos para una fecha
+pasada; usarlos haría que la misma ejecución diera otra ruta cada vez. Una ETA estática es
+reproducible y sirve para saber si la jornada alcanza; no es una promesa al cliente, y el `aviso` lo
+dice.
+
+## 170. Sin geometrías ni polilíneas, y un transporte que no filtra coordenadas
+
+**Decisión.** Ninguna respuesta de la API, bitácora, error, salida de la línea de comandos ni la
+Cuenta 360 lleva la coordenada de una cuenta, de una base o de un snap, ni la geometría o la
+polilínea de una ruta; las peticiones a OSRM piden sin geometría ni waypoints. Las tablas no tienen
+dónde guardar una coordenada, las de paso son temporales de la transacción, y un error se registra
+con su tipo, su SQLSTATE y sus marcos, nunca con su mensaje.
+
+**Por qué.** Una polilínea es la ubicación de cada cuenta, uno tras otro, y lo que no se publica no
+se filtra. La operación necesita el orden, las horas y los tramos, no el dibujo. Las pruebas mandan
+coordenadas en la URL de un error del transporte y buscan coordenadas en la bitácora, la ejecución,
+el trabajo y cada respuesta de la API.
+
+## 171. Ni rebalanceo entre gestores ni optimización global
+
+**Decisión.** `ruteo/v2` rutea las cuentas que `campo/v2` le dio a cada gestor, y solo esas. No
+mueve cuentas entre gestores ni entre bases, ni optimiza todas las rutas a la vez: una cuenta que no
+cabe queda `SIN_TIEMPO` en su gestor, con su motivo.
+
+**Por qué.** El reparto es de `campo/v2`, con su política, su hash y sus motivos (decisiones 148 a
+150); si el ruteo lo cambiara, habría dos autoridades sobre quién visita a quién. Lo que el ruteo
+descubre (que una carga no cabe por calle) es justo la información que la operación necesita para
+cambiar la configuración de campo, y queda contado por gestor y por base.
+
+## 172. Sin una tabla de tramos
+
+**Decisión.** No hay una tabla de tramos (`TramoRutaV2`): el tramo de llegada a cada parada
+programada (su salida del lugar anterior, su distancia, su duración y su espera) vive en la parada,
+y el de regreso a la base, en la ruta.
+
+**Por qué.** En una ruta cerrada hay exactamente un tramo por parada programada más el regreso, así
+que una tabla de tramos repetiría la llave de la parada con una fila más por ruta. Con los tramos en
+la parada, una página de paradas ya trae su tramo sin otra unión, y el regreso, que no tiene
+parada, es de la ruta. Si alguna vez un tramo tuviera más de un segmento (una ruta con escalas), sí
+haría falta.
+
+## 173. Una ruta por gestor con al menos una cuenta `ASIGNADA`
+
+**Decisión.** Una ejecución tiene una ruta por cada gestor que tiene al menos una cuenta `ASIGNADA`
+en el plan, y una parada por cada cuenta `ASIGNADA`. Un gestor sin cuentas no tiene ruta, y las
+cuentas que `campo/v2` no asignó no son paradas.
+
+**Por qué.** Una ruta vacía no dice nada que la carga del gestor en el plan no diga ya, y
+multiplicaría las filas por los gestores sin trabajo. Las cuentas sin gestor ya tienen su motivo en
+`campo/v2`; el ruteo responde una pregunta distinta, sobre las que sí se asignaron. La ruta exige en
+la base que su gestor tenga carga en el plan, con su misma base, y la parada, que su cuenta tenga
+asignación en el plan.
+
+## 174. Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.13.0
+
+**Decisión.** Una ejecución se resuelve en un trabajo durable `RUTEO_V2` (el nivel 7 de la cola),
+en una transacción y en un `SAVEPOINT`, y solo publica su dueño vigente. PostgreSQL selecciona los
+gestores y las cuentas del plan por conjuntos; Python pide el snap y las matrices al proveedor y
+planea cada ruta con la política; lo que decide vuelve por `COPY` a tablas temporales y se publica
+con un `INSERT ... SELECT` por tabla. Los índices son los de sus consultas: en las paradas, la llave
+(ejecución, cuenta), (ejecución, estado, cuenta), (ejecución, gestor, orden) y (cuenta, ejecución);
+en las rutas, (ejecución, gestor) y su `ruta_id`; en las ejecuciones, las únicas parciales por firma
+y (plan, id). Una página de paradas o de rutas se elige primero por sus llaves y después se le une lo
+demás. No hay particionado.
+
+**Por qué así.** En el benchmark XL (el plan de 99,720 cuentas `ASIGNADA` de 5,523 gestores del
+benchmark de `campo/v2`), con un proveedor sintético que no es una red vial, la ejecución tomó
+18.5 s con 236 MiB de memoria pico y 96 MiB de WAL: la publicación, 8.8 s; la selección, 3.3 s; la
+secuenciación, 1.0 s; el 2-opt, 0.3 s. Contra la red real del estado de Puebla (OpenStreetMap,
+1,739,426 aristas), servida por OSRM en la misma máquina, el mismo plan tomó 16.8 s, con 41,896
+paradas programadas por calle. Reconstruir cada ejecución dio el mismo hash de todo lo publicado.
+Dentro de PostgreSQL, una página de paradas tarda 0.6 ms, la de un estado 0.6 ms, la de un gestor
+1.8 ms, la de una ruta 0.4 ms y las paradas de una cuenta 0.2 ms. La página 500 de las paradas
+tardaba 213 ms porque unía y ordenaba las 99,720 paradas antes de saltarse las anteriores; eligiendo
+la página por sus llaves primero tarda 3.6 ms. Las rutas se ordenan por el código del gestor, que
+está en otra tabla, así que una página lee las rutas de la ejecución (6 a 8 ms con 5,523).
+
+**Por qué sin particionado.** Cada parada ocupa 547 bytes con sus índices (52 MiB por ejecución XL)
+y cada ruta, 832; crecen con cada fecha que se rutee. Todas las consultas entran por índices que
+empiezan por la ejecución o por la cuenta. Como en `campo/v2` (decisión 153), donde el particionado
+podría pagar es en la retención de ejecuciones viejas, y eso es una política de la operación, con
+datos de producción (v0.18).
+
+**Lo que v0.13.0 no hace**, a propósito: tráfico o duraciones por hora del día; ventanas horarias
+por cuenta, duraciones de visita distintas, vehículos, capacidades o habilidades; TSP, VRP o VRPTW
+óptimos y la optimización conjunta de las rutas (v0.16); rebalancear cuentas entre gestores o bases;
+geometrías y mapas (v0.17); actualizar la red sola; comparar lo planeado con lo que el gestor hizo, y
+la analítica de la cobranza (v0.14); y abrir una ejecución sin que alguien la pida.

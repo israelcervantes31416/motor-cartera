@@ -57,3 +57,17 @@ datos/*
 *.kml
 *.kmz
 *.fgb
+
+# Ni redes viales: un extracto de OpenStreetMap se descarga de su fuente y se prepara fuera del
+# repositorio, en datos/red_vial (ignorado), y la red sintetica de las pruebas se genera al vuelo
+# (src/motor_cartera/ruteo_v2/sintetica.py). Lo que prepara OSRM tampoco entra: es grande y se
+# rehace con `motor-cartera preparar-red-vial`. El CI tambien reconoce un .osm.pbf y los archivos
+# preparados de OSRM (cada uno es un tar) por sus primeros bytes.
+*.pbf
+*.osm
+*.o5m
+*.o5c
+*.osc
+*.osrm
+*.osrm.*
+*.tar

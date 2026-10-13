@@ -15,6 +15,10 @@ x-app: &app
     # El almacen de artefactos fuente: cada archivo recibido, por su SHA-256, sin borrarse nunca. La
     # API lo escribe y el worker lo lee; es un volumen propio, aparte del de PostgreSQL.
     MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
+    # El proveedor de ruteo de ruteo/v2: el OSRM de abajo, en la red interna. Mientras no responde
+    # (su perfil no se levanto, o todavia carga la red), el worker no toma trabajos RUTEO_V2 y sigue
+    # con los demas.
+    MC_OSRM_URL: http://osrm:5000
   volumes:
     - ./:/app
     - fuentes:/var/lib/motor-cartera/fuentes
@@ -85,6 +89,34 @@ services:
     # Con SIGTERM termina el trabajo en curso y sale. Si tarda mas que esto, Docker lo mata y el
     # trabajo vuelve a la cola cuando vence su lease.
     stop_grace_period: 30s
+
+  # El proveedor de ruteo de ruteo/v2: OSRM v26.9.0 autoalojado, con la imagen fijada por su digest
+  # (la misma con que preparar.sh prepara la red). Sirve la red de MC_RED_VIAL_HUELLA, preparada en
+  # datos/red_vial/<huella> por `motor-cartera preparar-red-vial --docker` y su preparar.sh, y la
+  # declara en cada respuesta. Sin puerto publicado: solo la API y el worker lo ven, y las
+  # coordenadas de las cuentas no salen de la red interna. --verbosity WARNING porque su bitacora de
+  # accesos (INFO) repite cada peticion, con sus coordenadas. Va en el perfil `ruteo`: se levanta
+  # con `docker compose --profile ruteo up -d osrm` cuando la red ya esta preparada.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v26.9.0-debian@sha256:8a1b1bc938412f15f9b5b32d794c4ec6bf4a85dfbbabfa0a014b70b187edb53b
+    profiles: ["ruteo"]
+    command:
+      - osrm-routed
+      - --algorithm
+      - mld
+      - --verbosity
+      - WARNING
+      - --max-nearest-locations
+      - "100"
+      - /redes/${MC_RED_VIAL_HUELLA:-sin-red}/red.osrm
+    volumes:
+      - ./datos/red_vial:/redes:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5000"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
 
 volumes:
   pgdata:

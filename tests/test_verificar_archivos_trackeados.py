@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pyarrow as pa
@@ -107,6 +108,15 @@ def test_una_cartera_metida_con_git_add_f_dice_por_que_no_debe_estar(repo, carte
         "geografia/municipios.gpkg",
         "geografia/municipios.geojson",
         "geografia/municipios.kmz",
+        "red_vial/mexico-latest.osm.pbf",
+        "red_vial/red_sintetica.osm",
+        "red_vial/cambios.osc",
+        "red_vial/red.osrm",
+        "red_vial/red.osrm.cells",
+        "red_vial/red.osrm.partition",
+        "red_vial/red.osrm.mldgr",
+        "red_vial/red.osrm.fileIndex",
+        "entregas/redes.tar",
     ],
 )
 def test_nada_de_lo_que_el_gitignore_excluye_se_cuela(repo, ruta):
@@ -228,6 +238,47 @@ def test_un_formato_de_datos_un_comprimido_o_un_volcado_se_reconoce_por_dentro(
 
     assert resultado.returncode == 1
     assert f"{nombre}: por dentro es {que_es}" in resultado.stdout
+
+
+def _tar() -> bytes:
+    """Un tar POSIX con un miembro, como los que escribe OSRM al preparar una red."""
+    destino = io.BytesIO()
+    with tarfile.open(fileobj=destino, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        miembro = tarfile.TarInfo("osrm_fingerprint.meta")
+        miembro.size = 8
+        tar.addfile(miembro, io.BytesIO(bytes(8)))
+    return destino.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("nombre", "contenido", "que_es"),
+    [
+        ("red.bin", _tar, "un tar (como los archivos que prepara OSRM)"),
+        # El principio de un .osm.pbf: el largo de su encabezado y su tipo, OSMHeader.
+        (
+            "extracto.dat",
+            lambda: b"\x00\x00\x00\x0d\x0a\x09OSMHeader\x18\xa0\x01" + bytes(64),
+            "un extracto de OpenStreetMap (.osm.pbf)",
+        ),
+    ],
+    ids=["tar-de-osrm", "osm-pbf"],
+)
+def test_una_red_vial_se_reconoce_por_dentro(repo, nombre, contenido, que_es):
+    (repo / nombre).write_bytes(contenido())
+    git(repo, "add", nombre)
+
+    resultado = revisar(repo)
+
+    assert resultado.returncode == 1
+    assert f"{nombre}: por dentro es {que_es}" in resultado.stdout
+
+
+def test_un_texto_que_menciona_ustar_u_osmheader_no_es_una_red(repo):
+    # Las firmas de adentro se buscan en su byte: mencionarlas en otro lugar no las imita.
+    (repo / "notas.md").write_text("Un tar dice ustar y un .osm.pbf dice OSMHeader.\n" * 20)
+    git(repo, "add", "notas.md")
+
+    assert revisar(repo).returncode == 0
 
 
 def test_una_base_sqlite_se_reconoce_por_dentro(repo, tmp_path):

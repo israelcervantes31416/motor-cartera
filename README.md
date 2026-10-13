@@ -1,8 +1,9 @@
 # motor-cartera
 
-Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético
-de cartera de crédito al consumo, construido sobre **datos sintéticos**, con una API REST para
-operarlo y un worker que ejecuta cada etapa desde una cola durable.
+Motor de ingesta, validación, segmentación, decisión, priorización territorial, planeación de campo
+y ruteo (sintético y por calle) de cartera de crédito al consumo, construido sobre **datos
+sintéticos**, con una API REST para operarlo y un worker que ejecuta cada etapa desde una cola
+durable.
 
 ## De qué se trata
 
@@ -96,6 +97,17 @@ declarada, no factibilidad vial**: cada candidata queda `ASIGNADA`, `REVISION_TE
 ([docs/campo_v2.md](docs/campo_v2.md), [docs/configuracion_campo.md](docs/configuracion_campo.md)
 y [docs/particion_campo.md](docs/particion_campo.md)).
 
+Desde v0.13.0, **Ruteo vial v2** dice si esa carga cabe en una ruta por calle. Sobre un plan de
+`campo/v2` y una **versión declarada de la red vial** (un extracto de OpenStreetMap preparado con
+OSRM v26.9.0 y servido por un `osrm-routed` autoalojado, con su huella y su manifiesto), `ruteo/v2`
+ordena las cuentas de cada gestor saliendo de su base y regresando a ella: por prioridad y por el
+vecino más cercano, con un 2-opt acotado, una ETA planificada sin tráfico, un servicio fijo de
+900 s y su jornada, con turnos partidos y el regreso reservado. Cada parada queda `PROGRAMADA`,
+`SIN_TIEMPO`, `NO_ENRUTABLE` o `NO_ENRUTABLE_BASE`, con su motivo. Es una **heurística
+determinista, no una ruta óptima**, y ninguna respuesta lleva una coordenada ni una geometría
+([docs/ruteo_v2.md](docs/ruteo_v2.md), [docs/red_vial.md](docs/red_vial.md) y
+[docs/politica_ruteo.md](docs/politica_ruteo.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -107,16 +119,19 @@ propósito para que el contrato tenga de dónde agarrarse.
 
 La cartografía tampoco entra. La referencia municipal oficial (el Marco Geoestadístico Integrado
 2025 del INEGI, público) se descarga de su URL y se verifica contra el SHA-256 de un manifiesto del
-repositorio; las pruebas y la prueba de humo usan referencias sintéticas que escriben al vuelo. Y
-las coordenadas de las cuentas son sintéticas: puntos de la cartografía pública, en proporciones
-explícitas, no ubicaciones de nadie.
+repositorio; las pruebas y la prueba de humo usan referencias sintéticas que escriben al vuelo. Las
+redes viales tampoco entran: un extracto de OpenStreetMap se descarga y se prepara fuera del
+repositorio, y las pruebas, la prueba de humo y el CI usan una red sintética diminuta que generan
+al vuelo. Y las coordenadas de las cuentas son sintéticas: puntos de la cartografía pública, en
+proporciones explícitas, no ubicaciones de nadie.
 
 El `.gitignore` lo cuida por nombre, pero solo frena lo que todavía no está trackeado. Lo
 trackeado lo revisa `scripts/verificar_archivos_trackeados.py` en el CI: falla si entró algo
 que el `.gitignore` excluye (con `git add -f`, o en mayúsculas donde git las distingue) o, con
 cualquier nombre, una hoja de cálculo, un zip, un Parquet o un Arrow, un archivo comprimido (gzip,
 bzip2, xz, zstd, 7z, rar), un volcado de `pg_dump`, una base SQLite (un GeoPackage lo es), un
-Shapefile o un FlatGeobuf, que reconoce por sus primeros bytes. Antes de un commit también se corre a mano:
+Shapefile, un FlatGeobuf, un extracto de OpenStreetMap (`.osm.pbf`) o un archivo preparado de OSRM
+(un tar), que reconoce por sus primeros bytes. Antes de un commit también se corre a mano:
 
 ```bash
 python scripts/verificar_archivos_trackeados.py
@@ -124,7 +139,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay doce versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay trece versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -179,6 +194,13 @@ punta:
   reparte por prioridad y por microtramos, con su propietario preferido por Rendezvous y spillover
   dentro de la base. Todo o nada, en un trabajo durable `CAMPO_V2`, con la carga de cada gestor y
   el balance como diagnóstico.
+- **v0.13.0 ✅ Ruteo vial v2: Red Vial, Secuenciación y Factibilidad de Jornada**: las versiones de
+  la red vial (OpenStreetMap preparado con OSRM v26.9.0, MLD y el perfil `car` fijados) se
+  identifican por su huella, que el backend declara en cada respuesta; sobre un plan de `campo/v2`,
+  cada gestor recibe una ruta cerrada en su base por la red vial, por prioridad, con snap de hasta
+  500 m, matrices por bloques, vecino más cercano, 2-opt acotado, turnos partidos y el regreso
+  reservado, y ETA planificadas sin tráfico. Todo o nada, en un trabajo durable `RUTEO_V2` que solo
+  toma un worker cuyo OSRM responde.
 
 Lo que ya hace:
 
@@ -292,6 +314,20 @@ Lo que ya hace:
 - [x] `cargar-campo`, `generar-campo-sintetico`, `planificar-campo-v2`, `resumen-campo-v2`,
   `backfill-campo-v2` y `exportar-plan-campo`; la Cuenta 360 con su `campo_resumen`, sin
   coordenadas; y un benchmark de `campo/v2` sobre el XL, fuera del CI
+- [x] Versiones de la red vial identificadas por su huella (el SHA-256 de la fuente, OSRM v26.9.0
+  con su distribución exacta, MLD, el perfil `car` fijado y los comandos), con su manifiesto
+  verificado y su atribución ODbL; `generar-red-sintetica`, `preparar-red-vial` (con Docker o con
+  los binarios nativos) y `registrar-red-vial`, y el servicio `osrm` del compose, sin puerto
+  publicado y sin bitácora de accesos
+- [x] `ruteo/v2` (`ruteo-public-v2`, con su `hash_politica`): snap de hasta 500.00 m, matrices por
+  gestor en bloques de 100 × 100, `PRIORITY_NEAREST_NEIGHBOR_2OPT/v1`, servicio de 900 s, turnos
+  partidos, regreso reservado y ETA planificadas, sin línea recta ni tráfico; un backend que declara
+  otra red falla cerrado antes de recibir un punto, y un fallo técnico se reintenta por la cola en
+  lugar de publicarse
+- [x] `rutear-v2`, `resumen-ruteo-v2` y `backfill-ruteo-v2`; la API de redes, ejecuciones, rutas y
+  paradas; la Cuenta 360 con su `ruteo_resumen`, sin coordenadas; pruebas contra OSRM de verdad
+  sobre la red sintética en el CI; y dos benchmarks fuera del CI: el planificador sobre el plan XL
+  y la red real del estado de Puebla
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -308,9 +344,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.10.0 — Decision Engine v2
 ✅ v0.11.0 — Geografía Real, Territorial v2 y Bases Operativas
 ✅ v0.12.0 — Campo v2: Capacidad, Partición y Asignación Operativa
-➡️ v0.13 — Ruteo vial v2
+✅ v0.13.0 — Ruteo vial v2: Red Vial, Secuenciación y Factibilidad de Jornada
+➡️ v0.14 — Collection Analytics
 
-v0.14 Collection Analytics
 v0.15 Predictive Intelligence
 v0.16 Optimización Matemática
 v0.17 Aplicación + dashboards
@@ -319,10 +355,10 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.13, Ruteo vial v2**: sobre la carga diaria de cada gestor que publica Campo
-v2, si ese conjunto de visitas cabe en una ruta por calle: el orden de las visitas, los tiempos de
-traslado y la factibilidad dentro de la jornada. Sin adelantar la analítica ni los modelos
-predictivos.
+Lo que sigue es **v0.14, Collection Analytics**: comparar lo que se planeó (la decisión, el plan de
+campo y la ruta) con lo que la cobranza hizo y con lo que se recuperó, con las fuentes y las
+versiones de cada número a la vista. Sin adelantar los modelos predictivos ni la optimización
+matemática.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -776,6 +812,33 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
   --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia --campo
 ```
 
+Con `--ruteo <red_vial_version_id>` y `--base-ruteo=<lon>,<lat>` (y `--campo`), recorre además
+`ruteo/v2` sobre una red vial ya publicada que un OSRM sirve al worker: la red sintética que
+`generar-red-sintetica` dibuja dentro de un municipio de la referencia, con sus puntos en la muestra
+de la cartera oficial (que por eso se genera después), y una base en el cruce que imprime. Publica
+esas bases, las asigna, publica una configuración con un gestor de día completo, uno de turno
+partido y uno de 40 minutos, planea el día siguiente al corte y lo rutea; revisa la red, una ruta
+`COMPLETA` y una `PARCIAL`, paradas `PROGRAMADA`, `SIN_TIEMPO` y `NO_ENRUTABLE` (por un snap de más
+de 500 m y por un tramo sin camino), que en la pausa del turno partido nadie maneja ni atiende, el
+regreso a la base, la Cuenta 360, el trabajo `RUTEO_V2` y el `409` de las mismas entradas, sin una
+coordenada en ninguna respuesta:
+
+```bash
+docker compose exec api motor-cartera generar-red-sintetica --geografia-version <geografia_version_id> \
+  --municipio 21114 --puntos datos/geografia/puntos.json --destino datos/red_vial/fuente/red_sintetica.osm
+docker compose exec api motor-cartera preparar-red-vial datos/red_vial/fuente/red_sintetica.osm \
+  --region "Red sintetica de la prueba de humo" --proveedor-datos SINTETICO --licencia sintetica --docker
+sh datos/red_vial/<huella>/preparar.sh
+docker compose exec api motor-cartera registrar-red-vial datos/red_vial/<huella>
+MC_RED_VIAL_HUELLA=<huella> docker compose --profile ruteo up -d --wait osrm
+python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial_2026-09-30.zip \
+  --corte 2026-09-30 --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip --geografia --campo \
+  --ruteo <red_vial_version_id> --base-ruteo=<lon>,<lat>
+```
+
+La base va unida a su opción, con `=`: en México su longitud es negativa, y separada, el `argparse`
+de Python 3.12 la toma por otra opción.
+
 ## Fuentes oficiales
 
 Desde v0.6.0 hay tres contratos de entrada, y el de cada archivo se declara, nunca se adivina:
@@ -1225,6 +1288,56 @@ cambió el propietario preferido de 2 de 8,603 microtramos (un reparto por turno
 de 11 a 29 ms (mediana), y la Cuenta 360, 62 ms. Los detalles, en
 [docs/campo_v2.md](docs/campo_v2.md).
 
+## Ruteo vial v2
+
+`ruteo/v2` responde, para un plan de `campo/v2` y una versión de la red vial declarados, si la carga
+de cada gestor cabe en una ruta por calle: en qué orden, a qué hora llega a cada cuenta y cuáles no
+caben o no son enrutables, y por qué. Es un trabajo durable que alguien pide, con entradas
+declaradas y todo o nada.
+
+- **Una red vial versionada.** Un extracto de OpenStreetMap (o la red sintética de las pruebas)
+  preparado con OSRM v26.9.0 (MLD, el `car.lua` de esa versión tal cual, la imagen fijada por su
+  digest), identificado por su huella y con su manifiesto verificado. El backend la declara en cada
+  respuesta, y si declara otra, la ejecución falla cerrado sin enviar un punto.
+- **OSRM autoalojado.** Nunca el servidor público ni otro servicio externo: el servicio `osrm` del
+  compose no publica puertos, las peticiones van por `POST` con las coordenadas en el cuerpo y su
+  bitácora de accesos está apagada.
+- **`ruteo-public-v2`.** La ruta sale de la base y regresa a ella; cada parada necesita snap a no
+  más de 500.00 m y camino por la red (nunca una línea recta); se programa por prioridad con el
+  vecino más cercano y un 2-opt acotado; cada traslado y cada servicio (900 s) caben enteros en una
+  ventana, se espera en el lugar y el regreso se reserva. **Heurística, no óptima; ETA planificadas
+  sin tráfico.**
+- **Privacidad.** Ninguna respuesta, bitácora, error ni salida de la línea de comandos lleva una
+  coordenada, una geometría ni una polilínea.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec api motor-cartera preparar-red-vial datos/red_vial/fuente/puebla.osm.pbf \
+  --region "Estado de Puebla" --fecha-snapshot 2026-10-13 --docker
+sh datos/red_vial/<huella>/preparar.sh
+docker compose exec api motor-cartera registrar-red-vial datos/red_vial/<huella>
+MC_RED_VIAL_HUELLA=<huella> docker compose --profile ruteo up -d --wait osrm
+curl -s -X POST -H "$K" -H "Content-Type: application/json" \
+  -d '{"campo_run_id":"<campo_run_id>","red_vial_version_id":"<red_vial_version_id>"}' \
+  http://localhost:8000/ruteo-v2/ejecuciones
+curl -s -H "$K" "http://localhost:8000/ruteo-v2/ejecuciones/<ruteo_run_id>/rutas?estado=PARCIAL"
+curl -s -H "$K" "http://localhost:8000/ruteo-v2/ejecuciones/<ruteo_run_id>/paradas?estado=SIN_TIEMPO"
+docker compose exec worker motor-cartera resumen-ruteo-v2 --ejecucion <ruteo_run_id>
+```
+
+Todo está en [docs/ruteo_v2.md](docs/ruteo_v2.md), [docs/red_vial.md](docs/red_vial.md) y
+[docs/politica_ruteo.md](docs/politica_ruteo.md). El porqué, en las decisiones 154 a 174.
+
+**Medido.** Sobre el plan XL del benchmark de `campo/v2` (99,720 cuentas `ASIGNADA` de 5,523
+gestores), con un proveedor sintético que no es una red vial, la ejecución tomó **18.5 s** (236 MiB
+de memoria pico), y reconstruirla dio el mismo hash. Contra la red real del estado de Puebla
+(OpenStreetMap, 1,739,426 aristas), preparada en 35.5 s con los binarios nativos de OSRM y servida
+en la misma máquina, el mismo plan tomó **16.8 s**, con 41,896 paradas programadas por calle, y su
+reconstrucción también dio el mismo hash. Dentro de PostgreSQL, una página de paradas (por estado,
+gestor, ruta o cuenta, o la número 500) tarda de 0.2 a 3.6 ms; las paradas de una base, 7.5 ms, y
+una página de rutas, de 6 a 8 ms, porque se ordenan por el código del gestor. La Cuenta 360 tarda
+67 ms. Los detalles, en [docs/ruteo_v2.md](docs/ruteo_v2.md).
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -1662,6 +1775,21 @@ motor-cartera backfill-motor-pagos                   # encola la interpretación
 El almacén de artefactos es el directorio de `MC_SOURCE_STORE_ROOT` (`datos/fuentes` en el
 `.env.example`); la API, el worker y el CLI tienen que ver el mismo.
 
+`ruteo/v2` sin Docker: con los binarios nativos de OSRM v26.9.0 (en Windows, los que trae el
+paquete `node_osrm` de su release), `preparar-red-vial --osrm-bin` prepara y publica la red en un
+paso, `osrm-routed` la sirve, y el worker la usa con `MC_OSRM_URL`. Así se probó v0.13.0 en una
+máquina sin Docker ni WSL, prueba de humo incluida:
+
+```bash
+motor-cartera generar-red-sintetica --destino datos/red_vial/fuente/red_sintetica.osm
+motor-cartera preparar-red-vial datos/red_vial/fuente/red_sintetica.osm --region "Red sintetica" \
+  --proveedor-datos SINTETICO --licencia sintetica --osrm-bin <directorio de los binarios>
+osrm-routed --algorithm mld --verbosity WARNING --max-nearest-locations 100 --port 5000 \
+  datos/red_vial/<huella>/red.osrm
+MC_OSRM_URL=http://localhost:5000 motor-cartera worker      # en otra terminal
+motor-cartera rutear-v2 --plan <campo_run_id> --red-vial-version <red_vial_version_id>
+```
+
 Sin un worker corriendo, la API registra el trabajo pero nadie lo ejecuta: el flujo se queda en la
 cola. `motor-cartera worker --una-vez` procesa a lo más un trabajo y sale, para probar o
 diagnosticar. `cargar` registra la corrida y su trabajo en la misma cola, lo toma él mismo y hace
@@ -1781,6 +1909,22 @@ lleva una coordenada. La política, la cuadrícula y el generador (`pytest
 tests/test_campo_v2_politica.py tests/test_generador_campo.py`) no necesitan base. El benchmark
 de `campo/v2` no corre en el CI.
 
+`ruteo/v2` también, contra PostgreSQL y con proveedores de ruteo de pruebas que no son una red vial
+(un snap y un tramo por par de puntos que la prueba decide): goldens de la matriz, de la prioridad,
+del snap en cada frontera (0, 50, 499, 500, 500.004, 500.005 y 500.01 m), de la base no enrutable,
+de la red desconectada, de la jornada simple y la partida (sin manejar en la pausa), del regreso
+reservado y del 2-opt (que reduce el traslado y que rechaza un cambio que no cabe), y propiedades
+sobre matrices al azar contra un simulador independiente; el backend con otra red, que falla sin
+recibir un punto; el proveedor caído, que deja la ejecución `EN_PROCESO` hasta agotar sus intentos;
+fallas inyectadas en siete puntos, dos workers, el lease perdido, el worker que no toma un ruteo sin
+proveedor, el empate por `cuenta_id`, la reconstrucción idéntica, la inmutabilidad, y coordenadas
+en la URL de un error del transporte que no aparecen en ninguna parte. Con `MC_OSRM_URL_PRUEBAS` y
+`MC_RED_VIAL_PRUEBAS`, `tests/test_ruteo_v2_osrm.py` prueba contra OSRM de verdad, sobre la red
+sintética: el snap, la matriz con su calle de un solo sentido y su tramo aislado, la matriz por
+bloques, la ruta de OSRM contra sus tramos y una ejecución de punta a punta; el CI la prepara con
+la imagen fijada y la sirve para eso. La política (`pytest tests/test_ruteo_v2_politica.py`) no
+necesita base. Los benchmarks de `ruteo/v2` no corren en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1790,8 +1934,10 @@ idempotencia y la API del historial, incluidos resultados de otras versiones de 
 prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el ruteo, una ingesta
 de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos,
 y el corte oficial, con coordenadas sintéticas sobre una referencia sintética, por la geografía,
-las bases, `territorial/v2` y `campo/v2`; comprueba que ni el backfill de la historia, ni el del
-motor, ni el de `campo/v2` encuentran nada pendiente, compara en modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
+las bases, `territorial/v2`, `campo/v2` y `ruteo/v2`, sobre una red vial sintética que prepara y
+sirve OSRM con su imagen fijada; comprueba que ni el backfill de la historia, ni el del motor, ni el
+de `campo/v2` encuentran nada pendiente, que el de `ruteo/v2` encola solo lo que falta, compara en
+modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
 contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
 escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía
@@ -1896,6 +2042,19 @@ src/motor_cartera/
 │   ├── consultas.py   Las configuraciones, los planes, sus asignaciones, cargas y unidades, y los
 │   │                  de una cuenta
 │   └── backfill.py    Los planes que faltan para una configuración y una fecha declaradas
+├── ruteo_v2/
+│   ├── politica.py    ruteo-public-v2 como datos y su hash; el snap, las ventanas, la secuencia,
+│   │                  el 2-opt y la simulación de la jornada: el núcleo puro
+│   ├── proveedor.py   El proveedor de ruteo: el cliente de OSRM (POST, reintentos, la red que
+│   │                  declara el backend) y su protocolo
+│   ├── red_vial.py    Las versiones de la red: la huella, la preparación, el manifiesto y su
+│   │                  registro
+│   ├── sintetica.py   La red vial sintética de las pruebas, la prueba de humo y el CI
+│   ├── perfiles/      El car.lua de OSRM v26.9.0, tal cual, con su licencia
+│   ├── ejecuciones.py ruteo/v2: abrir con sus entradas declaradas, pedir la red y rutear un plan,
+│   │                  todo o nada
+│   ├── consultas.py   Las redes, las ejecuciones, sus rutas y paradas, y las de una cuenta
+│   └── backfill.py    Las ejecuciones que faltan sobre una red declarada
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -1912,9 +2071,10 @@ src/motor_cartera/
 │                      atribución (sus ejecuciones, sus resultados y sus candidatas), decision/v2
 │                      (sus ejecuciones, las features y la decisión de cada cuenta), la geografía
 │                      (versiones de la referencia, municipios, ejecuciones y resultados), las
-│                      bases operativas, territorial/v2 (ejecuciones y asignaciones) y campo/v2
+│                      bases operativas, territorial/v2 (ejecuciones y asignaciones), campo/v2
 │                      (la configuración de campo, los planes, sus asignaciones, sus unidades y
-│                      la carga de cada gestor)
+│                      la carga de cada gestor) y ruteo/v2 (las versiones de la red vial, las
+│                      ejecuciones, la ruta de cada gestor y cada parada)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
 │                      el lifecycle sintético de cada periodo del escenario (lifecycle.py) y la
@@ -1923,7 +2083,7 @@ src/motor_cartera/
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
 │                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
-│                      configuración de campo y campo v2; subidas, esquemas, errores y
+│                      configuración de campo, campo v2 y ruteo v2; subidas, esquemas, errores y
 │                      autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
@@ -1931,19 +2091,22 @@ src/motor_cartera/
                        comparar-decisiones, generar-geografia-sintetica, importar-geografia,
                        muestrear-puntos, geolocalizar, cargar-bases, asignar-territorial-v2,
                        cargar-campo, generar-campo-sintetico, planificar-campo-v2,
-                       resumen-campo-v2, backfill-campo-v2, exportar-plan-campo y worker
+                       resumen-campo-v2, backfill-campo-v2, exportar-plan-campo,
+                       generar-red-sintetica, preparar-red-vial, registrar-red-vial, rutear-v2,
+                       resumen-ruteo-v2, backfill-ruteo-v2 y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
                        modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
-                       geografía y de campo/v2, y actualización del catálogo del INEGI
+                       geografía, de campo/v2 y de ruteo/v2, y actualización del catálogo del
+                       INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
                        de promesas), atribucion.md (la atribución operativa), decision_v2.md
                        (el Decision Engine v2 y su diccionario de features), geografia.md (la
                        geografía real), territorial_v2.md, bases_operativas.md, campo_v2.md,
-                       configuracion_campo.md, particion_campo.md, los diccionarios
-                       de CARTERA y PAGOS, y carrier.md
+                       configuracion_campo.md, particion_campo.md, ruteo_v2.md, red_vial.md,
+                       politica_ruteo.md, los diccionarios de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -2184,7 +2347,8 @@ y `ruteo/v1` siguen como estaban.
 **De Campo v2 (v0.12.0).** Lo que v0.12.0 deja a propósito para después:
 
 - **Capacidad declarada, no factibilidad vial.** El cupo de un gestor es una declaración: si sus
-  cuentas caben en su jornada, con traslados, calles y tiempos, es v0.13 (Ruteo vial v2).
+  cuentas caben en su jornada, con traslados, calles y tiempos, lo dice `ruteo/v2` (v0.13), sin
+  cambiar el plan.
 - **Sin orden de visita.** `orden_prioridad` es el lugar de una cuenta en la cola de capacidad de
   su base, no el orden en que se visita.
 - **Una cuenta, una unidad.** Sin pesos por tipo de visita, saldo o dificultad, y una media jornada
@@ -2201,6 +2365,33 @@ y `ruteo/v1` siguen como estaban.
   configuración nuevas lo disparan.
 - **Sin particionado** (decisión 153), y medido en una sola máquina, que no era dedicada.
 
+**Del Ruteo vial v2 (v0.13.0).** Lo que v0.13.0 deja a propósito para después:
+
+- **Una heurística, no un óptimo.** El vecino más cercano por prioridad con un 2-opt acotado no es
+  un TSP, ni un VRP, ni un VRPTW: la optimización matemática es la v0.16.
+- **ETA planificadas, sin tráfico.** Las duraciones son las del perfil `car`, estáticas; no hay
+  tráfico, clima, incidentes, estacionamiento ni velocidades por hora del día.
+- **Un servicio de 900 s para todas.** Es una hipótesis pública, sin medir; no hay duraciones por
+  tipo de cuenta ni ventanas horarias por cuenta.
+- **Sin rebalanceo ni optimización global.** Una cuenta que no cabe queda `SIN_TIEMPO` en su gestor:
+  el reparto es de `campo/v2`, y corregirlo es otra configuración de campo.
+- **El snap de 500 m no se calibró.** Es un parámetro de la política, sin evidencia de una
+  operación; los puntos de las pruebas y de los benchmarks son sintéticos.
+- **Las redes son reales, las cuentas no.** El benchmark de Puebla usa OpenStreetMap con puntos
+  sintéticos al azar dentro de cada municipio, que caen también lejos de toda calle, y su plan XL
+  repite coordenadas (99,720 cuentas en 7,592 puntos distintos), así que sus matrices fueron chicas.
+- **La red no se actualiza sola.** Un extracto nuevo es otra versión, que alguien prepara, publica
+  y declara. Dos preparaciones de la misma red dan los mismos snaps y las mismas duraciones, pero una
+  distancia puede diferir en un metro: la reconstrucción byte por byte pide la preparación publicada.
+- **Un solo perfil y un solo motor.** `car` de OSRM v26.9.0: ni motocicletas, ni a pie, ni camiones,
+  ni otro motor de ruteo.
+- **Sin geometrías ni mapas.** La ruta no se dibuja (v0.17); lo que se publica es el orden, las horas
+  y los tramos.
+- **No se abre sola.** Una ejecución se pide con su plan y su red, o la encuentra su backfill con
+  una red declarada.
+- **Sin particionado** (decisión 174), y medido en una sola máquina, que no era dedicada; OSRM, con
+  sus binarios nativos de Windows, no con la imagen de Docker (que el CI sí usa).
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -2209,10 +2400,11 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Siete niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+- **Ocho niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
   los operacionales, después los `HISTORIA`, los `MOTOR_PAGOS`, los `ATRIBUCION` y
-  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, los `TERRITORIAL_V2` y al final los
-  `CAMPO_V2`; dentro de cada nivel, en el orden en que se crearon.
+  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, los `TERRITORIAL_V2`, los `CAMPO_V2` y
+  al final los `RUTEO_V2` (que solo toma un worker cuyo proveedor de ruteo responde); dentro de cada
+  nivel, en el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
@@ -2261,7 +2453,8 @@ Y dos que son del diseño, no pendientes:
   benchmark de v0.10, decidió las 465,999 cuentas de un corte XL en 34.6 s.
 - **Una sola API key**, sin usuarios, permisos ni rotación.
 - **El `docker compose up` se prueba en el CI**, en Linux. La máquina donde se desarrolla el
-  proyecto no tiene Docker, así que en Windows y macOS no está probado.
+  proyecto no tiene Docker, así que en Windows y macOS no está probado; ahí la prueba de humo corre
+  con la API, el worker y OSRM como procesos.
 
 ## Desarrollo asistido por IA
 

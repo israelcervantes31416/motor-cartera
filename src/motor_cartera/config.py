@@ -87,6 +87,28 @@ class Config(BaseSettings):
     worker_backoff_segundos: float = Field(default=1, gt=0)
     """La espera tras el primer error de un trabajo; se duplica en cada intento: 1, 2, 4, 8..."""
 
+    # El proveedor de ruteo de ruteo/v2: un OSRM autoalojado. Son parametros operativos: cuanto se
+    # espera a que responda y cuantas veces se reintenta una peticion, nunca una duracion ni una
+    # distancia. Sin MC_OSRM_URL este proceso no rutea, y su worker no toma trabajos RUTEO_V2.
+    osrm_url: str | None = None
+    """MC_OSRM_URL: el OSRM autoalojado, en la red interna (http://osrm:5000 en el compose). Nunca
+    el servidor publico de OSRM: las coordenadas de las cuentas no salen de la red propia."""
+    osrm_timeout_conexion_segundos: float = Field(default=3, gt=0)
+    osrm_timeout_lectura_segundos: float = Field(default=30, gt=0)
+    osrm_reintentos: int = Field(default=2, ge=0, le=10)
+    """Cuantas veces se reintenta una peticion tras un fallo transitorio (sin conexion, un timeout,
+    un 5xx): 2 son tres intentos, con una espera que se duplica desde osrm_backoff_segundos."""
+    osrm_backoff_segundos: float = Field(default=0.5, ge=0)
+    osrm_lote_nearest: int = Field(default=100, ge=1, le=10_000)
+    """Cuantos puntos van en cada peticion nearest. El compose arranca OSRM con
+    --max-nearest-locations 100."""
+    osrm_concurrencia: int = Field(default=4, ge=1, le=64)
+    """Cuantas peticiones a OSRM puede tener en curso una ejecucion: las matrices de los siguientes
+    gestores se piden mientras se planea el actual. No cambia ninguna ruta."""
+    osrm_salud_segundos: float = Field(default=10, gt=0)
+    """Cada cuanto el worker vuelve a preguntar si OSRM responde antes de tomar un trabajo
+    RUTEO_V2."""
+
     @model_validator(mode="after")
     def _el_latido_cabe_en_el_lease(self) -> Self:
         if self.worker_heartbeat_segundos >= self.worker_lease_segundos:
