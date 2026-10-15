@@ -2,8 +2,8 @@
 
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
 una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
-una decision v2, a una geografia, a una ejecucion de territorial/v2, a un plan de campo/v2 o
-a una ejecucion de ruteo/v2.
+una decision v2, a una geografia, a una ejecucion de territorial/v2, a un plan de campo/v2, a
+una ejecucion de ruteo/v2 o a una de analytics/v1.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -21,6 +21,7 @@ from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.db.modelos import (
     Corrida,
+    EjecucionAnalytics,
     EjecucionAtribucion,
     EjecucionCampoV2,
     EjecucionDecision,
@@ -33,6 +34,7 @@ from motor_cartera.db.modelos import (
     EjecucionRuteoV2,
     EjecucionTerritorial,
     EjecucionTerritorialV2,
+    EstadoAnalytics,
     EstadoAtribucion,
     EstadoCampoV2,
     EstadoCorrida,
@@ -49,6 +51,7 @@ from motor_cartera.db.modelos import (
     EstadoTerritorialV2,
     IngestaPagos,
     ResultadoAtribucion,
+    ResultadoEjecucionAnalytics,
     ResultadoEjecucionCampoV2,
     ResultadoEjecucionDecisionV2,
     ResultadoEjecucionGeografia,
@@ -215,6 +218,16 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
             "duracion_servicio_total_s": 0,
             "duracion_espera_total_s": 0,
             "resultado": ResultadoEjecucionRuteoV2.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.ANALYTICS: Objetivo(
+        EjecucionAnalytics,
+        EstadoAnalytics,
+        "ejecucion_analytics_id",
+        "analytics_run_id",
+        {
+            "agregados_publicados": 0,
+            "resultado": ResultadoEjecucionAnalytics.INTENTOS_AGOTADOS.value,
         },
     ),
 }

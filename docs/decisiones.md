@@ -1,13 +1,14 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2 y Ruteo Vial v2
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2 y Collection Analytics
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
 Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos Canónico y
 Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0), el Decision
 Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0), Campo v2:
-Capacidad, Partición y Asignación Operativa (v0.12.0) y el Ruteo Vial v2: Red Vial, Secuenciación y
-Factibilidad de Jornada (v0.13.0) están hechos como están, y qué haría distinto o cuándo cambiaría
-cada decisión.
+Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red Vial, Secuenciación y
+Factibilidad de Jornada (v0.13.0) y Collection Analytics: Métricas, Cohortes y Embudos
+Point-in-Time (v0.14.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
+decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
@@ -15,14 +16,16 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [territorial_v2.md](territorial_v2.md), en [bases_operativas.md](bases_operativas.md), en
 [campo_v2.md](campo_v2.md), en [configuracion_campo.md](configuracion_campo.md), en
 [particion_campo.md](particion_campo.md), en [ruteo_v2.md](ruteo_v2.md), en
-[red_vial.md](red_vial.md) y en [politica_ruteo.md](politica_ruteo.md); aquí va el porqué.
+[red_vial.md](red_vial.md), en [politica_ruteo.md](politica_ruteo.md), en
+[analytics.md](analytics.md), en [metricas_analytics.md](metricas_analytics.md) y en
+[cohortes_analytics.md](cohortes_analytics.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
-de Campo v2, y las 154 a 174, del Ruteo Vial v2.
+de Campo v2; las 154 a 174, del Ruteo Vial v2, y las 175 a 196, de Collection Analytics.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
@@ -202,6 +205,28 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 172. [Sin una tabla de tramos](#172-sin-una-tabla-de-tramos)
 173. [Una ruta por gestor con al menos una cuenta `ASIGNADA`](#173-una-ruta-por-gestor-con-al-menos-una-cuenta-asignada)
 174. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.13.0](#174-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0130)
+175. [Analytics agregado, no un feature store](#175-analytics-agregado-no-un-feature-store)
+176. [La cohorte anclada a un corte canónico](#176-la-cohorte-anclada-a-un-corte-canónico)
+177. [`as_of` y `known_at`, y los dos modos](#177-as_of-y-known_at-y-los-dos-modos)
+178. [Un manifiesto explícito, comprobado antes de registrar nada](#178-un-manifiesto-explícito-comprobado-antes-de-registrar-nada)
+179. [Sin «la última» implícita: proponer no es elegir](#179-sin-la-última-implícita-proponer-no-es-elegir)
+180. [La recuperación sale de los movimientos canónicos, con la semántica de `motor-pagos/v1`](#180-la-recuperación-sale-de-los-movimientos-canónicos-con-la-semántica-de-motor-pagosv1)
+181. [Los reversos, point-in-time](#181-los-reversos-point-in-time)
+182. [La cobertura de pagos, por día, desde los archivos conocidos](#182-la-cobertura-de-pagos-por-día-desde-los-archivos-conocidos)
+183. [El lifecycle, point-in-time: lo que llegó tarde y las anulaciones](#183-el-lifecycle-point-in-time-lo-que-llegó-tarde-y-las-anulaciones)
+184. [La atribución no es causalidad](#184-la-atribución-no-es-causalidad)
+185. [El estado de una promesa es el de la evaluación declarada](#185-el-estado-de-una-promesa-es-el-de-la-evaluación-declarada)
+186. [NULL no es cero](#186-null-no-es-cero)
+187. [Las razones guardan su numerador y su denominador; decimal, no float](#187-las-razones-guardan-su-numerador-y-su-denominador-decimal-no-float)
+188. [Dimensiones limitadas: conjuntos fijos del catálogo](#188-dimensiones-limitadas-conjuntos-fijos-del-catálogo)
+189. [Supresión de celdas pequeñas: 10 cuentas, primaria y complementaria](#189-supresión-de-celdas-pequeñas-10-cuentas-primaria-y-complementaria)
+190. [Un gestor de campo no es un `actor_ref`](#190-un-gestor-de-campo-no-es-un-actor_ref)
+191. [Planificado no es ejecutado](#191-planificado-no-es-ejecutado)
+192. [Sin dashboards](#192-sin-dashboards)
+193. [Sin modelos](#193-sin-modelos)
+194. [Sin optimización](#194-sin-optimización)
+195. [Los agregados se materializan, con su hash](#195-los-agregados-se-materializan-con-su-hash)
+196. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.14.0](#196-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0140)
 
 ---
 
@@ -3993,3 +4018,317 @@ por cuenta, duraciones de visita distintas, vehículos, capacidades o habilidade
 óptimos y la optimización conjunta de las rutas (v0.16); rebalancear cuentas entre gestores o bases;
 geometrías y mapas (v0.17); actualizar la red sola; comparar lo planeado con lo que el gestor hizo, y
 la analítica de la cobranza (v0.14); y abrir una ejecución sin que alguien la pida.
+
+## 175. Analytics agregado, no un feature store
+
+**Decisión.** `analytics/v1` publica agregados por celda de un conjunto de dimensiones (una métrica,
+una vista, un conjunto, un periodo y una celda por fila), nunca una fila por cuenta, ni por cuenta y
+día. Las tablas de paso por cuenta (`an_pc`, `an_ac`) son temporales de la transacción y se borran
+al confirmar.
+
+**Por qué.** La pregunta es de una cohorte, no de una cuenta: el detalle individual ya lo responde la
+Cuenta 360. Un feature store (una fila por cuenta y día, con sus features) es la base de un modelo
+predictivo, que es otra versión (v0.15), con otra validación y otro problema de privacidad; tenerlo
+aquí invitaría a usarlo como si ya estuviera validado. Una fila por cuenta y día de una cohorte de
+500,000 cuentas y 30 días son 15 millones de filas por análisis: lo publicado de un análisis XL son
+miles de celdas.
+
+## 176. La cohorte anclada a un corte canónico
+
+**Decisión.** Cada ejecución se ancla a un `CorteCanonico`: sus snapshots son la cohorte, una vez cada
+cuenta, con las dimensiones que tenían en el corte, y las ejecuciones que dan otras dimensiones
+(`decision/v2`, la geografía, `territorial/v2`) tienen que ser del mismo corte.
+
+**Por qué.** «Las cuentas que siguen al final» es sesgo de supervivencia: una cuenta que pagó y salió
+de la cartera desaparecería justo de donde se mide la recuperación. El corte es una población que no
+cambia con el tiempo ni con lo que se sepa después, y sus dimensiones son las que se conocían al
+empezar: describir la cohorte `ALTA` del corte con la prioridad que la cuenta tiene hoy mezclaría el
+resultado con su causa.
+
+## 177. `as_of` y `known_at`, y los dos modos
+
+**Decisión.** Toda ejecución tiene dos relojes que no se sustituyen: `as_of`, hasta qué día ocurrió
+el negocio (en una zona horaria explícita), y `known_at`, hasta qué instante se podía conocer. En
+`OPERATIVO`, `known_at` puede omitirse y es el reloj de la base, tomado una vez al abrir; en
+`BACKTEST`, es obligatorio. Nunca el reloj del proceso. El modo no entra en la firma.
+
+**Por qué.** Sin `known_at`, un análisis del pasado se hace con todo lo que se sabe hoy: gestiones
+registradas tarde, anulaciones posteriores, reversos que llegaron después, y el resultado se ve mejor
+o peor de lo que se podía ver entonces (la fuga temporal que también evita `decision/v2`, decisión
+113). El reloj de la base es el de los registros: el del proceso puede estar adelantado o atrasado.
+Que el modo no entre en la firma hace que un `OPERATIVO` y un `BACKTEST` con la misma frontera sean el
+mismo análisis.
+
+## 178. Un manifiesto explícito, comprobado antes de registrar nada
+
+**Decisión.** Una ejecución declara cada entrada por su identificador público: la interpretación de
+pagos de cada mes, su atribución, la evaluación de promesas, `decision/v2`, la geografía,
+`territorial/v2`, `campo/v2` y `ruteo/v2`. Antes de registrar nada se comprueba que cada una exista,
+haya terminado `EXITOSA`, sea de la cartera y del corte, existiera a `known_at` y encadene con las
+demás; si no, un código estable y ni una fila. El hash del manifiesto es el SHA-256 de las entradas en
+orden canónico; la firma, el de todo lo que fija el resultado.
+
+**Por qué.** Lo que se analiza tiene que poder decirse, auditarse y repetirse: con el manifiesto y la
+firma, otra persona reconstruye exactamente el mismo análisis. Comprobar antes de registrar hace que
+una petición mala no deje una ejecución fallida que alguien tenga que interpretar. Que dos
+interpretaciones de la misma ventana no se puedan declarar evita que un movimiento cuente dos veces.
+
+## 179. Sin «la última» implícita: proponer no es elegir
+
+**Decisión.** Ni la API ni el motor eligen «la última» de nada. La línea de comandos puede
+**proponer** un manifiesto con reglas documentadas (la interpretación vigente de cada mes a
+`known_at`; la atribución que leyó esa interpretación; la única evaluación, decisión, geografía,
+territorial, plan y ruteo de su cadena), pero si una familia tiene dos o más candidatas igual de
+válidas, la reporta como ambigua, no elige, y no escribe el manifiesto. Proponer no analiza.
+
+**Por qué.** «La última decisión» cambia de significado cada vez que alguien abre otra, y dos
+análisis con el mismo texto de petición dirían cosas distintas. La interpretación vigente de un mes no
+es una elección: cada reinterpretación de una ventana sustituye a la anterior por la regla de
+`motor-pagos/v1`. Dos decisiones del mismo corte con distinto `known_at`, o dos territoriales con
+distintas bases, sí son una elección de negocio, y le toca a quien pide.
+
+## 180. La recuperación sale de los movimientos canónicos, con la semántica de `motor-pagos/v1`
+
+**Decisión.** La recuperación de la cohorte sale solo de `MovimientoEconomicoCanonico` de las
+interpretaciones declaradas, conciliados por `cuenta_canonica_id`, y con la semántica de
+`motor-pagos/v1` evaluada al final de `as_of`: un `PAGO` no anulado suma, un `POSIBLE_REVERSO` resta,
+y un `REVERSO` y su pago suman cero juntos y no entran. Un movimiento sin cuenta o de una cuenta que
+no está en el corte es calidad de los pagos, no recuperación.
+
+**Por qué.** `PagoObservado` es evidencia de fuente, con duplicados exactos y ambigüedades:
+`MovimientoEconomicoCanonico` es la interpretación económica, con su versión. Inventar otra regla de
+signo (restar el reverso en su propio día, por ejemplo) daría otra recuperación que la del motor de
+pagos, de `decision/v2` y de la evaluación de promesas, y dos números distintos para lo mismo. La
+consecuencia, documentada, es que el valor de un periodo puede cambiar en un análisis con un `as_of`
+posterior: cada análisis dice la verdad de su frontera. La neta puede ser negativa y no se recorta.
+
+## 181. Los reversos, point-in-time
+
+**Decisión.** Un `PAGO` está anulado para un análisis solo si el `REVERSO` que lo anula está en una
+interpretación declarada y se recibió antes del final de `as_of`. La marca `anulado_por_movimiento_id`
+de una interpretación no se usa a ciegas. Si una interpretación declarada tiene un reverso recibido
+antes del final de `as_of` cuyo pago está en otra interpretación declarada que no dice que lo anula,
+el análisis falla (`pagos.reversos_coherentes`).
+
+**Por qué.** Una reinterpretación de enero hecha en febrero ya marca anulado el pago del 10 de enero
+cuyo reverso llegó el 5 de febrero: usar esa marca en un análisis al 31 de enero metería el futuro en
+el pasado. Con la regla, el pago cuenta al 31 de enero y deja de contar al 28 de febrero, como se
+habría visto en cada fecha. Declarar la interpretación vieja de un mes junto con la nueva del
+siguiente dejaría un reverso que anula un pago que su interpretación no tiene anulado: el control lo
+detecta y no se publica nada.
+
+## 182. La cobertura de pagos, por día, desde los archivos conocidos
+
+**Decisión.** Un día tiene cobertura de pagos si cae entre el primer y el último movimiento de algún
+archivo de pagos cuya historia terminó hasta `known_at`, y si la interpretación declarada de su mes
+clasificó cada pago observado conocido de ese mes. Un periodo con algún día sin cobertura publica sus
+métricas de pagos `NO_DISPONIBLE`, con cuántos días y cuáles.
+
+**Por qué.** `pagos/v1` no declara el periodo que cubre un archivo: la única evidencia es lo que trae.
+Sin esta regla, un hueco entre dos archivos sería un cero de recuperación, y un cero que no se observó
+es un dato inventado. Es conservadora: el primer o el último día de un archivo que no trajo pagos
+ese día queda sin cobertura. Mejor un `NO_DISPONIBLE` explicado que un cero.
+
+## 183. El lifecycle, point-in-time: lo que llegó tarde y las anulaciones
+
+**Decisión.** Una gestión cuenta si ocurrió en el horizonte, se registró hasta `known_at`, y no tiene
+una anulación que haya ocurrido antes del final de `as_of` y se haya registrado hasta `known_at`. Una
+promesa, si la creó una de esas gestiones y se registró hasta `known_at`.
+
+**Por qué.** Una gestión registrada después de `known_at` no se podía conocer. Una anulación tiene sus
+dos relojes también: si ocurrió después de `as_of`, la gestión era efectiva ese día (caso A); si
+ocurrió antes pero se registró después de `known_at`, no se sabía (caso B); solo si ocurrió antes y se
+sabía, la gestión no cuenta (caso C). `decision/v2` solo mira si la anulación se registró, porque
+decide sobre lo que existe en `as_of`; aquí, un análisis antiguo no puede cambiar porque alguien anuló
+después una gestión de entonces.
+
+## 184. La atribución no es causalidad
+
+**Decisión.** Las clases de la atribución son las de `atribucion/v1` declarada: asociación única,
+ambigua o sin candidata. Una ambigua queda ambigua: no se elige candidata ni se reparte el monto.
+Ninguna métrica se llama «pagos causados», «recuperación generada» ni «impacto», y el pago no es una
+etapa del embudo de contacto.
+
+**Por qué.** Que un pago llegue después de una gestión con contacto no dice que la gestión lo produjo:
+el cliente pudo pagar de todos modos. Medir impacto exige un diseño (un grupo de control, un
+experimento) que no existe en estos datos. Elegir una candidata de una ambigua, o repartirle el monto,
+inventaría una precisión que la atribución no tiene (decisiones 106 y 107).
+
+## 185. El estado de una promesa es el de la evaluación declarada
+
+**Decisión.** Los estados de las promesas salen de la `EjecucionEvaluacionPromesas` declarada, con el
+mismo `as_of` y la misma zona. analytics no reevalúa ninguna promesa. La tasa de cumplimiento deja
+fuera las pendientes, las canceladas y las no evaluables.
+
+**Por qué.** Evaluar una promesa es una regla versionada (`evaluacion-promesa/v1`), con sus casos
+difíciles (pagos sin interpretar, datos que no llegan): reescribirla aquí daría dos verdades. Una
+promesa pendiente todavía puede cumplirse, una cancelada ya no es un compromiso y una no evaluable no
+tiene datos: meterlas en el denominador bajaría la tasa sin que nadie haya incumplido.
+
+## 186. NULL no es cero
+
+**Decisión.** Una métrica sin su entrada, o con un periodo sin cobertura de pagos, es `NO_DISPONIBLE`,
+sin valor y con su motivo; una métrica de estado sin periodo es `NO_APLICA`; un dato vacío de la
+fuente (el saldo atrasado) no se suma como cero, y su cobertura se publica aparte.
+
+**Por qué.** Un cero dice «no hubo»; un NULL dice «no se sabe». Confundirlos es el error más común de
+un reporte de cobranza: un mes sin archivo de pagos que sale con recuperación cero, o un saldo
+atrasado desconocido que baja el promedio. Cada estado tiene su motivo, y la prueba del golden
+compara una cuenta sin el dato con otra con cero.
+
+## 187. Las razones guardan su numerador y su denominador; decimal, no float
+
+**Decisión.** Una razón publica su valor con 10 decimales, su numerador y su denominador. Con
+denominador cero, su valor es NULL con motivo `DENOMINADOR_CERO`. Todo se calcula en `NUMERIC` y se
+publica como decimal exacto; los montos están en la moneda de la fuente.
+
+**Por qué.** Una razón sin su denominador no se puede volver a agregar ni juzgar: 1 de 2 no es lo
+mismo que 50,000 de 100,000. El 0 % de un grupo sin promesas resueltas sería falso: no hubo nada que
+cumplir. Un float no reconcilia al centavo, y los controles comparan centavos sin tolerancia. La
+moneda no se inventa: no hay conversión ni multimoneda.
+
+## 188. Dimensiones limitadas: conjuntos fijos del catálogo
+
+**Decisión.** Una métrica se desglosa solo por los conjuntos que declara el catálogo (16, con sus
+llaves y su universo), nunca por un GROUP BY arbitrario. No son dimensiones la cuenta, sus
+identificadores, el `actor_ref`, las coordenadas ni la partición de campo (zona, subzona, tramo,
+microtramo).
+
+**Por qué.** Cada conjunto es una pregunta con su población y su control (que sume su `TOTAL`), y la
+supresión necesita saber qué grupos suman qué. Un GROUP BY libre haría imposible proteger las celdas
+pequeñas y permitiría cruzar hasta ubicar una cuenta. El microtramo es una celda de 1 km: casi todas
+tendrían menos de 10 cuentas, y publicarlas sería publicar dónde viven. Un conjunto nuevo es otra
+versión del catálogo.
+
+## 189. Supresión de celdas pequeñas: 10 cuentas, primaria y complementaria
+
+**Decisión.** Una celda de un desglose con menos de 10 cuentas distintas de su universo se publica
+`SUPRIMIDO`, sin valor, numerador, denominador ni población. Además, cada grupo (un conjunto contra
+el `TOTAL`, un municipio dentro de su entidad, un cruce dentro de sus marginales, un gestor dentro de
+su base) es una ecuación, su total es la suma de sus celdas, y ninguna queda con una sola incógnita:
+con el total visible, lo suprimido son cero celdas o dos o más que juntas tienen al menos 10 (si no,
+se suprime la visible más pequeña, con desempate por `dimension_hash`, y si no queda ninguna
+visible, el total); con el total suprimido, alguna de sus celdas también. Para proteger a otra se
+prefiere una celda que no sea la única de algún grupo. Se repite hasta que todos los grupos cumplan.
+La decisión es por celda, para todas sus métricas y periodos. `TOTAL` nunca se suprime.
+
+**Por qué.** Una celda de 3 cuentas en un municipio pequeño, cruzada con un producto, describe a
+personas. La complementaria evita la resta: con la entidad visible y un solo municipio suprimido, el
+municipio suprimido es la entidad menos los demás. La primera versión solo revisaba los grupos con
+el total visible y dejaba deducir una celda pequeña de dos maneras, que la revisión previa al merge
+encontró: un padre visible cuya única celda se suprimió para proteger a otra la revela (y con ella
+se resta la pequeña), y un padre suprimido con todas sus celdas visibles se reconstruye sumándolas.
+La regla de la ecuación cierra las dos, y una prueba con 300 tablas al azar comprueba que ninguna
+celda pequeña se deduce sumando y restando grupos. Preferir una celda que no sea la única de su
+grupo evita suprimir de más: a esa la revela su total y no protege a nadie. Decidir por celda y no
+por periodo evita que una serie diaria reconstruya lo que el acumulado oculta. 10 es un umbral
+común, explícito en la política y en su hash; no es una garantía contra cualquier combinación de
+sumas y restas entre conjuntos distintos, y así se documenta.
+
+## 190. Un gestor de campo no es un `actor_ref`
+
+**Decisión.** Las métricas de campo y de ruteo usan el código del gestor de campo de la configuración
+de campo; las de gestión no tienen dimensión de quién gestionó. Nunca se cruzan, y `actor_ref` no se
+publica.
+
+**Por qué.** El gestor de campo es un código operativo de una configuración declarada (decisión 143):
+dice a quién se le planeó una carga. El `actor_ref` de una gestión es una referencia opaca de quien
+la registró (decisión 109) y puede ser una persona real: un ranking de cobradores por `actor_ref`
+es una evaluación de desempeño de personas, que no es de este sistema, y cruzarlos afirmaría que el
+gestor planeado es quien hizo la gestión.
+
+## 191. Planificado no es ejecutado
+
+**Decisión.** Las métricas de campo y de ruteo describen el plan declarado de una fecha: candidatas,
+asignadas, paradas programadas, distancias y duraciones planificadas. Las visitas registradas son de
+la gestión (`gestion.visitas_campo_registradas`) y no se comparan con las programadas como si fueran
+lo mismo. El embudo de campo termina en `PARADAS_PROGRAMADAS`.
+
+**Por qué.** Que una parada esté programada no dice que el gestor fue, ni a qué hora. Comparar el plan
+con lo ejecutado exige unir una visita con su parada (la misma cuenta, el mismo día, el mismo gestor),
+y esa unión no existe en los datos: el lifecycle no sabe de rutas. Es una pregunta para cuando exista.
+
+## 192. Sin dashboards
+
+**Decisión.** La salida de `analytics/v1` son agregados: por la API, la línea de comandos y las
+exportaciones (CSV, Parquet, JSONL). No hay Power BI, Looker, Dash, Streamlit, React ni gráficas.
+
+**Por qué.** Un dashboard es una capa de presentación con sus propias decisiones (qué se muestra, cómo
+se colorea, qué se esconde) que no deben tomarse antes de tener números auditables. Las exportaciones
+llevan el estado de cada valor y nunca un valor suprimido, así que cualquier herramienta encima
+respeta lo mismo.
+
+## 193. Sin modelos
+
+**Decisión.** Ninguna métrica es una probabilidad, un score, un pronóstico ni una recuperación
+esperada; no hay XGBoost, LightGBM, scikit-learn, SHAP ni feature store predictivo.
+
+**Por qué.** Predecir exige primero describir bien, sin fuga temporal: esta versión construye la base
+histórica y analítica sobre la que un modelo podría entrenarse y validarse con backtesting (v0.15,
+Predictive Intelligence). Un modelo hoy se entrenaría sobre métricas que todavía no tienen su
+historia de backtests.
+
+## 194. Sin optimización
+
+**Decisión.** analytics no recomienda ni optimiza: no hay MILP, VRP global, asignación óptima ni
+«la siguiente mejor acción». Describe lo que pasó y lo que se planeó.
+
+**Por qué.** Una recomendación es una decisión con su política, su versión y su responsable, y una
+optimización necesita una función objetivo de negocio que nadie ha declarado. Mezclarlas con la
+descripción haría que un número descriptivo se leyera como una instrucción.
+
+## 195. Los agregados se materializan, con su hash
+
+**Decisión.** Cada ejecución materializa sus agregados y sus controles en tablas (`agregado_analytics`,
+`control_analytics`), inmutables, con el SHA-256 de todo lo publicado en orden canónico
+(`hash_agregados`). No hay vistas ni cálculos al vuelo en la API: la API solo lee lo publicado.
+
+**Por qué.** Un análisis point-in-time no debe cambiar porque cambió una tabla de origen: materializado
+con su manifiesto y su hash, es un registro auditable que se puede comparar, y reconstruirlo con el
+mismo manifiesto tiene que dar el mismo hash (las pruebas lo comprueban, también después de reescribir
+el orden físico de las tablas de origen). Calcular al vuelo haría cada consulta tan cara como un
+análisis y su resultado dependería del momento de la consulta. Por lo mismo, bajar la `0015` no
+pierde evidencia: cierra lo que estaba en curso (`CERRADA_AL_BAJAR`), quita los trabajos
+`ANALYTICS` y las tablas de analytics, y no toca ninguna entrada; al volver a subir, el mismo
+manifiesto en `BACKTEST`, con su `known_at`, vuelve a dar el mismo `hash_agregados`.
+
+## 196. Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.14.0
+
+**Decisión.** Una ejecución se resuelve en un trabajo durable `ANALYTICS` (el nivel 8 de la cola), en
+una transacción y en un `SAVEPOINT`, y solo publica su dueño vigente. PostgreSQL lee cada dominio por
+conjuntos, agrega a (cuenta, periodo) con `UNION ALL` sin unir dominios entre sí, y de ahí a las
+celdas con `GROUPING SETS`; Python solo decide la supresión sobre las celdas, que vuelven por `COPY`.
+Los índices de las tablas nuevas son los de sus consultas: la llave natural de los agregados (que
+sirve los filtros por métrica), (ejecución, conjunto, vista, periodo) para los filtros sin métrica,
+las únicas parciales por firma, (corte, `as_of`, id) en las ejecuciones y las llaves de las entradas.
+Ningún índice GIN sobre las dimensiones: los filtros de la API entran por las columnas. No hay
+particionado.
+
+**Por qué así.** En el benchmark XL, sin reconstruir nada, la cohorte de 500,000 cuentas del corte
+con toda la cadena de operación, por día en 30 días, se analizó en 41.5 s con 182 MiB de memoria
+pico y 115 MiB de WAL; la del primer corte semanal con todo el lifecycle (1,804,210 gestiones,
+2,990,891 movimientos y 2,697,650 pagos atribuidos), por semana en 78 días, en 191.7 s; y los 12
+cortes semanales por mes, en 929.2 s (81.9 s de mediana). La memoria del proceso no pasa de 182 MiB:
+los hechos viven en tablas temporales de PostgreSQL, y Python solo ve las celdas. Los planes de la
+primera medición mostraron dos defectos del SQL: las tablas de paso de una fila por entrada sin
+`ANALYZE` (el planificador ordenaba los 8 millones de movimientos de la cartera para unirlos) y un
+`UNION ALL` cuyas ramas llevaban los 25 hechos con ceros (un ordenamiento de 1 GB en disco).
+Corregidos, el XL-B pasó de 289.9 a 191.7 s con el mismo hash de lo publicado. Por la API, cada
+consulta de los agregados tarda de 11 a 16 ms de mediana (de 0.1 a 1.5 ms dentro de PostgreSQL),
+salvo la de todas las celdas suprimidas sin métrica ni conjunto (81.5 ms). `work_mem` no se fija en
+el motor: con 256 MB el XL-B tarda 162.6 s, y subirlo es una decisión de la operación. Los alcances
+de los archivos de pagos se leen recorriendo `pago_observado` (unos 6 s en el XL); un índice
+(archivo, fecha) lo evitaría a costa de cada ingesta de pagos, y no se agrega.
+
+**Por qué sin particionado.** Cada agregado ocupa 418 bytes con sus índices, y lo que se publica
+depende de las celdas, las métricas y los periodos, no de las cuentas ni de los días: los 12 cortes
+semanales publicaron 39,140 agregados cada uno, con 500,000 cuentas o con 465,999, y el XL-A, 0.41
+por cuenta en un horizonte de 15 millones de cuenta-días. Todas las consultas entran por índices que
+empiezan por la ejecución. Como en `campo/v2` y `ruteo/v2` (decisiones 153 y 174), donde el
+particionado podría pagar es en la retención de ejecuciones viejas, y eso es una política de la
+operación, con datos de producción.
+
+**Lo que v0.14.0 no hace**, a propósito: causalidad, pronósticos, probabilidades, scoring o
+recuperación esperada (v0.15); recomendaciones u optimización matemática; dashboards o gráficas;
+comparar lo planificado con lo ejecutado en campo; métricas por persona (`actor_ref`); multimoneda;
+retención o un *warehouse* externo; y abrir un análisis sin que alguien lo pida.

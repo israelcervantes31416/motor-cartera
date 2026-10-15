@@ -190,10 +190,11 @@ jobs:
           docker compose exec -T api motor-cartera generar-escenario --destino datos/escenario
           --perfil XS --cortes 4 --primer-corte 2026-10-07 --semilla 7 --formato zip
 
-      # Con --campo tambien planea campo/v2 sobre el corte oficial, y con --ruteo rutea por la red
-      # vial un plan propio en la base de la red; deja en humo.txt la configuracion de campo, el plan
-      # y la ejecucion de ruteo/v2. Con pipefail, tee no oculta un fallo. La base va unida a su
-      # opcion: su longitud es negativa, y separada, argparse la toma por otra opcion.
+      # Con --campo tambien planea campo/v2 sobre el corte oficial, con --ruteo rutea por la red
+      # vial un plan propio en la base de la red, y con --analytics analiza la cohorte del corte con
+      # analytics/v1; deja en humo.txt la configuracion de campo, el plan, la ejecucion de ruteo/v2 y
+      # la de analytics/v1. Con pipefail, tee no oculta un fallo. La base va unida a su opcion: su
+      # longitud es negativa, y separada, argparse la toma por otra opcion.
       - name: Prueba de humo por la API
         run: |
           set -o pipefail
@@ -203,7 +204,7 @@ jobs:
             --oficial datos/cartera_oficial_2026-09-30.zip --corte 2026-09-30 \
             --pagos datos/pagos_oficial_2026-09-24_2026-09-30.zip \
             --escenario datos/escenario --geografia --campo \
-            --ruteo "$red" --base-ruteo="$base" | tee humo.txt
+            --ruteo "$red" --base-ruteo="$base" --analytics | tee humo.txt
 
       # La historia de cada dataset conformado se abrio en la misma transaccion que el: el backfill
       # no encuentra ninguno sin historia, ni ninguno con solo ejecuciones fallidas.
@@ -286,6 +287,35 @@ jobs:
           grep -q "Se encolaron 1 trabajos RUTEO_V2" encolar_ruteo.txt
           docker compose exec -T worker $backfill --dry-run | tee backfill_ruteo_2.txt
           grep -q "Ejecuciones pendientes: 0" backfill_ruteo_2.txt
+
+      # Y analizo la cohorte del corte oficial con analytics/v1: el resumen y la exportacion salen
+      # por la linea de comandos. El backfill del mismo corte no elige entre las tres territorial/v2
+      # que la prueba publico sobre la misma geografia: lo reporta ambiguo y no pide nada. Sin
+      # territorial, campo ni ruteo, el manifiesto que se construye no es ambiguo: se escribe sin
+      # analizar nada, y analizar-cobranza lo analiza en primer plano.
+      - name: Resumen, exportacion, manifiesto y backfill de analytics/v1
+        run: |
+          set -o pipefail
+          analytics=$(awk '/^analytics_run_id/ {print $2}' humo.txt)
+          docker compose exec -T worker motor-cartera resumen-analytics --ejecucion "$analytics" \
+            | tee analytics.txt
+          grep -q "0 sin cuadrar" analytics.txt
+          grep -q "no prueba causalidad" analytics.txt
+          docker compose exec -T worker motor-cartera exportar-analytics --ejecucion "$analytics" \
+            --formato parquet --destino datos/analytics.parquet | tee exportar.txt
+          grep -q "suprimidos, sin valor" exportar.txt
+          opciones="--modo OPERATIVO --zona America/Mexico_City --granularidad DIA"
+          docker compose exec -T worker motor-cartera backfill-analytics $opciones --horizonte 2 \
+            --desde 2026-09-30 --hasta 2026-09-30 --dry-run | tee backfill_analytics.txt
+          grep -q "2026-09-30: ambiguo en TERRITORIAL_V2" backfill_analytics.txt
+          grep -q "Ejecuciones pendientes: 0" backfill_analytics.txt
+          docker compose exec -T worker motor-cartera construir-manifiesto-analytics $opciones \
+            --corte 2026-09-30 --as-of 2026-10-01 --sin TERRITORIAL_V2 --sin CAMPO_V2 \
+            --sin RUTEO_V2 --destino datos/manifiesto_analytics.json | tee manifiesto.txt
+          grep -q "No se inicio ningun analisis" manifiesto.txt
+          docker compose exec -T worker motor-cartera analizar-cobranza \
+            --manifiesto datos/manifiesto_analytics.json | tee analizar.txt
+          grep -q "EXITOSA (ANALYTICS_PUBLICADA)" analizar.txt
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
