@@ -1,4 +1,4 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2 y Collection Analytics
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics y Predictive Intelligence
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
@@ -6,9 +6,9 @@ Escala (v0.6.0), el Modelo Histórico y Cuenta 360 (v0.7.0), el Motor de Pagos C
 Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0), el Decision
 Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0), Campo v2:
 Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red Vial, Secuenciación y
-Factibilidad de Jornada (v0.13.0) y Collection Analytics: Métricas, Cohortes y Embudos
-Point-in-Time (v0.14.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada
-decisión.
+Factibilidad de Jornada (v0.13.0), Collection Analytics: Métricas, Cohortes y Embudos
+Point-in-Time (v0.14.0) y Predictive Intelligence: Modelos Temporales, Calibración y Drift
+(v0.15.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
@@ -17,19 +17,23 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [campo_v2.md](campo_v2.md), en [configuracion_campo.md](configuracion_campo.md), en
 [particion_campo.md](particion_campo.md), en [ruteo_v2.md](ruteo_v2.md), en
 [red_vial.md](red_vial.md), en [politica_ruteo.md](politica_ruteo.md), en
-[analytics.md](analytics.md), en [metricas_analytics.md](metricas_analytics.md) y en
-[cohortes_analytics.md](cohortes_analytics.md); aquí va el porqué.
+[analytics.md](analytics.md), en [metricas_analytics.md](metricas_analytics.md), en
+[cohortes_analytics.md](cohortes_analytics.md), en [predictivo.md](predictivo.md), en
+[features_predictivas.md](features_predictivas.md), en
+[modelos_predictivos.md](modelos_predictivos.md) y en
+[backtesting_predictivo.md](backtesting_predictivo.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
-de Campo v2; las 154 a 174, del Ruteo Vial v2, y las 175 a 196, de Collection Analytics.
+de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics, y las
+197 a 222, de Predictive Intelligence.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
-*Desde v0.13.0*.
+*Desde v0.13.0* o *Desde v0.15.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -227,6 +231,32 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 194. [Sin optimización](#194-sin-optimización)
 195. [Los agregados se materializan, con su hash](#195-los-agregados-se-materializan-con-su-hash)
 196. [Por conjuntos, índices medidos, sin particionado; y qué no resuelve v0.14.0](#196-por-conjuntos-índices-medidos-sin-particionado-y-qué-no-resuelve-v0140)
+197. [Predecir no es causar](#197-predecir-no-es-causar)
+198. [Las features, point-in-time](#198-las-features-point-in-time)
+199. [Tres relojes](#199-tres-relojes)
+200. [La ventana (T, T+H], con las reglas de los motores existentes](#200-la-ventana-t-th-con-las-reglas-de-los-motores-existentes)
+201. [Labels maduros, censurados o no disponibles; censurado no es cero](#201-labels-maduros-censurados-o-no-disponibles-censurado-no-es-cero)
+202. [Las marcas de cobertura se declaran](#202-las-marcas-de-cobertura-se-declaran)
+203. [Un manifiesto explícito, comprobado antes de registrar nada](#203-un-manifiesto-explícito-comprobado-antes-de-registrar-nada)
+204. [Sin split aleatorio](#204-sin-split-aleatorio)
+205. [La purga entre bloques](#205-la-purga-entre-bloques)
+206. [Walk-forward hacia atrás y TEST intocable](#206-walk-forward-hacia-atrás-y-test-intocable)
+207. [GLM como public-v1](#207-glm-como-public-v1)
+208. [Newton por bloques propio; scikit-learn solo como prueba](#208-newton-por-bloques-propio-scikit-learn-solo-como-prueba)
+209. [Sin rebalanceo de clases](#209-sin-rebalanceo-de-clases)
+210. [La calibración, decidida en VALIDATION](#210-la-calibración-decidida-en-validation)
+211. [Baseline de TRAIN y compuertas fijadas antes de TEST](#211-baseline-de-train-y-compuertas-fijadas-antes-de-test)
+212. [El modelo es un JSON canónico](#212-el-modelo-es-un-json-canónico)
+213. [Nunca pickle; un runtime independiente](#213-nunca-pickle-un-runtime-independiente)
+214. [Ningún identificador es una feature](#214-ningún-identificador-es-una-feature)
+215. [Ningún dato personal ni sensible, y sin geografía fina](#215-ningún-dato-personal-ni-sensible-y-sin-geografía-fina)
+216. [Las salidas de Decision, Campo y Ruteo no son features](#216-las-salidas-de-decision-campo-y-ruteo-no-son-features)
+217. [Recuperación positiva esperada; el riesgo es 1 − p](#217-recuperación-positiva-esperada-el-riesgo-es-1--p)
+218. [La explicación se verifica con el `feature_hash`](#218-la-explicación-se-verifica-con-el-feature_hash)
+219. [El drift diagnostica; no reentrena](#219-el-drift-diagnostica-no-reentrena)
+220. [Las predicciones corren en sombra](#220-las-predicciones-corren-en-sombra)
+221. [Sin transacciones largas; el benchmark M y el XL](#221-sin-transacciones-largas-el-benchmark-m-y-el-xl)
+222. [Índices medidos, sin particionado; y qué no resuelve v0.15.0](#222-índices-medidos-sin-particionado-y-qué-no-resuelve-v0150)
 
 ---
 
@@ -4268,6 +4298,10 @@ histórica y analítica sobre la que un modelo podría entrenarse y validarse co
 Predictive Intelligence). Un modelo hoy se entrenaría sobre métricas que todavía no tienen su
 historia de backtests.
 
+*Desde v0.15.0*, `predictive/model-v1` predice, en sus propias tablas y con su propio
+entrenamiento (decisiones 197 a 222). `analytics/v1` sigue sin modelos: ninguna métrica lee una
+predicción, y un agregado sigue siendo una descripción de lo observado.
+
 ## 194. Sin optimización
 
 **Decisión.** analytics no recomienda ni optimiza: no hay MILP, VRP global, asignación óptima ni
@@ -4332,3 +4366,322 @@ operación, con datos de producción.
 recuperación esperada (v0.15); recomendaciones u optimización matemática; dashboards o gráficas;
 comparar lo planificado con lo ejecutado en campo; métricas por persona (`actor_ref`); multimoneda;
 retención o un *warehouse* externo; y abrir un análisis sin que alguien lo pida.
+
+## 197. Predecir no es causar
+
+**Decisión.** `predictive/model-v1` estima la probabilidad de resultados **observados bajo la
+operación histórica**: recuperación positiva, contacto, creación de una promesa y la recuperación
+positiva esperada, en los días siguientes a un corte. No estima el efecto de ninguna acción, no dice
+qué acción ejecutar y ningún documento, campo ni respuesta lo presenta así: cada versión, cada
+scoring y cada explicación llevan el aviso.
+
+**Por qué.** Los datos con que se entrena salen de una política: la cobranza gestionó más a quien más
+debía, por el canal de su tramo. Una probabilidad alta de pago puede ser la de una cuenta que paga
+sola o la de una que la operación ya trabajaba; el modelo no puede distinguirlas, y quien lea la
+probabilidad como el resultado de una acción tomaría decisiones sobre una relación que nadie midió.
+Separar la predicción de la decisión es lo que permite construir, en v0.16, una optimización que
+trate ese problema explícitamente en lugar de heredarlo escondido.
+
+## 198. Las features, point-in-time
+
+**Decisión.** Una feature usa hechos ocurridos hasta el final de T y registrados hasta K, con el
+mismo SQL en el entrenamiento, el scoring y la explicación: los cortes conocidos a K, la
+interpretación de pagos vigente a K de cada mes, los reversos recibidos hasta el final de T, el
+lifecycle registrado hasta K sin las anulaciones registradas hasta K, y la evaluación de promesas
+terminada hasta K. Una ventana de pagos sin cobertura completa deja sus features NULL.
+
+**Por qué.** La fuga temporal es el defecto que más infla un modelo y el que menos se ve: una feature
+que mira un pago del día siguiente, un reverso que llegó después o una evaluación terminada más tarde
+hace que el backtest prometa lo que el scoring no puede dar. Calcularlas por conjuntos, con filtros
+por instante de registro y no por la fecha máxima observada, hace que reconstruirlas después dé
+exactamente lo mismo (las pruebas lo comprueban cuenta por cuenta, con eventos tardíos, reversos
+futuros y evaluaciones posteriores).
+
+## 199. Tres relojes
+
+**Decisión.** Cada ancla declara `feature_as_of` (T, el día del corte), `feature_known_at` (K, hasta
+cuándo se conocía lo de las features) y `label_known_at` (L, hasta cuándo se observa para el label),
+con `K <= L <= el reloj de la base`, siempre con zona. Un scoring declara su `known_at`; en
+`OPERATIVO`, sin declararlo, es el reloj de la base, una vez.
+
+**Por qué.** Con un solo reloj hay que elegir entre features con información futura o labels sin
+madurar. T dice cuándo se predice; K, qué se sabía entonces; L, qué se supo después para calificar la
+predicción. Separar K de T permite el escenario real en que un corte se procesa días después de su
+fecha, y separar L de K es lo que hace posible un label sin contaminar las features.
+
+## 200. La ventana (T, T+H], con las reglas de los motores existentes
+
+**Decisión.** La ventana de un target es (T, T+H]: los días T+1 a T+H, enteros, en la zona declarada.
+La recuperación neta es la de `motor-pagos/v1` y `analytics/v1` sobre las interpretaciones
+declaradas (un reverso anula su pago solo si llegó antes del final de la ventana; el reverso de un
+pago anterior a la ventana no entra a su neto); el contacto es la cuenta contactada de
+`analytics/v1`; la promesa es la creación de una `PromesaPago`, no su cumplimiento.
+
+**Por qué.** Lo ocurrido el día T es pasado: si el día T fuera parte del label, una feature y un label
+podrían ver el mismo pago. Reutilizar las reglas de los motores que ya se auditan evita una segunda
+definición de «recuperó» o «se contactó» que con el tiempo diferiría de la primera. La promesa se
+mide por su creación porque su cumplimiento necesita su propia ventana, más larga que 30 días.
+
+## 201. Labels maduros, censurados o no disponibles; censurado no es cero
+
+**Decisión.** Un label existe solo si está `MADURA`: la cobertura declarada de su fuente llega a
+T+H. Si no llega, `CENSURADA`; si no se declaró, `NO_DISPONIBLE`. Un label que no madura queda NULL
+en el dataset, no entra al entrenamiento de su target y se cuenta.
+
+**Por qué.** Un label sin madurar parece un cero: la cuenta «no pagó» porque los pagos de esos días
+todavía no llegan. Entrenar con esos ceros sesga hacia abajo cada probabilidad, y más en las anclas
+recientes, que son las que más se parecen al scoring. Contar los censurados por target y split deja
+ver cuánto del dataset no se usó y por qué.
+
+## 202. Las marcas de cobertura se declaran
+
+**Decisión.** `pagos_completos_hasta` y `lifecycle_completo_hasta` se declaran en el manifiesto (el
+escenario las escribe en su manifiesto, y la carga las copia a su bitácora); ninguna puede ser
+posterior al día de L. Nunca salen de la fecha máxima observada en una tabla.
+
+**Por qué.** Un día sin pagos observados no prueba que los pagos de ese día ya llegaron: el archivo
+de esa semana puede llegar mañana. La fecha máxima observada confundiría «no hubo» con «no ha
+llegado», que es exactamente la confusión que la censura evita. Una marca declarada es un dato
+auditable con su responsable.
+
+## 203. Un manifiesto explícito, comprobado antes de registrar nada
+
+**Decisión.** Un entrenamiento lee un manifiesto: sus anclas con sus relojes, su cobertura y su
+split, y las interpretaciones de pagos de sus labels. Se comprueba fail-closed (24 códigos estables)
+antes de registrar nada, con su hash canónico y una firma de todo lo que fija el resultado.
+`construir-manifiesto-predictivo` propone uno con una regla determinista, sin entrenar.
+
+**Por qué.** «Los últimos 26 cortes» o «la interpretación más reciente» dependen del momento en que
+se ejecuta: el mismo comando daría otro modelo mañana. Un manifiesto explícito se puede revisar,
+repetir y comparar, y su firma hace que el mismo entrenamiento no se publique dos veces. Exigir la
+interpretación vigente a L de cada mes (y completa) evita un label que lea menos pagos de los que se
+sabían.
+
+## 204. Sin split aleatorio
+
+**Decisión.** El split es temporal y lo declara el manifiesto: TRAIN antes de VALIDATION y VALIDATION
+antes de TEST. No hay split aleatorio, por cuenta ni por fila, en ninguna parte.
+
+**Por qué.** En un split aleatorio, filas de la misma cuenta y de la misma semana caen en TRAIN y en
+TEST, y la evaluación mide memoria, no predicción. La pregunta de negocio es temporal: con lo que se
+sabe hoy, qué pasará después; el split tiene que hacer la misma pregunta.
+
+## 205. La purga entre bloques
+
+**Decisión.** Entre TRAIN y VALIDATION, y entre VALIDATION y TEST, la ventana del label más largo
+de un bloque (T + 30) termina antes de la primera ancla del siguiente. Las anclas de en medio se
+declaran `PURGE`: se construyen y se cuentan, no se usan.
+
+**Por qué.** Sin purga, el label de la última semana de TRAIN se construye con los pagos de las
+primeras semanas de VALIDATION: el modelo vería, a través de sus labels, el periodo con que se le
+evalúa. La purga cuesta cuatro anclas semanales por frontera y evita un optimismo que no se puede
+detectar después.
+
+## 206. Walk-forward hacia atrás y TEST intocable
+
+**Decisión.** El backtest repite el procedimiento en tres folds hacia atrás desde el split principal,
+cada uno con su purga y su propio preprocesamiento, y reporta cada fold, su agregado (media, mínimo y
+máximo) y el holdout de TEST aparte. TEST se evalúa una vez, al final, con el artefacto publicado, y
+no elige nada.
+
+**Por qué.** Un solo periodo de evaluación puede ser favorable por azar; ver tres folds muestra si el
+modelo se sostiene o se degrada en el tiempo, y un promedio solo no lo mostraría. Que TEST no elija
+nada (ni C, ni α, ni la calibración, ni las features, ni el generador) es lo que hace de su métrica
+una estimación honesta; usarlo para decidir la convertiría en otra VALIDATION.
+
+## 207. GLM como public-v1
+
+**Decisión.** Los clasificadores son regresiones logísticas con L2 y el monto un GLM Tweedie con
+liga log (potencia 1.5), con rejillas pequeñas y declaradas. Sin árboles, boosting, redes, AutoML ni
+búsqueda de hiperparámetros.
+
+**Por qué.** La primera versión tiene que ser auditable de punta a punta: un GLM se explica
+exactamente (la contribución de cada feature suma el predictor), se calibra bien, su artefacto cabe
+en un JSON legible, y su desempeño fija el baseline honesto contra el que un modelo más complejo
+tendría que justificarse después. Con features point-in-time bien construidas, gran parte de la señal
+es lineal en sus transformaciones; lo que no lo sea, el walk-forward lo dirá.
+
+## 208. Newton por bloques propio; scikit-learn solo como prueba
+
+**Decisión.** Los GLM se ajustan con un Newton (IRLS) propio, en NumPy, que acumula X'WX y X'g
+bloque por bloque en un orden fijo, con el objetivo de scikit-learn. scikit-learn es una dependencia
+de desarrollo: una prueba compara los dos.
+
+**Por qué.** El dataset del benchmark no cabe como una matriz densa en la memoria de una máquina
+chica (millones de filas por cerca de cien columnas), y Newton solo necesita, por iteración, matrices
+del tamaño de las columnas. Un estimador propio, con su tolerancia fijada, da un resultado
+determinista y una memoria acotada; compararlo con scikit-learn en cada corrida de las pruebas
+asegura que el objetivo es el mismo sin que el servicio dependa de él.
+
+## 209. Sin rebalanceo de clases
+
+**Decisión.** Ni `class_weight`, ni SMOTE, ni sobremuestreo, ni submuestreo.
+
+**Por qué.** Rebalancear cambia la prevalencia que ve el modelo, y sus probabilidades dejan de ser
+probabilidades: una cuenta con 0.5 ya no tendría la mitad de chance. Con métricas que no dependen
+de un umbral (AUC, log loss, Brier) y sin umbral publicado, el desbalance no es un problema que
+resolver, y la calibración de la prevalencia real es lo que v0.16 necesitará para valores esperados.
+
+## 210. La calibración, decidida en VALIDATION
+
+**Decisión.** Platt (una logística sin regularizar del predictor lineal) se ajusta en VALIDATION y se
+adopta solo si baja el Brier de VALIDATION al menos 0.1 %; si no, la probabilidad queda cruda. TEST
+reporta la calibrada y la cruda, sin decidir nada.
+
+**Por qué.** La regularización y el cambio de prevalencia entre periodos descalibran una logística;
+Platt lo corrige con dos parámetros sin cambiar el orden de las cuentas. Decidirlo con una regla
+fijada en VALIDATION evita adoptar una calibración que no mejora, y nunca calibrar con TEST mantiene
+TEST como evaluación. Platt y no isotónica: con dos parámetros, la calibración se generaliza mejor
+con poca VALIDATION y cabe en el artefacto.
+
+## 211. Baseline de TRAIN y compuertas fijadas antes de TEST
+
+**Decisión.** El baseline es la prevalencia (o la media) de TRAIN, constante. Un clasificador queda
+`VALIDADO` si en TEST su log loss y su Brier no son peores que los del baseline, su ROC AUC es mayor
+que 0.5 y toda probabilidad es válida; el monto, si su MAE no es peor y toda predicción es finita y
+no negativa; y el ajuste elegido convergió. La versión se publica solo con sus cuatro componentes
+validados; si no, queda `RECHAZADA` con sus métricas.
+
+**Por qué.** Una AUC mínima arbitraria se negocia después de verla; superar al baseline fuera del
+tiempo es la prueba mínima de que el modelo sabe algo más que la prevalencia. Fijar las compuertas en
+la política, con su hash, antes de entrenar, impide moverlas para que un modelo pase. Un modelo
+rechazado no desaparece: sus métricas quedan para entender por qué.
+
+## 212. El modelo es un JSON canónico
+
+**Decisión.** Cada componente se publica como un artefacto JSON canónico (`predictive/artifact-v1`)
+con su SHA-256: el preprocesamiento, las columnas, los coeficientes, el intercepto, la liga, la
+calibración y la precisión, con 12 cifras significativas. La versión guarda el `hash_modelo` de sus
+cuatro artefactos.
+
+**Por qué.** Un JSON se lee, se compara con un `diff` y se verifica con su hash; un cambio de un
+coeficiente cambia el hash. Es todo lo necesario para predecir y nada más, y no depende de la versión
+de ninguna biblioteca.
+
+## 213. Nunca pickle; un runtime independiente
+
+**Decisión.** Ni pickle, ni joblib, ni cloudpickle como contrato. El runtime de inferencia lee solo el
+JSON, no usa el código de entrenamiento, y las pruebas lo comparan con el estimador (lo mismo hasta
+el redondeo del float64, idéntico después de cuantizar) y con scikit-learn. Las probabilidades se
+publican con 8 decimales y el monto en centavos, como enteros, y el riesgo es su complemento exacto.
+
+**Por qué.** Un pickle ejecuta código al cargarse (un artefacto alterado es código arbitrario), se
+rompe entre versiones de las bibliotecas y no se puede auditar. Un runtime separado del
+entrenamiento prueba que el artefacto basta; la cuantización fija hace que el hash de lo publicado
+no dependa del redondeo del float binario.
+
+## 214. Ningún identificador es una feature
+
+**Decisión.** Ni el `cuenta_id`, ni el `CLIENTE_UNICO`, ni el despacho o la cartera, ni la fila o la
+hoja de origen, ni el `actor_ref`, ni un hash de cualquiera de ellos. Una guarda rechaza cualquier
+feature con un nombre de identidad, y una prueba lo comprueba.
+
+**Por qué.** Un identificador permite memorizar a la cuenta: el modelo «predice» lo que ya vio de
+ella, y no generaliza a una cuenta nueva. Un hash de una identidad sigue siendo una identidad: no
+anonimiza nada y tiene el mismo problema.
+
+## 215. Ningún dato personal ni sensible, y sin geografía fina
+
+**Decisión.** Ni nombre, ni domicilio, ni teléfono, ni referencias, ni aval, ni correo; ni CURP, RFC,
+sexo, género, edad, religión, salud o etnia, ni proxys de ellos; ni coordenadas, municipio, tramo,
+microtramo ni zona. La única geografía es la entidad.
+
+**Por qué.** Un dato sensible no tiene lugar en un modelo de cobranza aunque mejore una métrica: un
+modelo que usa la edad o el género discrimina por construcción. La geografía fina identifica a una
+persona y aprende el barrio, no la cuenta. Los datos sintéticos no cambian la regla: la arquitectura
+es la que se usaría con datos reales.
+
+## 216. Las salidas de Decision, Campo y Ruteo no son features
+
+**Decisión.** Ni la prioridad, el canal recomendado o el score de `decision/v2`, ni la base, el
+gestor, el orden, la ETA o el estado de `campo/v2` y `ruteo/v2`, ni la estrategia, el canal o los
+estatus declarados en la cartera. Las tablas de esas salidas no aparecen en el SQL de las features.
+
+**Por qué.** Esos motores deciden qué hacer con una cuenta; en v0.16 decidirán con estas
+predicciones. Si una predicción usara sus salidas, el ciclo se cerraría: el modelo aprendería la
+política de ayer y la reforzaría. La estrategia declarada es la misma política, venida de la
+cartera.
+
+## 217. Recuperación positiva esperada; el riesgo es 1 − p
+
+**Decisión.** El monto es la esperanza de max(recuperación neta, 0) en 30 días, publicado como
+`recuperacion_positiva_esperada_30d`, nunca «neta esperada». El riesgo sin recuperación es
+`1 − p_recuperacion_positiva_30d`, exacto, sin modelo propio.
+
+**Por qué.** Un neto negativo (un reverso de un pago anterior) no es una recuperación que una
+operación pueda buscar, y un Tweedie con liga log no admite negativos: truncar a cero es una
+definición, y el nombre lo dice. Un segundo modelo para el riesgo podría contradecir al primero
+(una cuenta con 0.7 de pagar y 0.5 de no pagar); el complemento exacto no.
+
+## 218. La explicación se verifica con el `feature_hash`
+
+**Decisión.** Cada predicción guarda el `feature_hash` de sus features. La explicación de una cuenta
+recalcula sus features con los relojes del scoring, verifica que su `feature_hash` sea el publicado
+(si no, `409 LA_EXPLICACION_NO_REPRODUCE`) y descompone el predictor lineal en contribuciones que
+suman exactamente el predictor. No se guarda: se calcula al pedirla.
+
+**Por qué.** Una explicación de unas features distintas de las que produjeron la predicción sería una
+explicación de otra predicción. Verificar el hash hace que la explicación corresponda a lo publicado
+o no se dé. Calcularla al pedirla evita guardar 40 contribuciones por cuenta y scoring, que casi
+nadie lee; en un GLM la descomposición es exacta, sin aproximaciones.
+
+## 219. El drift diagnostica; no reentrena
+
+**Decisión.** Cada scoring mide, contra la referencia de TRAIN, el PSI de cada feature y de cada
+salida y el cambio en la fracción de NULL, con severidades `BAJO`, `MODERADO` y `ALTO` como
+heurísticas operacionales. El drift no cambia, no recalibra ni reentrena el modelo; no hay
+reentrenamiento automático. `evaluar-predictivo` mide el desempeño con los labels que ya maduraron,
+y solo lee.
+
+**Por qué.** Un PSI alto dice que la población cambió, no que el modelo empeoró: con el corte de otra
+temporada puede cambiar la distribución sin cambiar la relación con el resultado. Reentrenar
+automáticamente por un umbral cambiaría el modelo sin una revisión, con datos que nadie validó, y
+haría que el mismo scoring diera otro resultado según el día. Cambiar el modelo es otro
+entrenamiento, con su manifiesto y su versión.
+
+## 220. Las predicciones corren en sombra
+
+**Decisión.** Las predicciones se publican en sus propias tablas, en un trabajo de la cola en el nivel
+9, y nada de `decision/v2`, `campo/v2`, `ruteo/v2` ni `analytics/v1` las lee. No hay Decision Engine
+v3, selección de acción ni optimización en v0.15.
+
+**Por qué.** Antes de que una predicción mueva una decisión hay que ver, en paralelo, cómo se comporta
+con la operación real (su drift, su desempeño cuando maduran los labels). Usarlas desde el primer día
+convertiría cada error del modelo en un error operativo. Cómo consumirlas sin confundir predicción
+con causalidad es el diseño de v0.16.
+
+## 221. Sin transacciones largas; el benchmark M y el XL
+
+**Decisión.** Un entrenamiento construye su dataset ancla por ancla, cada una en su propia
+transacción corta de lectura, ajusta sin ninguna transacción abierta y publica en una transacción
+corta; un candado de PostgreSQL (un *advisory lock* en una conexión propia) hace que un segundo worker
+espere al primero, y solo publica el dueño vigente de su trabajo. El benchmark separa el modelo (el
+entrenamiento M, 100,000 cuentas por 26 anclas semanales) de la escala operacional (el scoring de un
+corte XL de 500,000 cuentas).
+
+**Por qué.** Una transacción abierta durante minutos detendría la frontera de conocimiento de los
+demás motores, que espera a que no quede ninguna abierta desde antes de su `known_at`. Entrenar con
+500,000 cuentas por 26 semanas no aportaría evidencia del modelo que no den 100,000, y
+multiplicaría el tiempo y la memoria; el scoring es lo que tiene que escalar a la cartera completa.
+
+## 222. Índices medidos, sin particionado; y qué no resuelve v0.15.0
+
+**Decisión.** Los índices de las tablas nuevas son los de sus consultas: la llave (scoring, cuenta)
+de las predicciones, (scoring, salida, cuenta) para cada orden de la API, (cuenta, scoring) para las
+predicciones de una cuenta, la llave (scoring, tipo, nombre) del drift, las únicas parciales por
+firma de los entrenamientos y los scorings, y (estado, id), (corte, id) y (modelo, id) para sus
+listas. No hay particionado.
+
+**Por qué.** Cada consulta de la API entra por un índice que empieza por el scoring o por la cuenta,
+y ningún orden ordena el scoring entero. Las predicciones crecen con las cuentas y los scorings, y la
+retención de scorings viejos es, como en `campo/v2`, `ruteo/v2` y `analytics/v1`, una política de la
+operación, con datos de producción.
+
+**Qué no resuelve v0.15.0.** Los modelos predicen resultados observados bajo la política histórica y
+no estiman causalidad; el benchmark sintético valida la arquitectura y la estadística, no el
+desempeño real; la recuperación positiva esperada no es la neta esperada; un PSI alto no prueba por
+sí solo un deterioro; y no hay reentrenamiento automático, aprendizaje en línea, ML causal, Decision
+Engine v3 ni optimización. Lo que sigue es v0.16, Optimización Matemática: consumir estas
+predicciones, la capacidad, el territorio, los recursos de campo y las restricciones de ruteo para
+decidir, con restricciones explícitas, sin suponer que cambiar de acción causa la probabilidad
+predicha.

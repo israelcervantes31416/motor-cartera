@@ -120,6 +120,21 @@ hash, lo que falta es `NO_DISPONIBLE` y no cero, y las celdas de menos de 10 cue
 ([docs/analytics.md](docs/analytics.md), [docs/metricas_analytics.md](docs/metricas_analytics.md) y
 [docs/cohortes_analytics.md](docs/cohortes_analytics.md)).
 
+Desde v0.15.0, **Predictive Intelligence** estima, en sombra, lo que podría pasar después. Para cada
+cuenta de un corte canónico, `predictive/model-v1` publica la probabilidad calibrada de recuperación
+positiva en 30 días, de contacto en 14 y de crear una promesa en 30, la recuperación **positiva**
+esperada en 30 días y el riesgo sin recuperación (1 − p, exacto), con lo que se conocía en
+`known_at`. Se entrena con un manifiesto temporal explícito (tres relojes, labels maduros o
+censurados y nunca ceros, cobertura declarada, split temporal con purga y walk-forward), con
+regresiones logísticas y un GLM Tweedie cuyo artefacto es un JSON canónico con su hash, calibrados y
+elegidos en VALIDATION, y solo se publica si supera a su baseline en TEST. Cada predicción guarda su
+`feature_hash`, su explicación se verifica con él y cada scoring mide su drift contra TRAIN. **Una
+predicción no es causal**: no dice qué acción tomar, y nada operacional la lee
+([docs/predictivo.md](docs/predictivo.md),
+[docs/features_predictivas.md](docs/features_predictivas.md),
+[docs/modelos_predictivos.md](docs/modelos_predictivos.md) y
+[docs/backtesting_predictivo.md](docs/backtesting_predictivo.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -151,7 +166,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay catorce versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay quince versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -221,6 +236,16 @@ punta:
   promesas por su evaluación declarada, atribución no causal, embudos de contacto y de campo,
   supresión primaria y complementaria de celdas de menos de 10 cuentas y controles de reconciliación
   exactos. Todo o nada, en un trabajo durable `ANALYTICS`.
+- **v0.15.0 ✅ Predictive Intelligence: Modelos Temporales, Calibración y Drift**: cuatro modelos
+  (`predictive/model-v1`) de resultados observados bajo la operación histórica (recuperación
+  positiva a 30 días, contacto a 14, creación de una promesa a 30 y la recuperación positiva
+  esperada), con targets (`predictive-targets/public-v1`), 40 features point-in-time
+  (`predictive-features/public-v1`) y una política de entrenamiento (`predictive-training/public-v1`)
+  versionados con sus hashes; un manifiesto temporal explícito con tres relojes, censura, cobertura
+  declarada y purga; regresiones logísticas con L2 y un Tweedie, calibrados con Platt en VALIDATION,
+  publicados como JSON canónico solo si superan su baseline en TEST; scoring con predicciones
+  cuantizadas, `feature_hash`, explicación verificada y drift contra TRAIN, en sombra. Todo o nada,
+  en trabajos durables `PREDICTIVE_TRAINING` y `PREDICTIVE_SCORING`.
 
 Lo que ya hace:
 
@@ -363,6 +388,25 @@ Lo que ya hace:
   reporta la ambigüedad sin elegir), `analizar-cobranza`, `resumen-analytics`, `exportar-analytics`
   (CSV, Parquet y JSONL, sin valores suprimidos) y `backfill-analytics`; y un benchmark de
   `analytics/v1` sobre el XL, fuera del CI
+- [x] `predictive/model-v1`: targets, features y política de entrenamiento versionados con sus
+  hashes; tres relojes (`feature_as_of`, `feature_known_at`, `label_known_at`), labels `MADURA`,
+  `CENSURADA` o `NO_DISPONIBLE` (un censurado nunca es cero) con la cobertura declarada, y un
+  manifiesto explícito comprobado antes de registrar nada (24 códigos) con su hash y su firma
+- [x] El dataset ancla por ancla, en transacciones cortas, con el mismo SQL del scoring y su
+  `dataset_hash`; split temporal con purga, walk-forward de tres folds, regresiones logísticas con
+  L2 y un GLM Tweedie por un Newton por bloques propio (comparado con scikit-learn en las pruebas),
+  sin rebalanceo, Platt decidido en VALIDATION, baseline de TRAIN, compuertas en TEST, intervalos
+  bootstrap por cuenta y un artefacto JSON canónico con un runtime de inferencia independiente
+- [x] Scoring de una versión `PUBLICADA` declarada: una predicción por cuenta, cuantizada, con el
+  riesgo como complemento exacto, su `feature_hash` y sus motivos; drift (PSI de features, de
+  salidas y de faltantes) contra TRAIN; explicación local verificada con su `feature_hash`; todo o
+  nada en trabajos durables, con lease perdido, dos workers y fallas inyectadas probados
+- [x] La API de features, targets, entrenamientos, modelos, scorings, predicciones (filtros y
+  órdenes en la base), drift, explicación y las predicciones de una cuenta; el CLI
+  (`generar-escenario-predictivo`, `cargar-escenario-predictivo`, `construir-manifiesto-predictivo`,
+  `entrenar-predictivo`, `resumen-modelo-predictivo`, `score-predictivo`, `drift-predictivo` y
+  `evaluar-predictivo`); un escenario longitudinal sintético con señal pública
+  (`escenario-predictivo/v1`) y un benchmark fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -381,19 +425,20 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.12.0 — Campo v2: Capacidad, Partición y Asignación Operativa
 ✅ v0.13.0 — Ruteo vial v2: Red Vial, Secuenciación y Factibilidad de Jornada
 ✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time
-➡️ v0.15 — Predictive Intelligence
+✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift
+➡️ v0.16 — Optimización Matemática
 
-v0.16 Optimización Matemática
 v0.17 Aplicación + dashboards
 v0.18 Cloud + observabilidad + hardening
 
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.15, Predictive Intelligence**: sobre la base histórica y analítica ya
-auditable, la probabilidad de recuperación, de contacto y de promesa o cumplimiento, el riesgo de no
-pago y la recuperación esperada, con calibración, backtesting temporal, drift y explicabilidad,
-siempre sin fuga temporal. Sin adelantar la optimización matemática.
+Lo que sigue es **v0.16, Optimización Matemática**: consumir las probabilidades, la recuperación
+positiva esperada y el riesgo de `predictive/model-v1`, con la capacidad, el territorio, los recursos
+de campo y las restricciones de ruteo, para decidir con restricciones explícitas qué cuentas
+priorizar, qué canal considerar y cómo usar la capacidad, sin suponer que cambiar de acción causa la
+probabilidad predicha: ese problema se trata explícitamente en su diseño.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -885,6 +930,28 @@ ruteo, los dos embudos y sus controles, todos OK, sin un solo dato de una cuenta
 resume y exporta esa ejecución, comprueba que el backfill del corte reporta ambiguas sus tres
 `territorial/v2` sin elegir ninguna, y construye un manifiesto sin ellas que `analizar-cobranza`
 analiza.
+
+Con `--predictivo <directorio>` recorre `predictive/model-v1` sobre un escenario predictivo ya
+cargado y el manifiesto que `construir-manifiesto-predictivo` propuso en su directorio
+(`manifiesto.json`); sin el archivo, solo hace eso. Revisa las features y los targets versionados
+(ninguna feature es un identificador, un dato personal ni una coordenada), pide el entrenamiento por
+la API y espera a que el worker publique la versión, recalcula aquí el SHA-256 de cada artefacto y
+el hash del modelo, puntúa el último corte (tres probabilidades en [0, 1], el riesgo exactamente
+1 − p, la recuperación positiva esperada y el `feature_hash` de cada predicción) y revisa su drift,
+una explicación verificada, las predicciones de una cuenta y el scoring `BACKTEST` del corte de
+TEST con su `feature_known_at`, con el `409` de las mismas entradas. El escenario va en su propia
+cartera. El CI, después, resume el modelo y su drift por la línea de comandos y comprueba que el
+desempeño de ese `BACKTEST` con los labels del manifiesto reproduce las métricas de TEST:
+
+```bash
+docker compose exec api motor-cartera generar-escenario-predictivo datos/predictivo --cuentas 600 \
+  --cortes 20 --primer-corte 2026-03-04
+docker compose exec -e MC_CARTERA_ID=PREDICTIVO worker motor-cartera cargar-escenario-predictivo \
+  datos/predictivo
+docker compose exec worker motor-cartera construir-manifiesto-predictivo --escenario datos/predictivo \
+  --validation 1 --test 1 --destino datos/predictivo/manifiesto.json
+python scripts/prueba_de_humo.py --predictivo datos/predictivo
+```
 
 ## Fuentes oficiales
 
@@ -1431,6 +1498,51 @@ agregados, con 500,000 cuentas o con 465,999: lo publicado depende de las celdas
 de las cuentas. Un agregado ocupa 418 bytes con sus índices. Por la API, el resumen, una serie o un
 desglose tardan de 11 a 16 ms. Los detalles, en [docs/analytics.md](docs/analytics.md).
 
+## Predictive Intelligence
+
+`predictive/model-v1` responde, para cada cuenta de un corte y con lo que se conocía en
+`known_at`, qué tan probable es que tenga una recuperación positiva en los 30 días siguientes, que
+se le contacte en 14 y que prometa en 30, y cuánto se espera recuperar de ella (la parte positiva).
+Corre en paralelo, en sombra: **no es causal**, no recomienda una acción y nada de `decision/v2`,
+`campo/v2` ni `ruteo/v2` lo lee.
+
+- **Tres relojes.** `feature_as_of` (T, el día del corte), `feature_known_at` (hasta cuándo se
+  conocía lo de las features) y `label_known_at` (hasta cuándo se observa para el label). Una
+  feature usa lo ocurrido hasta el final de T y registrado hasta K; la ventana de un label es
+  (T, T+H].
+- **Labels maduros, no ceros.** Un label solo existe si la cobertura **declarada** de su fuente
+  llega al final de su ventana; si no, está censurado y no entra al entrenamiento.
+- **Un manifiesto explícito.** Las anclas, sus relojes, su cobertura y su split temporal (TRAIN,
+  VALIDATION y TEST con purga entre ellos), y las interpretaciones de pagos de los labels; nunca
+  «los últimos cortes». `construir-manifiesto-predictivo` propone uno.
+- **Modelos auditables.** Regresiones logísticas con L2 y un GLM Tweedie, elegidos y calibrados en
+  VALIDATION, publicados como JSON canónico con su hash solo si superan a su baseline en TEST, con
+  un runtime que lee solo el JSON.
+- **Scoring verificable.** Cada predicción guarda su `feature_hash`; su explicación lo verifica y
+  suma exactamente el predictor; cada scoring mide su drift contra TRAIN y no reentrena nada.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec worker motor-cartera generar-escenario-predictivo datos/predictivo --cuentas 600 \
+  --cortes 20 --primer-corte 2026-03-04
+docker compose exec -e MC_CARTERA_ID=PREDICTIVO worker motor-cartera cargar-escenario-predictivo \
+  datos/predictivo
+docker compose exec worker motor-cartera construir-manifiesto-predictivo --escenario datos/predictivo \
+  --validation 1 --test 1 --destino datos/manifiesto_predictivo.json
+docker compose exec worker motor-cartera entrenar-predictivo --manifiesto datos/manifiesto_predictivo.json
+docker compose exec -e MC_CARTERA_ID=PREDICTIVO worker motor-cartera score-predictivo \
+  --modelo <modelo_version_id> --corte 2026-07-15
+curl -s -H "$K" "http://localhost:8000/predictivo/scorings/<scoring_run_id>/predicciones?orden=RIESGO_SIN_RECUPERACION_30D&sentido=DESC"
+curl -s -H "$K" "http://localhost:8000/predictivo/scorings/<scoring_run_id>/cuentas/<cuenta_id>/explicacion"
+curl -s -H "$K" "http://localhost:8000/predictivo/scorings/<scoring_run_id>/drift"
+```
+
+Todo está en [docs/predictivo.md](docs/predictivo.md),
+[docs/features_predictivas.md](docs/features_predictivas.md),
+[docs/modelos_predictivos.md](docs/modelos_predictivos.md) y
+[docs/backtesting_predictivo.md](docs/backtesting_predictivo.md). El porqué, en las decisiones 197 a
+222.
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -1761,6 +1873,15 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /analytics/ejecuciones/{analytics_run_id}/agregados` | Lo publicado, filtrado en la base por métrica, vista, conjunto, periodo, estado y llave de dimensión, paginado; nada más se acepta | 200, 401, 404, 409, 422 |
 | `GET /analytics/ejecuciones/{analytics_run_id}/resumen` y `/embudos` | Unos indicadores del total, cada uno con su estado, y los embudos `CONTACTO` y `CAMPO` | 200, 401, 404, 409, 422 |
 | `GET /analytics/ejecuciones/{analytics_run_id}/controles` | Los controles de reconciliación, también los de una `FALLIDA` | 200, 401, 404, 422 |
+| `GET /predictivo/features` y `/predictivo/targets` | Las features y los targets de `predictive/model-v1`, versionados, con su hash | 200, 401 |
+| `POST /predictivo/entrenamientos` | Pide un entrenamiento con su manifiesto explícito (anclas con sus relojes, su cobertura y su split, e interpretaciones de pagos); lo entrena el worker | 201, 401, 404, 409, 422 |
+| `GET /predictivo/entrenamientos` y `/{training_run_id}` | Los entrenamientos (filtro `estado`) y uno con su manifiesto, sus hashes, sus conteos, su backtest y su versión | 200, 401, 404, 422 |
+| `GET /predictivo/modelos` y `/{modelo_version_id}` | El registro de versiones (filtro `estado`) y una con su ficha y sus cuatro componentes: artefacto, métricas, intervalos y compuertas | 200, 401, 404, 422 |
+| `POST /predictivo/scorings` | Pide el scoring de un corte con una versión `PUBLICADA` declarada (`OPERATIVO` o `BACKTEST` con `known_at`); lo calcula el worker | 201, 401, 404, 409, 422 |
+| `GET /predictivo/scorings` y `/{scoring_run_id}` | Los scorings (filtros `estado`, `modelo_version_id` y `corte_id`) y uno con su resumen de drift | 200, 401, 404, 422 |
+| `GET /predictivo/scorings/{scoring_run_id}/predicciones` | Las predicciones, filtradas en la base por el rango de cada salida, producto, entidad y estado, y ordenadas por una lista cerrada; paginadas | 200, 401, 404, 409, 422 |
+| `GET /predictivo/scorings/{scoring_run_id}/drift` y `/cuentas/{cuenta_id}/explicacion` | El drift por feature y por salida; la explicación de una predicción, verificada con su `feature_hash` | 200, 401, 404, 409, 422 |
+| `GET /cuentas/{cuenta_id}/predictivo` | Las predicciones publicadas de la cuenta, de la más reciente a la más antigua | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -2056,6 +2177,23 @@ bitácora sin datos de una cuenta. El catálogo, la política, los periodos y la
 tests/test_analytics_politica.py`) no necesitan base. El benchmark de `analytics/v1` no corre en
 el CI.
 
+`predictive/model-v1` se prueba contra PostgreSQL con un golden de fugas escrito a mano (`pytest
+tests/test_predictivo_golden.py`): un pago del día T+1 que nunca es feature, un reverso posterior a
+la ventana que no anula el label y uno dentro de ella que sí, el reverso de un pago anterior a la
+ventana, un contacto registrado después de K, una evaluación de promesas terminada después de K, un
+label censurado que queda NULL, la purga y cada error del manifiesto, y el `feature_hash` de
+PostgreSQL contra el de Python cuenta por cuenta. Sobre un escenario generado con señal (`pytest
+tests/test_predictivo_entrenamiento.py tests/test_predictivo_scoring.py`), un entrenamiento de punta a
+punta, su baseline, la reconstrucción idéntica del entrenamiento y del scoring después de reescribir
+el orden físico de las tablas, fallas inyectadas en cada punto, dos workers, el lease perdido, una
+versión rechazada por sus compuertas, los rangos que la base rechaza, el hash de las predicciones,
+el PSI de sus bins, la explicación verificada, la API y el CLI; y que un scoring `BACKTEST` del corte
+de TEST reproduce exactamente sus métricas. Los GLM contra scikit-learn, el runtime del JSON, la
+imputación, las categorías desconocidas, Platt, el hash del artefacto, las métricas y el PSI
+(`pytest tests/test_predictivo_modelos.py tests/test_predictivo_definiciones.py
+tests/test_predictivo_propiedades.py`) no necesitan base. El benchmark de `predictive/model-v1` no
+corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -2068,12 +2206,16 @@ y el corte oficial, con coordenadas sintéticas sobre una referencia sintética,
 las bases, `territorial/v2`, `campo/v2` y `ruteo/v2`, sobre una red vial sintética que prepara y
 sirve OSRM con su imagen fijada, hasta `analytics/v1`; comprueba que ni el backfill de la historia,
 ni el del motor, ni el de `campo/v2` encuentran nada pendiente, que el de `ruteo/v2` encola solo lo
-que falta, que el de `analytics/v1` reporta lo ambiguo sin elegir, compara en modo sombra la
-decisión v2 del corte oficial con su decisión v1, baja los
+que falta y que el de `analytics/v1` reporta lo ambiguo sin elegir, compara en modo sombra la
+decisión v2 del corte oficial con su decisión v1, entrena un modelo predictivo pequeño con su
+escenario sintético, en su propia cartera, lo usa para puntuar, medir el drift y explicar una
+predicción, y comprueba que el `BACKTEST` del corte de TEST reproduce sus métricas; baja los
 contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
 escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía,
-de `campo/v2` y de `analytics/v1` son un workflow aparte, que solo corre a mano.
+de `campo/v2` y del planificador de `ruteo/v2` son un workflow aparte, que solo corre a mano; los
+de `analytics/v1` y `predictive/model-v1` se corren a mano con su script, sobre una base `*_bench`
+que ya tiene el XL.
 
 ## Arquitectura
 
@@ -2201,6 +2343,30 @@ src/motor_cartera/
 │   ├── consultas.py   El catálogo, las ejecuciones, sus agregados, su resumen, sus embudos y sus
 │   │                  controles
 │   └── seleccion.py   Proponer un manifiesto, con sus reglas, sin elegir lo ambiguo
+├── predictivo/
+│   ├── targets.py     predictive-targets/public-v1: los targets, sus ventanas, su madurez y su hash
+│   ├── features.py    predictive-features/public-v1: cada feature con su fuente y su nulo, lo
+│   │                  prohibido, la forma canónica, el feature_hash y el hash
+│   ├── politica.py    predictive-training/public-v1: split, rejillas, calibración, compuertas,
+│   │                  métricas, bootstrap, drift y su hash
+│   ├── manifiesto.py  El manifiesto de un entrenamiento: leerlo, comprobarlo, su hash, la firma y
+│   │                  proponer uno
+│   ├── sql.py         El SQL point-in-time de las features y de los labels, por conjuntos
+│   ├── construccion.py Las features (y los labels) de un corte con sus relojes, por COPY a Arrow
+│   ├── dataset.py     El dataset ancla por ancla, compacto, y su dataset_hash
+│   ├── preprocesamiento.py Transformación, imputación, escalado y one-hot, aprendidos de TRAIN
+│   ├── glm.py         Logística L2, Tweedie y Platt por Newton (IRLS) por bloques
+│   ├── metricas.py    Clasificación, calibración, monto, bootstrap por cuenta y PSI
+│   ├── artefacto.py   El artefacto JSON canónico, su hash, el runtime y la cuantización
+│   ├── entrenamiento.py Abrir y entrenar, con el walk-forward y la publicación todo o nada
+│   ├── scoring.py     Abrir y puntuar, con los motivos, el drift y la publicación todo o nada
+│   ├── drift.py       El PSI de features y salidas y el de los faltantes, contra TRAIN
+│   ├── explicacion.py La explicación local verificada con el feature_hash
+│   ├── desempeno.py   El desempeño de un scoring con sus labels maduros
+│   ├── consultas.py   Lo que leen la API y el CLI
+│   ├── escenario.py   Cargar un escenario predictivo semana por semana, con su bitácora
+│   ├── candado.py     El candado de una ejecución: un advisory lock, sin transacción abierta
+│   └── medicion.py    Los tiempos por fase, la memoria pico y el entorno
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -2220,18 +2386,22 @@ src/motor_cartera/
 │                      bases operativas, territorial/v2 (ejecuciones y asignaciones), campo/v2
 │                      (la configuración de campo, los planes, sus asignaciones, sus unidades y
 │                      la carga de cada gestor), ruteo/v2 (las versiones de la red vial, las
-│                      ejecuciones, la ruta de cada gestor y cada parada) y analytics/v1 (las
-│                      ejecuciones con su manifiesto, sus agregados y sus controles)
+│                      ejecuciones, la ruta de cada gestor y cada parada), analytics/v1 (las
+│                      ejecuciones con su manifiesto, sus agregados y sus controles) y
+│                      predictive/model-v1 (los entrenamientos con sus anclas y sus
+│                      interpretaciones, las versiones del modelo con sus componentes, los
+│                      scorings, sus predicciones y su drift)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
-│                      el lifecycle sintético de cada periodo del escenario (lifecycle.py) y la
-│                      configuración de campo sintética (campo.py)
+│                      el lifecycle sintético de cada periodo del escenario (lifecycle.py), la
+│                      configuración de campo sintética (campo.py) y el escenario predictivo con
+│                      señal pública (predictivo.py)
 ├── api/               FastAPI: corridas, pagos, orquestación, cartera, decisiones, territorial,
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
 │                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
-│                      configuración de campo, campo v2, ruteo v2 y analytics; subidas, esquemas,
-│                      errores y autenticación
+│                      configuración de campo, campo v2, ruteo v2, analytics y predictivo;
+│                      subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
                        backfill-motor-pagos, backfill-lifecycle, backfill-atribucion, decidir-v2,
@@ -2242,12 +2412,15 @@ src/motor_cartera/
                        generar-red-sintetica, preparar-red-vial, registrar-red-vial, rutear-v2,
                        resumen-ruteo-v2, backfill-ruteo-v2, construir-manifiesto-analytics,
                        analizar-cobranza, resumen-analytics, exportar-analytics,
-                       backfill-analytics y worker
+                       backfill-analytics, generar-escenario-predictivo,
+                       cargar-escenario-predictivo, construir-manifiesto-predictivo,
+                       entrenar-predictivo, resumen-modelo-predictivo, score-predictivo,
+                       drift-predictivo, evaluar-predictivo y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
                        modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
-                       geografía, de campo/v2, de ruteo/v2 y de analytics/v1, y actualización
-                       del catálogo del INEGI
+                       geografía, de campo/v2, de ruteo/v2, de analytics/v1 y de
+                       predictive/model-v1, y actualización del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
@@ -2256,7 +2429,9 @@ docs/                  decisiones.md (por qué está hecho así), fuentes.md (la
                        geografía real), territorial_v2.md, bases_operativas.md, campo_v2.md,
                        configuracion_campo.md, particion_campo.md, ruteo_v2.md, red_vial.md,
                        politica_ruteo.md, analytics.md, metricas_analytics.md,
-                       cohortes_analytics.md, los diccionarios de CARTERA y PAGOS, y carrier.md
+                       cohortes_analytics.md, predictivo.md, features_predictivas.md,
+                       modelos_predictivos.md, backtesting_predictivo.md, los diccionarios de
+                       CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -2565,6 +2740,25 @@ y `ruteo/v1` siguen como estaban.
   llegó después anula un pago de ese periodo: cada análisis dice la verdad de su frontera.
 - **No se abre solo.** Un análisis se pide con su manifiesto, o lo encuentra su backfill con su
   horizonte declarado.
+
+**De Predictive Intelligence (v0.15.0).** Lo que v0.15.0 deja a propósito para después:
+
+- **Los modelos predicen resultados observados bajo la política histórica.** No estiman
+  causalidad ni dicen qué acción debe ejecutarse: una probabilidad alta no dice que gestionar la
+  cuenta cambie su resultado.
+- **El benchmark sintético valida la arquitectura y la estadística; no demuestra el desempeño real
+  en producción.** Una buena AUC sintética no es garantía de una AUC real: el generador fija la
+  relación entre las features y los resultados.
+- **La recuperación positiva esperada no es la recuperación neta esperada**: los netos negativos se
+  truncan a cero por definición.
+- **Un PSI alto no prueba por sí solo un deterioro**: mide un cambio de la población. El desempeño
+  se mide con `evaluar-predictivo` cuando los labels maduran.
+- **No hay reentrenamiento automático**, aprendizaje en línea, ML causal, *uplift*, Decision Engine
+  v3 ni optimización (v0.16). Cambiar un modelo es otro entrenamiento, con su manifiesto.
+- **Las predicciones corren en sombra**: nada operacional las lee todavía.
+- **GLM, no más.** Sin árboles, boosting ni redes: la primera versión fija el baseline auditable.
+- **Sin backfill predictivo**: cada scoring declara su versión y su corte.
+- **Una cartera por modelo**: un scoring de otra cartera se calcula y su drift lo dice.
 
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
