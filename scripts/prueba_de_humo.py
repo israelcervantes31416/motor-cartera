@@ -57,6 +57,15 @@ PARCIAL, paradas PROGRAMADA, SIN_TIEMPO y NO_ENRUTABLE (por un snap de mas de 50
 sin camino), la espera en la pausa del turno partido sin manejar en ella, el regreso a la base, la
 Cuenta 360 y su trabajo RUTEO_V2, sin una sola coordenada.
 
+Con --analytics (y --ruteo), recorre analytics/v1 sobre la cohorte del corte oficial, del corte al
+dia del plan de ruteo, por dia: el catalogo con su hash, dos gestiones del ultimo dia y la
+evaluacion de las promesas a ese dia, el manifiesto con lo que la prueba publico (la interpretacion
+de septiembre y su atribucion, la evaluacion, decision/v2, la geografia, la territorial/v2, el plan
+y su ruteo), y lo publicado: el TOTAL, un desglose visible, una celda SUPRIMIDO sin valor, la
+recuperacion neta (un dia con cobertura, y el horizonte NO_DISPONIBLE porque un dia no tiene pagos
+conocidos), la contactabilidad, las promesas, la decision, el campo, el ruteo, los dos embudos y
+sus controles, todos OK, sin un solo dato de una cuenta.
+
 Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
 laptop:
 
@@ -69,7 +78,7 @@ laptop:
         --pagos pagos.zip --geografia --campo
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
         --pagos pagos.zip --geografia --campo --ruteo <red_vial_version_id>
-        --base-ruteo=<lon>,<lat>
+        --base-ruteo=<lon>,<lat> --analytics
 
 La base va unida a su opcion: en Mexico su longitud es negativa, y separada, argparse la toma por
 otra opcion.
@@ -1735,7 +1744,7 @@ def _fuera_de_la_pausa(desde: str, hasta: str) -> bool:
 
 def la_ruta_vial(
     corte: str, del_dia: dict, decision: dict, geografia: dict, red_vial: str, base: str
-) -> None:
+) -> dict:
     """ruteo/v2 de punta a punta sobre la red vial sintetica, servida por OSRM: la version de la
     red declarada, bases con una base en un cruce de la red (la que imprimio
     generar-red-sintetica), territorial/v2 y una configuracion de campo con tres gestores (uno de
@@ -2037,6 +2046,300 @@ def la_ruta_vial(
     )
     print(f"ruteo_plan_campo {plan['campo_run_id']}")
     print(f"ruteo_run_id {ejecucion['ruteo_run_id']}")
+    return {"territorial": territorial, "plan": plan, "ruteo": ejecucion}
+
+
+# --- analytics/v1 ---------------------------------------------------------------------------------
+
+PROHIBIDAS_EN_ANALYTICS = (
+    '"cuenta_id"',
+    '"cliente_unico"',
+    '"actor_ref"',
+    '"latitud"',
+    '"longitud"',
+    '"microtramo_id"',
+    '"tramo_id"',
+    '"polilinea"',
+)
+
+
+def _sin_cuentas(cuerpo, donde: str, cuentas: list[str]) -> None:
+    """Lo que publica analytics es agregado: ni un identificador de una cuenta, ni un actor_ref,
+    ni una coordenada."""
+    texto = json.dumps(cuerpo)
+    esperar(
+        not any(llave in texto for llave in PROHIBIDAS_EN_ANALYTICS)
+        and not any(c in texto for c in cuentas)
+        and "CU0" not in texto
+        and "AGT-" not in texto
+        and not re.search(r"-9\d\.\d{4}", texto),
+        f"{donde}: sin datos de una cuenta",
+    )
+
+
+def _agregados(ejecucion: str, **filtros) -> dict:
+    consulta = "&".join(f"{llave}={valor}" for llave, valor in filtros.items())
+    estado, _, pagina = pedir("GET", f"/analytics/ejecuciones/{ejecucion}/agregados?{consulta}")
+    esperar(estado == 200, f"GET .../agregados?{consulta}: {estado}, {pagina.get('total')} filas")
+    return pagina
+
+
+def la_analitica(
+    corte: str, del_dia: dict, decision: dict, geografia: dict, operacion: dict
+) -> None:
+    """analytics/v1 de punta a punta sobre la cohorte del corte oficial, del corte al dia del plan
+    de ruteo, por dia, con lo que se sabe ahora (OPERATIVO): el catalogo con su hash; dos gestiones
+    del ultimo dia del horizonte (una con promesa, otra sin contacto) y la evaluacion de las
+    promesas a ese dia; el manifiesto declarado (la interpretacion de septiembre que leyo su
+    atribucion, esa atribucion, la evaluacion, decision/v2, la geografia, la territorial/v2, el plan
+    de campo y su ruteo), la ejecucion por su trabajo ANALYTICS, y lo publicado: el TOTAL, un
+    desglose visible, una celda SUPRIMIDO sin ningun valor, la recuperacion neta (el 30, con
+    cobertura; el acumulado, con un dia sin pagos conocidos, NO_DISPONIBLE y no cero), la
+    contactabilidad, las promesas, la decision, el campo y el ruteo, los dos embudos y sus
+    controles, todos OK; el 409 de las mismas entradas, y sin un solo dato de una cuenta en ninguna
+    respuesta."""
+    plan, ruteo = operacion["plan"], operacion["ruteo"]
+    as_of = plan["fecha_operacion"]
+    print(f"analytics/v1 de la cohorte del {corte} al {as_of}")
+
+    estado, _, catalogo = pedir("GET", "/analytics/catalogo")
+    (politica,) = catalogo.get("politicas", [None])
+    esperar(
+        estado == 200
+        and catalogo["version"] == "analytics-metrics/public-v1"
+        and len(catalogo["hash"]) == 64
+        and len(catalogo["metricas"]) >= 87
+        and all(m["descripcion"] and m["fuentes_requeridas"] for m in catalogo["metricas"])
+        and (politica["version"], politica["min_group_size"]) == ("analytics-public-v1", 10),
+        f"GET /analytics/catalogo: {catalogo.get('version')} ({catalogo.get('hash', '')[:12]}...), "
+        f"{len(catalogo.get('metricas', []))} metricas, cada una con su formula y sus entradas",
+    )
+
+    # Dos gestiones del ultimo dia, de dos cuentas de la cohorte (las primeras que decidio su
+    # decision/v2): una con contacto que promete, otra sin contacto. Las del lifecycle de la prueba
+    # ocurrieron antes del corte, fuera del horizonte.
+    estado, _, decididas = pedir(
+        "GET", f"/decisiones-v2/{decision['decision_run_id']}/resultados?por_pagina=2"
+    )
+    cuentas = [r["cuenta_id"] for r in decididas.get("elementos", [])]
+    esperar(estado == 200 and len(cuentas) == 2, "dos cuentas de la cohorte para gestionar")
+    for cuenta_id, campos in zip(
+        cuentas,
+        (
+            {"nivel_contacto": "CONTACTO_TITULAR", "resultado": "PROMESA"},
+            {"nivel_contacto": "SIN_CONTACTO", "resultado": "SIN_RESPUESTA"},
+        ),
+        strict=True,
+    ):
+        estado, _, gestion = enviar(
+            f"/cuentas/{cuenta_id}/gestiones",
+            {
+                "ocurrido_en": f"{as_of}T10:00:00-06:00",
+                "canal": "TELEFONICA",
+                "medio": "LLAMADA",
+                "actor_ref": "AGT-0101",
+                **campos,
+            },
+            llave=f"humo-{uuid.uuid4().hex}",
+        )
+        esperar(estado == 201, f"una gestion el {as_of}: {campos['resultado']}")
+        if campos["resultado"] == "PROMESA":
+            limite = (datetime.fromisoformat(as_of) + timedelta(days=4)).date().isoformat()
+            estado, _, _ = enviar(
+                f"/gestiones/{gestion['gestion_id']}/promesas",
+                {"monto_prometido": "500.00", "fecha_limite": limite},
+                llave=f"humo-{uuid.uuid4().hex}",
+            )
+            esperar(estado == 201, f"su promesa de 500.00 al {limite}")
+    estado, encabezados, _ = enviar("/evaluaciones-promesas", {"as_of": as_of})
+    evaluacion = seguir(ubicacion_de(encabezados))
+    esperar(
+        estado == 201 and evaluacion.get("estado") == "EXITOSA",
+        f"la evaluacion de las promesas al {as_of}: {evaluacion.get('estado')}",
+    )
+
+    # La atribucion de septiembre que se declara, con la interpretacion que leyo.
+    periodo = corte[:7]
+    estado, _, atribuciones = pedir("GET", f"/atribuciones?periodo={periodo}&estado=EXITOSA")
+    atribucion = next((a for a in atribuciones.get("elementos", []) if a["vigente"]), None)
+    esperar(
+        estado == 200 and atribucion is not None,
+        f"la atribucion vigente de {periodo}, sobre la interpretacion "
+        f"{atribucion and atribucion['motor_pagos_run_id']}",
+    )
+    pedida = {
+        "corte_id": del_dia["corte_id"],
+        "as_of": as_of,
+        "modo": "OPERATIVO",
+        "zona_horaria": "America/Mexico_City",
+        "granularidad": "DIA",
+        "motor_pagos_run_ids": [atribucion["motor_pagos_run_id"]],
+        "atribucion_run_ids": [atribucion["atribucion_run_id"]],
+        "evaluacion_run_id": evaluacion["evaluacion_run_id"],
+        "decision_run_id": decision["decision_run_id"],
+        "geografia_run_id": geografia["geografia_run_id"],
+        "territorial_run_id": operacion["territorial"]["territorial_run_id"],
+        "campo_run_id": plan["campo_run_id"],
+        "ruteo_run_id": ruteo["ruteo_run_id"],
+    }
+    for cambios, codigo_http, codigo in (
+        ({"modo": "BACKTEST"}, 422, "KNOWN_AT_REQUERIDO"),
+        ({"evaluacion_run_id": str(uuid.uuid4())}, 404, "ENTRADA_NO_ENCONTRADA"),
+        ({"territorial_run_id": None}, 422, "ENCADENAMIENTO_INCORRECTO"),
+        ({"ultima": True}, 422, "ENTRADA_INVALIDA"),
+    ):
+        estado, _, error = enviar("/analytics/ejecuciones", {**pedida, **cambios})
+        esperar(
+            (estado, error.get("codigo")) == (codigo_http, codigo),
+            f"POST /analytics/ejecuciones con {list(cambios)}: {estado} {error.get('codigo')}",
+        )
+    estado, encabezados, abierta = enviar("/analytics/ejecuciones", pedida)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and ubicacion_de(encabezados) == f"/analytics/ejecuciones/{abierta['analytics_run_id']}"
+        and len(abierta["entradas"]) == 9,
+        f"POST /analytics/ejecuciones: {estado} EN_PROCESO, con sus 9 entradas y known_at "
+        f"{abierta.get('known_at')}",
+    )
+    e = seguir(ubicacion_de(encabezados))
+    run = e["analytics_run_id"]
+    esperar(
+        (e.get("estado"), e.get("resultado")) == ("EXITOSA", "ANALYTICS_PUBLICADA")
+        and e["agregados_publicados"] > 0
+        and e["controles_fallidos"] == 0
+        and len(e["hash_agregados"]) == 64
+        and e["cuentas_cohorte"] == del_dia["cuentas"],
+        f"la ejecucion termino {e.get('estado')}: {e.get('agregados_publicados')} agregados, "
+        f"{e.get('controles_totales')} controles, "
+        f"{(e.get('disponibilidad') or {}).get('celdas_suprimidas')} celdas suprimidas",
+    )
+    _sin_cuentas(e, "la ejecucion", cuentas)
+
+    def total(metrica: str, vista: str = "ACUMULADA", periodo: str | None = None) -> dict:
+        filtros = {"metrica": metrica, "dimension_set": "TOTAL", "vista": vista}
+        if periodo is not None:
+            filtros |= {"periodo_desde": periodo, "periodo_hasta": periodo}
+        (fila,) = _agregados(run, **filtros)["elementos"]
+        return fila
+
+    cuentas_ = total("cartera.cuentas")
+    esperar(
+        (cuentas_["estado_valor"], cuentas_["valor"]) == ("DISPONIBLE", str(del_dia["cuentas"])),
+        f"TOTAL: {cuentas_['valor']} cuentas en la cohorte, visible",
+    )
+    visibles = _agregados(
+        run, metrica="cartera.cuentas", dimension_set="ATRASO_BUCKET", estado_valor="DISPONIBLE"
+    )
+    esperar(
+        visibles["total"] >= 1
+        and all(int(f["poblacion_cuentas"]) >= 10 for f in visibles["elementos"]),
+        f"un desglose visible: {visibles['total']} tramos de atraso con 10 cuentas o mas",
+    )
+    suprimidas = _agregados(
+        run, metrica="cartera.cuentas", estado_valor="SUPRIMIDO", por_pagina=500
+    )
+    esperar(
+        suprimidas["total"] >= 1
+        and all(
+            (f["valor"], f["numerador"], f["denominador"], f["poblacion_cuentas"])
+            == (None, None, None, None)
+            for f in suprimidas["elementos"]
+        ),
+        f"{suprimidas['total']} celdas SUPRIMIDO, sin valor ni poblacion",
+    )
+    del_30 = total("recuperacion.neta", "PERIODO", corte)
+    acumulada = total("recuperacion.neta")
+    esperar(
+        del_30["estado_valor"] == "DISPONIBLE"
+        and del_30["valor"] is not None
+        and acumulada["estado_valor"] == "NO_DISPONIBLE"
+        and acumulada["valor"] is None
+        and acumulada["motivos"][0]["codigo"] == "PAGOS_SIN_COBERTURA",
+        f"recuperacion neta: el {corte}, {del_30['valor']}; el horizonte, NO_DISPONIBLE "
+        f"({acumulada['motivos'][0]['codigo']}: {acumulada['motivos'][0].get('dias')} dia sin "
+        "pagos conocidos), no cero",
+    )
+    contacto = total("gestion.contactadas_sobre_gestionadas")
+    esperar(
+        (contacto["estado_valor"], contacto["numerador"], contacto["denominador"])
+        == ("DISPONIBLE", "1", "2")
+        and contacto["valor"] == "0.5000000000",
+        f"contactabilidad: {contacto['numerador']} de {contacto['denominador']} gestionadas",
+    )
+    creadas, pendientes = total("promesa.creadas"), total("promesa.pendientes")
+    tasa = total("promesa.tasa_cumplimiento_total")
+    esperar(
+        (creadas["valor"], pendientes["valor"]) == ("1", "1")
+        and (tasa["valor"], tasa["denominador"]) == (None, "0")
+        and tasa["motivos"] == [{"codigo": "DENOMINADOR_CERO"}],
+        "promesas: 1 creada, PENDIENTE en la evaluacion declarada; la tasa sin resueltas es NULL "
+        "con denominador 0, no 0 %",
+    )
+    decididas = total("decision.cuentas")
+    esperar(
+        decididas["valor"] == str(del_dia["cuentas"]),
+        f"decision: {decididas['valor']} cuentas decididas",
+    )
+    c = plan["conteos"]
+    candidatas, asignadas = total("campo.candidatas"), total("campo.asignadas")
+    programadas = total("ruteo.programadas")
+    esperar(
+        (candidatas["valor"], asignadas["valor"], programadas["valor"])
+        == (str(c["candidatas_campo"]), str(c["asignadas"]), str(ruteo["conteos"]["programadas"])),
+        f"campo y ruteo: {candidatas['valor']} candidatas, {asignadas['valor']} asignadas, "
+        f"{programadas['valor']} paradas programadas (planificadas, no visitas)",
+    )
+
+    estado, _, embudos = pedir("GET", f"/analytics/ejecuciones/{run}/embudos")
+    por_nombre = {x["embudo"]: x["etapas"] for x in embudos.get("embudos", [])}
+    esperar(
+        estado == 200
+        and [x["cuentas"] for x in por_nombre["CONTACTO"]] == [del_dia["cuentas"], 2, 1, 1]
+        and [x["cuentas"] for x in por_nombre["CAMPO"]]
+        == [c["candidatas_campo"], c["asignadas"], ruteo["conteos"]["programadas"]],
+        "embudos: CONTACTO "
+        + " > ".join(f"{x['etapa']} {x['cuentas']}" for x in por_nombre.get("CONTACTO", []))
+        + "; CAMPO "
+        + " > ".join(f"{x['etapa']} {x['cuentas']}" for x in por_nombre.get("CAMPO", [])),
+    )
+    estado, _, resumen = pedir("GET", f"/analytics/ejecuciones/{run}/resumen")
+    estado_c, _, controles = pedir("GET", f"/analytics/ejecuciones/{run}/controles")
+    esperar(
+        (estado, estado_c) == (200, 200)
+        and len(controles["controles"]) == controles["controles_totales"] == e["controles_totales"]
+        and {x["estado"] for x in controles["controles"]} == {"OK"},
+        f"GET .../controles: los {controles.get('controles_totales')} controles, todos OK",
+    )
+    for cuerpo, donde in (
+        (catalogo, "el catalogo"),
+        (embudos, "los embudos"),
+        (resumen, "el resumen"),
+        (controles, "los controles"),
+        (_agregados(run, por_pagina=500), "una pagina de agregados"),
+        (suprimidas, "las celdas suprimidas"),
+    ):
+        _sin_cuentas(cuerpo, donde, cuentas)
+
+    estado, _, trabajo = pedir("GET", f"/trabajos/{e['trabajo_id']}")
+    esperar(
+        estado == 200 and (trabajo["tipo"], trabajo["estado"]) == ("ANALYTICS", "COMPLETADO"),
+        f"su trabajo ANALYTICS: {trabajo.get('estado')} ({trabajo.get('intentos')})",
+    )
+    # La misma frontera con las mismas entradas es la misma ejecucion: el modo no entra en la firma.
+    estado, _, error = enviar(
+        "/analytics/ejecuciones", {**pedida, "modo": "BACKTEST", "known_at": e["known_at"]}
+    )
+    esperar(
+        (estado, error.get("codigo")) == (409, "ANALYTICS_YA_GENERADA"),
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+    estado, _, _ = pedir("GET", f"/cuentas/{cuentas[0]}/analytics")
+    esperar(
+        estado == 404,
+        f"GET /cuentas/{{cuenta_id}}/analytics: {estado}, no hay analytics por cuenta",
+    )
+    print(f"analytics_run_id {run}")
 
 
 def main(
@@ -2049,6 +2352,7 @@ def main(
     campo: bool = False,
     red_vial: str | None = None,
     base_ruteo: str | None = None,
+    analitica: bool = False,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo}")
 
@@ -2459,6 +2763,13 @@ def main(
         "/ruteo-v2/rutas/{ruta_id}",
         "/ruteo-v2/rutas/{ruta_id}/paradas",
         "/cuentas/{cuenta_id}/ruteo-v2",
+        "/analytics/catalogo",
+        "/analytics/ejecuciones",
+        "/analytics/ejecuciones/{analytics_run_id}",
+        "/analytics/ejecuciones/{analytics_run_id}/agregados",
+        "/analytics/ejecuciones/{analytics_run_id}/resumen",
+        "/analytics/ejecuciones/{analytics_run_id}/embudos",
+        "/analytics/ejecuciones/{analytics_run_id}/controles",
     )
     esperar(
         estado == 200
@@ -2466,8 +2777,8 @@ def main(
         and all(ruta in documentadas for ruta in rutas_esperadas),
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
         "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
-        "la atribucion, decision/v2, la geografia, las bases, territorial/v2, campo/v2 y "
-        "ruteo/v2",
+        "la atribucion, decision/v2, la geografia, las bases, territorial/v2, campo/v2, "
+        "ruteo/v2 y analytics/v1",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -2487,7 +2798,11 @@ def main(
         if campo:
             el_campo(corte, del_dia, decision, geografia_del_corte)
         if red_vial is not None:
-            la_ruta_vial(corte, del_dia, decision, geografia_del_corte, red_vial, base_ruteo)
+            operacion = la_ruta_vial(
+                corte, del_dia, decision, geografia_del_corte, red_vial, base_ruteo
+            )
+            if analitica:
+                la_analitica(corte, del_dia, decision, geografia_del_corte, operacion)
     print("Todo en orden.")
 
 
@@ -2522,6 +2837,12 @@ if __name__ == "__main__":
         metavar="LON,LAT",
         help="La base de ruteo: el cruce de la red que imprimio generar-red-sintetica.",
     )
+    argumentos.add_argument(
+        "--analytics",
+        action="store_true",
+        help="Recorre analytics/v1 sobre la cohorte del corte oficial, hasta el dia del plan de "
+        "ruteo, con el manifiesto de lo que la prueba publico.",
+    )
     leidos = argumentos.parse_args()
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
@@ -2533,6 +2854,8 @@ if __name__ == "__main__":
         argumentos.error("--ruteo y --base-ruteo van juntos.")
     if leidos.ruteo is not None and not leidos.campo:
         argumentos.error("--ruteo va con --campo.")
+    if leidos.analytics and leidos.ruteo is None:
+        argumentos.error("--analytics va con --ruteo.")
     main(
         leidos.archivo,
         leidos.oficial,
@@ -2543,4 +2866,5 @@ if __name__ == "__main__":
         campo=leidos.campo,
         red_vial=leidos.ruteo,
         base_ruteo=leidos.base_ruteo,
+        analitica=leidos.analytics,
     )
