@@ -111,7 +111,9 @@ jobs:
   # escenario de cuatro cortes con sus pagos llega, en paralelo, hasta la Cuenta 360, con sus pagos
   # interpretados por el motor de pagos; y el corte oficial, con coordenadas sinteticas, pasa por
   # geografia/v1, las bases operativas, territorial/v2, campo/v2 y ruteo/v2, sobre una red vial
-  # sintetica que prepara y sirve OSRM v26.9.0 con su imagen fijada.
+  # sintetica que prepara y sirve OSRM v26.9.0 con su imagen fijada. Al final, un escenario
+  # predictivo pequeno, en su propia cartera, entrena predictive/model-v1 y lo usa para puntuar,
+  # medir el drift y explicar una prediccion.
   compose:
     runs-on: ubuntu-latest
 
@@ -317,10 +319,55 @@ jobs:
             --manifiesto datos/manifiesto_analytics.json | tee analizar.txt
           grep -q "EXITOSA (ANALYTICS_PUBLICADA)" analizar.txt
 
+      # predictive/model-v1 sobre su propio escenario sintetico (escenario-predictivo/v1, con reglas
+      # de senal publicas y fijas), en su propia cartera, despues de todo lo anterior: 600 cuentas y
+      # 20 cortes semanales con sus pagos y su lifecycle, cargados semana por semana por el
+      # pipeline de siempre, con la frontera de conocimiento de cada corte. El manifiesto se
+      # propone sin entrenar nada; la prueba de humo lo entrena por la API y el worker lo publica,
+      # puntua el ultimo corte, mide su drift, explica una prediccion y puntua el corte de TEST en
+      # BACKTEST con su feature_known_at. El resumen y el drift salen por la linea de comandos, y el
+      # desempeno de ese BACKTEST con los labels del manifiesto reproduce las metricas de TEST.
+      - name: Predictive Intelligence
+        run: |
+          set -o pipefail
+          docker compose exec -T api motor-cartera generar-escenario-predictivo datos/predictivo \
+            --cuentas 600 --cortes 20 --primer-corte 2026-03-04
+          docker compose exec -T -e MC_CARTERA_ID=PREDICTIVO worker motor-cartera \
+            cargar-escenario-predictivo datos/predictivo | tee cargar_predictivo.txt
+          grep -q "Cargados 20 cortes" cargar_predictivo.txt
+          docker compose exec -T worker motor-cartera construir-manifiesto-predictivo \
+            --escenario datos/predictivo --validation 1 --test 1 \
+            --destino datos/predictivo/manifiesto.json | tee manifiesto_predictivo.txt
+          grep -q "No se entreno nada" manifiesto_predictivo.txt
+          python3 scripts/prueba_de_humo.py --predictivo datos/predictivo | tee humo_predictivo.txt
+          valor() { awk -v llave="$1" '$1 == llave {print $2}' humo_predictivo.txt; }
+          docker compose exec -T worker motor-cartera resumen-modelo-predictivo \
+            --modelo "$(valor modelo_version_id)" | tee resumen_predictivo.txt
+          grep -q ": PUBLICADA" resumen_predictivo.txt
+          test "$(grep -c "fallidas ninguna" resumen_predictivo.txt)" -eq 4
+          docker compose exec -T worker motor-cartera drift-predictivo \
+            --scoring "$(valor scoring_run_id)" | tee drift_predictivo.txt
+          grep -q "No cambia ni reentrena el modelo" drift_predictivo.txt
+          docker compose exec -T worker motor-cartera evaluar-predictivo \
+            --scoring "$(valor scoring_backtest_id)" --label-known-at "$(valor label_known_at)" \
+            --pagos-completos-hasta "$(valor pagos_completos_hasta)" \
+            --lifecycle-completo-hasta "$(valor lifecycle_completo_hasta)" \
+            --salida datos/predictivo/desempeno.json | tee desempeno_predictivo.txt
+          python3 - <<'EOF'
+          import json
+
+          r = json.load(open("datos/predictivo/desempeno.json", encoding="utf-8"))
+          componentes = r["componentes"]
+          assert [c["estado"] for c in componentes] == ["EVALUADO"] * 4, componentes
+          diferencias = [d for c in componentes for d in c["diferencias"].values() if d is not None]
+          assert diferencias and max(abs(d) for d in diferencias) <= 1e-12, diferencias
+          print(f"{len(diferencias)} metricas de TEST reproducidas por el BACKTEST")
+          EOF
+
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
-      # base registra tiene que seguir en el almacen con sus mismos bytes: las dos carteras, los
-      # pagos y los dos Parquet conformados.
+      # base registra tiene que seguir en el almacen con sus mismos bytes: las carteras, los pagos
+      # y sus Parquet conformados, los del escenario predictivo incluidos.
       - name: Persistencia del almacen de artefactos
         run: |
           docker compose --profile ruteo down
