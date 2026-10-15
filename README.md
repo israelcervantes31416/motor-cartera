@@ -1,9 +1,9 @@
 # motor-cartera
 
-Motor de ingesta, validación, segmentación, decisión, priorización territorial, planeación de campo
-y ruteo (sintético y por calle) de cartera de crédito al consumo, construido sobre **datos
-sintéticos**, con una API REST para operarlo y un worker que ejecuta cada etapa desde una cola
-durable.
+Motor de ingesta, validación, segmentación, decisión, priorización territorial, planeación de
+campo, ruteo (sintético y por calle) y analítica point-in-time de cartera de crédito al consumo,
+construido sobre **datos sintéticos**, con una API REST para operarlo y un worker que ejecuta cada
+etapa desde una cola durable.
 
 ## De qué se trata
 
@@ -108,6 +108,18 @@ determinista, no una ruta óptima**, y ninguna respuesta lleva una coordenada ni
 ([docs/ruteo_v2.md](docs/ruteo_v2.md), [docs/red_vial.md](docs/red_vial.md) y
 [docs/politica_ruteo.md](docs/politica_ruteo.md)).
 
+Desde v0.14.0, **Collection Analytics** describe lo que pasó con una cohorte. Anclada a un corte
+canónico, `analytics/v1` dice, agregado y **point-in-time**, qué se recuperó (con la semántica de
+`motor-pagos/v1` al final de `as_of`), cuántas cuentas se gestionaron, se contactaron y prometieron,
+qué promesas se cumplieron según su evaluación declarada, cómo se asocian los pagos con las
+gestiones (una asociación, no una causa) y qué planearon `decision/v2`, `campo/v2` y `ruteo/v2`, de
+`fecha_corte` al final de `as_of` y con lo que se conocía en `known_at`. Cada ejecución declara su
+manifiesto de entradas (nunca «la última»), las métricas salen de un catálogo versionado con su
+hash, lo que falta es `NO_DISPONIBLE` y no cero, y las celdas de menos de 10 cuentas se suprimen.
+**Describe; no prueba causalidad, no predice y no recomienda**
+([docs/analytics.md](docs/analytics.md), [docs/metricas_analytics.md](docs/metricas_analytics.md) y
+[docs/cohortes_analytics.md](docs/cohortes_analytics.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -139,7 +151,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay trece versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay catorce versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -201,6 +213,14 @@ punta:
   500 m, matrices por bloques, vecino más cercano, 2-opt acotado, turnos partidos y el regreso
   reservado, y ETA planificadas sin tráfico. Todo o nada, en un trabajo durable `RUTEO_V2` que solo
   toma un worker cuyo OSRM responde.
+- **v0.14.0 ✅ Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time**: una cohorte
+  anclada a un corte canónico se describe agregada, de `fecha_corte` al final de `as_of` en una zona
+  explícita y con lo que se conocía en `known_at`, con un manifiesto de entradas explícito, un
+  catálogo de 87 métricas (`analytics-metrics/public-v1`) y una política de publicación
+  (`analytics-public-v1`) con sus hashes; reversos, gestiones tardías y anulaciones point-in-time,
+  promesas por su evaluación declarada, atribución no causal, embudos de contacto y de campo,
+  supresión primaria y complementaria de celdas de menos de 10 cuentas y controles de reconciliación
+  exactos. Todo o nada, en un trabajo durable `ANALYTICS`.
 
 Lo que ya hace:
 
@@ -328,6 +348,21 @@ Lo que ya hace:
   paradas; la Cuenta 360 con su `ruteo_resumen`, sin coordenadas; pruebas contra OSRM de verdad
   sobre la red sintética en el CI; y dos benchmarks fuera del CI: el planificador sobre el plan XL
   y la red real del estado de Puebla
+- [x] `analytics/v1`: la cohorte de un corte canónico, `as_of` y `known_at` (`OPERATIVO`, con el
+  reloj de la base una vez, o `BACKTEST`), granularidad `TOTAL`, `DIA`, `SEMANA_ISO` o `MES`, un
+  manifiesto explícito comprobado antes de registrar nada, la recuperación de los movimientos
+  canónicos con los reversos point-in-time, el lifecycle con sus llegadas tardías y sus anulaciones,
+  las promesas por su evaluación declarada y la atribución sin elegir candidatas; por conjuntos, con
+  `GROUPING SETS`, sin una fila por cuenta, todo o nada en un trabajo durable `ANALYTICS`
+- [x] El catálogo versionado de 87 métricas en 11 familias y 16 conjuntos de dimensiones fijos, NULL
+  ≠ 0, razones con su numerador y su denominador, decimales exactos, supresión de celdas de menos de
+  10 cuentas (primaria y complementaria) y controles de reconciliación exactos que, si no cuadran,
+  dejan la ejecución `FALLIDA` sin publicar nada
+- [x] La API de catálogo, ejecuciones, agregados (filtros en la base, sin SQL arbitrario), resumen,
+  embudos y controles, sin analytics por cuenta; `construir-manifiesto-analytics` (que propone y
+  reporta la ambigüedad sin elegir), `analizar-cobranza`, `resumen-analytics`, `exportar-analytics`
+  (CSV, Parquet y JSONL, sin valores suprimidos) y `backfill-analytics`; y un benchmark de
+  `analytics/v1` sobre el XL, fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -345,9 +380,9 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.11.0 — Geografía Real, Territorial v2 y Bases Operativas
 ✅ v0.12.0 — Campo v2: Capacidad, Partición y Asignación Operativa
 ✅ v0.13.0 — Ruteo vial v2: Red Vial, Secuenciación y Factibilidad de Jornada
-➡️ v0.14 — Collection Analytics
+✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time
+➡️ v0.15 — Predictive Intelligence
 
-v0.15 Predictive Intelligence
 v0.16 Optimización Matemática
 v0.17 Aplicación + dashboards
 v0.18 Cloud + observabilidad + hardening
@@ -355,10 +390,10 @@ v0.18 Cloud + observabilidad + hardening
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.14, Collection Analytics**: comparar lo que se planeó (la decisión, el plan de
-campo y la ruta) con lo que la cobranza hizo y con lo que se recuperó, con las fuentes y las
-versiones de cada número a la vista. Sin adelantar los modelos predictivos ni la optimización
-matemática.
+Lo que sigue es **v0.15, Predictive Intelligence**: sobre la base histórica y analítica ya
+auditable, la probabilidad de recuperación, de contacto y de promesa o cumplimiento, el riesgo de no
+pago y la recuperación esperada, con calibración, backtesting temporal, drift y explicabilidad,
+siempre sin fuga temporal. Sin adelantar la optimización matemática.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -838,6 +873,18 @@ python scripts/prueba_de_humo.py datos/humo.xlsx --oficial datos/cartera_oficial
 
 La base va unida a su opción, con `=`: en México su longitud es negativa, y separada, el `argparse`
 de Python 3.12 la toma por otra opción.
+
+Con `--analytics` (y `--ruteo`), recorre además `analytics/v1` sobre la cohorte del corte oficial,
+del corte al día del plan de ruteo, por día: el catálogo con su hash, dos gestiones del último día y
+la evaluación de las promesas a ese día, el manifiesto con lo que la prueba publicó (la
+interpretación de septiembre y su atribución, la evaluación, `decision/v2`, la geografía, la
+`territorial/v2`, el plan y su ruteo) y lo publicado: el `TOTAL`, un desglose visible, una celda
+`SUPRIMIDO` sin valor, la recuperación neta (un día con cobertura, y el horizonte `NO_DISPONIBLE`
+porque un día no tiene pagos conocidos), la contactabilidad, las promesas, la decisión, el campo, el
+ruteo, los dos embudos y sus controles, todos OK, sin un solo dato de una cuenta. El CI, después,
+resume y exporta esa ejecución, comprueba que el backfill del corte reporta ambiguas sus tres
+`territorial/v2` sin elegir ninguna, y construye un manifiesto sin ellas que `analizar-cobranza`
+analiza.
 
 ## Fuentes oficiales
 
@@ -1338,6 +1385,52 @@ gestor, ruta o cuenta, o la número 500) tarda de 0.2 a 3.6 ms; las paradas de u
 una página de rutas, de 6 a 8 ms, porque se ordenan por el código del gestor. La Cuenta 360 tarda
 67 ms. Los detalles, en [docs/ruteo_v2.md](docs/ruteo_v2.md).
 
+## Collection Analytics
+
+`analytics/v1` responde, para una cohorte (un corte canónico) y un horizonte declarados, qué le pasó
+a esa cohorte: cuánto se recuperó, cuántas cuentas se gestionaron, se contactaron y prometieron, qué
+promesas se cumplieron, cómo se asocian los pagos con las gestiones, y qué se planeó en campo y en
+ruteo. Es un trabajo durable que alguien pide, con entradas declaradas y todo o nada.
+
+- **Dos relojes.** `as_of` es hasta qué día ocurrió el negocio, en una zona horaria explícita;
+  `known_at`, hasta qué instante se podía conocer. Una gestión registrada después de `known_at` no
+  existe para ese análisis; un reverso que llegó después del final de `as_of` no anula el pago, y una
+  anulación que ocurrió después de `as_of` no borra la gestión.
+- **Un manifiesto explícito.** Cada entrada se declara por su identificador y se comprueba antes de
+  registrar nada; nunca «la última». Lo que no se declara se publica `NO_DISPONIBLE`, no cero.
+- **Un catálogo versionado.** 87 métricas con su fórmula, su numerador y su denominador, sus
+  entradas y sus limitaciones, en `analytics-metrics/public-v1`, con su hash.
+- **Privacidad.** Solo agregados, por 16 conjuntos fijos de dimensiones; una celda de menos de 10
+  cuentas se suprime, y la que dejaría reconstruirla también. Ni una cuenta, un `actor_ref`, una
+  coordenada ni un microtramo en ninguna respuesta.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec worker motor-cartera construir-manifiesto-analytics --corte 2026-09-30 \
+  --as-of 2026-10-01 --modo OPERATIVO --zona America/Mexico_City --granularidad DIA \
+  --destino datos/manifiesto_analytics.json
+docker compose exec worker motor-cartera analizar-cobranza --manifiesto datos/manifiesto_analytics.json
+curl -s -H "$K" http://localhost:8000/analytics/catalogo
+curl -s -H "$K" "http://localhost:8000/analytics/ejecuciones/<analytics_run_id>/agregados?metrica=recuperacion.neta&vista=PERIODO&dimension_set=TOTAL"
+curl -s -H "$K" "http://localhost:8000/analytics/ejecuciones/<analytics_run_id>/embudos"
+docker compose exec worker motor-cartera exportar-analytics --ejecucion <analytics_run_id> --formato parquet
+```
+
+Todo está en [docs/analytics.md](docs/analytics.md),
+[docs/metricas_analytics.md](docs/metricas_analytics.md) y
+[docs/cohortes_analytics.md](docs/cohortes_analytics.md). El porqué, en las decisiones 175 a 196.
+
+**Medido.** Sobre el XL de los benchmarks anteriores, sin reconstruir nada, la cohorte de 500,000
+cuentas del corte con toda la cadena de operación (`decision/v2`, la geografía, `territorial/v2`,
+`campo/v2` y su ruteo contra la red real de Puebla), por día en 30 días, se analizó en **41.5 s**
+(182 MiB de memoria pico) y publicó 203,113 agregados de 6,884 celdas, con sus 113 controles OK. La
+del primer corte semanal con todo el lifecycle (1,804,210 gestiones, 2,990,891 movimientos, 354,480
+promesas evaluadas y 2,697,650 pagos atribuidos), por semana en 78 días, tomó **191.7 s**, y los 12
+cortes semanales por mes, **81.9 s** de mediana cada uno. Cada corte semanal publicó 39,140
+agregados, con 500,000 cuentas o con 465,999: lo publicado depende de las celdas y los periodos, no
+de las cuentas. Un agregado ocupa 418 bytes con sus índices. Por la API, el resumen, una serie o un
+desglose tardan de 11 a 16 ms. Los detalles, en [docs/analytics.md](docs/analytics.md).
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -1652,6 +1745,22 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /campo-v2/planes/{campo_run_id}/cargas` | La carga de cada gestor: su jornada en la fecha, su capacidad, lo que recibió y sus ventanas; filtro `base`, paginada | 200, 401, 404, 422 |
 | `GET /campo-v2/planes/{campo_run_id}/unidades` | Las zonas, subzonas, tramos y microtramos que ocupó el plan; filtros `nivel`, `padre` y `base`, paginadas | 200, 401, 404, 422 |
 | `GET /cuentas/{cuenta_id}/campo-v2` | Los planes de la cuenta, de la fecha de operación más reciente a la más antigua, paginados | 200, 401, 404, 422 |
+| `GET /ruteo-v2/redes` | Las versiones de la red vial, la más reciente primero, paginadas | 200, 401, 422 |
+| `GET /ruteo-v2/redes/{red_vial_version_id}` | Una versión, con los comandos de su preparación y el SHA-256 de cada archivo | 200, 401, 404, 422 |
+| `POST /ruteo-v2/ejecuciones` | Pide rutear un plan de `campo/v2` sobre una versión declarada de la red vial; lo rutea un worker cuyo OSRM responde | 201, 401, 404, 409, 422 |
+| `GET /ruteo-v2/ejecuciones` | Las ejecuciones de ruteo/v2; filtros `campo_run_id`, `red_vial_version_id` y `estado`, paginadas | 200, 401, 404, 422 |
+| `GET /ruteo-v2/ejecuciones/{ruteo_run_id}` | Una ejecución: entradas, política con su hash, firma, conteos, totales y distribución | 200, 401, 404, 422 |
+| `GET /ruteo-v2/ejecuciones/{ruteo_run_id}/rutas` | La ruta de cada gestor, filtrable por gestor, base y estado, paginada | 200, 401, 404, 422 |
+| `GET /ruteo-v2/ejecuciones/{ruteo_run_id}/paradas` | Las paradas, filtrables por estado, gestor, base y prioridad, sin coordenadas, paginadas | 200, 401, 404, 422 |
+| `GET /ruteo-v2/rutas/{ruta_id}` y `/paradas` | Una ruta con su salida, su regreso y sus totales, y sus paradas en orden de visita | 200, 401, 404, 422 |
+| `GET /cuentas/{cuenta_id}/ruteo-v2` | Las paradas de la cuenta en las ejecuciones de ruteo/v2, de la fecha más reciente a la más antigua | 200, 401, 404, 422 |
+| `GET /analytics/catalogo` | El catálogo de métricas con su hash, la política con el suyo y los conjuntos con sus llaves | 200, 401 |
+| `POST /analytics/ejecuciones` | Pide el análisis de una cohorte con su manifiesto explícito (`corte_id`, `as_of`, `modo`, `zona_horaria`, `granularidad`, `known_at` y cada entrada); lo analiza el worker | 201, 401, 404, 409, 422 |
+| `GET /analytics/ejecuciones` | Las ejecuciones de analytics; filtros `corte_id`, `estado` y `as_of`, paginadas | 200, 401, 404, 422 |
+| `GET /analytics/ejecuciones/{analytics_run_id}` | Una ejecución: su manifiesto, sus relojes, sus versiones, sus hashes y su disponibilidad | 200, 401, 404, 422 |
+| `GET /analytics/ejecuciones/{analytics_run_id}/agregados` | Lo publicado, filtrado en la base por métrica, vista, conjunto, periodo, estado y llave de dimensión, paginado; nada más se acepta | 200, 401, 404, 409, 422 |
+| `GET /analytics/ejecuciones/{analytics_run_id}/resumen` y `/embudos` | Unos indicadores del total, cada uno con su estado, y los embudos `CONTACTO` y `CAMPO` | 200, 401, 404, 409, 422 |
+| `GET /analytics/ejecuciones/{analytics_run_id}/controles` | Los controles de reconciliación, también los de una `FALLIDA` | 200, 401, 404, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -1733,6 +1842,12 @@ Las reglas que un cliente tiene que conocer:
   la territorial/v2, `422 BASES_INCONSISTENTES`. Las mismas entradas ya planeadas dan
   `409 CAMPO_V2_YA_GENERADO`, y las que se están planeando, `409 CAMPO_V2_EN_PROCESO`. Cada plan
   dice en su `aviso` que la capacidad es declarada, no factibilidad vial.
+- **Un análisis declara su manifiesto y sus dos relojes.** Una entrada que no terminó `EXITOSA`, que
+  no existía a `known_at`, de otro corte o que no encadena con las demás es un `422` con su código
+  (`ENTRADA_NO_CONOCIDA`, `CORTE_INCONSISTENTE`, `ENCADENAMIENTO_INCORRECTO`, ...), y nada se
+  registra. Las mismas entradas ya analizadas dan `409 ANALYTICS_YA_GENERADA`; los agregados, el
+  resumen y los embudos de una ejecución que no está `EXITOSA`, `409 ANALYTICS_NO_PUBLICADA`. Un
+  parámetro de los agregados que no es del catálogo es `422 ENTRADA_INVALIDA`.
 - **La historia no se pide: se abre sola** con cada dataset conformado. Mientras la ingesta sigue en
   proceso, `/historia` responde `409 CORRIDA_EN_PROCESO` o `PAGOS_EN_PROCESO`; una corrida de
   cartera/v1, o que no publicó, `404 SIN_DATASET_CONFORMADO`.
@@ -1925,6 +2040,22 @@ bloques, la ruta de OSRM contra sus tramos y una ejecución de punta a punta; el
 la imagen fijada y la sirve para eso. La política (`pytest tests/test_ruteo_v2_politica.py`) no
 necesita base. Los benchmarks de `ruteo/v2` no corren en el CI.
 
+`analytics/v1` se prueba contra PostgreSQL con un golden escrito a mano (`pytest
+tests/test_analytics_golden.py`): veinte cuentas sintéticas construidas como lo haría la operación,
+con dos fronteras de conocimiento, y lo publicado comparado métrica por métrica: los pagos (dos
+observaciones idénticas, un reverso dentro del horizonte, reversos posteriores a `as_of` en la misma
+ventana y en la siguiente, un posible reverso que deja una cuenta en negativo, un pago sin cuenta y
+uno de otro corte), la llegada tardía, las tres anulaciones, la atribución sin elegir, los seis
+estados de una promesa y el denominador de la tasa, NULL contra cero, el denominador cero, una celda
+de 9 suprimida y una de 10 visible con su supresión complementaria, la cuenta con tres gestiones,
+dos pagos y dos promesas que no se multiplican, y la cadena de campo y ruteo. Hay pruebas de cada
+error del manifiesto, de la misma firma, de fallas inyectadas en ocho puntos, de un control que no
+cuadra (con interpretaciones reales que no se corresponden), dos workers, el lease perdido, la
+reconstrucción idéntica después de reescribir el orden físico de las tablas, la inmutabilidad y la
+bitácora sin datos de una cuenta. El catálogo, la política, los periodos y la supresión (`pytest
+tests/test_analytics_politica.py`) no necesitan base. El benchmark de `analytics/v1` no corre en
+el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -1935,13 +2066,14 @@ prueba de humo del flujo automático vía HTTP, con una cartera oficial hasta el
 de pagos y un escenario de cuatro cortes y sus pagos hasta la Cuenta 360 y el motor de pagos,
 y el corte oficial, con coordenadas sintéticas sobre una referencia sintética, por la geografía,
 las bases, `territorial/v2`, `campo/v2` y `ruteo/v2`, sobre una red vial sintética que prepara y
-sirve OSRM con su imagen fijada; comprueba que ni el backfill de la historia, ni el del motor, ni el
-de `campo/v2` encuentran nada pendiente, que el de `ruteo/v2` encola solo lo que falta, compara en
-modo sombra la decisión v2 del corte oficial con su decisión v1, baja los
+sirve OSRM con su imagen fijada, hasta `analytics/v1`; comprueba que ni el backfill de la historia,
+ni el del motor, ni el de `campo/v2` encuentran nada pendiente, que el de `ruteo/v2` encola solo lo
+que falta, que el de `analytics/v1` reporta lo ambiguo sin elegir, compara en modo sombra la
+decisión v2 del corte oficial con su decisión v1, baja los
 contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
-escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía
-y de `campo/v2` son un workflow aparte, que solo corre a mano.
+escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía,
+de `campo/v2` y de `analytics/v1` son un workflow aparte, que solo corre a mano.
 
 ## Arquitectura
 
@@ -2055,6 +2187,20 @@ src/motor_cartera/
 │   │                  todo o nada
 │   ├── consultas.py   Las redes, las ejecuciones, sus rutas y paradas, y las de una cuenta
 │   └── backfill.py    Las ejecuciones que faltan sobre una red declarada
+├── analytics/
+│   ├── catalogo.py    analytics-metrics/public-v1: cada métrica con su definición formal, los
+│   │                  conjuntos de dimensiones, el JSON canónico, el dimension_hash y el hash
+│   ├── politica.py    analytics-public-v1: el mínimo por celda, los periodos y su hash
+│   ├── supresion.py   La supresión primaria y complementaria de las celdas: el núcleo puro
+│   ├── cobertura.py   La cobertura de pagos de cada día del horizonte
+│   ├── manifiesto.py  El manifiesto: resolverlo y comprobarlo, su hash y la firma
+│   ├── sql.py         El SQL por conjuntos: la cohorte, cada dominio point-in-time, los hechos
+│   │                  por cuenta y periodo, las celdas con GROUPING SETS y la publicación
+│   ├── controles.py   Los controles de reconciliación, exactos
+│   ├── ejecuciones.py analytics/v1: abrir con su manifiesto y analizar, todo o nada
+│   ├── consultas.py   El catálogo, las ejecuciones, sus agregados, su resumen, sus embudos y sus
+│   │                  controles
+│   └── seleccion.py   Proponer un manifiesto, con sus reglas, sin elegir lo ambiguo
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -2073,8 +2219,9 @@ src/motor_cartera/
 │                      (versiones de la referencia, municipios, ejecuciones y resultados), las
 │                      bases operativas, territorial/v2 (ejecuciones y asignaciones), campo/v2
 │                      (la configuración de campo, los planes, sus asignaciones, sus unidades y
-│                      la carga de cada gestor) y ruteo/v2 (las versiones de la red vial, las
-│                      ejecuciones, la ruta de cada gestor y cada parada)
+│                      la carga de cada gestor), ruteo/v2 (las versiones de la red vial, las
+│                      ejecuciones, la ruta de cada gestor y cada parada) y analytics/v1 (las
+│                      ejecuciones con su manifiesto, sus agregados y sus controles)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
 │                      el lifecycle sintético de cada periodo del escenario (lifecycle.py) y la
@@ -2083,8 +2230,8 @@ src/motor_cartera/
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
 │                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
-│                      configuración de campo, campo v2 y ruteo v2; subidas, esquemas, errores y
-│                      autenticación
+│                      configuración de campo, campo v2, ruteo v2 y analytics; subidas, esquemas,
+│                      errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
                        backfill-motor-pagos, backfill-lifecycle, backfill-atribucion, decidir-v2,
@@ -2093,12 +2240,14 @@ src/motor_cartera/
                        cargar-campo, generar-campo-sintetico, planificar-campo-v2,
                        resumen-campo-v2, backfill-campo-v2, exportar-plan-campo,
                        generar-red-sintetica, preparar-red-vial, registrar-red-vial, rutear-v2,
-                       resumen-ruteo-v2, backfill-ruteo-v2 y worker
+                       resumen-ruteo-v2, backfill-ruteo-v2, construir-manifiesto-analytics,
+                       analizar-cobranza, resumen-analytics, exportar-analytics,
+                       backfill-analytics y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
                        modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
-                       geografía, de campo/v2 y de ruteo/v2, y actualización del catálogo del
-                       INEGI
+                       geografía, de campo/v2, de ruteo/v2 y de analytics/v1, y actualización
+                       del catálogo del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
@@ -2106,7 +2255,8 @@ docs/                  decisiones.md (por qué está hecho así), fuentes.md (la
                        (el Decision Engine v2 y su diccionario de features), geografia.md (la
                        geografía real), territorial_v2.md, bases_operativas.md, campo_v2.md,
                        configuracion_campo.md, particion_campo.md, ruteo_v2.md, red_vial.md,
-                       politica_ruteo.md, los diccionarios de CARTERA y PAGOS, y carrier.md
+                       politica_ruteo.md, analytics.md, metricas_analytics.md,
+                       cohortes_analytics.md, los diccionarios de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -2391,6 +2541,30 @@ y `ruteo/v1` siguen como estaban.
   una red declarada.
 - **Sin particionado** (decisión 174), y medido en una sola máquina, que no era dedicada; OSRM, con
   sus binarios nativos de Windows, no con la imagen de Docker (que el CI sí usa).
+
+**De Collection Analytics (v0.14.0).** Lo que v0.14.0 deja a propósito para después:
+
+- **Describe; no prueba causalidad.** Una asociación de pagos con gestiones no es un impacto: medirlo
+  exige un diseño (un grupo de control, un experimento) que estos datos no tienen.
+- **Planificado no es ejecutado.** Una parada programada no es una visita realizada, y lo que se
+  planeó no se compara con lo que el gestor hizo: el lifecycle no sabe de rutas.
+- **Un gestor de campo no es un `actor_ref`**, y no hay métricas por persona ni rankings de
+  cobradores.
+- **Sin dashboards, gráficas ni reportes visuales** (v0.17): la salida son agregados por la API, la
+  línea de comandos y las exportaciones.
+- **Sin pronósticos, scoring, probabilidades ni recuperación esperada** (v0.15), ni recomendaciones
+  automáticas u optimización matemática (v0.16).
+- **Sin multimoneda.** Los montos están en la moneda de la fuente, sin conversión.
+- **Sin retención ni un warehouse externo.** Cada ejecución queda en PostgreSQL, inmutable; no hay
+  política de retención de ejecuciones viejas.
+- **La supresión es conservadora, no una garantía formal** contra cualquier combinación de restas
+  entre conjuntos distintos; el umbral (10) es de la política, con su hash.
+- **La cobertura de pagos es conservadora.** `pagos/v1` no declara el periodo de un archivo: un día
+  sin movimientos al borde de un archivo queda sin cobertura, y sus métricas `NO_DISPONIBLE`.
+- **La serie de un periodo se corrige** en un análisis con un `as_of` posterior, cuando un reverso que
+  llegó después anula un pago de ese periodo: cada análisis dice la verdad de su frontera.
+- **No se abre solo.** Un análisis se pide con su manifiesto, o lo encuentra su backfill con su
+  horizonte declarado.
 
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +

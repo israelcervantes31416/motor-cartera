@@ -420,3 +420,124 @@ def test_la_base_de_ruteo_va_unida_a_su_opcion():
         assert not separada.search((raiz / archivo).read_text(encoding="utf-8")), archivo
     ci = (raiz / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert '--base-ruteo="$base"' in ci
+
+
+# --- analytics/v1 ---------------------------------------------------------------------------------
+
+METRICA_DOCUMENTADA = re.compile(r"^\| `([a-z_]+\.[a-z_]+)` \|", re.MULTILINE)
+
+
+def test_cada_metrica_del_catalogo_esta_documentada_una_vez_y_ninguna_mas():
+    """Cada metrica del catalogo tiene exactamente una fila en metricas_analytics.md, y ninguna fila
+    documenta una metrica que el catalogo no tiene. Los codigos del catalogo son unicos."""
+    from motor_cartera.analytics.catalogo import METRICAS
+
+    codigos = [m.codigo for m in METRICAS]
+    documentadas = METRICA_DOCUMENTADA.findall(
+        (DOCS / "metricas_analytics.md").read_text(encoding="utf-8")
+    )
+
+    assert len(codigos) == len(set(codigos))
+    assert sorted(documentadas) == sorted(codigos)
+
+
+def test_el_documento_de_analytics_define_cada_resultado_estado_motivo_y_error():
+    """Cada resultado de una ejecucion, cada estado de un valor, cada motivo de NO_DISPONIBLE y
+    cada error del manifiesto tiene su fila en analytics.md; los puntos de falla se nombran."""
+    from motor_cartera.analytics import cobertura, ejecuciones, manifiesto, supresion
+    from motor_cartera.db.modelos import ResultadoEjecucionAnalytics
+
+    filas = _codigos_de_tablas("analytics.md")
+    texto = (DOCS / "analytics.md").read_text(encoding="utf-8")
+    errores = {
+        clase.codigo
+        for clase in vars(manifiesto).values()
+        if isinstance(clase, type)
+        and issubclass(clase, manifiesto.EntradaNoAnalizable)
+        and clase is not manifiesto.EntradaNoAnalizable
+    }
+
+    assert {r.value for r in ResultadoEjecucionAnalytics} | {"CERRADA_AL_BAJAR"} <= filas
+    assert {"DISPONIBLE", "NO_DISPONIBLE", "SUPRIMIDO", "NO_APLICA"} <= filas
+    assert {
+        cobertura.ENTRADA_NO_DECLARADA,
+        cobertura.PAGOS_SIN_COBERTURA,
+        cobertura.INTERPRETACION_INCOMPLETA,
+        cobertura.ATRIBUCION_NO_DECLARADA,
+    } <= filas
+    assert len(errores) == 24 and errores <= filas
+    for codigo in (supresion.PRIMARIA, supresion.COMPLEMENTARIA, "DENOMINADOR_CERO"):
+        assert f"`{codigo}`" in texto, codigo
+    for punto in ejecuciones.PUNTOS_DE_FALLA:
+        assert f"`{punto}`" in texto, punto
+
+
+def test_las_versiones_y_los_hashes_documentados_son_los_del_servicio():
+    from motor_cartera.analytics.catalogo import VERSION_CATALOGO, VERSION_MOTOR, hash_catalogo
+    from motor_cartera.analytics.politica import PUBLIC_V1
+    from motor_cartera.analytics.politica import hash_politica as hash_de_la_politica
+
+    analytics = (DOCS / "analytics.md").read_text(encoding="utf-8")
+    metricas = (DOCS / "metricas_analytics.md").read_text(encoding="utf-8")
+
+    for valor in (VERSION_MOTOR, VERSION_CATALOGO, PUBLIC_V1.version, hash_catalogo()):
+        assert valor in analytics, valor
+    assert hash_de_la_politica(PUBLIC_V1) in analytics
+    assert hash_catalogo() in metricas
+
+
+def test_el_documento_de_cohortes_define_cada_conjunto_con_sus_llaves():
+    """Cada conjunto de dimensiones del catalogo tiene su fila en cohortes_analytics.md, con sus
+    llaves; y cada llave de dimension se explica."""
+    from motor_cartera.analytics.catalogo import CONJUNTOS, Conjunto
+
+    texto = (DOCS / "cohortes_analytics.md").read_text(encoding="utf-8")
+    filas = {
+        linea.split(" | ")[0].strip("| `"): linea
+        for linea in texto.splitlines()
+        if linea.startswith("| `")
+    }
+
+    for conjunto in Conjunto:
+        fila = filas[conjunto.value]
+        for llave in CONJUNTOS[conjunto].claves:
+            assert f"`{llave}`" in fila, (conjunto, llave)
+    for llave in {c for d in CONJUNTOS.values() for c in d.claves}:
+        assert llave in filas, llave
+    for etapa in ("COHORTE", "GESTIONADAS", "CONTACTADAS", "CON_PROMESA", "CANDIDATAS"):
+        assert f"`{etapa}`" in texto, etapa
+
+
+def test_la_documentacion_de_analytics_no_le_atribuye_causalidad_a_nada():
+    """Describir no es probar causalidad: ningun documento de analytics/v1 dice que una gestion
+    causo, genero o incremento un pago, y el principal lo niega con todas sus letras."""
+    for archivo in ("analytics.md", "metricas_analytics.md", "cohortes_analytics.md"):
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for frase in (
+            "causó el pago",
+            "causado por",
+            "generó la recuperación",
+            "recuperación generada por",
+            "incrementó la recuperación",
+            "impacto de la gestión",
+        ):
+            assert frase not in texto, (archivo, frase)
+    principal = " ".join((DOCS / "analytics.md").read_text(encoding="utf-8").split())
+    assert "no prueba causalidad, no predice y no recomienda" in principal
+    assert "asociación operacional, no causalidad" in principal
+
+
+def test_las_decisiones_de_analytics_estan_todas_y_en_orden():
+    texto = (DOCS / "decisiones.md").read_text(encoding="utf-8")
+    numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
+
+    assert numeros == list(range(1, 197))
+    assert "las 175 a 196, de Collection Analytics" in " ".join(texto[:4000].split())
+
+
+def test_el_readme_marca_v0_14_publicada_y_v0_15_la_que_sigue():
+    texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
+
+    assert "✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time" in texto
+    assert "➡️ v0.15 — Predictive Intelligence" in texto
+    assert "➡️ v0.14" not in texto
