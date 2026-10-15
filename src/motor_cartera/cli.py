@@ -2811,6 +2811,507 @@ def _avisar_historia(*, corrida_id: int | None = None, ingesta_pagos_id: int | N
         )
 
 
+# --- predictive/model-v1 --------------------------------------------------------------------------
+
+
+@app.command("generar-escenario-predictivo")
+def generar_escenario_predictivo(
+    destino: Annotated[str, typer.Argument(help="El directorio donde se escribe el escenario.")],
+    perfil: Annotated[
+        str | None, typer.Option(help="XS, S, M, L, XL o XXL: cuantas cuentas.")
+    ] = None,
+    cuentas: Annotated[int | None, typer.Option(help="Cuantas cuentas, sin perfil.")] = None,
+    cortes: Annotated[int, typer.Option(help="Cuantos cortes semanales.")] = 26,
+    primer_corte: Annotated[
+        datetime,
+        typer.Option("--primer-corte", formats=["%Y-%m-%d"], help="La fecha del primer corte."),
+    ] = datetime(2026, 1, 7),
+    semilla: Annotated[int, typer.Option(help="La semilla del escenario.")] = 2026,
+) -> None:
+    """Escribe un escenario sintetico para predictive/model-v1 (escenario-predictivo/v1): cortes
+    semanales de una misma cartera, sus pagos y su lifecycle, con reglas de senal fijas y
+    declaradas en su manifiesto (escenario.json), y la cobertura exacta que escribio. Los labels
+    no se escriben: los construye el pipeline al entrenar. Determinista con la semilla."""
+    from motor_cartera.generador.predictivo import generar_escenario_predictivo as generar
+    from motor_cartera.generador.predictivo import perfil as cuentas_del_perfil
+
+    if (perfil is None) == (cuentas is None):
+        typer.echo("Declara --perfil o --cuentas, uno de los dos.", err=True)
+        raise typer.Exit(code=2)
+    total = cuentas if cuentas is not None else cuentas_del_perfil(perfil.upper())
+    escenario = generar(
+        destino, cuentas=total, cortes=cortes, primer_corte=primer_corte.date(), semilla=semilla
+    )
+    m = escenario.manifiesto
+    typer.echo(
+        f"Escenario predictivo de {total:,} cuentas y {cortes} cortes en {destino}: cobertura de "
+        f"pagos y lifecycle del {m['cobertura']['pagos_completos_desde']} al "
+        f"{m['cobertura']['pagos_completos_hasta']}."
+    )
+    typer.echo(f"  tasas semanales: {m['tasas_semanales']}")
+
+
+@app.command("cargar-escenario-predictivo")
+def cargar_escenario_predictivo(
+    destino: Annotated[str, typer.Argument(help="El directorio del escenario.")],
+) -> None:
+    """Carga un escenario predictivo semana por semana en la cartera de la configuracion: los
+    pagos y el lifecycle de cada periodo, el corte y su evaluacion de promesas, procesando en
+    primer plano lo que cada carga deja EN_PROCESO. Despues de cada corte anota su frontera de
+    conocimiento (carga.json): las anclas de un entrenamiento la leen. Se puede reanudar."""
+    from motor_cartera.predictivo.escenario import cargar
+
+    bitacora = cargar(destino, progreso=typer.echo)
+    typer.echo(
+        f"Cargados {len(bitacora['cortes'])} cortes; label_known_at {bitacora['label_known_at']}."
+    )
+
+
+@app.command("construir-manifiesto-predictivo")
+def construir_manifiesto_predictivo(
+    escenario: Annotated[
+        str | None,
+        typer.Option(
+            help="El directorio de un escenario cargado: sus cortes, su frontera de conocimiento "
+            "por corte (carga.json) y su cobertura declarada."
+        ),
+    ] = None,
+    desde: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%d"],
+            help="El primer corte que es ancla. Con --escenario es opcional: los cortes anteriores "
+            "siguen siendo historia de las features, pero no anclas.",
+        ),
+    ] = None,
+    hasta: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%d"], help="El ultimo corte que es ancla; con --escenario, opcional."
+        ),
+    ] = None,
+    zona: Annotated[str, typer.Option(help="Sin escenario: la zona IANA.")] = "America/Mexico_City",
+    label_known_at: Annotated[
+        str | None,
+        typer.Option(
+            "--label-known-at",
+            help="ISO 8601 con zona; sin escenario y sin ella, la base, una vez.",
+        ),
+    ] = None,
+    pagos_completos_hasta: Annotated[
+        datetime | None,
+        typer.Option(
+            "--pagos-completos-hasta",
+            formats=["%Y-%m-%d"],
+            help="Sin escenario: hasta que dia los pagos estan completos. Se declara, nunca se "
+            "infiere de la fecha maxima observada.",
+        ),
+    ] = None,
+    lifecycle_completo_hasta: Annotated[
+        datetime | None, typer.Option("--lifecycle-completo-hasta", formats=["%Y-%m-%d"])
+    ] = None,
+    validation: Annotated[int, typer.Option(help="Cuantas anclas de VALIDATION.")] = 3,
+    test: Annotated[int, typer.Option(help="Cuantas anclas de TEST.")] = 3,
+    destino: Annotated[
+        str, typer.Option(help="El JSON del manifiesto que se escribe.")
+    ] = "datos/manifiesto_predictivo.json",
+) -> None:
+    """Propone el manifiesto de un entrenamiento y lo escribe, sin entrenar nada. Con --escenario,
+    las anclas son sus cortes (entre --desde y --hasta, si se dan) con la frontera de conocimiento
+    de cada uno; sin el, los cortes de la cartera entre --desde y --hasta, con la frontera de cada
+    uno igual a su creacion. TEST son las ultimas anclas maduras, VALIDATION las anteriores con la
+    purga de la politica, y TRAIN las anteriores a VALIDATION con su purga. El manifiesto se
+    comprueba como lo haria entrenar-predictivo."""
+    import json
+    from datetime import date
+    from uuid import UUID
+
+    from sqlalchemy import text
+    from sqlmodel import select
+
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import CorteCanonico
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.predictivo import manifiesto
+    from motor_cartera.predictivo.escenario import leer_bitacora
+
+    with sesion() as s:
+        if escenario is not None:
+            b = leer_bitacora(escenario)
+            despacho, cartera, zona_ = b["despacho_id"], b["cartera_id"], b["zona_horaria"]
+            fechas = {
+                str(c): f
+                for c, f in s.execute(
+                    text(
+                        "SELECT corte_id, fecha_corte FROM corte_canonico "
+                        "WHERE despacho_id = :d AND cartera_id = :c"
+                    ),
+                    {"d": despacho, "c": cartera},
+                ).all()
+            }
+            candidatos = [
+                manifiesto.CorteCandidato(
+                    UUID(c["corte_id"]),
+                    fechas[c["corte_id"]],
+                    datetime.fromisoformat(c["known_at"]),
+                )
+                for c in b["cortes"]
+                if (desde is None or fechas[c["corte_id"]] >= desde.date())
+                and (hasta is None or fechas[c["corte_id"]] <= hasta.date())
+            ]
+            frontera = datetime.fromisoformat(b["label_known_at"])
+            pagos = date.fromisoformat(b["cobertura"]["pagos_completos_hasta"])
+            lifecycle = date.fromisoformat(b["cobertura"]["lifecycle_completo_hasta"])
+        else:
+            if desde is None or hasta is None:
+                typer.echo("Sin --escenario, declara --desde y --hasta.", err=True)
+                raise typer.Exit(code=2)
+            despacho, cartera, zona_ = config.despacho_id, config.cartera_id, zona
+            candidatos = [
+                manifiesto.CorteCandidato(c.corte_id, c.fecha_corte, c.creado_en)
+                for c in s.exec(
+                    select(CorteCanonico).where(
+                        CorteCanonico.despacho_id == despacho,
+                        CorteCanonico.cartera_id == cartera,
+                        CorteCanonico.fecha_corte >= desde.date(),
+                        CorteCanonico.fecha_corte <= hasta.date(),
+                    )
+                ).all()
+            ]
+            frontera = (
+                _instante(label_known_at, "--label-known-at")
+                or s.execute(text("SELECT now()")).scalar_one()
+            )
+            pagos = None if pagos_completos_hasta is None else pagos_completos_hasta.date()
+            lifecycle = (
+                None if lifecycle_completo_hasta is None else lifecycle_completo_hasta.date()
+            )
+        try:
+            propuesta = manifiesto.proponer(
+                s,
+                despacho_id=despacho,
+                cartera_id=cartera,
+                zona=zona_,
+                cortes=candidatos,
+                label_known_at=frontera,
+                pagos_completos_hasta=pagos,
+                lifecycle_completo_hasta=lifecycle,
+                anclas_validation=validation,
+                anclas_test=test,
+            )
+            r = manifiesto.resolver(s, manifiesto.leer(propuesta))
+        except manifiesto.ManifiestoInvalido as exc:
+            typer.echo(f"{exc.codigo}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        s.rollback()
+    ruta = Path(destino)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        json.dumps(
+            {
+                "manifiesto": propuesta,
+                "hash_manifiesto": r.hash_manifiesto,
+                "firma_inputs": r.firma,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    por_split: dict[str, list[str]] = {}
+    for a in propuesta["anclas"]:
+        por_split.setdefault(a["split"], []).append(a["feature_as_of"])
+    typer.echo(
+        f"Manifiesto propuesto de {despacho}/{cartera} en {zona_}, label_known_at {frontera}:"
+    )
+    for split, fechas_ in por_split.items():
+        typer.echo(f"  {split}: {len(fechas_)} anclas, del {fechas_[0]} al {fechas_[-1]}")
+    typer.echo(f"  {len(propuesta['interpretaciones_pagos'])} interpretaciones de pagos")
+    typer.echo(f"  hash del manifiesto {r.hash_manifiesto}; firma {r.firma}")
+    typer.echo(f"Escrito: {ruta}. No se entreno nada: usa entrenar-predictivo.")
+
+
+def _manifiesto_predictivo(ruta: Path):
+    import json
+
+    from pydantic import ValidationError
+
+    from motor_cartera.api.esquemas_predictivo import EntrenamientoPredictivoEntrada
+    from motor_cartera.predictivo import manifiesto
+
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        entrada = EntrenamientoPredictivoEntrada.model_validate(datos.get("manifiesto", datos))
+        return manifiesto.leer(entrada.model_dump(mode="json"))
+    except (OSError, ValueError, ValidationError, manifiesto.ManifiestoInvalido) as exc:
+        typer.echo(f"El manifiesto {ruta} no se puede leer: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@app.command("entrenar-predictivo")
+def entrenar_predictivo(
+    manifiesto_: Annotated[
+        str, typer.Option("--manifiesto", help="El JSON de construir-manifiesto-predictivo.")
+    ],
+) -> None:
+    """Entrena predictive/model-v1 en primer plano, con su propio trabajo de la cola durable, con
+    el manifiesto declarado: construye el dataset, ajusta, calibra, evalua TEST con sus compuertas
+    y publica la version (PUBLICADA o RECHAZADA), todo o nada. Termina con codigo 1 si no queda
+    una version PUBLICADA."""
+    from motor_cartera.db.modelos import ResultadoEntrenamientoPredictivo
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.orquestacion.worker import entrenar_predictivo_en_primer_plano
+    from motor_cartera.predictivo import consultas, entrenamiento, manifiesto
+
+    declarado = _manifiesto_predictivo(Path(manifiesto_))
+    try:
+        e = entrenar_predictivo_en_primer_plano(declarado)
+    except manifiesto.ManifiestoInvalido as exc:
+        typer.echo(f"{exc.codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (entrenamiento.EntrenamientoEnProceso, entrenamiento.EntrenamientoYaPublicado) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    with sesion() as s:
+        v = consultas.obtener_entrenamiento(s, e.training_run_id)
+    typer.echo(f"predictive/model-v1 {e.training_run_id}: {e.estado} ({e.resultado})")
+    if e.dataset_hash:
+        typer.echo(
+            f"  {e.ejemplos_total:,} filas ({e.ejemplos_train:,} TRAIN, "
+            f"{e.ejemplos_validation:,} VALIDATION, {e.ejemplos_test:,} TEST, "
+            f"{e.ejemplos_purge:,} PURGE; {e.ejemplos_censurados:,} con algun label censurado)"
+        )
+        typer.echo(f"  dataset_hash {e.dataset_hash}")
+    if v.modelo_version_id is not None:
+        typer.echo(f"  modelo_version_id {v.modelo_version_id} ({v.estado_modelo})")
+    typer.echo(f"  {e.detalle}")
+    if e.resultado != ResultadoEntrenamientoPredictivo.MODELO_PUBLICADO:
+        raise typer.Exit(code=1)
+
+
+@app.command("resumen-modelo-predictivo")
+def resumen_modelo_predictivo(
+    modelo: Annotated[str, typer.Option("--modelo", help="El modelo_version_id.")],
+) -> None:
+    """Resume una version de predictive/model-v1: su estado, sus hashes, sus periodos, y por
+    componente su algoritmo, sus hiperparametros, su calibracion, sus metricas de TEST contra el
+    baseline, sus intervalos y sus compuertas. Agregado: ninguna cuenta."""
+    from uuid import UUID
+
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.predictivo import consultas
+
+    with sesion() as s:
+        try:
+            v = consultas.obtener_modelo(s, UUID(modelo))
+        except consultas.NoEncontrado as exc:
+            typer.echo(f"No existe la version {modelo}.", err=True)
+            raise typer.Exit(code=1) from exc
+    m = v.version
+    typer.echo(f"{m.version_modelo} {m.modelo_version_id}: {m.estado}")
+    typer.echo(f"  entrenamiento {v.training_run_id}; dataset_hash {m.dataset_hash}")
+    typer.echo(f"  hash_modelo {m.hash_modelo}; {m.version_features} ({m.hash_features[:12]}...)")
+    typer.echo(
+        f"  TRAIN {m.periodo_train_desde} a {m.periodo_train_hasta}, VALIDATION "
+        f"{m.periodo_validation_desde} a {m.periodo_validation_hasta}, TEST "
+        f"{m.periodo_test_desde} a {m.periodo_test_hasta}"
+    )
+    for c in v.componentes:
+        t, b = c.metricas_test, c.baseline_test
+        typer.echo(
+            f"  {c.target}: {c.estado}, {c.algoritmo} {c.hiperparametros}, {c.calibracion}, "
+            f"artefacto {c.hash_artefacto[:12]}..."
+        )
+        if c.algoritmo == "LOGISTICA_L2":
+            typer.echo(
+                f"    TEST n {t['n']:,}, prevalencia {t['prevalencia']:.4f}, ROC AUC "
+                f"{t['roc_auc']:.4f}, PR AUC {t['pr_auc']:.4f}, log loss {t['log_loss']:.4f} "
+                f"(baseline {b['log_loss']:.4f}), Brier {t['brier']:.4f} (baseline "
+                f"{b['brier']:.4f}), ECE {t['ece']:.4f}"
+            )
+        else:
+            typer.echo(
+                f"    TEST n {t['n']:,}, MAE {t['mae']:.2f} (baseline {b['mae']:.2f}), RMSE "
+                f"{t['rmse']:.2f}, media real {t['real_medio']:.2f}, predicha "
+                f"{t['predicho_medio']:.2f}"
+            )
+        for nombre, i in c.bootstrap_test["intervalos"].items():
+            typer.echo(
+                f"    IC95 {nombre}: {i['estimado']:.6f} [{i['inferior']:.6f}, {i['superior']:.6f}]"
+            )
+        fallidas = [g["compuerta"] for g in c.compuertas if not g["ok"]]
+        typer.echo(f"    compuertas: {len(c.compuertas)}, fallidas {fallidas or 'ninguna'}")
+
+
+@app.command("score-predictivo")
+def score_predictivo(
+    modelo: Annotated[str, typer.Option("--modelo", help="El modelo_version_id (PUBLICADA).")],
+    corte: Annotated[
+        datetime | None,
+        typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte de la cartera."),
+    ] = None,
+    corte_id: Annotated[str | None, typer.Option("--corte-id", help="O su corte_id.")] = None,
+    modo: Annotated[str, typer.Option(help="OPERATIVO o BACKTEST.")] = "OPERATIVO",
+    known_at: Annotated[
+        str | None, typer.Option("--known-at", help="ISO 8601 con zona; en BACKTEST, obligatorio.")
+    ] = None,
+) -> None:
+    """Puntua un corte con una version PUBLICADA declarada, en primer plano y con su propio
+    trabajo: una prediccion por cuenta y su drift contra TRAIN, todo o nada. Nunca "el ultimo
+    modelo". Termina con codigo 1 si no publico."""
+    from uuid import UUID
+
+    from motor_cartera.db.modelos import EstadoScoringPredictivo, ModoScoringPredictivo
+    from motor_cartera.orquestacion.worker import puntuar_predictivo_en_primer_plano
+    from motor_cartera.predictivo import scoring
+
+    if (corte is None) == (corte_id is None):
+        typer.echo("Declara --corte o --corte-id, uno de los dos.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        modo_ = ModoScoringPredictivo(modo.upper())
+    except ValueError as exc:
+        typer.echo(f"--modo es OPERATIVO o BACKTEST, no {modo}.", err=True)
+        raise typer.Exit(code=2) from exc
+    objetivo = UUID(corte_id) if corte_id is not None else _corte_por_fecha(corte.date())
+    try:
+        e = puntuar_predictivo_en_primer_plano(
+            modelo_version_id=UUID(modelo),
+            corte_id=objetivo,
+            known_at=_instante(known_at, "--known-at"),
+            modo=modo_,
+        )
+    except scoring.ScoringInvalido as exc:
+        typer.echo(f"{exc.codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (scoring.ScoringEnProceso, scoring.ScoringYaPublicado) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"scoring {e.scoring_run_id}: {e.estado} ({e.resultado})")
+    if e.hash_predicciones:
+        typer.echo(
+            f"  {e.predicciones_publicadas:,} predicciones, hash {e.hash_predicciones}; drift "
+            f"{e.hash_drift}"
+        )
+        typer.echo(
+            f"  drift: {e.drift_resumen['feature']} features, {e.drift_resumen['score']} salidas"
+        )
+    typer.echo(f"  {e.detalle}")
+    if e.estado != EstadoScoringPredictivo.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("drift-predictivo")
+def drift_predictivo(
+    scoring_: Annotated[str, typer.Option("--scoring", help="El scoring_run_id.")],
+    todas: Annotated[
+        bool, typer.Option("--todas", help="Todas las filas, no solo las 15 mayores.")
+    ] = False,
+) -> None:
+    """El drift de un scoring contra TRAIN: PSI por feature y por salida, y el cambio en la
+    fraccion de NULL, de mayor a menor PSI. Agregado; no cambia ni reentrena el modelo."""
+    from uuid import UUID
+
+    from motor_cartera.db.modelos import EstadoScoringPredictivo
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.predictivo import consultas
+
+    with sesion() as s:
+        try:
+            v = consultas.obtener_scoring(s, UUID(scoring_))
+        except consultas.NoEncontrado as exc:
+            typer.echo(f"No existe el scoring {scoring_}.", err=True)
+            raise typer.Exit(code=1) from exc
+        if v.ejecucion.estado != EstadoScoringPredictivo.EXITOSA:
+            typer.echo(f"El scoring esta {v.ejecucion.estado}: no tiene drift.", err=True)
+            raise typer.Exit(code=1)
+        filas = sorted(consultas.drift(s, v.ejecucion), key=lambda f: (-f.psi, f.tipo, f.nombre))
+        resumen = v.ejecucion.drift_resumen
+    typer.echo(f"drift del scoring {scoring_} (modelo {v.modelo_version_id}):")
+    typer.echo(
+        f"  features {resumen['feature']}, salidas {resumen['score']}, NULL {resumen['faltantes']}"
+    )
+    for f in filas if todas else filas[:15]:
+        faltantes = (
+            ""
+            if f.faltantes_train is None
+            else f", NULL {f.faltantes_train} -> {f.faltantes_scoring} ({f.severidad_faltantes})"
+        )
+        typer.echo(f"  {f.tipo} {f.nombre}: PSI {f.psi} {f.severidad}{faltantes}")
+    typer.echo(f"  {resumen['aviso']}")
+
+
+@app.command("evaluar-predictivo")
+def evaluar_predictivo(
+    scoring_: Annotated[str, typer.Option("--scoring", help="El scoring_run_id.")],
+    pagos_completos_hasta: Annotated[
+        datetime | None,
+        typer.Option(
+            "--pagos-completos-hasta",
+            formats=["%Y-%m-%d"],
+            help="Hasta que dia los pagos estan completos: declarado, nunca inferido.",
+        ),
+    ] = None,
+    lifecycle_completo_hasta: Annotated[
+        datetime | None, typer.Option("--lifecycle-completo-hasta", formats=["%Y-%m-%d"])
+    ] = None,
+    label_known_at: Annotated[
+        str | None, typer.Option("--label-known-at", help="ISO 8601 con zona; sin ella, la base.")
+    ] = None,
+    interpretacion: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--interpretacion",
+            help="Una interpretacion de pagos por mes de la ventana (repetible); sin ellas, las "
+            "vigentes a label_known_at.",
+        ),
+    ] = None,
+    salida: Annotated[str | None, typer.Option(help="Un JSON con la evaluacion completa.")] = None,
+) -> None:
+    """El drift de desempeno de un scoring: sus predicciones publicadas contra los labels que ya
+    maduraron (la regla de predictive-targets/public-v1), comparadas con las metricas de TEST de su
+    modelo. Solo lee: no guarda nada ni reentrena."""
+    import json
+    from uuid import UUID
+
+    from motor_cartera.predictivo import desempeno
+
+    try:
+        r = desempeno.evaluar(
+            UUID(scoring_),
+            label_known_at=_instante(label_known_at, "--label-known-at"),
+            pagos_completos_hasta=None
+            if pagos_completos_hasta is None
+            else pagos_completos_hasta.date(),
+            lifecycle_completo_hasta=None
+            if lifecycle_completo_hasta is None
+            else lifecycle_completo_hasta.date(),
+            interpretaciones=None if not interpretacion else [UUID(x) for x in interpretacion],
+        )
+    except desempeno.EvaluacionInvalida as exc:
+        typer.echo(f"{exc.codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"desempeno del scoring {r['scoring_run_id']} (as_of {r['as_of']}) con labels a "
+        f"{r['label_known_at']}, {r['cuentas']:,} cuentas:"
+    )
+    for c in r["componentes"]:
+        if c["estado"] != "EVALUADO":
+            typer.echo(f"  {c['target']}: {c['madurez']}, no se evalua (no es un cero)")
+            continue
+        metricas_ = ", ".join(
+            f"{k} {v:.4f} ({'+' if (d := c['diferencias'][k]) is not None and d >= 0 else ''}"
+            f"{'' if d is None else f'{d:.4f}'} vs TEST)"
+            for k, v in c["metricas"].items()
+            if k in c["diferencias"] and v is not None
+        )
+        typer.echo(f"  {c['target']}: {metricas_}")
+    typer.echo(f"  {r['aviso']}")
+    if salida:
+        Path(salida).write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+        typer.echo(f"Escrito: {salida}")
+
+
 @app.command()
 def worker(
     una_vez: Annotated[

@@ -34,6 +34,7 @@ from motor_cartera.api import (
     movimientos,
     orquestacion,
     pagos,
+    predictivo,
     ruteo,
     ruteo_v2,
     salud,
@@ -271,6 +272,28 @@ recomienda**.
 
 No hay analytics por cuenta: la Cuenta 360 no cambia.
 
+**Predictive Intelligence** (`predictive/model-v1`) estima, en paralelo y en sombra, la probabilidad
+de resultados observados bajo la operacion historica en los dias siguientes a un corte: recuperacion
+positiva a 30 dias, contacto a 14, creacion de una promesa a 30, y la recuperacion positiva
+esperada a 30. Cada entrenamiento declara su manifiesto (anclas con sus tres relojes, su cobertura
+y su split temporal con purga; las interpretaciones de pagos de sus labels): **nada se elige como
+"lo ultimo"**. Los modelos son GLM (logistica con L2 y Tweedie), su artefacto es JSON canonico con
+su hash, se calibran y se eligen con VALIDATION, y se publican solo si pasan sus compuertas en
+TEST. Un scoring declara su version PUBLICADA. **Una prediccion no es un efecto causal**, no
+recomienda una accion y no cambia decision/v2, campo/v2 ni ruteo/v2.
+
+46. `GET /predictivo/features` y `GET /predictivo/targets`: las definiciones versionadas, con su
+    hash.
+47. `POST /predictivo/entrenamientos` con el manifiesto, en un trabajo `PREDICTIVE_TRAINING`.
+    `GET /predictivo/entrenamientos` y `/predictivo/entrenamientos/{training_run_id}`.
+48. `GET /predictivo/modelos` y `/predictivo/modelos/{modelo_version_id}`: la ficha, los artefactos,
+    las metricas de VALIDATION y de TEST, los intervalos bootstrap y las compuertas.
+49. `POST /predictivo/scorings` con el `modelo_version_id`, el `corte_id`, el `modo` y `known_at`,
+    en un trabajo `PREDICTIVE_SCORING`. `GET /predictivo/scorings` y
+    `/predictivo/scorings/{scoring_run_id}`; `/predicciones` (rangos, producto, entidad, estado y un
+    orden de una lista cerrada), `/drift` y `/cuentas/{cuenta_id}/explicacion`.
+50. `GET /cuentas/{cuenta_id}/predictivo`: las predicciones publicadas de una cuenta.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -414,6 +437,14 @@ ETIQUETAS = [
         "explicito, un catalogo versionado y la supresion de celdas pequenas. Describe lo "
         "observado y lo planificado, agregado: no prueba causalidad, no predice y no recomienda.",
     },
+    {
+        "name": "predictivo",
+        "description": "Predictive Intelligence (predictive/model-v1): features y targets "
+        "versionados, entrenamientos con un manifiesto temporal explicito, versiones del modelo "
+        "con artefactos JSON, calibracion y compuertas, scorings con drift y explicaciones "
+        "verificadas. Predice resultados observados bajo la operacion historica: no es causal, no "
+        "recomienda y no cambia decision/v2, campo/v2 ni ruteo/v2.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -460,5 +491,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(campo_v2.router, dependencies=protegidas)
     app.include_router(ruteo_v2.router, dependencies=protegidas)
     app.include_router(analytics.router, dependencies=protegidas)
+    app.include_router(predictivo.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app
