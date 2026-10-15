@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI
 from motor_cartera import __version__
 from motor_cartera.api import (
     acuerdos,
+    analytics,
     atribuciones,
     bases,
     campo,
@@ -249,6 +250,27 @@ factibilidad vial** (v0.13), y no mueve cuentas entre bases.
     tramo, microtramo o prioridad), `/cargas` y `/unidades`.
 42. `GET /cuentas/{cuenta_id}/campo-v2`; `GET /cuentas/{cuenta_id}` trae su `campo_resumen`.
 
+**Collection Analytics** (`analytics/v1`) describe una cohorte, agregada y point-in-time: las
+cuentas de un corte canonico, de `fecha_corte` al final de `as_of` en una zona horaria explicita,
+con lo que se conocia en `known_at`. Cada ejecucion declara su manifiesto de entradas por su
+identificador (las interpretaciones de pagos de cada mes y su atribucion, la evaluacion de
+promesas, decision/v2, la geografia, territorial/v2, campo/v2 y ruteo/v2): **nada se elige como
+"lo ultimo"**, y lo que no se declara se publica `NO_DISPONIBLE`, nunca cero. Las metricas salen
+de un catalogo versionado (`analytics-metrics/public-v1`, con su hash), y las celdas con menos de
+10 cuentas se suprimen (`analytics-public-v1`). Describe; **no prueba causalidad, no predice y no
+recomienda**.
+
+43. `GET /analytics/catalogo`: cada metrica con su formula, su numerador y su denominador, sus
+    dimensiones permitidas, sus entradas requeridas y sus limitaciones.
+44. `POST /analytics/ejecuciones` con el `corte_id`, `as_of`, `modo` (`OPERATIVO` o `BACKTEST`, con
+    `known_at` obligatorio), `zona_horaria`, `granularidad` y las entradas, en un trabajo
+    `ANALYTICS`. `GET /analytics/ejecuciones` y `/analytics/ejecuciones/{analytics_run_id}`.
+45. `GET /analytics/ejecuciones/{analytics_run_id}/agregados`, filtrables por metrica, vista,
+    conjunto, periodo, estado y llave de dimension; `/resumen`, `/embudos` (`CONTACTO` y `CAMPO`) y
+    `/controles`.
+
+No hay analytics por cuenta: la Cuenta 360 no cambia.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -385,6 +407,13 @@ ETIQUETAS = [
         "y las duraciones, y que no cabe en la jornada o no es enrutable. Una heuristica, no una "
         "ruta optima; sin coordenadas ni geometrias.",
     },
+    {
+        "name": "analytics",
+        "description": "Collection Analytics (analytics/v1): metricas, cohortes, embudos y "
+        "reporting point-in-time de una cohorte anclada a un corte, con un manifiesto de entradas "
+        "explicito, un catalogo versionado y la supresion de celdas pequenas. Describe lo "
+        "observado y lo planificado, agregado: no prueba causalidad, no predice y no recomienda.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -430,5 +459,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(campo.router, dependencies=protegidas)
     app.include_router(campo_v2.router, dependencies=protegidas)
     app.include_router(ruteo_v2.router, dependencies=protegidas)
+    app.include_router(analytics.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

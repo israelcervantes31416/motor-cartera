@@ -2079,6 +2079,683 @@ def backfill_ruteo_v2(
             typer.echo(f"  ruteo_run_id {e.ruteo_run_id}")
 
 
+# --- analytics/v1 ---------------------------------------------------------------------------------
+
+_FAMILIAS_ANALYTICS = (
+    "MOTOR_PAGOS",
+    "ATRIBUCION",
+    "EVALUACION_PROMESAS",
+    "DECISION_V2",
+    "GEOGRAFIA",
+    "TERRITORIAL_V2",
+    "CAMPO_V2",
+    "RUTEO_V2",
+)
+
+
+def _instante(texto: str | None, opcion: str):
+    """Un instante ISO 8601 con su zona, o None. Sin zona no es un instante: codigo 2."""
+    if texto is None:
+        return None
+    try:
+        instante = datetime.fromisoformat(texto)
+    except ValueError as exc:
+        typer.echo(f"{opcion}: {texto!r} no es un instante ISO 8601.", err=True)
+        raise typer.Exit(code=2) from exc
+    if instante.tzinfo is None:
+        typer.echo(f"{opcion}: {texto!r} no lleva su zona horaria (por ejemplo -06:00).", err=True)
+        raise typer.Exit(code=2)
+    return instante
+
+
+def _familias(sin: list[str] | None):
+    from motor_cartera.analytics.catalogo import Fuente
+
+    excluidas = {f.upper() for f in sin or []}
+    desconocidas = excluidas - set(_FAMILIAS_ANALYTICS)
+    if desconocidas:
+        typer.echo(
+            f"--sin solo admite {', '.join(_FAMILIAS_ANALYTICS)}; no {sorted(desconocidas)}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return frozenset(Fuente(f) for f in _FAMILIAS_ANALYTICS if f not in excluidas)
+
+
+def _known_at_de(modo, known_at, comando: str):
+    """known_at declarado, o en OPERATIVO el reloj de la base, una vez. Un BACKTEST lo exige."""
+    from sqlalchemy import text
+
+    from motor_cartera.analytics.politica import Modo
+    from motor_cartera.db.sesion import sesion
+
+    if known_at is not None:
+        return known_at
+    if modo == Modo.BACKTEST:
+        typer.echo(f"{comando}: un BACKTEST declara su frontera con --known-at.", err=True)
+        raise typer.Exit(code=2)
+    with sesion() as s:
+        return s.execute(text("SELECT now()")).scalar_one()
+
+
+def _imprimir_propuesta(propuesta) -> None:
+    for e in propuesta.elecciones:
+        ventana = "" if e.ventana is None else f" {e.ventana:%Y-%m}"
+        if e.elegida is None:
+            typer.echo(f"  {e.tipo.value}{ventana}: {e.regla}")
+        else:
+            typer.echo(
+                f"  {e.tipo.value}{ventana}: {e.elegida.referencia} ({e.regla}; firma "
+                f"{e.elegida.firma[:12] or '?'}..., {e.elegida.detalle})"
+            )
+        for c in e.candidatas:
+            if e.elegida is not None and c.referencia == e.elegida.referencia:
+                continue
+            terminada = "?" if c.terminada_en is None else c.terminada_en.isoformat()
+            typer.echo(
+                f"      candidata {c.referencia}: firma {c.firma[:12]}..., terminada {terminada}, "
+                f"{c.detalle}"
+            )
+
+
+def _cuerpo_del_manifiesto(peticion) -> dict:
+    """La peticion como la recibe POST /analytics/ejecuciones."""
+
+    def texto(valor):
+        return None if valor is None else str(valor)
+
+    return {
+        "corte_id": str(peticion.corte_id),
+        "as_of": peticion.as_of.isoformat(),
+        "modo": peticion.modo.value,
+        "zona_horaria": peticion.zona_horaria,
+        "granularidad": peticion.granularidad.value,
+        "known_at": None if peticion.known_at is None else peticion.known_at.isoformat(),
+        "motor_pagos_run_ids": [str(x) for x in peticion.motor_pagos],
+        "atribucion_run_ids": [str(x) for x in peticion.atribucion],
+        "evaluacion_run_id": texto(peticion.evaluacion_promesas),
+        "decision_run_id": texto(peticion.decision_v2),
+        "geografia_run_id": texto(peticion.geografia),
+        "territorial_run_id": texto(peticion.territorial_v2),
+        "campo_run_id": texto(peticion.campo_v2),
+        "ruteo_run_id": texto(peticion.ruteo_v2),
+    }
+
+
+@app.command("construir-manifiesto-analytics")
+def construir_manifiesto_analytics(
+    corte: Annotated[
+        datetime, typer.Option("--corte", formats=["%Y-%m-%d"], help="La fecha del corte.")
+    ],
+    as_of: Annotated[
+        datetime,
+        typer.Option("--as-of", formats=["%Y-%m-%d"], help="El ultimo dia de negocio."),
+    ],
+    modo: Annotated[str, typer.Option("--modo", help="OPERATIVO o BACKTEST.")],
+    zona: Annotated[str, typer.Option("--zona", help="La zona horaria IANA.")],
+    granularidad: Annotated[
+        str, typer.Option("--granularidad", help="TOTAL, DIA, SEMANA_ISO o MES.")
+    ],
+    known_at: Annotated[
+        str | None,
+        typer.Option(
+            "--known-at",
+            help="La frontera de conocimiento, ISO 8601 con zona. Obligatoria en BACKTEST; en "
+            "OPERATIVO, sin ella, el reloj de la base.",
+        ),
+    ] = None,
+    sin: Annotated[
+        list[str] | None,
+        typer.Option("--sin", help="Una familia que no se declara (repetible), p. ej. RUTEO_V2."),
+    ] = None,
+    pagos_run: Annotated[
+        list[str] | None, typer.Option("--pagos-run", help="Una interpretacion declarada.")
+    ] = None,
+    atribucion_run: Annotated[
+        list[str] | None, typer.Option("--atribucion-run", help="Una atribucion declarada.")
+    ] = None,
+    evaluacion_run: Annotated[str | None, typer.Option("--evaluacion-run")] = None,
+    decision_run: Annotated[str | None, typer.Option("--decision-run")] = None,
+    geografia_run: Annotated[str | None, typer.Option("--geografia-run")] = None,
+    territorial_run: Annotated[str | None, typer.Option("--territorial-run")] = None,
+    campo_run: Annotated[str | None, typer.Option("--campo-run")] = None,
+    ruteo_run: Annotated[str | None, typer.Option("--ruteo-run")] = None,
+    fecha_operacion: Annotated[
+        datetime | None,
+        typer.Option(
+            "--fecha-operacion", formats=["%Y-%m-%d"], help="Solo un plan de campo de ese dia."
+        ),
+    ] = None,
+    destino: Annotated[
+        str, typer.Option(help="El JSON del manifiesto que se escribe.")
+    ] = "datos/manifiesto_analytics.json",
+) -> None:
+    """Propone el manifiesto de una ejecucion de analytics/v1 y lo escribe, sin analizar nada:
+    muestra exactamente que ejecucion propone de cada familia, con su firma y su regla, y las demas
+    candidatas. Solo lee lo que existia a known_at. Una familia con dos o mas candidatas igual de
+    validas es ambigua: no se elige, se reporta, y termina con codigo 1; declarala con su opcion
+    (--decision-run, ...). El manifiesto se comprueba como lo haria analizar-cobranza."""
+    import json
+    from uuid import UUID
+
+    from sqlmodel import select
+
+    from motor_cartera.analytics import manifiesto, seleccion
+    from motor_cartera.analytics.catalogo import Fuente
+    from motor_cartera.analytics.politica import Granularidad, Modo
+    from motor_cartera.db.modelos import CorteCanonico
+    from motor_cartera.db.sesion import sesion
+
+    try:
+        modo_ = Modo(modo.upper())
+        granularidad_ = Granularidad(granularidad.upper())
+    except ValueError as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    frontera = _known_at_de(modo_, _instante(known_at, "--known-at"), "construir-manifiesto")
+    familias = _familias(sin)
+    declaradas = {
+        tipo: tuple(UUID(x) for x in valores if x)
+        for tipo, valores in (
+            (Fuente.MOTOR_PAGOS, pagos_run or []),
+            (Fuente.ATRIBUCION, atribucion_run or []),
+            (Fuente.EVALUACION_PROMESAS, [evaluacion_run]),
+            (Fuente.DECISION_V2, [decision_run]),
+            (Fuente.GEOGRAFIA, [geografia_run]),
+            (Fuente.TERRITORIAL_V2, [territorial_run]),
+            (Fuente.CAMPO_V2, [campo_run]),
+            (Fuente.RUTEO_V2, [ruteo_run]),
+        )
+    }
+    corte_id = _corte_por_fecha(corte.date())
+    with sesion() as s:
+        corte_ = s.exec(select(CorteCanonico).where(CorteCanonico.corte_id == corte_id)).one()
+        try:
+            propuesta = seleccion.proponer(
+                s,
+                corte=corte_,
+                as_of=as_of.date(),
+                modo=modo_,
+                zona=zona,
+                granularidad=granularidad_,
+                known_at=frontera,
+                familias=familias,
+                declaradas=declaradas,
+                fecha_operacion=None if fecha_operacion is None else fecha_operacion.date(),
+            )
+        except manifiesto.EntradaNoAnalizable as exc:
+            typer.echo(f"{exc.codigo}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        s.rollback()
+    typer.echo(
+        f"Manifiesto propuesto del corte {corte.date().isoformat()} ({corte_id}) al "
+        f"{as_of.date().isoformat()} en {zona}, {modo_.value}, {granularidad_.value}, con lo que "
+        f"se conocia hasta {frontera.isoformat()}:"
+    )
+    _imprimir_propuesta(propuesta)
+    if propuesta.ambiguas:
+        typer.echo(
+            f"{len(propuesta.ambiguas)} familias ambiguas: no se eligio ninguna candidata y no se "
+            "escribio el manifiesto. Declara cada una con su opcion.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    r = propuesta.resuelto
+    ruta = Path(destino)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        json.dumps(
+            {
+                "manifiesto": _cuerpo_del_manifiesto(propuesta.peticion),
+                "hash_manifiesto": r.hash_manifiesto,
+                "firma_inputs": r.firma,
+                "seleccion": [
+                    {
+                        "tipo": e.tipo.value,
+                        "ventana": None if e.ventana is None else e.ventana.isoformat(),
+                        "regla": e.regla,
+                        "elegida": None if e.elegida is None else str(e.elegida.referencia),
+                        "candidatas": [str(c.referencia) for c in e.candidatas],
+                    }
+                    for e in propuesta.elecciones
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    typer.echo(f"  hash del manifiesto {r.hash_manifiesto}; firma {r.firma}")
+    for aviso in r.advertencias:
+        typer.echo(f"  {aviso}")
+    typer.echo(f"Escrito: {ruta}. No se inicio ningun analisis: usa analizar-cobranza.")
+
+
+def _peticion_de_archivo(ruta: Path):
+    """La peticion de un manifiesto escrito por construir-manifiesto-analytics (o a mano, con la
+    forma del cuerpo de POST /analytics/ejecuciones). Nada se completa ni se infiere."""
+    import json
+
+    from pydantic import ValidationError
+
+    from motor_cartera.analytics import manifiesto
+    from motor_cartera.api.esquemas_analytics import EjecucionAnalyticsEntrada
+
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        entrada = EjecucionAnalyticsEntrada.model_validate(datos.get("manifiesto", datos))
+    except (OSError, ValueError, ValidationError) as exc:
+        typer.echo(f"El manifiesto {ruta} no se puede leer: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    return manifiesto.Peticion(
+        corte_id=entrada.corte_id,
+        as_of=entrada.as_of,
+        modo=entrada.modo,
+        zona_horaria=entrada.zona_horaria,
+        granularidad=entrada.granularidad,
+        known_at=entrada.known_at,
+        motor_pagos=tuple(entrada.motor_pagos_run_ids),
+        atribucion=tuple(entrada.atribucion_run_ids),
+        evaluacion_promesas=entrada.evaluacion_run_id,
+        decision_v2=entrada.decision_run_id,
+        geografia=entrada.geografia_run_id,
+        territorial_v2=entrada.territorial_run_id,
+        campo_v2=entrada.campo_run_id,
+        ruteo_v2=entrada.ruteo_run_id,
+        version_catalogo=entrada.version_catalogo,
+        version_politica=entrada.version_politica,
+    )
+
+
+@app.command("analizar-cobranza")
+def analizar_cobranza(
+    manifiesto_: Annotated[
+        str,
+        typer.Option("--manifiesto", help="El JSON de construir-manifiesto-analytics."),
+    ],
+) -> None:
+    """Analiza una cohorte con analytics/v1, en primer plano y sin la API, con el manifiesto
+    declarado: ninguna entrada se elige aqui. Pasa por la cola durable, con el trabajo de este
+    proceso, despues de esperar su frontera de conocimiento. Termina con codigo 1 si no publico."""
+    from motor_cartera.analytics import ejecuciones as analytics
+    from motor_cartera.analytics import manifiesto
+    from motor_cartera.db.modelos import EstadoAnalytics
+    from motor_cartera.orquestacion.worker import analizar_en_primer_plano
+
+    peticion = _peticion_de_archivo(Path(manifiesto_))
+    codigos = {
+        analytics.AnalyticsEnProceso: "ANALYTICS_EN_PROCESO",
+        analytics.AnalyticsYaGenerada: "ANALYTICS_YA_GENERADA",
+    }
+    try:
+        e = analizar_en_primer_plano(peticion)
+    except (
+        manifiesto.EntradaNoAnalizable,
+        analytics.AnalyticsEnProceso,
+        analytics.AnalyticsYaGenerada,
+    ) as exc:
+        codigo = getattr(exc, "codigo", None) or codigos[type(exc)]
+        typer.echo(f"{codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"analytics/v1 {e.analytics_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(f"  {e.version_catalogo} ({e.hash_catalogo[:12]}...), {e.version_politica}")
+    typer.echo(f"  firma {e.firma_inputs}; manifiesto {e.hash_manifiesto}")
+    if e.hash_agregados:
+        typer.echo(f"  {e.agregados_publicados:,} agregados, hash {e.hash_agregados}")
+    typer.echo(f"  {e.detalle}")
+    typer.echo(f"analytics_run_id {e.analytics_run_id}")
+    if e.estado != EstadoAnalytics.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+@app.command("resumen-analytics")
+def resumen_analytics(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="El analytics_run_id.")],
+) -> None:
+    """Resume una ejecucion de analytics/v1: su manifiesto, sus relojes, sus versiones y hashes,
+    la disponibilidad de cada familia, unos indicadores del total, los embudos y sus controles.
+    Agregado: ninguna cuenta."""
+    from uuid import UUID
+
+    from motor_cartera.analytics import consultas
+    from motor_cartera.db.modelos import EstadoAnalytics
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        try:
+            v = consultas.obtener(s, UUID(ejecucion))
+        except consultas.EjecucionNoEncontrada as exc:
+            typer.echo(f"No existe la ejecucion {ejecucion}.", err=True)
+            raise typer.Exit(code=1) from exc
+        e = v.ejecucion
+        typer.echo(f"analytics/v1 {e.analytics_run_id}: {e.estado} ({e.resultado})")
+        typer.echo(
+            f"  corte {e.fecha_corte.isoformat()} ({v.corte_id}), as_of {e.as_of.isoformat()} en "
+            f"{e.zona_horaria}, known_at {e.known_at.isoformat()}, {e.modo}, {e.granularidad}"
+        )
+        typer.echo(
+            f"  {e.version_catalogo} ({e.hash_catalogo[:12]}...), {e.version_politica} "
+            f"({e.hash_politica[:12]}...), firma {e.firma_inputs}"
+        )
+        for x in v.entradas:
+            periodo = "" if x.periodo_desde is None else f" {x.periodo_desde:%Y-%m-%d}"
+            typer.echo(f"  entrada {x.tipo_entrada}{periodo}: {x.referencia_publica}")
+        controles = consultas.controles(s, e)
+        fallidos = [c for c in controles if c.estado != "OK"]
+        typer.echo(f"  controles: {len(controles)}, {len(fallidos)} sin cuadrar")
+        for c in fallidos:
+            typer.echo(f"    {c.codigo_control}: esperado {c.esperado}, observado {c.observado}")
+        if e.estado != EstadoAnalytics.EXITOSA:
+            typer.echo(f"  {e.detalle}")
+            return
+        disponibilidad = e.disponibilidad or {}
+        for familia, d in disponibilidad.get("familias", {}).items():
+            extra = ", ".join(f"{k} {v_}" for k, v_ in d.items() if k != "estado")
+            typer.echo(f"  {familia}: {d['estado']}" + (f" ({extra})" if extra else ""))
+        typer.echo(
+            f"  {e.agregados_publicados:,} agregados, "
+            f"{disponibilidad.get('celdas_suprimidas', 0):,} celdas suprimidas, hash "
+            f"{e.hash_agregados}"
+        )
+        for i in consultas.resumen(s, e):
+            valor = i.valor if i.estado_valor == "DISPONIBLE" else i.estado_valor
+            typer.echo(f"  {i.nombre}: {valor}")
+        for nombre, etapas in consultas.embudos(s, e).items():
+            typer.echo(
+                f"  embudo {nombre}: "
+                + " > ".join(
+                    f"{x.etapa} {x.cuentas if x.cuentas is not None else x.estado_valor}"
+                    for x in etapas
+                )
+            )
+    typer.echo(
+        "Describe lo observado y lo planificado, agregado: no prueba causalidad, no predice y no "
+        "recomienda."
+    )
+
+
+@app.command("exportar-analytics")
+def exportar_analytics(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="Un analytics_run_id EXITOSA.")],
+    formato: Annotated[str, typer.Option(help="csv, parquet o jsonl.")] = "csv",
+    destino: Annotated[str | None, typer.Option(help="El archivo que se escribe.")] = None,
+    metrica: Annotated[str | None, typer.Option(help="Solo esa metrica.")] = None,
+    vista: Annotated[str | None, typer.Option(help="ACUMULADA o PERIODO.")] = None,
+    conjunto: Annotated[str | None, typer.Option(help="Solo ese conjunto.")] = None,
+) -> None:
+    """Exporta los agregados de una ejecucion EXITOSA, para inspeccionarlos o llevarlos a otra
+    herramienta: una fila por metrica, celda y periodo, con su estado. Una celda SUPRIMIDO se
+    exporta sin ningun valor, y un valor no disponible queda vacio, nunca cero. Montos y razones
+    como decimales exactos, nunca float."""
+    import csv
+    import json
+    from uuid import UUID
+
+    from motor_cartera.analytics import consultas
+    from motor_cartera.analytics.consultas import FiltrosAgregados
+    from motor_cartera.db.modelos import EstadoAnalytics
+    from motor_cartera.db.sesion import sesion
+
+    formato = formato.lower()
+    if formato not in ("csv", "parquet", "jsonl"):
+        typer.echo("--formato es csv, parquet o jsonl.", err=True)
+        raise typer.Exit(code=2)
+    ruta = Path(destino or f"datos/analytics_{ejecucion}.{formato}")
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    with sesion() as s:
+        try:
+            v = consultas.obtener(s, UUID(ejecucion))
+        except consultas.EjecucionNoEncontrada as exc:
+            typer.echo(f"No existe la ejecucion {ejecucion}.", err=True)
+            raise typer.Exit(code=1) from exc
+        if v.ejecucion.estado != EstadoAnalytics.EXITOSA:
+            typer.echo(
+                f"La ejecucion {ejecucion} esta {v.ejecucion.estado}: no publico agregados.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        filas = consultas.todos_los_agregados(
+            s,
+            v.ejecucion,
+            FiltrosAgregados(
+                metrica=metrica,
+                vista=None if vista is None else vista.upper(),
+                dimension_set=None if conjunto is None else conjunto.upper(),
+            ),
+        )
+    columnas = (
+        "metrica",
+        "vista",
+        "dimension_set",
+        "periodo_desde",
+        "periodo_hasta",
+        "periodo_parcial",
+        "dimensiones",
+        "estado_valor",
+        "poblacion_cuentas",
+        "valor",
+        "numerador",
+        "denominador",
+        "motivos",
+    )
+
+    def registro(a) -> dict:
+        return {
+            "metrica": a.metrica_codigo,
+            "vista": a.vista,
+            "dimension_set": a.dimension_set,
+            "periodo_desde": a.periodo_desde.isoformat(),
+            "periodo_hasta": a.periodo_hasta.isoformat(),
+            "periodo_parcial": a.periodo_parcial,
+            "dimensiones": json.dumps(a.dimensiones, sort_keys=True, ensure_ascii=False),
+            "estado_valor": a.estado_valor,
+            "poblacion_cuentas": a.poblacion_cuentas,
+            "valor": None if a.valor is None else str(a.valor),
+            "numerador": None if a.numerador is None else str(a.numerador),
+            "denominador": None if a.denominador is None else str(a.denominador),
+            "motivos": json.dumps(a.motivos, sort_keys=True, ensure_ascii=False),
+        }
+
+    if formato == "csv":
+        with ruta.open("w", encoding="utf-8", newline="") as salida:
+            escritor = csv.DictWriter(salida, fieldnames=columnas)
+            escritor.writeheader()
+            for a in filas:
+                escritor.writerow(registro(a))
+    elif formato == "jsonl":
+        with ruta.open("w", encoding="utf-8") as salida:
+            for a in filas:
+                salida.write(json.dumps(registro(a), ensure_ascii=False) + "\n")
+    else:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        exacto = pa.decimal128(38, 10)
+        tabla = pa.table(
+            {
+                "metrica": pa.array([a.metrica_codigo for a in filas], pa.string()),
+                "vista": pa.array([a.vista for a in filas], pa.string()),
+                "dimension_set": pa.array([a.dimension_set for a in filas], pa.string()),
+                "periodo_desde": pa.array([a.periodo_desde for a in filas], pa.date32()),
+                "periodo_hasta": pa.array([a.periodo_hasta for a in filas], pa.date32()),
+                "periodo_parcial": pa.array([a.periodo_parcial for a in filas], pa.bool_()),
+                "dimensiones": pa.array([registro(a)["dimensiones"] for a in filas], pa.string()),
+                "estado_valor": pa.array([a.estado_valor for a in filas], pa.string()),
+                "poblacion_cuentas": pa.array([a.poblacion_cuentas for a in filas], pa.int64()),
+                "valor": pa.array([a.valor for a in filas], exacto),
+                "numerador": pa.array([a.numerador for a in filas], exacto),
+                "denominador": pa.array([a.denominador for a in filas], exacto),
+                "motivos": pa.array([registro(a)["motivos"] for a in filas], pa.string()),
+            }
+        )
+        pq.write_table(tabla, ruta)
+    suprimidas = sum(1 for a in filas if a.estado_valor == "SUPRIMIDO")
+    typer.echo(
+        f"Escrito: {ruta} ({len(filas):,} agregados de la ejecucion {ejecucion}; {suprimidas:,} "
+        "suprimidos, sin valor)"
+    )
+
+
+@app.command("backfill-analytics")
+def backfill_analytics(
+    modo: Annotated[str, typer.Option("--modo", help="OPERATIVO o BACKTEST: obligatorio.")],
+    granularidad: Annotated[
+        str, typer.Option("--granularidad", help="TOTAL, DIA, SEMANA_ISO o MES: obligatoria.")
+    ],
+    zona: Annotated[str, typer.Option("--zona", help="La zona horaria IANA: obligatoria.")],
+    known_at: Annotated[
+        str | None,
+        typer.Option(
+            "--known-at",
+            help="La frontera, ISO 8601 con zona: obligatoria en BACKTEST. En OPERATIVO, sin "
+            "ella, el reloj de la base, una vez para todo el backfill.",
+        ),
+    ] = None,
+    as_of: Annotated[
+        datetime | None,
+        typer.Option(
+            "--as-of", formats=["%Y-%m-%d"], help="El mismo as_of para cada corte (o --horizonte)."
+        ),
+    ] = None,
+    horizonte: Annotated[
+        int | None,
+        typer.Option("--horizonte", min=1, help="Dias del horizonte de cada corte (o --as-of)."),
+    ] = None,
+    desde: Annotated[
+        datetime | None,
+        typer.Option("--desde", formats=["%Y-%m-%d"], help="Solo los cortes desde esa fecha."),
+    ] = None,
+    hasta: Annotated[
+        datetime | None,
+        typer.Option("--hasta", formats=["%Y-%m-%d"], help="Solo los cortes hasta esa fecha."),
+    ] = None,
+    sin: Annotated[
+        list[str] | None, typer.Option("--sin", help="Una familia que no se declara (repetible).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo dice que haria; no encola nada.")
+    ] = False,
+) -> None:
+    """Las ejecuciones de analytics/v1 que faltan, corte por corte, con el modo, la granularidad, la
+    zona, la frontera y el horizonte declarados: nada se infiere. El manifiesto de cada corte sale
+    de construir-manifiesto (las mismas reglas); un corte con una familia ambigua se reporta y no se
+    analiza. Lo que ya tiene una ejecucion EXITOSA o EN_PROCESO con la misma firma no se pide otra
+    vez; la frontera es parte de la firma, asi que con la misma --known-at es idempotente. Sin
+    --dry-run, encola los trabajos ANALYTICS; los ejecuta un worker."""
+    from datetime import timedelta as dias
+
+    from sqlmodel import select
+
+    from motor_cartera.analytics import ejecuciones as analytics
+    from motor_cartera.analytics import manifiesto, seleccion
+    from motor_cartera.analytics.politica import Granularidad, Modo
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import CorteCanonico, EjecucionAnalytics
+    from motor_cartera.db.sesion import sesion
+
+    try:
+        modo_ = Modo(modo.upper())
+        granularidad_ = Granularidad(granularidad.upper())
+    except ValueError as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if (as_of is None) == (horizonte is None):
+        typer.echo(
+            "backfill-analytics no inventa el horizonte: declara --as-of o --horizonte, uno.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    frontera = _known_at_de(modo_, _instante(known_at, "--known-at"), "backfill-analytics")
+    familias = _familias(sin)
+    pendientes, hechas, en_proceso, ambiguas, invalidas, fuera = [], 0, 0, [], [], []
+    with sesion() as s:
+        condiciones = [
+            CorteCanonico.despacho_id == config.despacho_id,
+            CorteCanonico.cartera_id == config.cartera_id,
+            CorteCanonico.creado_en <= frontera,
+        ]
+        if desde is not None:
+            condiciones.append(CorteCanonico.fecha_corte >= desde.date())
+        if hasta is not None:
+            condiciones.append(CorteCanonico.fecha_corte <= hasta.date())
+        cortes = s.exec(
+            select(CorteCanonico).where(*condiciones).order_by(CorteCanonico.fecha_corte)
+        ).all()
+        for corte in cortes:
+            dia = (
+                as_of.date() if as_of is not None else corte.fecha_corte + dias(days=horizonte - 1)
+            )
+            if dia < corte.fecha_corte:
+                fuera.append(corte.fecha_corte)
+                continue
+            try:
+                propuesta = seleccion.proponer(
+                    s,
+                    corte=corte,
+                    as_of=dia,
+                    modo=modo_,
+                    zona=zona,
+                    granularidad=granularidad_,
+                    known_at=frontera,
+                    familias=familias,
+                )
+            except manifiesto.EntradaNoAnalizable as exc:
+                invalidas.append((corte.fecha_corte, exc.codigo, str(exc)))
+                continue
+            if propuesta.ambiguas:
+                ambiguas.append((corte.fecha_corte, [e.tipo.value for e in propuesta.ambiguas]))
+                continue
+            estados = set(
+                s.exec(
+                    select(EjecucionAnalytics.estado).where(
+                        EjecucionAnalytics.firma_inputs == propuesta.resuelto.firma
+                    )
+                ).all()
+            )
+            if "EXITOSA" in estados:
+                hechas += 1
+            elif "EN_PROCESO" in estados:
+                en_proceso += 1
+            else:
+                pendientes.append((corte, dia, propuesta))
+        s.rollback()
+        typer.echo(
+            f"analytics/v1 de {len(cortes)} cortes, {modo_.value}, {granularidad_.value}, en "
+            f"{zona}, con lo que se conocia hasta {frontera.isoformat()}:"
+        )
+        typer.echo(f"  ya analizados: {hechas}; en proceso: {en_proceso}")
+        for fecha in fuera:
+            typer.echo(f"  {fecha.isoformat()}: as_of anterior al corte; no se analiza")
+        for fecha, tipos in ambiguas:
+            typer.echo(
+                f"  {fecha.isoformat()}: ambiguo en {', '.join(tipos)}; declara sus entradas con "
+                "construir-manifiesto-analytics"
+            )
+        for fecha, codigo, mensaje in invalidas:
+            typer.echo(f"  {fecha.isoformat()}: {codigo}: {mensaje}")
+        typer.echo(f"  Ejecuciones pendientes: {len(pendientes)}")
+        for corte, dia, propuesta in pendientes:
+            typer.echo(
+                f"    corte {corte.fecha_corte.isoformat()} al {dia.isoformat()}: firma "
+                f"{propuesta.resuelto.firma[:16]}..., {len(propuesta.resuelto.entradas)} entradas"
+            )
+        if dry_run:
+            typer.echo("Con --dry-run no se encolo nada.")
+            return
+        abiertas = []
+        for _, _, propuesta in pendientes:
+            try:
+                abiertas.append(
+                    analytics.abrir(s, propuesta.peticion, max_intentos=config.worker_max_intentos)
+                )
+            except (analytics.AnalyticsEnProceso, analytics.AnalyticsYaGenerada) as exc:
+                typer.echo(f"  {exc}")
+        s.commit()
+        typer.echo(f"Se encolaron {len(abiertas)} trabajos ANALYTICS; los ejecuta un worker.")
+        for e in abiertas:
+            typer.echo(f"  analytics_run_id {e.analytics_run_id}")
+
+
 def _ventana_atribuible(ventana) -> str:
     """Una ventana de la atribucion, como la lee una persona."""
     return (

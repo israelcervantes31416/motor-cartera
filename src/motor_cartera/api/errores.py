@@ -99,6 +99,7 @@ _PROBLEMAS = {
     "literal_error": "Debe ser uno de: {expected}.",
     "date_parsing": "Debe ser una fecha AAAA-MM-DD.",
     "date_from_datetime_parsing": "Debe ser una fecha AAAA-MM-DD.",
+    "extra_forbidden": "No es un campo de esta peticion.",
 }
 
 
