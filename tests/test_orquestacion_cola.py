@@ -442,8 +442,8 @@ def test_el_reclamo_salta_las_filas_bloqueadas_y_toma_una_sola_en_orden():
 
     # Una consulta que toma una fila, lo operacional antes que la historia, la historia antes que
     # el motor de pagos, este antes que la atribucion y la evaluacion de promesas, estas antes que
-    # decision/v2 y la geografia, despues territorial/v2, campo/v2 y al final ruteo/v2, y despues en
-    # orden de id, saltando las bloqueadas; y un UPDATE de esa.
+    # decision/v2 y la geografia, despues territorial/v2, campo/v2, ruteo/v2 y al final
+    # analytics/v1, y despues en orden de id, saltando las bloqueadas; y un UPDATE de esa.
     tomar, marcar = vistas
     assert tomar.startswith("SELECT ") and "FROM trabajo_orquestacion WHERE" in tomar
     assert tomar.endswith(
@@ -456,7 +456,8 @@ def test_el_reclamo_salta_las_filas_bloqueadas_y_toma_una_sola_en_orden():
         "WHEN (trabajo_orquestacion.tipo = %(tipo_7)s) THEN %(param_7)s::INTEGER "
         "WHEN (trabajo_orquestacion.tipo = %(tipo_8)s) THEN %(param_8)s::INTEGER "
         "WHEN (trabajo_orquestacion.tipo = %(tipo_9)s) THEN %(param_9)s::INTEGER "
-        "ELSE %(param_10)s::INTEGER END, trabajo_orquestacion.id "
-        "LIMIT %(param_11)s::INTEGER FOR UPDATE SKIP LOCKED"
+        "WHEN (trabajo_orquestacion.tipo = %(tipo_10)s) THEN %(param_10)s::INTEGER "
+        "ELSE %(param_11)s::INTEGER END, trabajo_orquestacion.id "
+        "LIMIT %(param_12)s::INTEGER FOR UPDATE SKIP LOCKED"
     )
     assert marcar.startswith("UPDATE trabajo_orquestacion SET ")
