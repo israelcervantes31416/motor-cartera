@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.elements import conv
 from sqlmodel import Field, SQLModel
 
+from motor_cartera.analytics.politica import Granularidad, Modo
 from motor_cartera.config import config
 from motor_cartera.db.espacial import Geometria
 from motor_cartera.fuentes.formatos import Formato
@@ -4583,6 +4584,421 @@ class ParadaRutaV2(SQLModel, table=True):
     motivo: str | None = Field(default=None, max_length=40)
 
 
+# --- analytics/v1 ---------------------------------------------------------------------------------
+#
+# Desde la 0015. Collection Analytics describe una cohorte (las cuentas de un corte canonico) desde
+# fecha_corte hasta as_of, con lo que se conocia en known_at, sobre un manifiesto explicito de
+# entradas (EntradaAnalytics): ninguna "ultima" interpretacion, atribucion, evaluacion, decision ni
+# plan. Publica todo o nada sus agregados (AgregadoAnalytics: una metrica de un periodo en una
+# celda de un conjunto de dimensiones) y sus controles de reconciliacion (ControlAnalytics). No hay
+# ninguna fila por cuenta: lo que crece es periodos x celdas x metricas. Lo publicado no se
+# reescribe: los triggers de la 0015 rechazan cualquier UPDATE o DELETE sobre las entradas, los
+# agregados y los controles, y sobre una ejecucion terminada.
+
+TIPOS_ENTRADA_ANALYTICS = (
+    "CORTE",
+    "MOTOR_PAGOS",
+    "ATRIBUCION",
+    "EVALUACION_PROMESAS",
+    "DECISION_V2",
+    "GEOGRAFIA",
+    "TERRITORIAL_V2",
+    "CAMPO_V2",
+    "RUTEO_V2",
+)
+"""Lo que puede declarar un manifiesto. Solo CORTE es obligatoria."""
+
+COLUMNA_DE_LA_ENTRADA = {
+    "CORTE": "corte_canonico_id",
+    "MOTOR_PAGOS": "ejecucion_motor_pagos_id",
+    "ATRIBUCION": "ejecucion_atribucion_id",
+    "EVALUACION_PROMESAS": "ejecucion_evaluacion_promesas_id",
+    "DECISION_V2": "ejecucion_decision_v2_id",
+    "GEOGRAFIA": "ejecucion_geografia_id",
+    "TERRITORIAL_V2": "ejecucion_territorial_v2_id",
+    "CAMPO_V2": "ejecucion_campo_v2_id",
+    "RUTEO_V2": "ejecucion_ruteo_v2_id",
+}
+"""La columna que apunta al recurso de cada tipo de entrada, con su llave foranea."""
+
+OBJETIVO_DE_LA_ENTRADA = " AND ".join(
+    f"(tipo_entrada = '{tipo}') = ({columna} IS NOT NULL)"
+    for tipo, columna in COLUMNA_DE_LA_ENTRADA.items()
+)
+"""Exactamente un recurso, el de su tipo."""
+
+VENTANAS_DE_ENTRADA = "('MOTOR_PAGOS', 'ATRIBUCION')"
+"""Las entradas que se declaran una por ventana (un mes); las demas, a lo mas una."""
+
+ESTADOS_VALOR_ANALYTICS = ("DISPONIBLE", "NO_DISPONIBLE", "SUPRIMIDO", "NO_APLICA")
+
+COHERENCIA_DEL_AGREGADO = (
+    "estado_valor IN ("
+    + ", ".join(f"'{e}'" for e in ESTADOS_VALOR_ANALYTICS)
+    + ") AND vista IN ('ACUMULADA', 'PERIODO') "
+    "AND (estado_valor = 'DISPONIBLE' OR (valor IS NULL AND numerador IS NULL "
+    "AND denominador IS NULL)) "
+    "AND (estado_valor <> 'SUPRIMIDO' OR poblacion_cuentas IS NULL) "
+    "AND (numerador IS NULL) = (denominador IS NULL) "
+    "AND (denominador IS NULL OR denominador <> 0 OR valor IS NULL) "
+    "AND (denominador IS NULL OR denominador = 0 OR valor IS NOT NULL) "
+    "AND (poblacion_cuentas IS NULL OR poblacion_cuentas >= 0) "
+    "AND periodo_desde <= periodo_hasta AND (vista = 'PERIODO' OR NOT periodo_parcial) "
+    "AND octet_length(dimension_hash) = 32 "
+    "AND (dimension_set <> 'TOTAL' OR dimensiones = '{}'::jsonb)"
+)
+"""Solo un valor DISPONIBLE tiene valor, numerador y denominador; uno SUPRIMIDO tampoco dice su
+poblacion. Una razon tiene los dos o ninguno; con denominador cero su valor es NULL, y con uno
+distinto de cero, no. La vista ACUMULADA no es parcial, y TOTAL no tiene dimensiones."""
+
+PUBLICACION_DE_ANALYTICS = (
+    "(estado = 'EXITOSA' AND cuentas_cohorte > 0 AND agregados_publicados > 0 "
+    "AND controles_totales > 0 AND controles_fallidos = 0 AND hash_agregados IS NOT NULL "
+    "AND disponibilidad IS NOT NULL) "
+    "OR (estado <> 'EXITOSA' AND agregados_publicados = 0 AND hash_agregados IS NULL)"
+)
+"""Una EXITOSA publico sus agregados y sus controles, y ninguno fallo; las demas no publicaron
+ningun agregado (una que fallo un control conserva sus controles)."""
+
+
+class EstadoAnalytics(StrEnum):
+    """En que quedo una ejecucion de analytics/v1. Solo una EXITOSA publica agregados."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEjecucionAnalytics(StrEnum):
+    """Como termino una ejecucion de analytics/v1."""
+
+    ANALYTICS_PUBLICADA = "ANALYTICS_PUBLICADA"
+    """EXITOSA: publico sus agregados y sus controles, todos OK."""
+    YA_GENERADA = "YA_GENERADA"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    ENTRADAS_NO_EXITOSAS = "ENTRADAS_NO_EXITOSAS"
+    """FALLIDA: una entrada declarada ya no esta EXITOSA."""
+    CONTROL_FALLIDO = "CONTROL_FALLIDO"
+    """FALLIDA: una reconciliacion de integridad no cuadro; sus controles se conservan."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionAnalytics(SQLModel, table=True):
+    """Una ejecucion de analytics/v1: la cohorte de un corte canonico, de fecha_corte a as_of, con
+    lo que se conocia en known_at, sobre un manifiesto declarado.
+
+    Guarda todo lo que fija su resultado: el corte, as_of, known_at, el modo, la zona, la
+    granularidad, las versiones del motor, del catalogo y de la politica con sus hashes, el hash del
+    manifiesto y la firma de sus entradas. La base garantiza a lo mas una EXITOSA y una EN_PROCESO
+    por firma.
+    """
+
+    __tablename__ = "ejecucion_analytics"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "fecha_corte"],
+            ["corte_canonico.id", "corte_canonico.fecha_corte"],
+            name="fk_analytics_corte",
+        ),
+        sa.Index(
+            "ux_analytics_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_analytics_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Las ejecuciones de una cohorte, por horizonte, la mas reciente primero.
+        sa.Index("ix_analytics_corte", "corte_canonico_id", "as_of", "id"),
+        sa.CheckConstraint(
+            "as_of >= fecha_corte AND horizonte_dias = (as_of - fecha_corte) + 1",
+            name=conv("ck_analytics_horizonte"),
+        ),
+        sa.CheckConstraint(
+            "hash_catalogo ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$' "
+            "AND hash_manifiesto ~ '^[0-9a-f]{64}$' AND firma_inputs ~ '^[0-9a-f]{64}$' "
+            "AND (hash_agregados IS NULL OR hash_agregados ~ '^[0-9a-f]{64}$')",
+            name=conv("ck_analytics_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL)", name=conv("ck_analytics_resultado")
+        ),
+        sa.CheckConstraint(
+            "cuentas_cohorte >= 0 AND agregados_publicados >= 0 AND controles_totales >= 0 "
+            "AND controles_fallidos >= 0 AND controles_fallidos <= controles_totales",
+            name=conv("ck_analytics_conteos"),
+        ),
+        sa.CheckConstraint(PUBLICACION_DE_ANALYTICS, name=conv("ck_analytics_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    analytics_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento. Lo determinista es su firma y lo que publica."""
+    corte_canonico_id: int
+    """El corte cuyos snapshots son la cohorte. Su llave foranea, con su fecha, esta arriba."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    fecha_corte: date
+    as_of: date
+    """Hasta que dia de negocio se describe: hasta el final de ese dia en la zona."""
+    known_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """Hasta que instante podia conocerse lo que se usa. En OPERATIVO sin declararlo, el reloj de la
+    base al abrir, una sola vez."""
+    modo: Modo = Field(
+        sa_type=sa.Enum(
+            Modo, name="modo_analytics", native_enum=False, create_constraint=True, length=12
+        )
+    )
+    zona_horaria: str = Field(max_length=64)
+    """La zona IANA de los dias del horizonte y de sus periodos: explicita, nunca la del sistema."""
+    granularidad: Granularidad = Field(
+        sa_type=sa.Enum(
+            Granularidad,
+            name="granularidad_analytics",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    horizonte_dias: int
+    """as_of - fecha_corte + 1: dias de calendario inclusivos."""
+    version_motor: str = Field(max_length=32)
+    version_catalogo: str = Field(max_length=40)
+    hash_catalogo: str = Field(max_length=64)
+    version_politica: str = Field(max_length=40)
+    hash_politica: str = Field(max_length=64)
+    hash_manifiesto: str = Field(max_length=64)
+    """SHA-256 de las entradas declaradas, en orden canonico."""
+    firma_inputs: str = Field(max_length=64)
+    """SHA-256 de todo lo que fija el resultado: el mismo conjunto logico, la misma firma."""
+    estado: EstadoAnalytics = Field(
+        default=EstadoAnalytics.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoAnalytics,
+            name="estado_analytics",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_cohorte: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas del corte: sus snapshots. Se fija al abrir."""
+    agregados_publicados: int = Field(default=0, sa_type=sa.BigInteger)
+    controles_totales: int = 0
+    controles_fallidos: int = 0
+    hash_agregados: str | None = Field(default=None, max_length=64)
+    """SHA-256 de todo lo que publico, en orden canonico: reconstruirla da el mismo."""
+    disponibilidad: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """Que familias y conjuntos se pudieron calcular, la cobertura de pagos por dia y por mes, y las
+    advertencias: explica cada NO_DISPONIBLE."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class EntradaAnalytics(SQLModel, table=True):
+    """Una entrada declarada del manifiesto de una ejecucion: el corte, o una ejecucion de otro
+    dominio, con su identificador publico, su version, su firma, su ventana o su fecha, y el
+    instante en que estuvo disponible. Nace con la ejecucion y no cambia."""
+
+    __tablename__ = "entrada_analytics"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_analytics_id"],
+            ["ejecucion_analytics.id"],
+            name="fk_entrada_analytics_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id"], ["corte_canonico.id"], name="fk_entrada_analytics_corte"
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_entrada_analytics_motor_pagos",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_atribucion_id"],
+            ["ejecucion_atribucion.id"],
+            name="fk_entrada_analytics_atribucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_evaluacion_promesas_id"],
+            ["ejecucion_evaluacion_promesas.id"],
+            name="fk_entrada_analytics_evaluacion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id"],
+            ["ejecucion_decision_v2.id"],
+            name="fk_entrada_analytics_decision_v2",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_geografia_id"],
+            ["ejecucion_geografia.id"],
+            name="fk_entrada_analytics_geografia",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_territorial_v2_id"],
+            ["ejecucion_territorial_v2.id"],
+            name="fk_entrada_analytics_territorial_v2",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_campo_v2_id"],
+            ["ejecucion_campo_v2.id"],
+            name="fk_entrada_analytics_campo_v2",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_v2_id"],
+            ["ejecucion_ruteo_v2.id"],
+            name="fk_entrada_analytics_ruteo_v2",
+        ),
+        # Una ventana mensual no aporta dos interpretaciones de pagos, ni dos atribuciones; y de lo
+        # demas, a lo mas una entrada por tipo.
+        sa.Index(
+            "ux_entrada_analytics_ventana",
+            "ejecucion_analytics_id",
+            "tipo_entrada",
+            "periodo_desde",
+            unique=True,
+            postgresql_where=sa.text(f"tipo_entrada IN {VENTANAS_DE_ENTRADA}"),
+        ),
+        sa.Index(
+            "ux_entrada_analytics_unica",
+            "ejecucion_analytics_id",
+            "tipo_entrada",
+            unique=True,
+            postgresql_where=sa.text(f"tipo_entrada NOT IN {VENTANAS_DE_ENTRADA}"),
+        ),
+        sa.CheckConstraint(
+            "tipo_entrada IN (" + ", ".join(f"'{t}'" for t in TIPOS_ENTRADA_ANALYTICS) + ")",
+            name=conv("ck_entrada_analytics_tipo"),
+        ),
+        sa.CheckConstraint(OBJETIVO_DE_LA_ENTRADA, name=conv("ck_entrada_analytics_objetivo")),
+        sa.CheckConstraint(
+            "firma ~ '^[0-9a-f]{64}$' AND (periodo_desde IS NULL OR periodo_hasta IS NULL "
+            f"OR periodo_desde <= periodo_hasta) AND (tipo_entrada NOT IN {VENTANAS_DE_ENTRADA} "
+            "OR (periodo_desde IS NOT NULL AND periodo_hasta IS NOT NULL))",
+            name=conv("ck_entrada_analytics_firma"),
+        ),
+    )
+
+    # La llave primaria es la natural: una entrada, una vez por ejecucion.
+    ejecucion_analytics_id: int = Field(primary_key=True)
+    tipo_entrada: str = Field(primary_key=True, max_length=24)
+    referencia_publica: UUID = Field(primary_key=True)
+    """El identificador publico del recurso: corte_id o su *_run_id."""
+    corte_canonico_id: int | None = None
+    ejecucion_motor_pagos_id: int | None = None
+    ejecucion_atribucion_id: int | None = None
+    ejecucion_evaluacion_promesas_id: int | None = None
+    ejecucion_decision_v2_id: int | None = None
+    ejecucion_geografia_id: int | None = None
+    ejecucion_territorial_v2_id: int | None = None
+    ejecucion_campo_v2_id: int | None = None
+    ejecucion_ruteo_v2_id: int | None = None
+    version: str = Field(max_length=40)
+    """La version del recurso: historia/v1, motor-pagos/v1, decision-policy/public-v1..."""
+    firma: str = Field(max_length=64)
+    """La firma del recurso: firma_contenido, firma_entrada o firma_inputs."""
+    periodo_desde: date | None = None
+    """La ventana de pagos o de atribucion, la fecha de corte, el as_of de una evaluacion o la
+    fecha de operacion de un plan, segun el tipo."""
+    periodo_hasta: date | None = None
+    disponible_en: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    """El instante persistido en que estuvo disponible: terminada_en de una ejecucion, creado_en de
+    un corte. Ninguno se inventa."""
+    metadatos: dict = Field(sa_type=JSONB)
+    """Lo minimo que la describe, sin datos de cuentas."""
+
+
+class AgregadoAnalytics(SQLModel, table=True):
+    """Un valor publicado: una metrica del catalogo, en un periodo de una vista, en una celda de un
+    conjunto de dimensiones. Inmutable.
+
+    Es una fila por metrica, y no una tabla ancha, porque el volumen es de agregados (periodos x
+    celdas x metricas), no de cuentas. `dimension_hash` es el SHA-256 de `dimensiones` en forma
+    canonica. Un valor SUPRIMIDO no guarda su valor, ni su numerador, ni su denominador, ni su
+    poblacion: no existen fuera de la transaccion que los calculo.
+    """
+
+    __tablename__ = "agregado_analytics"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_analytics_id"],
+            ["ejecucion_analytics.id"],
+            name="fk_agregado_analytics_ejecucion",
+        ),
+        # Todo lo de un conjunto de una vista, por periodo, sin recorrer las demas metricas.
+        sa.Index(
+            "ix_agregado_analytics_conjunto",
+            "ejecucion_analytics_id",
+            "dimension_set",
+            "vista",
+            "periodo_desde",
+        ),
+        sa.CheckConstraint(COHERENCIA_DEL_AGREGADO, name=conv("ck_agregado_analytics_valor")),
+    )
+
+    # La llave primaria es la natural, y es tambien el indice de una metrica: su serie en una
+    # vista y un conjunto, por periodo.
+    ejecucion_analytics_id: int = Field(primary_key=True)
+    metrica_codigo: str = Field(primary_key=True, max_length=64)
+    vista: str = Field(primary_key=True, max_length=12)
+    dimension_set: str = Field(primary_key=True, max_length=24)
+    periodo_desde: date = Field(primary_key=True)
+    dimension_hash: bytes = Field(primary_key=True, sa_type=sa.LargeBinary)
+    periodo_hasta: date
+    periodo_parcial: bool
+    dimensiones: dict = Field(sa_type=JSONB)
+    estado_valor: str = Field(max_length=16)
+    poblacion_cuentas: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """Las cuentas distintas del universo de la celda en el horizonte. NULL si la celda esta
+    suprimida, o si la metrica no es de cuentas."""
+    valor: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    numerador: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    denominador: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    motivos: list[dict] = Field(sa_type=JSONB)
+    """Por que el estado es el que es, con codigos estables: la entrada que falta, el dia sin
+    cobertura, la supresion. Vacio en un valor DISPONIBLE con denominador distinto de cero."""
+
+
+class ControlAnalytics(SQLModel, table=True):
+    """Una reconciliacion de una ejecucion: que se esperaba, que se observo y la diferencia, sin
+    datos de cuentas. Un control que falla deja la ejecucion FALLIDA."""
+
+    __tablename__ = "control_analytics"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_analytics_id"],
+            ["ejecucion_analytics.id"],
+            name="fk_control_analytics_ejecucion",
+        ),
+        sa.CheckConstraint(
+            "estado IN ('OK', 'FALLO') AND (esperado IS NULL) = (observado IS NULL) "
+            "AND (diferencia IS NULL) = (esperado IS NULL) "
+            "AND (diferencia IS NULL OR diferencia = observado - esperado) "
+            "AND (diferencia IS NULL OR (estado = 'OK') = (diferencia = 0))",
+            name=conv("ck_control_analytics_estado"),
+        ),
+    )
+
+    ejecucion_analytics_id: int = Field(primary_key=True)
+    codigo_control: str = Field(primary_key=True, max_length=80)
+    estado: str = Field(max_length=8)
+    esperado: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    observado: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    diferencia: Decimal | None = Field(default=None, sa_type=sa.Numeric())
+    detalle: str = Field(max_length=500)
+    """Que se comparo, para una persona: codigos, conteos y conjuntos, nunca una cuenta."""
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -4617,7 +5033,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'GEOGRAFIA') = (ejecucion_geografia_id IS NOT NULL) "
     "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL) "
     "AND (tipo = 'CAMPO_V2') = (ejecucion_campo_v2_id IS NOT NULL) "
-    "AND (tipo = 'RUTEO_V2') = (ejecucion_ruteo_v2_id IS NOT NULL)"
+    "AND (tipo = 'RUTEO_V2') = (ejecucion_ruteo_v2_id IS NOT NULL) "
+    "AND (tipo = 'ANALYTICS') = (ejecucion_analytics_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -4794,6 +5211,11 @@ class TipoTrabajo(StrEnum):
     sobre una version declarada de la red vial. Lo piden POST /ruteo-v2/ejecuciones, rutear-v2 o
     backfill-ruteo-v2. Corre en paralelo a ruteo/v1, que sigue siendo la etapa RUTEO; un worker sin
     proveedor de ruteo, o con uno que no responde, no lo toma."""
+    ANALYTICS = "ANALYTICS"
+    """Desde la 0015: Collection Analytics de una cohorte, de fecha_corte a as_of, con lo que se
+    conocia en known_at, sobre un manifiesto declarado. Lo piden POST /analytics/ejecuciones,
+    analizar-cobranza o backfill-analytics. Lee lo que publicaron los demas motores y no cambia
+    nada de ellos."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -4873,6 +5295,9 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ejecucion_ruteo_v2_id"], ["ejecucion_ruteo_v2.id"], name="fk_trabajo_ruteo_v2"
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_analytics_id"], ["ejecucion_analytics.id"], name="fk_trabajo_analytics"
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -4887,6 +5312,7 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_territorial_v2_id", name="uq_trabajo_territorial_v2"),
         sa.UniqueConstraint("ejecucion_campo_v2_id", name="uq_trabajo_campo_v2"),
         sa.UniqueConstraint("ejecucion_ruteo_v2_id", name="uq_trabajo_ruteo_v2"),
+        sa.UniqueConstraint("ejecucion_analytics_id", name="uq_trabajo_analytics"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -4955,6 +5381,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo CAMPO_V2, desde la 0013."""
     ejecucion_ruteo_v2_id: int | None = None
     """El objetivo de un trabajo RUTEO_V2, desde la 0014."""
+    ejecucion_analytics_id: int | None = None
+    """El objetivo de un trabajo ANALYTICS, desde la 0015."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int
