@@ -225,8 +225,11 @@ class Falla(Exception):
 @pytest.mark.parametrize("donde", motor.PUNTOS_DE_FALLA)
 def test_una_falla_en_cualquier_punto_no_publica_nada(escenario, modelo, monkeypatch, donde):
     corte = corte_de(escenario, "2026-07-08")
+    # Un known_at propio por punto de falla (su propia firma), siempre en el pasado: el modelo del
+    # modulo se entreno despues de label_known_at. Con segundos, una maquina rapida llegaba aqui
+    # antes de que el reloj de la base los alcanzara, y el scoring era KNOWN_AT_FUTURO.
     known_at = datetime.fromisoformat(escenario["label_known_at"]) + timedelta(
-        seconds=1 + motor.PUNTOS_DE_FALLA.index(donde)
+        microseconds=1 + motor.PUNTOS_DE_FALLA.index(donde)
     )
     ejecucion_id = abrir_scoring(
         modelo.modelo_version_id, corte["corte_id"], known_at=known_at, modo="BACKTEST"
