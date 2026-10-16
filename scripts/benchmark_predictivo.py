@@ -123,6 +123,10 @@ def entrenar(manifiesto: str) -> dict:
         ejecucion_id = entrenar_predictivo_en_primer_plano(declarado).id
     except entrenamiento.EntrenamientoYaPublicado as exc:
         ejecucion_id, recuperado = exc.previa.id, True
+    except entrenamiento.EntrenamientoEnProceso as exc:
+        # El proceso de una corrida anterior murio con el entrenamiento EN_PROCESO: se retoma
+        # aqui, como lo haria un worker cuando vence su lease, y se mide entero.
+        ejecucion_id = _retomar(exc.activa.id)
     segundos = time.perf_counter() - inicio
     with sesion() as s:
         e = s.get_one(EjecucionEntrenamientoPredictivo, ejecucion_id)
@@ -215,6 +219,29 @@ def entrenar(manifiesto: str) -> dict:
         }
     )
     return {**resultado, **medicion, "recuperado": recuperado}
+
+
+def _retomar(ejecucion_id: int) -> int:
+    """Toma, con la cola de siempre y solo entre los trabajos PREDICTIVE_TRAINING, el del
+    entrenamiento EN_PROCESO cuyo lease vencio, y lo procesa en este proceso."""
+    from motor_cartera.config import config
+    from motor_cartera.db.modelos import TipoTrabajo
+    from motor_cartera.orquestacion import cola
+    from motor_cartera.orquestacion.worker import identificador_worker, procesar_reclamo
+
+    worker_id = identificador_worker()
+    otros = frozenset(t for t in TipoTrabajo if t != TipoTrabajo.PREDICTIVE_TRAINING)
+    limite = time.monotonic() + 2 * config.worker_lease_segundos + 60
+    while (
+        reclamo := cola.reclamar(worker_id, config.worker_lease_segundos, excluir=otros)
+    ) is None:
+        if time.monotonic() > limite:
+            sys.exit(f"El entrenamiento EN_PROCESO {ejecucion_id} no se pudo retomar.")
+        time.sleep(5)
+    if reclamo.objetivo_id != ejecucion_id:
+        sys.exit(f"La cola dio el entrenamiento {reclamo.objetivo_id}, no el {ejecucion_id}.")
+    procesar_reclamo(reclamo, worker_id, config)
+    return ejecucion_id
 
 
 # --- un scoring, en su proceso --------------------------------------------------------------------

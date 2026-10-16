@@ -444,6 +444,14 @@ trabajos y las tablas de v0.15, y no toca nada de v0.14.
 - La explicación devuelve nombres de features, sus valores y sus contribuciones; nunca un dato
   personal.
 
+## Lo medido
+
+Sobre el escenario M (100,000 cuentas, 26 anclas) y un corte XL de 500,000 cuentas, en una sola
+máquina: el entrenamiento, 2,667 s y 1,282 MiB; el scoring XL, 173.1 s (2,888 cuentas por segundo),
+1,657 MiB y 586 MiB de WAL, 622 bytes por predicción con sus índices; por la API, de 11 a 28 ms por
+consulta y 111 ms la explicación de una cuenta. Las métricas, el backtest, el drift y cada fase, en
+[backtesting_predictivo.md](backtesting_predictivo.md#lo-medido).
+
 ## Limitaciones
 
 - Los modelos **predicen resultados observados bajo la política histórica**. **No estiman

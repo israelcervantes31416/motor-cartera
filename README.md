@@ -1543,6 +1543,17 @@ Todo está en [docs/predictivo.md](docs/predictivo.md),
 [docs/backtesting_predictivo.md](docs/backtesting_predictivo.md). El porqué, en las decisiones 197 a
 222.
 
+**Medido.** Sobre un escenario sintético de 100,000 cuentas y 39 cortes semanales (26 anclas), el
+entrenamiento M tardó 2,667 s con 1,282 MiB: 2,957,237 filas cuenta-ancla, 757,301 de TRAIN. En TEST
+(352,884 filas), la recuperación positiva a 30 días tiene un ROC AUC de 0.8359 y un log loss de 0.4322
+contra 0.5899 del baseline, calibrada sin Platt (ECE 0.014); el contacto a 14 días, 0.6798; la promesa
+a 30 días, 0.6833; el monto, un MAE de 1,462.72 contra 2,132.04. El walk-forward no se degrada en
+ningún fold. Puntuar 500,000 cuentas tardó 173.1 s (2,888 por segundo), con 1,657 MiB y 622 bytes por
+predicción; el drift distingue un corte cercano a TRAIN (una feature en ALTO, la que cuenta historia)
+de uno de otro generador (25 en ALTO). Por la API, de 11 a 28 ms por consulta y 111 ms la explicación
+de una cuenta, sin un Seq Scan sobre una tabla grande. Son datos sintéticos: validan la arquitectura y
+la estadística, no el desempeño en una cartera real.
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta

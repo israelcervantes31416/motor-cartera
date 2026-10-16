@@ -4664,6 +4664,14 @@ demás motores, que espera a que no quede ninguna abierta desde antes de su `kno
 500,000 cuentas por 26 semanas no aportaría evidencia del modelo que no den 100,000, y
 multiplicaría el tiempo y la memoria; el scoring es lo que tiene que escalar a la cartera completa.
 
+**Medido.** El entrenamiento M (26 anclas, 2,957,237 filas cuenta-ancla, 757,301 de TRAIN) tardó
+2,667 s con 1,282 MiB de memoria pico: el dataset, ancla por ancla, 1,860 s; el ajuste de los cuatro
+componentes con su rejilla, de 89 a 108 s cada uno; el walk-forward, 283 s. En TEST, la recuperación
+positiva tiene un ROC AUC de 0.8359 y un log loss de 0.4322 contra 0.5899 del baseline; el contacto,
+0.6798; la promesa, 0.6833; el monto, un MAE de 1,462.72 contra 2,132.04. El scoring XL de 500,000
+cuentas tardó 173.1 s (2,888 por segundo) con 1,657 MiB y 586 MiB de WAL. Los detalles, en
+[backtesting_predictivo.md](backtesting_predictivo.md#lo-medido).
+
 ## 222. Índices medidos, sin particionado; y qué no resuelve v0.15.0
 
 **Decisión.** Los índices de las tablas nuevas son los de sus consultas: la llave (scoring, cuenta)
@@ -4676,6 +4684,15 @@ listas. No hay particionado.
 y ningún orden ordena el scoring entero. Las predicciones crecen con las cuentas y los scorings, y la
 retención de scorings viejos es, como en `campo/v2`, `ruteo/v2` y `analytics/v1`, una política de la
 operación, con datos de producción.
+
+**Medido.** Sobre el scoring XL (500,000 predicciones, 622 bytes cada una con sus índices), cada
+consulta de la API entra por su índice: las páginas por cada orden, de 17 a 28 ms de mediana; las
+predicciones de una cuenta, 11 ms; la explicación de una cuenta, 111 ms. Ningún Seq Scan sobre una
+tabla grande. El benchmark encontró tres consultas que no escalaban, y se corrigieron antes del PR:
+la comprobación de que una interpretación clasificó cada pago (un `EXISTS` por pago, porque con la
+interpretación recién publicada fuera de las estadísticas el plan recorría todos sus resultados por
+pago), los movimientos de una sola cuenta (por el índice de los movimientos de una cuenta) y el total
+de una página sin filtros (el que publicó el scoring). Con eso no hace falta particionar.
 
 **Qué no resuelve v0.15.0.** Los modelos predicen resultados observados bajo la política histórica y
 no estiman causalidad; el benchmark sintético valida la arquitectura y la estadística, no el
