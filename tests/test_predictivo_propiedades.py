@@ -162,7 +162,8 @@ def test_el_sql_de_las_features_no_lee_decisiones_campo_ruteo_ni_analytics():
     textos = [
         *sql.sql_universo(una_cuenta=False),
         *sql.SQL_HISTORIA,
-        *sql.SQL_PAGOS,
+        *sql.sql_pagos(una_cuenta=False),
+        *sql.sql_pagos(una_cuenta=True),
         *sql.SQL_DATASETS_DE_PAGOS,
         sql.SQL_ALCANCES,
         sql.SQL_MESES,

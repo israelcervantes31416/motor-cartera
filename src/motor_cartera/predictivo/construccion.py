@@ -158,7 +158,7 @@ def preparar_features(
     p = parametros(relojes, tiempos, cuenta=cuenta)
     _ejecutar(s, sql.sql_universo(una_cuenta=cuenta is not None), p)
     _ejecutar(s, sql.SQL_HISTORIA, p)
-    _ejecutar(s, sql.SQL_PAGOS, p)
+    _ejecutar(s, sql.sql_pagos(una_cuenta=cuenta is not None), p)
     if disponibilidad is None:
         disponibilidad = _disponibilidad(s, relojes, p)
     p.update(

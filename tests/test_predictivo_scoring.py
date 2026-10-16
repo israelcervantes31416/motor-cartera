@@ -490,6 +490,50 @@ def test_la_api_filtra_y_ordena_las_predicciones_en_la_base(puntuado, cliente):
     )
 
 
+def test_las_dos_maneras_de_armar_una_pagina_filtrada_dan_lo_mismo(puntuado, monkeypatch):
+    """Un filtro que deja pocas predicciones se aplica primero, con su indice, y despues se ordena;
+    con muchas, se recorre el orden pedido. Las dos dan la misma pagina y el mismo total, en cada
+    orden. Sin filtros, el total es lo que publico el scoring, sin contar otra vez."""
+    from motor_cartera.predictivo import consultas
+
+    filtros = [
+        consultas.FiltrosPredicciones(
+            minimos={"riesgo_sin_recuperacion_30d": Decimal("0.6")},
+            maximos={"p_contacto_14d": Decimal("0.9")},
+            orden=orden,
+            sentido=sentido,
+        )
+        for orden, sentido in (
+            (consultas.Orden.CUENTA, consultas.Sentido.ASC),
+            (consultas.Orden.RIESGO_SIN_RECUPERACION_30D, consultas.Sentido.DESC),
+            (consultas.Orden.P_CONTACTO_14D, consultas.Sentido.ASC),
+            (consultas.Orden.RECUPERACION_POSITIVA_ESPERADA_30D, consultas.Sentido.DESC),
+        )
+    ]
+    with sesion() as s:
+        for f in filtros:
+            primero = consultas.predicciones(s, puntuado, f, desplazamiento=7, limite=40)
+            monkeypatch.setattr(consultas, "FILAS_PARA_FILTRAR_PRIMERO", -1)
+            recorriendo = consultas.predicciones(s, puntuado, f, desplazamiento=7, limite=40)
+            monkeypatch.setattr(consultas, "FILAS_PARA_FILTRAR_PRIMERO", 20_000)
+            assert primero == recorriendo
+            assert 0 < len(primero[1]) <= 40 and primero[0] > 47
+        total, pagina = consultas.predicciones(
+            s,
+            puntuado,
+            consultas.FiltrosPredicciones(minimos={}, maximos={}),
+            desplazamiento=0,
+            limite=10,
+        )
+        contadas = s.execute(
+            text(
+                "SELECT count(*) FROM prediccion_cuenta WHERE ejecucion_scoring_predictivo_id = :e"
+            ),
+            {"e": puntuado.id},
+        ).scalar_one()
+    assert total == contadas == puntuado.predicciones_publicadas and len(pagina) == 10
+
+
 def test_la_api_rechaza_un_manifiesto_invalido(escenario, cliente):
     datos = propuesto(escenario, variante=21)
     datos["anclas"][-2]["split"] = "TEST"

@@ -118,6 +118,28 @@ SQL_HISTORIA = (
 
 # --- los pagos ------------------------------------------------------------------------------------
 
+
+def sql_pagos(*, una_cuenta: bool) -> tuple[str, ...]:
+    """Los movimientos de las cuentas del corte, o de solo `:cuenta`. Con una cuenta, se buscan
+    por la llave de ix_movimiento_cuenta (despacho, cartera y CLIENTE_UNICO, de donde sale la cuenta
+    canonica de un movimiento): sin ella, la explicacion de una cuenta recorreria todos los
+    movimientos de la base. El CLIENTE_UNICO solo une; no es una feature ni sale de aqui."""
+    una = (
+        "JOIN cuenta_canonica c ON c.id = u.cuenta AND m.despacho_id = c.despacho_id "
+        "AND m.cartera_id = c.cartera_id AND m.cliente_unico = c.cliente_unico "
+        if una_cuenta
+        else ""
+    )
+    return (
+        *SQL_PAGOS[:2],
+        SQL_PAGOS[2].replace(
+            "JOIN pf_universo u ON u.cuenta = m.cuenta_canonica_id ",
+            "JOIN pf_universo u ON u.cuenta = m.cuenta_canonica_id " + una,
+        ),
+        *SQL_PAGOS[3:],
+    )
+
+
 SQL_PAGOS = (
     # La interpretacion de cada mes VIGENTE a K: la EXITOSA mas reciente que ya habia terminado.
     "CREATE TEMP TABLE pf_interpretacion ON COMMIT DROP AS "

@@ -249,6 +249,12 @@ RANGOS = {
 """Por salida, la columna que filtra su rango y si es la del complemento."""
 
 
+FILAS_PARA_FILTRAR_PRIMERO = 20_000
+"""Con un filtro que deja a lo mas estas predicciones (su conteo exacto ya se hizo), la pagina se
+arma primero con ellas, por el indice del filtro, y despues se ordena. Recorrer el orden pedido
+hasta juntar la pagina leeria el scoring entero cuando el filtro deja pocas."""
+
+
 @dataclass(frozen=True)
 class FiltrosPredicciones:
     minimos: dict[str, Decimal]
@@ -311,28 +317,46 @@ def predicciones(
         "JOIN snapshot_cuenta sn ON sn.corte_canonico_id = :corte "
         "AND sn.cuenta_canonica_id = p.cuenta_canonica_id "
     )
-    total = s.execute(
-        text(
-            f"SELECT count(*) FROM prediccion_cuenta p {snapshot if unir_snapshot else ''}"
-            f"WHERE {donde}"
-        ),
-        parametros,
-    ).scalar_one()
+    filtrada = len(condiciones) > 1 or unir_snapshot
+    # Sin filtros, el total es lo que el scoring publico, todo o nada: no se cuenta otra vez.
+    total = (
+        s.execute(
+            text(
+                f"SELECT count(*) FROM prediccion_cuenta p {snapshot if unir_snapshot else ''}"
+                f"WHERE {donde}"
+            ),
+            parametros,
+        ).scalar_one()
+        if filtrada
+        else ejecucion.predicciones_publicadas
+    )
     columna, inverso = _COLUMNA_DEL_ORDEN[filtros.orden]
     descendente = (filtros.sentido == Sentido.DESC) != inverso
     direccion = "DESC" if descendente else "ASC"
     orden = f"{columna} {direccion}, p.cuenta_canonica_id {direccion}"
-    filas = s.execute(
-        text(
-            "SELECT c.cuenta_id, sn.producto, sn.cve_entidad, p.p_recuperacion_positiva_30d, "
-            "p.p_contacto_14d, p.p_promesa_30d, p.riesgo_sin_recuperacion_30d, "
-            "p.recuperacion_positiva_esperada_30d, p.estado, p.motivos, "
-            "encode(p.feature_hash, 'hex') AS feature_hash "
-            f"FROM prediccion_cuenta p {snapshot}"
+    columnas = (
+        "SELECT c.cuenta_id, sn.producto, sn.cve_entidad, p.p_recuperacion_positiva_30d, "
+        "p.p_contacto_14d, p.p_promesa_30d, p.riesgo_sin_recuperacion_30d, "
+        "p.recuperacion_positiva_esperada_30d, p.estado, p.motivos, "
+        "encode(p.feature_hash, 'hex') AS feature_hash "
+    )
+    if filtrada and total <= FILAS_PARA_FILTRAR_PRIMERO:
+        consulta = (
+            "WITH elegidas AS MATERIALIZED (SELECT p.* FROM prediccion_cuenta p "
+            f"{snapshot if unir_snapshot else ''}WHERE {donde}) "
+            + columnas
+            + f"FROM (SELECT * FROM elegidas p ORDER BY {orden} "
+            "OFFSET :desplazamiento LIMIT :limite) p "
+            f"{snapshot}JOIN cuenta_canonica c ON c.id = p.cuenta_canonica_id ORDER BY {orden}"
+        )
+    else:
+        consulta = (
+            columnas + f"FROM prediccion_cuenta p {snapshot}"
             "JOIN cuenta_canonica c ON c.id = p.cuenta_canonica_id "
             f"WHERE {donde} ORDER BY {orden} OFFSET :desplazamiento LIMIT :limite"
-        ),
-        {**parametros, "desplazamiento": desplazamiento, "limite": limite},
+        )
+    filas = s.execute(
+        text(consulta), {**parametros, "desplazamiento": desplazamiento, "limite": limite}
     ).all()
     return total, [PrediccionVista(*f) for f in filas]
 
