@@ -4999,6 +4999,607 @@ class ControlAnalytics(SQLModel, table=True):
     """Que se comparo, para una persona: codigos, conteos y conjuntos, nunca una cuenta."""
 
 
+# --- Predictive Intelligence ----------------------------------------------------------------------
+#
+# Desde la 0016. predictive/model-v1 predice resultados observados bajo la operacion historica,
+# con lo que se conocia en cada momento: no es una decision ni un efecto causal, y no cambia
+# decision/v2, campo/v2 ni ruteo/v2. Un entrenamiento (EjecucionEntrenamientoPredictivo) lee un
+# manifiesto explicito: sus anclas (AnclaEntrenamientoPredictivo), cada una con sus tres relojes,
+# sus marcas de cobertura y su split, y las interpretaciones de pagos de sus labels
+# (InterpretacionEntrenamientoPredictivo). Publica, todo o nada, una version del modelo
+# (VersionModeloPredictivo) con sus cuatro componentes (ComponenteModeloPredictivo), cada uno con
+# su artefacto JSON y sus metricas. Un scoring (EjecucionScoringPredictivo) usa una version
+# PUBLICADA declarada sobre un corte, y publica, todo o nada, una prediccion por cuenta
+# (PrediccionCuenta) y su drift contra TRAIN (DriftPredictivo). Lo publicado no se reescribe: los
+# triggers de la 0016 rechazan cualquier UPDATE o DELETE sobre las anclas, las interpretaciones,
+# los componentes, las predicciones y el drift, sobre una version terminada y sobre una ejecucion
+# terminada. Ninguna tabla guarda un dato personal; las predicciones de una cuenta solo salen con su
+# cuenta_id.
+
+PROBABILIDADES_PREDICTIVAS = (
+    "p_recuperacion_positiva_30d",
+    "p_contacto_14d",
+    "p_promesa_30d",
+)
+
+RANGOS_DE_LA_PREDICCION = (
+    " AND ".join(f"{p} BETWEEN 0 AND 1" for p in PROBABILIDADES_PREDICTIVAS)
+    + " AND riesgo_sin_recuperacion_30d = 1 - p_recuperacion_positiva_30d"
+    + " AND recuperacion_positiva_esperada_30d >= 0"
+    + " AND recuperacion_positiva_esperada_30d <> 'NaN'::numeric"
+    + " AND octet_length(feature_hash) = 32"
+)
+"""Cada probabilidad en [0, 1] (BETWEEN rechaza NaN e infinito), el riesgo exactamente el
+complemento de la de recuperacion, y la recuperacion positiva esperada finita y no negativa."""
+
+TARGETS_PREDICTIVOS = (
+    "RECUPERACION_POSITIVA_30D",
+    "CONTACTO_14D",
+    "PROMESA_30D",
+    "RECUPERACION_POSITIVA_MONTO_30D",
+)
+
+SPLITS_PREDICTIVOS = ("TRAIN", "VALIDATION", "TEST", "PURGE")
+
+PUBLICACION_DEL_ENTRENAMIENTO = (
+    "(estado = 'EN_PROCESO' AND resultado IS NULL AND dataset_hash IS NULL) "
+    "OR (estado = 'EXITOSA' AND resultado IN ('MODELO_PUBLICADO', 'MODELO_RECHAZADO') "
+    "AND dataset_hash IS NOT NULL AND ejemplos_train > 0) "
+    "OR (estado = 'FALLIDA' AND resultado IS NOT NULL "
+    "AND resultado NOT IN ('MODELO_PUBLICADO', 'MODELO_RECHAZADO'))"
+)
+"""Una EXITOSA construyo su dataset y dejo un modelo, PUBLICADA o RECHAZADA; una FALLIDA no dejo
+ninguno."""
+
+CONTEOS_DEL_ENTRENAMIENTO = (
+    "anclas >= 0 AND ejemplos_total >= 0 AND ejemplos_train >= 0 AND ejemplos_validation >= 0 "
+    "AND ejemplos_test >= 0 AND ejemplos_purge >= 0 AND ejemplos_censurados >= 0 "
+    "AND ejemplos_train + ejemplos_validation + ejemplos_test + ejemplos_purge = ejemplos_total "
+    "AND ejemplos_censurados <= ejemplos_total"
+)
+
+PUBLICACION_DEL_SCORING = (
+    "(estado = 'EXITOSA' AND cuentas_objetivo > 0 "
+    "AND predicciones_publicadas = cuentas_objetivo "
+    "AND hash_predicciones IS NOT NULL AND hash_drift IS NOT NULL) "
+    "OR (estado <> 'EXITOSA' AND predicciones_publicadas = 0 "
+    "AND hash_predicciones IS NULL AND hash_drift IS NULL)"
+)
+"""Una EXITOSA publico una prediccion por cada cuenta de su corte y su drift; las demas, nada."""
+
+
+class EstadoEntrenamientoPredictivo(StrEnum):
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    """Construyo su dataset y dejo una version, PUBLICADA o RECHAZADA por sus compuertas."""
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoEntrenamientoPredictivo(StrEnum):
+    MODELO_PUBLICADO = "MODELO_PUBLICADO"
+    """EXITOSA: los cuatro componentes pasaron sus compuertas y la version quedo PUBLICADA."""
+    MODELO_RECHAZADO = "MODELO_RECHAZADO"
+    """EXITOSA: algun componente no paso sus compuertas en TEST; la version quedo RECHAZADA, con
+    sus metricas, y nada se publico."""
+    YA_ENTRENADO = "YA_ENTRENADO"
+    """FALLIDA: otra ejecucion publico primero la misma firma."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    SIN_EJEMPLOS = "SIN_EJEMPLOS"
+    """FALLIDA: algun bloque del split no tiene ejemplos maduros de algun target."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EstadoModeloPredictivo(StrEnum):
+    """El ciclo de una version: CANDIDATA (ajustada), VALIDADA (paso sus compuertas) y PUBLICADA, o
+    RECHAZADA. Todo en la transaccion que la publica: fuera de ella solo se ve PUBLICADA o
+    RECHAZADA."""
+
+    CANDIDATA = "CANDIDATA"
+    VALIDADA = "VALIDADA"
+    PUBLICADA = "PUBLICADA"
+    RECHAZADA = "RECHAZADA"
+
+
+class EstadoScoringPredictivo(StrEnum):
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ModoScoringPredictivo(StrEnum):
+    OPERATIVO = "OPERATIVO"
+    """known_at puede omitirse: es el reloj de la base al abrir, una sola vez."""
+    BACKTEST = "BACKTEST"
+    """known_at es obligatorio: un backtest declara su frontera de conocimiento."""
+
+
+class ResultadoScoringPredictivo(StrEnum):
+    PREDICCIONES_PUBLICADAS = "PREDICCIONES_PUBLICADAS"
+    YA_PUNTUADO = "YA_PUNTUADO"
+    """FALLIDA: otra ejecucion publico primero la misma firma."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionEntrenamientoPredictivo(SQLModel, table=True):
+    """Un entrenamiento de predictive/model-v1 sobre un manifiesto explicito: que anclas, con que
+    relojes, que split y que interpretaciones de pagos definen sus labels. Guarda las versiones y
+    los hashes de las features, de los targets y de la politica, el hash del manifiesto, la firma
+    de todo lo que fija el resultado y, al terminar, el hash del dataset y sus conteos. La base
+    garantiza a lo mas una EXITOSA y una EN_PROCESO por firma."""
+
+    __tablename__ = "ejecucion_entrenamiento_predictivo"
+    __table_args__ = (
+        sa.Index(
+            "ux_entrenamiento_predictivo_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_entrenamiento_predictivo_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # La lista de la API, la mas reciente primero, de un estado o de todos.
+        sa.Index("ix_entrenamiento_predictivo_estado", "estado", "id"),
+        sa.CheckConstraint(
+            "hash_features ~ '^[0-9a-f]{64}$' AND hash_targets ~ '^[0-9a-f]{64}$' "
+            "AND hash_politica ~ '^[0-9a-f]{64}$' AND hash_manifiesto ~ '^[0-9a-f]{64}$' "
+            "AND firma_inputs ~ '^[0-9a-f]{64}$' "
+            "AND (dataset_hash IS NULL OR dataset_hash ~ '^[0-9a-f]{64}$')",
+            name=conv("ck_entrenamiento_predictivo_firmas"),
+        ),
+        sa.CheckConstraint(
+            CONTEOS_DEL_ENTRENAMIENTO, name=conv("ck_entrenamiento_predictivo_conteos")
+        ),
+        sa.CheckConstraint(
+            PUBLICACION_DEL_ENTRENAMIENTO, name=conv("ck_entrenamiento_predictivo_publicacion")
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    training_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento. Lo determinista es su firma y lo que publica."""
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    zona_horaria: str = Field(max_length=64)
+    """La zona IANA de los dias de feature_as_of y de las ventanas de los labels."""
+    version_modelo: str = Field(max_length=32)
+    version_features: str = Field(max_length=40)
+    hash_features: str = Field(max_length=64)
+    version_targets: str = Field(max_length=40)
+    hash_targets: str = Field(max_length=64)
+    version_politica: str = Field(max_length=40)
+    hash_politica: str = Field(max_length=64)
+    manifiesto: dict = Field(sa_type=JSONB)
+    """El manifiesto declarado, en su forma canonica: lo que se puede repetir."""
+    hash_manifiesto: str = Field(max_length=64)
+    firma_inputs: str = Field(max_length=64)
+    """SHA-256 de todo lo que fija el resultado: el mismo manifiesto con las mismas versiones."""
+    dataset_hash: str | None = Field(default=None, max_length=64)
+    """SHA-256 del dataset, fila por fila en orden canonico: sus features, labels y madurez."""
+    estado: EstadoEntrenamientoPredictivo = Field(
+        default=EstadoEntrenamientoPredictivo.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoEntrenamientoPredictivo,
+            name="estado_entrenamiento",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    anclas: int = 0
+    ejemplos_total: int = Field(default=0, sa_type=sa.BigInteger)
+    """Filas cuenta-ancla del manifiesto, maduras o no."""
+    ejemplos_train: int = Field(default=0, sa_type=sa.BigInteger)
+    ejemplos_validation: int = Field(default=0, sa_type=sa.BigInteger)
+    ejemplos_test: int = Field(default=0, sa_type=sa.BigInteger)
+    ejemplos_purge: int = Field(default=0, sa_type=sa.BigInteger)
+    ejemplos_censurados: int = Field(default=0, sa_type=sa.BigInteger)
+    """Filas con al menos un label CENSURADA o NO_DISPONIBLE; el detalle, por target, en conteos."""
+    conteos: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """Por target y split: maduras, censuradas, no disponibles y la prevalencia o la media."""
+    backtest: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """El walk-forward: cada fold con su periodo, su eleccion y sus metricas por target."""
+    tiempos: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """Cuanto tardo cada fase y la memoria pico del proceso."""
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class AnclaEntrenamientoPredictivo(SQLModel, table=True):
+    """Un ancla del manifiesto de un entrenamiento: un corte canonico, el dia de la prediccion (su
+    fecha de corte), sus dos fronteras de conocimiento, las marcas de cobertura que declara y su
+    split. Nace con el entrenamiento y no cambia."""
+
+    __tablename__ = "ancla_entrenamiento_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_entrenamiento_predictivo_id"],
+            ["ejecucion_entrenamiento_predictivo.id"],
+            name="fk_ancla_predictiva_entrenamiento",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "feature_as_of"],
+            ["corte_canonico.id", "corte_canonico.fecha_corte"],
+            name="fk_ancla_predictiva_corte",
+        ),
+        sa.CheckConstraint(
+            "split IN (" + ", ".join(f"'{s}'" for s in SPLITS_PREDICTIVOS) + ")",
+            name=conv("ck_ancla_predictiva_split"),
+        ),
+        sa.CheckConstraint(
+            "feature_known_at <= label_known_at AND hash_ancla ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_ancla_predictiva_relojes"),
+        ),
+    )
+
+    ejecucion_entrenamiento_predictivo_id: int = Field(primary_key=True)
+    corte_canonico_id: int = Field(primary_key=True)
+    feature_as_of: date
+    """El dia de negocio de la prediccion: la fecha del corte (lo exige su llave foranea)."""
+    feature_known_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    label_known_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    pagos_completos_hasta: date | None = None
+    """Hasta que dia los pagos estaban completos a label_known_at, como lo declara el manifiesto:
+    evidencia declarada, nunca la fecha maxima observada. NULL: no declarada."""
+    lifecycle_completo_hasta: date | None = None
+    split: str = Field(max_length=12)
+    hash_ancla: str = Field(max_length=64)
+    """SHA-256 de la declaracion canonica del ancla."""
+
+
+class InterpretacionEntrenamientoPredictivo(SQLModel, table=True):
+    """Una interpretacion de pagos declarada para los labels de un entrenamiento: una por mes.
+    Nace con el entrenamiento y no cambia."""
+
+    __tablename__ = "interpretacion_entrenamiento_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_entrenamiento_predictivo_id"],
+            ["ejecucion_entrenamiento_predictivo.id"],
+            name="fk_interpretacion_predictiva_entrenamiento",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_motor_pagos_id"],
+            ["ejecucion_motor_pagos.id"],
+            name="fk_interpretacion_predictiva_motor_pagos",
+        ),
+        sa.UniqueConstraint(
+            "ejecucion_entrenamiento_predictivo_id",
+            "ejecucion_motor_pagos_id",
+            name="uq_interpretacion_predictiva_ejecucion",
+        ),
+    )
+
+    ejecucion_entrenamiento_predictivo_id: int = Field(primary_key=True)
+    periodo_desde: date = Field(primary_key=True)
+    """El mes de la interpretacion: una por mes, o un movimiento contaria dos veces."""
+    ejecucion_motor_pagos_id: int
+
+
+class VersionModeloPredictivo(SQLModel, table=True):
+    """Una version de predictive/model-v1: lo que dejo un entrenamiento EXITOSA, con sus versiones
+    y hashes, el hash del dataset, el del modelo (de sus artefactos), sus periodos y la referencia
+    de TRAIN para el drift. PUBLICADA, es inmutable y es la unica que un scoring puede usar; un
+    cambio es otra version, de otro entrenamiento."""
+
+    __tablename__ = "version_modelo_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_entrenamiento_predictivo_id"],
+            ["ejecucion_entrenamiento_predictivo.id"],
+            name="fk_modelo_predictivo_entrenamiento",
+        ),
+        sa.UniqueConstraint(
+            "ejecucion_entrenamiento_predictivo_id", name="uq_modelo_predictivo_entrenamiento"
+        ),
+        # El registro de la API, por estado y del mas reciente al mas antiguo.
+        sa.Index("ix_modelo_predictivo_estado", "estado", "creada_en"),
+        sa.CheckConstraint(
+            "hash_features ~ '^[0-9a-f]{64}$' AND hash_targets ~ '^[0-9a-f]{64}$' "
+            "AND hash_politica ~ '^[0-9a-f]{64}$' AND dataset_hash ~ '^[0-9a-f]{64}$' "
+            "AND hash_modelo ~ '^[0-9a-f]{64}$'",
+            name=conv("ck_modelo_predictivo_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'PUBLICADA') = (publicada_en IS NOT NULL)",
+            name=conv("ck_modelo_predictivo_publicada"),
+        ),
+        sa.CheckConstraint(
+            "periodo_train_desde <= periodo_train_hasta "
+            "AND periodo_train_hasta < periodo_validation_desde "
+            "AND periodo_validation_desde <= periodo_validation_hasta "
+            "AND periodo_validation_hasta < periodo_test_desde "
+            "AND periodo_test_desde <= periodo_test_hasta",
+            name=conv("ck_modelo_predictivo_periodos"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    modelo_version_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de la version."""
+    version_modelo: str = Field(max_length=32)
+    ejecucion_entrenamiento_predictivo_id: int
+    version_features: str = Field(max_length=40)
+    hash_features: str = Field(max_length=64)
+    version_targets: str = Field(max_length=40)
+    hash_targets: str = Field(max_length=64)
+    version_politica: str = Field(max_length=40)
+    hash_politica: str = Field(max_length=64)
+    dataset_hash: str = Field(max_length=64)
+    hash_modelo: str = Field(max_length=64)
+    """SHA-256 de los hashes de sus artefactos, por target: cambia si cambia un coeficiente."""
+    estado: EstadoModeloPredictivo = Field(
+        sa_type=sa.Enum(
+            EstadoModeloPredictivo,
+            name="estado_modelo_predictivo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    publicada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    periodo_train_desde: date
+    periodo_train_hasta: date
+    periodo_validation_desde: date
+    periodo_validation_hasta: date
+    periodo_test_desde: date
+    periodo_test_hasta: date
+    referencia_drift: dict = Field(sa_type=JSONB)
+    """Las distribuciones de TRAIN contra las que un scoring mide su drift: bins de cada feature,
+    su fraccion de NULL y bins de cada salida."""
+    metadatos: dict = Field(sa_type=JSONB)
+    """La ficha del modelo: uso previsto y no previsto, prevalencias, compuertas, limitaciones y las
+    versiones del entorno con que se entreno."""
+
+
+class ComponenteModeloPredictivo(SQLModel, table=True):
+    """Un componente de una version: el modelo de un target, con su algoritmo, sus
+    hiperparametros, su artefacto JSON con su hash, su calibracion, sus metricas de VALIDATION y de
+    TEST, el baseline de TEST, sus intervalos bootstrap y sus compuertas. Inmutable."""
+
+    __tablename__ = "componente_modelo_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_modelo_predictivo_id"],
+            ["version_modelo_predictivo.id"],
+            name="fk_componente_predictivo_modelo",
+        ),
+        sa.CheckConstraint(
+            "target IN (" + ", ".join(f"'{t}'" for t in TARGETS_PREDICTIVOS) + ") "
+            "AND algoritmo IN ('LOGISTICA_L2', 'TWEEDIE_LOG') "
+            "AND calibracion IN ('RAW', 'PLATT') AND estado IN ('VALIDADO', 'RECHAZADO') "
+            "AND hash_artefacto ~ '^[0-9a-f]{64}$' "
+            "AND ((target = 'RECUPERACION_POSITIVA_MONTO_30D') = (algoritmo = 'TWEEDIE_LOG'))",
+            name=conv("ck_componente_predictivo_coherencia"),
+        ),
+    )
+
+    version_modelo_predictivo_id: int = Field(primary_key=True)
+    target: str = Field(primary_key=True, max_length=40)
+    algoritmo: str = Field(max_length=24)
+    hiperparametros: dict = Field(sa_type=JSONB)
+    artefacto: dict = Field(sa_type=JSONB)
+    hash_artefacto: str = Field(max_length=64)
+    calibracion: str = Field(max_length=8)
+    metricas_validation: dict = Field(sa_type=JSONB)
+    metricas_test: dict = Field(sa_type=JSONB)
+    baseline_test: dict = Field(sa_type=JSONB)
+    bootstrap_test: dict = Field(sa_type=JSONB)
+    explicacion_global: list[dict] = Field(sa_type=JSONB)
+    """Cada coeficiente con su feature, su direccion y su magnitud en la escala estandarizada: una
+    asociacion del modelo, no una importancia causal."""
+    estado: str = Field(max_length=12)
+    compuertas: list[dict] = Field(sa_type=JSONB)
+
+
+class EjecucionScoringPredictivo(SQLModel, table=True):
+    """Un scoring: una version PUBLICADA declarada, un corte canonico, su as_of (el dia del corte) y
+    known_at. Nunca "el ultimo modelo". La base garantiza a lo mas una EXITOSA y una EN_PROCESO por
+    firma."""
+
+    __tablename__ = "ejecucion_scoring_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_modelo_predictivo_id"],
+            ["version_modelo_predictivo.id"],
+            name="fk_scoring_predictivo_modelo",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "as_of"],
+            ["corte_canonico.id", "corte_canonico.fecha_corte"],
+            name="fk_scoring_predictivo_corte",
+        ),
+        # Lo que referencia cada prediccion: la ejecucion junto con su corte.
+        sa.UniqueConstraint("id", "corte_canonico_id", name="uq_scoring_predictivo_id_corte"),
+        sa.Index(
+            "ux_scoring_predictivo_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_scoring_predictivo_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        sa.Index("ix_scoring_predictivo_corte", "corte_canonico_id", "id"),
+        sa.Index("ix_scoring_predictivo_modelo", "version_modelo_predictivo_id", "id"),
+        sa.Index("ix_scoring_predictivo_estado", "estado", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_features ~ '^[0-9a-f]{64}$' "
+            "AND (hash_predicciones IS NULL OR hash_predicciones ~ '^[0-9a-f]{64}$') "
+            "AND (hash_drift IS NULL OR hash_drift ~ '^[0-9a-f]{64}$')",
+            name=conv("ck_scoring_predictivo_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL) AND cuentas_objetivo >= 0 "
+            "AND predicciones_publicadas >= 0",
+            name=conv("ck_scoring_predictivo_resultado"),
+        ),
+        sa.CheckConstraint(PUBLICACION_DEL_SCORING, name=conv("ck_scoring_predictivo_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    scoring_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    version_modelo_predictivo_id: int
+    corte_canonico_id: int
+    despacho_id: str = Field(max_length=32)
+    cartera_id: str = Field(max_length=32)
+    as_of: date
+    """El dia de la prediccion: la fecha del corte (lo exige su llave foranea)."""
+    known_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    modo: ModoScoringPredictivo = Field(
+        sa_type=sa.Enum(
+            ModoScoringPredictivo,
+            name="modo_scoring_predictivo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    zona_horaria: str = Field(max_length=64)
+    version_features: str = Field(max_length=40)
+    hash_features: str = Field(max_length=64)
+    firma_inputs: str = Field(max_length=64)
+    estado: EstadoScoringPredictivo = Field(
+        default=EstadoScoringPredictivo.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoScoringPredictivo,
+            name="estado_scoring_predictivo",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_objetivo: int = Field(default=0, sa_type=sa.BigInteger)
+    predicciones_publicadas: int = Field(default=0, sa_type=sa.BigInteger)
+    hash_predicciones: str | None = Field(default=None, max_length=64)
+    """SHA-256 de las predicciones cuantizadas, en el orden de cuenta_id."""
+    hash_drift: str | None = Field(default=None, max_length=64)
+    disponibilidad: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """Que se conocia a known_at: la cobertura de pagos de cada ventana y la evaluacion de promesas
+    que se uso."""
+    drift_resumen: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    tiempos: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class PrediccionCuenta(SQLModel, table=True):
+    """La prediccion de una cuenta del corte en un scoring: sus tres probabilidades, su riesgo sin
+    recuperacion (el complemento exacto de la primera) y su recuperacion positiva esperada, con el
+    feature_hash de las features con que se calculo. Sin datos personales. Inmutable."""
+
+    __tablename__ = "prediccion_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_scoring_predictivo_id", "corte_canonico_id"],
+            ["ejecucion_scoring_predictivo.id", "ejecucion_scoring_predictivo.corte_canonico_id"],
+            name="fk_prediccion_scoring",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "cuenta_canonica_id"],
+            ["snapshot_cuenta.corte_canonico_id", "snapshot_cuenta.cuenta_canonica_id"],
+            name="fk_prediccion_snapshot",
+        ),
+        # Una pagina ordenada por una probabilidad o por el monto, sin ordenar el scoring entero; el
+        # riesgo es el orden inverso del de recuperacion.
+        sa.Index(
+            "ix_prediccion_recuperacion",
+            "ejecucion_scoring_predictivo_id",
+            "p_recuperacion_positiva_30d",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_prediccion_contacto",
+            "ejecucion_scoring_predictivo_id",
+            "p_contacto_14d",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_prediccion_promesa",
+            "ejecucion_scoring_predictivo_id",
+            "p_promesa_30d",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_prediccion_esperada",
+            "ejecucion_scoring_predictivo_id",
+            "recuperacion_positiva_esperada_30d",
+            "cuenta_canonica_id",
+        ),
+        # Las predicciones de una cuenta en todos sus scorings.
+        sa.Index("ix_prediccion_cuenta", "cuenta_canonica_id", "ejecucion_scoring_predictivo_id"),
+        sa.CheckConstraint(RANGOS_DE_LA_PREDICCION, name=conv("ck_prediccion_cuenta_rangos")),
+        sa.CheckConstraint(
+            "estado IN ('COMPLETA', 'CON_IMPUTACION')", name=conv("ck_prediccion_cuenta_estado")
+        ),
+    )
+
+    ejecucion_scoring_predictivo_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    corte_canonico_id: int
+    p_recuperacion_positiva_30d: Decimal = Field(max_digits=9, decimal_places=8)
+    p_contacto_14d: Decimal = Field(max_digits=9, decimal_places=8)
+    p_promesa_30d: Decimal = Field(max_digits=9, decimal_places=8)
+    riesgo_sin_recuperacion_30d: Decimal = Field(max_digits=9, decimal_places=8)
+    recuperacion_positiva_esperada_30d: Decimal = Field(max_digits=14, decimal_places=2)
+    estado: str = Field(max_length=16)
+    """COMPLETA, o CON_IMPUTACION si alguna feature era NULL o una categoria desconocida."""
+    motivos: list[dict] = Field(sa_type=JSONB)
+    feature_hash: bytes = Field(sa_type=sa.LargeBinary)
+
+
+class DriftPredictivo(SQLModel, table=True):
+    """El drift de un scoring contra TRAIN, por feature y por salida: su PSI, su fraccion de NULL
+    en TRAIN y en el scoring, y su severidad. Agregado: ningun bin nombra una cuenta. Inmutable."""
+
+    __tablename__ = "drift_predictivo"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_scoring_predictivo_id"],
+            ["ejecucion_scoring_predictivo.id"],
+            name="fk_drift_scoring",
+        ),
+        sa.CheckConstraint(
+            "tipo IN ('FEATURE', 'SCORE') AND psi >= 0 "
+            "AND severidad IN ('BAJO', 'MODERADO', 'ALTO') "
+            "AND (severidad_faltantes IS NULL OR severidad_faltantes IN "
+            "('BAJO', 'MODERADO', 'ALTO')) "
+            "AND (faltantes_train IS NULL) = (faltantes_scoring IS NULL) "
+            "AND (faltantes_train IS NULL) = (severidad_faltantes IS NULL)",
+            name=conv("ck_drift_predictivo_valores"),
+        ),
+    )
+
+    ejecucion_scoring_predictivo_id: int = Field(primary_key=True)
+    tipo: str = Field(primary_key=True, max_length=12)
+    nombre: str = Field(primary_key=True, max_length=64)
+    clase: str = Field(max_length=16)
+    """NUMERICA, CATEGORICA, PROBABILIDAD o MONTO."""
+    psi: Decimal = Field(max_digits=14, decimal_places=6)
+    severidad: str = Field(max_length=10)
+    faltantes_train: Decimal | None = Field(default=None, max_digits=9, decimal_places=6)
+    faltantes_scoring: Decimal | None = Field(default=None, max_digits=9, decimal_places=6)
+    severidad_faltantes: str | None = Field(default=None, max_length=10)
+    bins: dict = Field(sa_type=JSONB)
+    """Los bordes de TRAIN y las proporciones de TRAIN y del scoring: distribuciones, no cuentas."""
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -5034,7 +5635,9 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'TERRITORIAL_V2') = (ejecucion_territorial_v2_id IS NOT NULL) "
     "AND (tipo = 'CAMPO_V2') = (ejecucion_campo_v2_id IS NOT NULL) "
     "AND (tipo = 'RUTEO_V2') = (ejecucion_ruteo_v2_id IS NOT NULL) "
-    "AND (tipo = 'ANALYTICS') = (ejecucion_analytics_id IS NOT NULL)"
+    "AND (tipo = 'ANALYTICS') = (ejecucion_analytics_id IS NOT NULL) "
+    "AND (tipo = 'PREDICTIVE_TRAINING') = (ejecucion_entrenamiento_predictivo_id IS NOT NULL) "
+    "AND (tipo = 'PREDICTIVE_SCORING') = (ejecucion_scoring_predictivo_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -5216,6 +5819,13 @@ class TipoTrabajo(StrEnum):
     conocia en known_at, sobre un manifiesto declarado. Lo piden POST /analytics/ejecuciones,
     analizar-cobranza o backfill-analytics. Lee lo que publicaron los demas motores y no cambia
     nada de ellos."""
+    PREDICTIVE_TRAINING = "PREDICTIVE_TRAINING"
+    """Desde la 0016: entrenar predictive/model-v1 con un manifiesto explicito. Lo piden POST
+    /predictivo/entrenamientos o entrenar-predictivo. Lee lo publicado y no cambia nada; nunca lo
+    dispara un scoring."""
+    PREDICTIVE_SCORING = "PREDICTIVE_SCORING"
+    """Desde la 0016: las predicciones de las cuentas de un corte con una version PUBLICADA
+    declarada, y su drift. Lo piden POST /predictivo/scorings o score-predictivo."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -5298,6 +5908,16 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.ForeignKeyConstraint(
             ["ejecucion_analytics_id"], ["ejecucion_analytics.id"], name="fk_trabajo_analytics"
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_entrenamiento_predictivo_id"],
+            ["ejecucion_entrenamiento_predictivo.id"],
+            name="fk_trabajo_entrenamiento_predictivo",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_scoring_predictivo_id"],
+            ["ejecucion_scoring_predictivo.id"],
+            name="fk_trabajo_scoring_predictivo",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -5313,6 +5933,12 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint("ejecucion_campo_v2_id", name="uq_trabajo_campo_v2"),
         sa.UniqueConstraint("ejecucion_ruteo_v2_id", name="uq_trabajo_ruteo_v2"),
         sa.UniqueConstraint("ejecucion_analytics_id", name="uq_trabajo_analytics"),
+        sa.UniqueConstraint(
+            "ejecucion_entrenamiento_predictivo_id", name="uq_trabajo_entrenamiento_predictivo"
+        ),
+        sa.UniqueConstraint(
+            "ejecucion_scoring_predictivo_id", name="uq_trabajo_scoring_predictivo"
+        ),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -5383,6 +6009,10 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo RUTEO_V2, desde la 0014."""
     ejecucion_analytics_id: int | None = None
     """El objetivo de un trabajo ANALYTICS, desde la 0015."""
+    ejecucion_entrenamiento_predictivo_id: int | None = None
+    """El objetivo de un trabajo PREDICTIVE_TRAINING, desde la 0016."""
+    ejecucion_scoring_predictivo_id: int | None = None
+    """El objetivo de un trabajo PREDICTIVE_SCORING, desde la 0016."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

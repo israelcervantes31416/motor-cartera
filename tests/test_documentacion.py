@@ -527,17 +527,138 @@ def test_la_documentacion_de_analytics_no_le_atribuye_causalidad_a_nada():
     assert "asociación operacional, no causalidad" in principal
 
 
-def test_las_decisiones_de_analytics_estan_todas_y_en_orden():
+def test_las_decisiones_estan_todas_y_en_orden():
     texto = (DOCS / "decisiones.md").read_text(encoding="utf-8")
     numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
+    indice = [int(n) for n in re.findall(r"^(\d+)\. \[", texto, re.MULTILINE)]
 
-    assert numeros == list(range(1, 197))
-    assert "las 175 a 196, de Collection Analytics" in " ".join(texto[:4000].split())
+    assert numeros == list(range(1, 223))
+    assert indice == numeros
+    introduccion = " ".join(texto[:4500].split())
+    assert "las 175 a 196, de Collection Analytics" in introduccion
+    assert "las 197 a 222, de Predictive Intelligence" in introduccion
 
 
-def test_el_readme_marca_v0_14_publicada_y_v0_15_la_que_sigue():
+def test_el_readme_marca_v0_15_publicada_y_v0_16_la_que_sigue():
     texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
 
     assert "✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time" in texto
-    assert "➡️ v0.15 — Predictive Intelligence" in texto
-    assert "➡️ v0.14" not in texto
+    assert "✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift" in texto
+    assert "➡️ v0.16 — Optimización Matemática" in texto
+    assert "➡️ v0.15" not in texto
+
+
+# --- predictive/model-v1 --------------------------------------------------------------------------
+
+DOCUMENTOS_PREDICTIVOS = (
+    "predictivo.md",
+    "features_predictivas.md",
+    "modelos_predictivos.md",
+    "backtesting_predictivo.md",
+)
+
+
+def test_el_documento_predictivo_define_cada_resultado_error_motivo_y_punto_de_falla():
+    """Cada resultado de un entrenamiento y de un scoring, cada error del manifiesto, del scoring y
+    de la explicacion, cada motivo y estado de una prediccion y cada madurez tiene su fila en
+    predictivo.md; los puntos de falla se nombran."""
+    from motor_cartera.db.modelos import (
+        ResultadoEntrenamientoPredictivo,
+        ResultadoScoringPredictivo,
+    )
+    from motor_cartera.predictivo import entrenamiento, explicacion, manifiesto, scoring
+    from motor_cartera.predictivo.targets import Madurez
+
+    filas = _codigos_de_tablas("predictivo.md")
+    texto = (DOCS / "predictivo.md").read_text(encoding="utf-8")
+
+    def codigos(modulo, base) -> set[str]:
+        return {
+            clase.codigo
+            for clase in vars(modulo).values()
+            if isinstance(clase, type) and issubclass(clase, base)
+        }
+
+    errores = codigos(manifiesto, manifiesto.ManifiestoInvalido)
+    assert len(errores) == 25 and errores <= filas
+    assert codigos(scoring, scoring.ScoringInvalido) - {"SCORING_INVALIDO"} <= filas
+    assert (
+        codigos(explicacion, explicacion.ExplicacionNoDisponible) - {"EXPLICACION_NO_DISPONIBLE"}
+        <= filas
+    )
+    assert {r.value for r in ResultadoEntrenamientoPredictivo} | {"CERRADA_AL_BAJAR"} <= filas
+    assert {r.value for r in ResultadoScoringPredictivo} <= filas
+    assert {m.value for m in Madurez} <= filas
+    assert {
+        "COMPLETA",
+        "CON_IMPUTACION",
+        "DATO_NO_REPORTADO",
+        "SIN_HISTORIA",
+        "SIN_COBERTURA_PAGOS",
+        "SIN_EVALUACION_PROMESAS",
+        "CATEGORIA_FALTANTE",
+        "CATEGORIA_DESCONOCIDA",
+        "CANDIDATA",
+        "VALIDADA",
+        "PUBLICADA",
+        "RECHAZADA",
+    } <= filas
+    for punto in (*entrenamiento.PUNTOS_DE_FALLA, *scoring.PUNTOS_DE_FALLA):
+        assert f"`{punto}`" in texto, punto
+
+
+def test_cada_feature_esta_documentada_una_vez_y_ninguna_mas():
+    from motor_cartera.predictivo.features import FEATURES
+
+    texto = (DOCS / "features_predictivas.md").read_text(encoding="utf-8")
+    documentadas = re.findall(r"^\| `([a-z_0-9]+)` \| [A-Z]+ \|", texto, re.MULTILINE)
+    assert documentadas == [f.nombre for f in FEATURES]
+
+
+def test_las_versiones_y_los_hashes_predictivos_documentados_son_los_del_servicio():
+    from motor_cartera.predictivo import features, targets
+    from motor_cartera.predictivo.politica import (
+        PUBLIC_V1,
+        VERSION_ARTEFACTO,
+        VERSION_MODELO,
+        hash_politica,
+    )
+
+    predictivo = (DOCS / "predictivo.md").read_text(encoding="utf-8")
+    for valor in (
+        VERSION_MODELO,
+        VERSION_ARTEFACTO,
+        targets.VERSION_TARGETS,
+        targets.hash_targets(),
+        features.VERSION_FEATURES,
+        features.hash_features(),
+        PUBLIC_V1.version,
+        hash_politica(PUBLIC_V1),
+    ):
+        assert valor in predictivo, valor
+    assert features.hash_features() in (DOCS / "features_predictivas.md").read_text(
+        encoding="utf-8"
+    )
+    assert hash_politica(PUBLIC_V1) in (DOCS / "modelos_predictivos.md").read_text(encoding="utf-8")
+
+
+def test_la_documentacion_predictiva_no_promete_causalidad():
+    """Predecir no es causar: ninguna documentacion de v0.15 habla de un impacto, un incremento
+    causado o un tratamiento optimo, y uplift solo aparece para decir que no lo hay."""
+    for archivo in DOCUMENTOS_PREDICTIVOS:
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for frase in (
+            "impacto causal",
+            "incremento causado",
+            "tratamiento óptimo",
+            "tratamiento optimo",
+            "causó el pago",
+            "causado por",
+        ):
+            assert frase not in texto, (archivo, frase)
+        for oracion in re.split(r"(?<=\.) ", texto):
+            if "uplift" in oracion:
+                assert "no hay" in oracion, (archivo, oracion)
+    principal = " ".join((DOCS / "predictivo.md").read_text(encoding="utf-8").split())
+    assert "Una predicción no es causal." in principal
+    assert "no estiman causalidad" in principal.lower()

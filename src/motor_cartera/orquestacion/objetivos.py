@@ -3,7 +3,8 @@
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
 una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
 una decision v2, a una geografia, a una ejecucion de territorial/v2, a un plan de campo/v2, a
-una ejecucion de ruteo/v2 o a una de analytics/v1.
+una ejecucion de ruteo/v2, a una de analytics/v1, a un entrenamiento predictivo o a un scoring
+predictivo.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -26,12 +27,14 @@ from motor_cartera.db.modelos import (
     EjecucionCampoV2,
     EjecucionDecision,
     EjecucionDecisionV2,
+    EjecucionEntrenamientoPredictivo,
     EjecucionEvaluacionPromesas,
     EjecucionGeografia,
     EjecucionHistoria,
     EjecucionMotorPagos,
     EjecucionRuteo,
     EjecucionRuteoV2,
+    EjecucionScoringPredictivo,
     EjecucionTerritorial,
     EjecucionTerritorialV2,
     EstadoAnalytics,
@@ -40,6 +43,7 @@ from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
     EstadoDecisionV2,
+    EstadoEntrenamientoPredictivo,
     EstadoEvaluacionPromesas,
     EstadoGeografia,
     EstadoHistoria,
@@ -47,6 +51,7 @@ from motor_cartera.db.modelos import (
     EstadoMotorPagos,
     EstadoRuteo,
     EstadoRuteoV2,
+    EstadoScoringPredictivo,
     EstadoTerritorial,
     EstadoTerritorialV2,
     IngestaPagos,
@@ -57,9 +62,11 @@ from motor_cartera.db.modelos import (
     ResultadoEjecucionGeografia,
     ResultadoEjecucionRuteoV2,
     ResultadoEjecucionTerritorialV2,
+    ResultadoEntrenamientoPredictivo,
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
+    ResultadoScoringPredictivo,
     TipoTrabajo,
     ahora,
 )
@@ -228,6 +235,25 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
         {
             "agregados_publicados": 0,
             "resultado": ResultadoEjecucionAnalytics.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.PREDICTIVE_TRAINING: Objetivo(
+        EjecucionEntrenamientoPredictivo,
+        EstadoEntrenamientoPredictivo,
+        "ejecucion_entrenamiento_predictivo_id",
+        "training_run_id",
+        {"resultado": ResultadoEntrenamientoPredictivo.INTENTOS_AGOTADOS.value},
+    ),
+    TipoTrabajo.PREDICTIVE_SCORING: Objetivo(
+        EjecucionScoringPredictivo,
+        EstadoScoringPredictivo,
+        "ejecucion_scoring_predictivo_id",
+        "scoring_run_id",
+        {
+            "predicciones_publicadas": 0,
+            "hash_predicciones": None,
+            "hash_drift": None,
+            "resultado": ResultadoScoringPredictivo.INTENTOS_AGOTADOS.value,
         },
     ),
 }

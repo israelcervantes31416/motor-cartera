@@ -354,18 +354,21 @@ def _reclamable():
 def _prioridad():
     """0 para lo operacional, 1 para la historia, 2 para el motor de pagos, 3 para la atribucion y
     la evaluacion de promesas, 4 para decision/v2 y la geografia, 5 para territorial/v2, 6 para
-    campo/v2, 7 para ruteo/v2 y 8 para analytics/v1. La historia y la interpretacion de los pagos
-    son proyecciones paralelas: ninguna etapa del flujo las espera, y con un solo worker tampoco
-    espera detras de ellas. Un backfill de cientos de trabajos HISTORIA no retrasa la decision de
+    campo/v2, 7 para ruteo/v2, 8 para analytics/v1 y 9 para predictive/model-v1 (sus
+    entrenamientos y sus scorings). La historia y la interpretacion de los pagos son proyecciones
+    paralelas: ninguna etapa del flujo las espera, y con un solo worker tampoco espera detras de
+    ellas. Un backfill de cientos de trabajos HISTORIA no retrasa la decision de
     la cartera de hoy. El motor de pagos va despues porque interpreta lo que la historia publica:
     con los HISTORIA pendientes primero, una ventana se interpreta una vez con todos sus archivos, y
     no una vez por archivo. La atribucion y la evaluacion van despues porque leen lo que el motor de
     pagos publica, y decision/v2 despues porque lee todo lo anterior. La geografia lee un corte ya
     publicado; territorial/v2, una geografia ya publicada; campo/v2, una decision/v2 y una
-    territorial/v2 ya publicadas; ruteo/v2, un plan de campo/v2 ya publicado; y analytics/v1, lo
-    que todos los anteriores publicaron. No cambia que se ejecuta ni como (decision/v2 decide con lo
-    que se conocia en su known_at, se ejecute cuando se ejecute): solo cual de los que ya se pueden
-    tomar va primero."""
+    territorial/v2 ya publicadas; ruteo/v2, un plan de campo/v2 ya publicado; analytics/v1, lo
+    que todos los anteriores publicaron; y predictive/model-v1 corre en paralelo, en sombra, y lee
+    lo que la historia, el motor de pagos, el lifecycle y la evaluacion publicaron: nunca retrasa
+    una etapa operacional. No cambia que se ejecuta ni como (decision/v2 decide con lo que se
+    conocia en su known_at, se ejecute cuando se ejecute): solo cual de los que ya se pueden tomar
+    va primero."""
     return case(
         (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
         (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
@@ -377,6 +380,8 @@ def _prioridad():
         (TrabajoOrquestacion.tipo == TipoTrabajo.CAMPO_V2, 6),
         (TrabajoOrquestacion.tipo == TipoTrabajo.RUTEO_V2, 7),
         (TrabajoOrquestacion.tipo == TipoTrabajo.ANALYTICS, 8),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.PREDICTIVE_TRAINING, 9),
+        (TrabajoOrquestacion.tipo == TipoTrabajo.PREDICTIVE_SCORING, 9),
         else_=0,
     )
 

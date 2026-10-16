@@ -48,8 +48,10 @@ from motor_cartera.db.modelos import (
     EjecucionAnalytics,
     EjecucionCampoV2,
     EjecucionDecisionV2,
+    EjecucionEntrenamientoPredictivo,
     EjecucionGeografia,
     EjecucionRuteoV2,
+    EjecucionScoringPredictivo,
     EjecucionTerritorialV2,
     EstadoCorrida,
     EstadoIngestaPagos,
@@ -57,6 +59,7 @@ from motor_cartera.db.modelos import (
     EtapaFlujo,
     IngestaPagos,
     ModoDecisionV2,
+    ModoScoringPredictivo,
     TipoTrabajo,
     TrabajoOrquestacion,
 )
@@ -82,6 +85,11 @@ from motor_cartera.motor_pagos.ejecuciones import (
 )
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
+from motor_cartera.predictivo import entrenamiento as entrenamiento_predictivo
+from motor_cartera.predictivo import scoring as scoring_predictivo
+from motor_cartera.predictivo.entrenamiento import EntrenamientoYaPublicado, ejecutar_entrenamiento
+from motor_cartera.predictivo.manifiesto import ManifiestoDeclarado
+from motor_cartera.predictivo.scoring import ScoringYaPublicado, ejecutar_scoring
 from motor_cartera.ruteo.ejecuciones import RuteoYaGenerado, ejecutar_ruteo
 from motor_cartera.ruteo_v2 import ejecuciones as ruteo_v2
 from motor_cartera.ruteo_v2.ejecuciones import RuteoV2YaGenerado, SaludRuteo, ejecutar_ruteo_v2
@@ -108,6 +116,8 @@ PERDIO_LA_CARRERA = (
     CampoV2YaGenerado,
     RuteoV2YaGenerado,
     AnalyticsYaGenerada,
+    EntrenamientoYaPublicado,
+    ScoringYaPublicado,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -176,6 +186,8 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.CAMPO_V2: ejecutar_campo_v2,
     TipoTrabajo.RUTEO_V2: ejecutar_ruteo_v2,
     TipoTrabajo.ANALYTICS: ejecutar_analytics,
+    TipoTrabajo.PREDICTIVE_TRAINING: ejecutar_entrenamiento,
+    TipoTrabajo.PREDICTIVE_SCORING: ejecutar_scoring,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -641,6 +653,71 @@ def analizar_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(EjecucionAnalytics, ejecucion_id)
+
+
+def entrenar_predictivo_en_primer_plano(
+    declarado: ManifiestoDeclarado, *, config: Config | None = None
+) -> EjecucionEntrenamientoPredictivo:
+    """predictive/model-v1 del CLI, como analytics/v1: su ejecucion y su trabajo, tomado por este
+    proceso, y el entrenamiento en primer plano, despues de esperar su frontera. Si el proceso
+    muere, cualquier worker lo termina cuando vence el lease, con el mismo manifiesto. Propaga lo
+    que levanta `entrenamiento.abrir` sin registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = entrenamiento_predictivo.abrir(
+            s,
+            declarado,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_entrenamiento_predictivo_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionEntrenamientoPredictivo, ejecucion_id)
+
+
+def puntuar_predictivo_en_primer_plano(
+    *,
+    modelo_version_id: UUID,
+    corte_id: UUID,
+    known_at: datetime | None,
+    modo: ModoScoringPredictivo,
+    config: Config | None = None,
+) -> EjecucionScoringPredictivo:
+    """Un scoring de predictive/model-v1 del CLI, con su propio trabajo, en primer plano."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = scoring_predictivo.abrir(
+            s,
+            modelo_version_id=modelo_version_id,
+            corte_id=corte_id,
+            known_at=known_at,
+            modo=modo,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_scoring_predictivo_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionScoringPredictivo, ejecucion_id)
 
 
 def _cerrar(

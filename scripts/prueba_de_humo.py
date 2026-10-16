@@ -66,6 +66,15 @@ recuperacion neta (un dia con cobertura, y el horizonte NO_DISPONIBLE porque un 
 conocidos), la contactabilidad, las promesas, la decision, el campo, el ruteo, los dos embudos y
 sus controles, todos OK, sin un solo dato de una cuenta.
 
+Con --predictivo, recorre predictive/model-v1 sobre un escenario predictivo ya cargado
+(cargar-escenario-predictivo) y el manifiesto que construir-manifiesto-predictivo propuso en su
+directorio (manifiesto.json): las features y los targets versionados, sin un identificador ni un
+dato personal entre las features; un entrenamiento por la API que el worker publica, con cada
+artefacto y el hash del modelo recalculados aqui; el scoring del ultimo corte con sus tres
+probabilidades, su riesgo complementario exacto, su recuperacion positiva esperada y su
+feature_hash; su drift, una explicacion verificada y las predicciones de una cuenta; y el scoring
+BACKTEST del corte de TEST con su feature_known_at. Sin el archivo, solo hace eso.
+
 Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
 laptop:
 
@@ -79,6 +88,7 @@ laptop:
     python scripts/prueba_de_humo.py humo.xlsx --oficial oficial.zip --corte 2026-09-30
         --pagos pagos.zip --geografia --campo --ruteo <red_vial_version_id>
         --base-ruteo=<lon>,<lat> --analytics
+    python scripts/prueba_de_humo.py --predictivo datos/predictivo
 
 La base va unida a su opcion: en Mexico su longitud es negativa, y separada, argparse la toma por
 otra opcion.
@@ -2342,8 +2352,321 @@ def la_analitica(
     print(f"analytics_run_id {run}")
 
 
+# --- predictive/model-v1 --------------------------------------------------------------------------
+
+ESPERA_PREDICTIVA = 900  # segundos: un entrenamiento construye su dataset y ajusta cuatro GLM
+RUTAS_PREDICTIVAS = (
+    "/predictivo/features",
+    "/predictivo/targets",
+    "/predictivo/entrenamientos",
+    "/predictivo/entrenamientos/{training_run_id}",
+    "/predictivo/modelos",
+    "/predictivo/modelos/{modelo_version_id}",
+    "/predictivo/scorings",
+    "/predictivo/scorings/{scoring_run_id}",
+    "/predictivo/scorings/{scoring_run_id}/predicciones",
+    "/predictivo/scorings/{scoring_run_id}/drift",
+    "/predictivo/scorings/{scoring_run_id}/cuentas/{cuenta_id}/explicacion",
+    "/cuentas/{cuenta_id}/predictivo",
+)
+TARGETS_PREDICTIVOS = [
+    "RECUPERACION_POSITIVA_30D",
+    "CONTACTO_14D",
+    "PROMESA_30D",
+    "RECUPERACION_POSITIVA_MONTO_30D",
+]
+# Lo que ninguna feature puede ser, dicho aqui y no solo en el servicio: un identificador, un dato
+# personal, una coordenada, una geografia fina o una salida de decision, campo o ruteo.
+SENSIBLES = re.compile(
+    r"cuenta|cliente|actor|source|nombre|direccion|domicilio|telefono|correo|aval|curp|rfc|sexo"
+    r"|genero|latitud|longitud|municipio|estrategia|gestor|despacho|cartera|prioridad|ruta"
+)
+CAMPOS_DE_UNA_PREDICCION = {
+    "cuenta_id",
+    "producto",
+    "cve_entidad",
+    "p_recuperacion_positiva_30d",
+    "p_contacto_14d",
+    "p_promesa_30d",
+    "riesgo_sin_recuperacion_30d",
+    "recuperacion_positiva_esperada_30d",
+    "estado",
+    "motivos",
+    "feature_hash",
+}
+PROBABILIDADES = ("p_recuperacion_positiva_30d", "p_contacto_14d", "p_promesa_30d")
+UN_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _canonico(valor) -> bytes:
+    """El JSON canonico de predictive/artifact-v1: llaves en orden, sin espacios, UTF-8."""
+    return json.dumps(
+        valor, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+
+
+def seguir_lo_predictivo(ruta: str) -> dict:
+    """Un entrenamiento o un scoring, mientras siga EN_PROCESO, hasta ESPERA_PREDICTIVA."""
+    limite = time.monotonic() + ESPERA_PREDICTIVA
+    while True:
+        estado, _, recurso = pedir("GET", ruta)
+        if estado != 200 or recurso["estado"] != "EN_PROCESO" or time.monotonic() > limite:
+            return recurso
+        time.sleep(1)
+
+
+def lo_predictivo(directorio: Path) -> None:
+    """predictive/model-v1 de punta a punta, sobre un escenario predictivo ya cargado (carga.json)
+    y el manifiesto que propuso construir-manifiesto-predictivo (manifiesto.json): las definiciones,
+    un entrenamiento por la API y su version, valida y con sus hashes; un scoring con sus
+    predicciones en rango, su riesgo complementario y su feature_hash; su drift, una explicacion
+    verificada, las predicciones de una cuenta y el scoring BACKTEST del corte de TEST, que se
+    reconstruye con sus relojes. Ningun dato personal en el camino."""
+    from decimal import Decimal
+
+    bitacora = json.loads((directorio / "carga.json").read_text(encoding="utf-8"))
+    propuesta = json.loads((directorio / "manifiesto.json").read_text(encoding="utf-8"))
+    manifiesto = propuesta["manifiesto"]
+    print(f"predictive/model-v1 sobre {directorio} ({bitacora['cartera_id']})")
+
+    estado, _, openapi = pedir("GET", "/openapi.json", con_clave=False)
+    esperar(
+        estado == 200
+        and openapi["info"]["version"] == version_del_repositorio()
+        and all(ruta in openapi["paths"] for ruta in RUTAS_PREDICTIVAS),
+        f"GET /openapi.json: version {openapi['info']['version']}, con predictive/model-v1",
+    )
+    estado, _, error = pedir("GET", "/predictivo/modelos", con_clave=False)
+    esperar(
+        estado == 401 and error["codigo"] == "API_KEY_AUSENTE",
+        f"GET /predictivo/modelos sin clave: {estado}",
+    )
+    estado, _, features = pedir("GET", "/predictivo/features")
+    nombres = [f["nombre"] for f in features.get("features", [])]
+    esperar(
+        estado == 200
+        and features["version"] == "predictive-features/public-v1"
+        and re.fullmatch(r"[0-9a-f]{64}", features["hash"])
+        and len(nombres) == len(set(nombres)) == 40,
+        f"GET /predictivo/features: {features.get('version')} ({features.get('hash', '')[:12]}...),"
+        f" {len(nombres)} features",
+    )
+    esperar(
+        not any(SENSIBLES.search(n) for n in nombres)
+        and not any(re.fullmatch(p, n) for p in features["prohibidas"] for n in nombres),
+        "ninguna feature es un identificador, un dato personal, una coordenada ni una salida de "
+        "decision, campo o ruteo",
+    )
+    estado, _, targets = pedir("GET", "/predictivo/targets")
+    esperar(
+        estado == 200
+        and targets["version"] == "predictive-targets/public-v1"
+        and [t["target"] for t in targets["targets"]] == TARGETS_PREDICTIVOS,
+        f"GET /predictivo/targets: {targets.get('version')}, "
+        + ", ".join(t["target"] for t in targets.get("targets", [])),
+    )
+
+    # El entrenamiento, con el manifiesto que propuso construir-manifiesto-predictivo: la API lo
+    # comprueba y lo deja EN_PROCESO, y el worker lo entrena.
+    estado, encabezados, abierto = enviar("/predictivo/entrenamientos", manifiesto)
+    ubicacion = ubicacion_de(encabezados)
+    esperar(
+        estado == 201
+        and abierto["estado"] == "EN_PROCESO"
+        and ubicacion == f"/predictivo/entrenamientos/{abierto['training_run_id']}"
+        and abierto["firma_inputs"] == propuesta["firma_inputs"]
+        and abierto["hash_manifiesto"] == propuesta["hash_manifiesto"],
+        f"POST /predictivo/entrenamientos: {estado} EN_PROCESO, con la firma propuesta",
+    )
+    e = seguir_lo_predictivo(ubicacion)
+    esperar(
+        (e.get("estado"), e.get("resultado"), e.get("estado_modelo"))
+        == ("EXITOSA", "MODELO_PUBLICADO", "PUBLICADA")
+        and re.fullmatch(r"[0-9a-f]{64}", e["dataset_hash"] or "")
+        and e["ejemplos_train"] > 0
+        and e["ejemplos_test"] > 0
+        and e["ejemplos_censurados"] > 0,
+        f"el entrenamiento: {e.get('estado')} ({e.get('resultado')}) en "
+        f"{e.get('duracion_segundos')} s, {e.get('ejemplos_total', 0):,} filas "
+        f"({e.get('ejemplos_censurados', 0):,} con un label censurado, fuera de TRAIN), "
+        f"dataset {(e.get('dataset_hash') or '')[:12]}...",
+    )
+    folds = e["backtest"]["folds"]
+    esperar(
+        folds[-1]["estado"] == "PRINCIPAL"
+        and all(f["estado"] in ("EVALUADO", "NO_DISPONIBLE") for f in folds[:-1])
+        and set(e["backtest"]["holdout"]["targets"]) == set(TARGETS_PREDICTIVOS),
+        f"el backtest temporal: {len(folds)} folds ("
+        + ", ".join(f["estado"] for f in folds)
+        + ") y el holdout de TEST, aparte",
+    )
+    estado, _, error = enviar("/predictivo/entrenamientos", manifiesto)
+    esperar(
+        estado == 409 and error["codigo"] == "ENTRENAMIENTO_YA_PUBLICADO",
+        f"el mismo manifiesto otra vez: {estado} {error.get('codigo')}",
+    )
+    modelo_id = e["modelo_version_id"]
+    estado, _, modelo = pedir("GET", f"/predictivo/modelos/{modelo_id}")
+    componentes = modelo.get("componentes", [])
+    integros = all(
+        hashlib.sha256(_canonico(c["artefacto"])).hexdigest() == c["hash_artefacto"]
+        and c["artefacto"]["formato"] == "predictive/artifact-v1"
+        for c in componentes
+    )
+    del_modelo = hashlib.sha256(
+        _canonico({c["target"]: c["hash_artefacto"] for c in componentes})
+    ).hexdigest()
+    esperar(
+        estado == 200
+        and modelo["estado"] == "PUBLICADA"
+        and modelo["dataset_hash"] == e["dataset_hash"]
+        and sorted(c["target"] for c in componentes) == sorted(TARGETS_PREDICTIVOS)
+        and all(c["estado"] == "VALIDADO" for c in componentes)
+        and integros
+        and modelo["hash_modelo"] == del_modelo,
+        "GET /predictivo/modelos/{modelo_version_id}: PUBLICADA, cuatro componentes VALIDADO, cada "
+        f"artefacto con su SHA-256 recalculado aqui, y el hash_modelo {del_modelo[:12]}...",
+    )
+    for c in componentes:
+        t, b = c["metricas_test"], c["baseline_test"]
+        if c["algoritmo"] == "LOGISTICA_L2":
+            print(
+                f"      {c['target']}: ROC AUC {t['roc_auc']:.4f}, log loss {t['log_loss']:.4f} "
+                f"(baseline {b['log_loss']:.4f}), Brier {t['brier']:.4f}, {c['calibracion']}"
+            )
+        else:
+            print(f"      {c['target']}: MAE {t['mae']:.2f} (baseline {b['mae']:.2f})")
+
+    # El scoring del ultimo corte del escenario, OPERATIVO, con la version declarada.
+    ultimo = bitacora["cortes"][-1]
+    pedido = {"modelo_version_id": modelo_id, "corte_id": ultimo["corte_id"], "modo": "OPERATIVO"}
+    estado, encabezados, abierto = enviar("/predictivo/scorings", pedido)
+    esperar(
+        estado == 201 and abierto["estado"] == "EN_PROCESO",
+        f"POST /predictivo/scorings del corte {ultimo['fecha_corte']}: {estado} EN_PROCESO",
+    )
+    s = seguir_lo_predictivo(ubicacion_de(encabezados))
+    esperar(
+        s.get("estado") == "EXITOSA"
+        and s["predicciones_publicadas"] == s["cuentas_objetivo"] > 0
+        and re.fullmatch(r"[0-9a-f]{64}", s["hash_predicciones"] or "")
+        and re.fullmatch(r"[0-9a-f]{64}", s["hash_drift"] or ""),
+        f"el scoring: {s.get('estado')}, {s.get('predicciones_publicadas', 0):,} predicciones, "
+        f"hash {(s.get('hash_predicciones') or '')[:12]}...",
+    )
+    scoring = s["scoring_run_id"]
+    estado, _, pagina = pedir(
+        "GET",
+        f"/predictivo/scorings/{scoring}/predicciones?por_pagina=500"
+        "&orden=RIESGO_SIN_RECUPERACION_30D&sentido=DESC",
+    )
+    elementos = pagina.get("elementos", [])
+    esperar(
+        estado == 200
+        and pagina["total"] == s["predicciones_publicadas"]
+        and len(elementos) == min(500, pagina["total"])
+        and all(
+            Decimal(0) <= Decimal(p[n]) <= Decimal(1) for p in elementos for n in PROBABILIDADES
+        ),
+        f"GET .../predicciones: {estado}, {pagina.get('total', 0):,}, las tres probabilidades en "
+        "[0, 1]",
+    )
+    esperar(
+        all(
+            Decimal(p["riesgo_sin_recuperacion_30d"]) + Decimal(p["p_recuperacion_positiva_30d"])
+            == 1
+            for p in elementos
+        ),
+        "el riesgo sin recuperacion es exactamente 1 - p de recuperacion positiva, en cada una",
+    )
+    esperar(
+        all(Decimal(p["recuperacion_positiva_esperada_30d"]) >= 0 for p in elementos)
+        and all(re.fullmatch(r"[0-9a-f]{64}", p["feature_hash"]) for p in elementos),
+        "la recuperacion positiva esperada no es negativa, y cada prediccion trae su feature_hash",
+    )
+    riesgos = [Decimal(p["riesgo_sin_recuperacion_30d"]) for p in elementos]
+    esperar(
+        riesgos == sorted(riesgos, reverse=True)
+        and all(set(p) == CAMPOS_DE_UNA_PREDICCION for p in elementos),
+        "ordenadas por riesgo en la base; ninguna trae un dato personal ni una coordenada",
+    )
+    estado, _, drift = pedir("GET", f"/predictivo/scorings/{scoring}/drift")
+    filas = drift.get("filas", [])
+    esperar(
+        estado == 200
+        and len(filas) == 44
+        and sum(f["tipo"] == "SCORE" for f in filas) == 4
+        and all(f["severidad"] in ("BAJO", "MODERADO", "ALTO") for f in filas)
+        and not UN_UUID.search(json.dumps([f["bins"] for f in filas])),
+        f"GET .../drift: {estado}, {len(filas)} filas (40 features y 4 salidas), agregadas, "
+        "sin una cuenta",
+    )
+    cuenta = elementos[0]["cuenta_id"]
+    estado, _, explicada = pedir(
+        "GET", f"/predictivo/scorings/{scoring}/cuentas/{cuenta}/explicacion"
+    )
+    esperar(
+        estado == 200
+        and explicada["feature_hash"] == elementos[0]["feature_hash"]
+        and sorted(c["target"] for c in explicada["componentes"]) == sorted(TARGETS_PREDICTIVOS)
+        and all(
+            c["verificacion"] == {"suma_igual_al_predictor": True, "reproduce_lo_publicado": True}
+            for c in explicada["componentes"]
+        )
+        and "no dice que cambiar" in explicada["aviso"]
+        and set(explicada["features"]) == set(nombres),
+        f"GET .../explicacion: {estado}, con el feature_hash publicado; las contribuciones "
+        "suman el predictor y reproducen la prediccion: una asociacion, no una causa",
+    )
+    estado, _, de_la_cuenta = pedir("GET", f"/cuentas/{cuenta}/predictivo")
+    esperar(
+        estado == 200
+        and [p["scoring_run_id"] for p in de_la_cuenta["elementos"]] == [scoring]
+        and de_la_cuenta["elementos"][0]["feature_hash"] == elementos[0]["feature_hash"],
+        f"GET /cuentas/{{cuenta_id}}/predictivo: {estado}, su prediccion del scoring",
+    )
+
+    # Reconstruible: el corte de TEST, en BACKTEST con su feature_known_at, se puntua con lo que se
+    # conocia entonces; el mismo pedido otra vez es la misma firma, y un BACKTEST sin known_at no
+    # existe.
+    test = next(a for a in manifiesto["anclas"] if a["split"] == "TEST")
+    pedido = {
+        "modelo_version_id": modelo_id,
+        "corte_id": test["corte_id"],
+        "modo": "BACKTEST",
+        "known_at": test["feature_known_at"],
+    }
+    estado, encabezados, _ = enviar("/predictivo/scorings", pedido)
+    b = seguir_lo_predictivo(ubicacion_de(encabezados))
+    esperar(
+        estado == 201
+        and b.get("estado") == "EXITOSA"
+        and b["modo"] == "BACKTEST"
+        and b["as_of"] == test["feature_as_of"],
+        f"el scoring BACKTEST del corte de TEST ({test['feature_as_of']}) a su feature_known_at: "
+        f"{b.get('estado')}, {b.get('predicciones_publicadas', 0):,} predicciones",
+    )
+    estado, _, error = enviar("/predictivo/scorings", pedido)
+    esperar(
+        estado == 409 and error["codigo"] == "SCORING_YA_PUBLICADO",
+        f"el mismo scoring otra vez: {estado} {error.get('codigo')}",
+    )
+    estado, _, error = enviar("/predictivo/scorings", {**pedido, "known_at": None})
+    esperar(
+        estado == 422 and error["codigo"] == "KNOWN_AT_OBLIGATORIO",
+        f"un BACKTEST sin known_at: {estado} {error.get('codigo')}",
+    )
+    print(f"training_run_id {e['training_run_id']}")
+    print(f"modelo_version_id {modelo_id}")
+    print(f"scoring_run_id {scoring}")
+    print(f"scoring_backtest_id {b['scoring_run_id']}")
+    print(f"label_known_at {test['label_known_at']}")
+    print(f"pagos_completos_hasta {test['pagos_completos_hasta']}")
+    print(f"lifecycle_completo_hasta {test['lifecycle_completo_hasta']}")
+
+
 def main(
-    archivo: Path,
+    archivo: Path | None,
     oficial: Path | None = None,
     corte: str | None = None,
     pagos: Path | None = None,
@@ -2353,11 +2676,16 @@ def main(
     red_vial: str | None = None,
     base_ruteo: str | None = None,
     analitica: bool = False,
+    predictivo: Path | None = None,
 ) -> None:
-    print(f"Prueba de humo contra {BASE} con {archivo}")
+    print(f"Prueba de humo contra {BASE} con {archivo or predictivo}")
 
     estado, salud = esperar_a_la_api()
     esperar(estado == 200 and salud.get("base_de_datos") == "ok", "GET /salud 200, base ok")
+    if archivo is None:
+        lo_predictivo(predictivo)
+        print("Todo en orden.")
+        return
 
     estado, _, error = subir(archivo, con_clave=False)
     esperar(estado == 401 and error["codigo"] == "API_KEY_AUSENTE", "POST sin clave: 401")
@@ -2770,6 +3098,7 @@ def main(
         "/analytics/ejecuciones/{analytics_run_id}/resumen",
         "/analytics/ejecuciones/{analytics_run_id}/embudos",
         "/analytics/ejecuciones/{analytics_run_id}/controles",
+        *RUTAS_PREDICTIVAS,
     )
     esperar(
         estado == 200
@@ -2778,7 +3107,7 @@ def main(
         f"GET /openapi.json {estado}: version {version}, con la orquestacion, los motores, "
         "la evidencia de las fuentes, los pagos, la Cuenta 360, el motor de pagos, el lifecycle, "
         "la atribucion, decision/v2, la geografia, las bases, territorial/v2, campo/v2, "
-        "ruteo/v2 y analytics/v1",
+        "ruteo/v2, analytics/v1 y predictive/model-v1",
     )
     if oficial is not None:
         la_cartera_oficial(oficial, corte)
@@ -2803,12 +3132,16 @@ def main(
             )
             if analitica:
                 la_analitica(corte, del_dia, decision, geografia_del_corte, operacion)
+    if predictivo is not None:
+        lo_predictivo(predictivo)
     print("Todo en orden.")
 
 
 if __name__ == "__main__":
     argumentos = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    argumentos.add_argument("archivo", type=Path, help="Una cartera de cartera/v1.")
+    argumentos.add_argument(
+        "archivo", type=Path, nargs="?", help="Una cartera de cartera/v1 (sin --predictivo)."
+    )
     argumentos.add_argument("--oficial", type=Path, help="Una cartera oficial de cartera/v2.")
     argumentos.add_argument("--corte", help="La fecha de corte de la cartera oficial, AAAA-MM-DD.")
     argumentos.add_argument("--pagos", type=Path, help="Un archivo de pagos de pagos/v1.")
@@ -2843,7 +3176,31 @@ if __name__ == "__main__":
         help="Recorre analytics/v1 sobre la cohorte del corte oficial, hasta el dia del plan de "
         "ruteo, con el manifiesto de lo que la prueba publico.",
     )
+    argumentos.add_argument(
+        "--predictivo",
+        type=Path,
+        metavar="DIRECTORIO",
+        help="Un escenario predictivo ya cargado, con el manifiesto.json que propuso "
+        "construir-manifiesto-predictivo: recorre predictive/model-v1.",
+    )
     leidos = argumentos.parse_args()
+    if leidos.archivo is None:
+        if leidos.predictivo is None:
+            argumentos.error("Falta el archivo, o --predictivo.")
+        if any(
+            (
+                leidos.oficial,
+                leidos.corte,
+                leidos.pagos,
+                leidos.escenario,
+                leidos.geografia,
+                leidos.campo,
+                leidos.ruteo,
+                leidos.base_ruteo,
+                leidos.analytics,
+            )
+        ):
+            argumentos.error("Sin el archivo, solo va --predictivo.")
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
     if leidos.geografia and leidos.oficial is None:
@@ -2867,4 +3224,5 @@ if __name__ == "__main__":
         red_vial=leidos.ruteo,
         base_ruteo=leidos.base_ruteo,
         analitica=leidos.analytics,
+        predictivo=leidos.predictivo,
     )

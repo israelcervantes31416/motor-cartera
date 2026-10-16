@@ -1,6 +1,6 @@
 [project]
 name = "motor-cartera"
-version = "0.14.0"
+version = "0.15.0"
 description = "Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético determinista de cartera de crédito al consumo, con orquestación durable sobre PostgreSQL, un modelo histórico con Cuenta 360, un motor de pagos canónico con conciliación, el lifecycle de cobranza con atribución operativa y un Decision Engine v2 point-in-time y explicable, sobre datos sintéticos"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,11 +18,13 @@ dependencies = [
     "python-multipart>=0.0.13",
     "pyarrow>=21",
     "pyshp>=3.1",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
-# httpx2 es el cliente que usa el TestClient de Starlette.
-dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.6", "httpx2>=2.0"]
+# httpx2 es el cliente que usa el TestClient de Starlette. scikit-learn solo lo usan las pruebas, para
+# comparar los GLM de predictive/model-v1 con el mismo objetivo: el servicio no lo importa.
+dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.6", "httpx2>=2.0", "scikit-learn>=1.6"]
 
 [project.scripts]
 motor-cartera = "motor_cartera.cli:app"
