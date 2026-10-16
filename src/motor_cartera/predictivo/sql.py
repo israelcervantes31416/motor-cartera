@@ -178,13 +178,15 @@ SQL_ALCANCES = (
 )
 SQL_MESES = (
     # Por mes de la ventana de 90 dias: los pagos observados conocidos a K y cuantos clasifico la
-    # interpretacion de su mes vigente a K, uno por uno.
+    # interpretacion de su mes vigente a K, uno por uno. El EXISTS sondea la llave primaria de
+    # resultado_pago_observado con sus tres columnas: un LEFT JOIN, con la interpretacion del mes
+    # mas reciente todavia fuera de las estadisticas, puede recorrer todos sus resultados por pago.
     "SELECT CAST(date_trunc('month', p.fecha_recepcion) AS date) AS mes, count(*), "
-    "count(r.source_row) FROM pago_observado p "
+    "count(*) FILTER (WHERE EXISTS (SELECT 1 FROM resultado_pago_observado r "
+    "WHERE r.ejecucion_motor_pagos_id = i.id AND r.dataset_conformado_id = p.dataset_conformado_id "
+    "AND r.source_row = p.source_row)) FROM pago_observado p "
     "LEFT JOIN pf_interpretacion i "
     "ON i.periodo_desde = CAST(date_trunc('month', p.fecha_recepcion) AS date) "
-    "LEFT JOIN resultado_pago_observado r ON r.ejecucion_motor_pagos_id = i.id "
-    "AND r.dataset_conformado_id = p.dataset_conformado_id AND r.source_row = p.source_row "
     "WHERE p.despacho_id = :despacho AND p.cartera_id = :cartera "
     "AND p.fecha_recepcion >= :primer_mes AND p.fecha_recepcion < :fin_local "
     "AND p.dataset_conformado_id IN (SELECT id FROM pf_dataset_pagos) GROUP BY 1 ORDER BY 1"

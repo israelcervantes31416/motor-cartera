@@ -514,12 +514,16 @@ def comprobar_completa(
     s: Session, e: EjecucionMotorPagos, conocido: datetime, despacho: str, cartera: str
 ) -> None:
     """Que la interpretacion de un mes clasifico cada pago observado de ese mes conocido a
-    `conocido`: los de los archivos cuya historia termino hasta entonces."""
+    `conocido`: los de los archivos cuya historia termino hasta entonces. Un EXISTS por pago, con
+    las tres columnas de la llave de resultado_pago_observado: con un LEFT JOIN, una interpretacion
+    recien publicada (que las estadisticas todavia no conocen) puede hacer que el plan recorra
+    todos sus resultados por cada pago."""
     observados, clasificados = s.execute(
         text(
-            "SELECT count(*), count(r.source_row) FROM pago_observado p "
-            "LEFT JOIN resultado_pago_observado r ON r.ejecucion_motor_pagos_id = :e "
-            "AND r.dataset_conformado_id = p.dataset_conformado_id AND r.source_row = p.source_row "
+            "SELECT count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 "
+            "FROM resultado_pago_observado r WHERE r.ejecucion_motor_pagos_id = :e "
+            "AND r.dataset_conformado_id = p.dataset_conformado_id "
+            "AND r.source_row = p.source_row)) FROM pago_observado p "
             "WHERE p.despacho_id = :d AND p.cartera_id = :c AND p.fecha_recepcion >= :desde "
             "AND p.fecha_recepcion < :hasta AND p.dataset_conformado_id IN ("
             "SELECT h.dataset_conformado_id FROM ejecucion_historia h "
