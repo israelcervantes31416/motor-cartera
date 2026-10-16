@@ -24,8 +24,12 @@ El riesgo sin recuperación es 1 − `p_recuperacion_positiva_30d`, exacto: no t
   predicción, exp(η), nunca es negativa.
 
 Se ajustan con un Newton (IRLS) propio, en NumPy, con búsqueda de paso de Armijo, que acumula X'WX y
-X'g bloque por bloque (65,536 filas) en un orden fijo: el resultado es determinista y la memoria es
-la de un bloque, nunca la matriz entera. La tolerancia (10⁻¹²) es la que hace que su resultado sea el
+X'g bloque por bloque (65,536 filas) en un orden fijo: el resultado es determinista en una misma
+plataforma y la memoria es la de un bloque, nunca la matriz entera. Entre plataformas (otro
+procesador, otro BLAS), el álgebra de punto flotante puede mover el último dígito de un coeficiente,
+y con él el hash del artefacto: el mismo manifiesto entrenado en Windows y en Linux da modelos
+equivalentes, no idénticos byte por byte. Por eso la ficha guarda el entorno, y una predicción se
+reconstruye con el artefacto publicado, que es lo que fija el resultado, no reentrenando. La tolerancia (10⁻¹²) es la que hace que su resultado sea el
 de scikit-learn con el mismo objetivo; una prueba lo compara (y lo que se publica no depende de este
 código: el artefacto es independiente). Una columna constante en TRAIN no se ajusta: su coeficiente
 es exactamente cero. scikit-learn es solo una dependencia de desarrollo, para esa prueba.

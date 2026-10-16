@@ -4510,8 +4510,11 @@ de desarrollo: una prueba compara los dos.
 **Por qué.** El dataset del benchmark no cabe como una matriz densa en la memoria de una máquina
 chica (millones de filas por cerca de cien columnas), y Newton solo necesita, por iteración, matrices
 del tamaño de las columnas. Un estimador propio, con su tolerancia fijada, da un resultado
-determinista y una memoria acotada; compararlo con scikit-learn en cada corrida de las pruebas
-asegura que el objetivo es el mismo sin que el servicio dependa de él.
+determinista en una misma plataforma y una memoria acotada; compararlo con scikit-learn en cada
+corrida de las pruebas asegura que el objetivo es el mismo sin que el servicio dependa de él. Entre
+plataformas, el punto flotante del BLAS puede mover el último dígito de un coeficiente y el hash del
+artefacto (el CI, en Linux, publica otro `hash_modelo` que una laptop con Windows para el mismo
+escenario): lo reproducible de punta a punta es lo publicado, que el runtime lee del JSON.
 
 ## 209. Sin rebalanceo de clases
 
