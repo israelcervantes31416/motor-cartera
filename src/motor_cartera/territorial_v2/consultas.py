@@ -283,6 +283,17 @@ def historial(
     return total, [_en_historia(fila) for fila in filas]
 
 
+def de_ejecucion(
+    s: Session, cuenta: CuentaCanonica, ejecucion_territorial_id: int
+) -> AsignacionEnHistoria | None:
+    """La asignacion de la cuenta en esa ejecucion EXITOSA, si la tiene: la que declara un contexto
+    de la app (app/v1), por el plan de campo/v2 que la leyo."""
+    fila = s.exec(
+        _de_la_cuenta(cuenta).where(EjecucionTerritorialV2.id == ejecucion_territorial_id)
+    ).first()
+    return None if fila is None else _en_historia(fila)
+
+
 def de_geografia(
     s: Session, cuenta: CuentaCanonica, ejecucion_geografia_id: int
 ) -> AsignacionEnHistoria | None:

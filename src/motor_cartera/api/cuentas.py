@@ -222,35 +222,10 @@ def obtener_cuenta(
         salidas_observadas=p.salidas_observadas,
         reingresos_observados=p.reingresos_observados,
         pagos_observados=vista.pagos_observados,
-        snapshot_actual=_snapshot(vista.snapshot_actual),
-        ultimo_snapshot_observado=_snapshot(vista.ultimo_snapshot_observado),
-        resumen_pagos=ResumenPagosRespuesta(
-            version_motor=VERSION_MOTOR_PAGOS,
-            observaciones=pagos.observaciones,
-            observaciones_interpretadas=pagos.observaciones_interpretadas,
-            movimientos_canonicos=pagos.movimientos_canonicos,
-            duplicados_exactos=pagos.duplicados_exactos,
-            coincidencias_ambiguas=pagos.coincidencias_ambiguas,
-            reversos=pagos.reversos,
-            posibles_reversos=pagos.posibles_reversos,
-            no_conciliados=pagos.no_conciliados,
-            pagos_anulados=pagos.pagos_anulados,
-            recuperacion_bruta_interpretada=pagos.recuperacion_bruta_interpretada,
-            recuperacion_neta_interpretada=pagos.recuperacion_neta_interpretada,
-        ),
-        lifecycle_resumen=LifecycleResumenRespuesta(
-            version_lifecycle=VERSION_LIFECYCLE,
-            gestiones=operacion.gestiones,
-            gestiones_anuladas=operacion.gestiones_anuladas,
-            ultima_gestion=_ultima(operacion.ultima_gestion),
-            ultimo_contacto_titular=_ultima(operacion.ultimo_contacto_titular),
-            promesas=operacion.promesas,
-            promesas_vigentes=operacion.promesas_vigentes,
-            convenios=operacion.convenios,
-            convenios_vigentes=operacion.convenios_vigentes,
-            visitas=operacion.visitas,
-            ultima_atribucion=_atribucion(atribuida),
-        ),
+        snapshot_actual=snapshot_respuesta(vista.snapshot_actual),
+        ultimo_snapshot_observado=snapshot_respuesta(vista.ultimo_snapshot_observado),
+        resumen_pagos=resumen_pagos_respuesta(pagos),
+        lifecycle_resumen=lifecycle_resumen_respuesta(operacion, atribuida),
         ultima_decision_v2=None
         if decidida is None
         else UltimaDecisionV2Respuesta(
@@ -275,6 +250,43 @@ def obtener_cuenta(
             microtramo_id=planeada.vista.asignacion.microtramo_id,
         ),
         ruteo_resumen=None if ruteada is None else _ruteo(ruteada),
+    )
+
+
+def resumen_pagos_respuesta(pagos: consultas.ResumenPagos) -> ResumenPagosRespuesta:
+    """Lo que la interpretacion vigente del motor de pagos dice de los pagos de una cuenta."""
+    return ResumenPagosRespuesta(
+        version_motor=VERSION_MOTOR_PAGOS,
+        observaciones=pagos.observaciones,
+        observaciones_interpretadas=pagos.observaciones_interpretadas,
+        movimientos_canonicos=pagos.movimientos_canonicos,
+        duplicados_exactos=pagos.duplicados_exactos,
+        coincidencias_ambiguas=pagos.coincidencias_ambiguas,
+        reversos=pagos.reversos,
+        posibles_reversos=pagos.posibles_reversos,
+        no_conciliados=pagos.no_conciliados,
+        pagos_anulados=pagos.pagos_anulados,
+        recuperacion_bruta_interpretada=pagos.recuperacion_bruta_interpretada,
+        recuperacion_neta_interpretada=pagos.recuperacion_neta_interpretada,
+    )
+
+
+def lifecycle_resumen_respuesta(
+    operacion: lifecycle.ResumenLifecycle, atribuida: ResultadoVisto | None
+) -> LifecycleResumenRespuesta:
+    """Lo que la cobranza hizo con una cuenta, en numeros, y la ultima atribucion de sus pagos."""
+    return LifecycleResumenRespuesta(
+        version_lifecycle=VERSION_LIFECYCLE,
+        gestiones=operacion.gestiones,
+        gestiones_anuladas=operacion.gestiones_anuladas,
+        ultima_gestion=_ultima(operacion.ultima_gestion),
+        ultimo_contacto_titular=_ultima(operacion.ultimo_contacto_titular),
+        promesas=operacion.promesas,
+        promesas_vigentes=operacion.promesas_vigentes,
+        convenios=operacion.convenios,
+        convenios_vigentes=operacion.convenios_vigentes,
+        visitas=operacion.visitas,
+        ultima_atribucion=_atribucion(atribuida),
     )
 
 
@@ -574,7 +586,7 @@ def _campos(visto: SnapshotVisto) -> dict:
     }
 
 
-def _snapshot(visto: SnapshotVisto | None) -> SnapshotRespuesta | None:
+def snapshot_respuesta(visto: SnapshotVisto | None) -> SnapshotRespuesta | None:
     return None if visto is None else SnapshotRespuesta(**_campos(visto))
 
 

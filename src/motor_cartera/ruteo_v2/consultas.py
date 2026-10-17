@@ -414,6 +414,15 @@ def historial(
     return total, [_en_historia(fila) for fila in filas]
 
 
+def de_ejecucion(s: Session, cuenta: CuentaCanonica, ejecucion_id: int) -> ParadaEnHistoria | None:
+    """La parada de la cuenta en esa ejecucion EXITOSA, si la tiene: la que declara un contexto de
+    la app (app/v1), en lugar de la ultima. Por (ejecucion, cuenta)."""
+    fila = s.exec(
+        _de_la_cuenta(cuenta).where(ParadaRutaV2.ejecucion_ruteo_v2_id == ejecucion_id)
+    ).one_or_none()
+    return None if fila is None else _en_historia(fila)
+
+
 def ultima(s: Session, cuenta: CuentaCanonica, al: date | None = None) -> ParadaEnHistoria | None:
     """La parada de la ejecucion EXITOSA mas reciente de la cuenta (con `al`, la de fecha de
     operacion hasta ese dia): la que resume la Cuenta 360."""

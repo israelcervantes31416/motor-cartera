@@ -404,6 +404,28 @@ def predicciones_de_cuenta(
     return total, [PrediccionDeCuentaVista(*f) for f in filas]
 
 
+def de_scoring(
+    s: Session, ejecucion: EjecucionScoringPredictivo, cuenta: int
+) -> PrediccionDeCuentaVista | None:
+    """La prediccion publicada de una cuenta en ese scoring, si la tiene: la que declara un contexto
+    de la app (app/v1). Por (scoring, cuenta)."""
+    fila = s.execute(
+        text(
+            "SELECT e.scoring_run_id, v.modelo_version_id, k.corte_id, e.as_of, e.known_at, "
+            "p.p_recuperacion_positiva_30d, p.p_contacto_14d, p.p_promesa_30d, "
+            "p.riesgo_sin_recuperacion_30d, p.recuperacion_positiva_esperada_30d, p.estado, "
+            "p.motivos, encode(p.feature_hash, 'hex') "
+            "FROM prediccion_cuenta p "
+            "JOIN ejecucion_scoring_predictivo e ON e.id = p.ejecucion_scoring_predictivo_id "
+            "JOIN version_modelo_predictivo v ON v.id = e.version_modelo_predictivo_id "
+            "JOIN corte_canonico k ON k.id = e.corte_canonico_id "
+            "WHERE p.ejecucion_scoring_predictivo_id = :e AND p.cuenta_canonica_id = :cuenta"
+        ),
+        {"e": ejecucion.id, "cuenta": cuenta},
+    ).one_or_none()
+    return None if fila is None else PrediccionDeCuentaVista(*fila)
+
+
 def drift(s: Session, ejecucion: EjecucionScoringPredictivo) -> list[DriftPredictivo]:
     return list(
         s.exec(
