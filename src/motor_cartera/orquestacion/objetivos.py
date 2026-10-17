@@ -3,8 +3,8 @@
 Un trabajo apunta a una corrida, a una ejecucion de alguno de los motores, a una ingesta de pagos, a
 una ejecucion historica, a una del motor de pagos, a una atribucion, a una evaluacion de promesas, a
 una decision v2, a una geografia, a una ejecucion de territorial/v2, a un plan de campo/v2, a
-una ejecucion de ruteo/v2, a una de analytics/v1, a un entrenamiento predictivo o a un scoring
-predictivo.
+una ejecucion de ruteo/v2, a una de analytics/v1, a un entrenamiento predictivo, a un scoring
+predictivo o a una ejecucion de optimization/v1.
 Para cerrarlo, el worker necesita saber en que tabla vive ese recurso, cuales de sus estados son
 terminales, como se llama su identificador publico y como se deja FALLIDO cuando la cola agota sus
 intentos sin que el motor lo terminara. Los motores no saben de la cola y la cola no sabe de sus
@@ -32,6 +32,7 @@ from motor_cartera.db.modelos import (
     EjecucionGeografia,
     EjecucionHistoria,
     EjecucionMotorPagos,
+    EjecucionOptimizacion,
     EjecucionRuteo,
     EjecucionRuteoV2,
     EjecucionScoringPredictivo,
@@ -49,6 +50,7 @@ from motor_cartera.db.modelos import (
     EstadoHistoria,
     EstadoIngestaPagos,
     EstadoMotorPagos,
+    EstadoOptimizacion,
     EstadoRuteo,
     EstadoRuteoV2,
     EstadoScoringPredictivo,
@@ -66,6 +68,7 @@ from motor_cartera.db.modelos import (
     ResultadoEvaluacionPromesas,
     ResultadoHistoria,
     ResultadoMotorPagos,
+    ResultadoOptimizacion,
     ResultadoScoringPredictivo,
     TipoTrabajo,
     ahora,
@@ -254,6 +257,23 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
             "hash_predicciones": None,
             "hash_drift": None,
             "resultado": ResultadoScoringPredictivo.INTENTOS_AGOTADOS.value,
+        },
+    ),
+    TipoTrabajo.OPTIMIZATION: Objetivo(
+        EjecucionOptimizacion,
+        EstadoOptimizacion,
+        "ejecucion_optimizacion_id",
+        "optimizacion_run_id",
+        {
+            "cuentas_publicadas": 0,
+            "cuentas_asignadas": 0,
+            "hash_plan": None,
+            "objetivo_primario_centavos": None,
+            "objetivo_secundario": None,
+            "unidades_recurso": None,
+            "desempate_canonico": None,
+            "solver_status": "NO_INVOCADO",
+            "resultado": ResultadoOptimizacion.INTENTOS_AGOTADOS.value,
         },
     ),
 }

@@ -50,6 +50,7 @@ from motor_cartera.db.modelos import (
     EjecucionDecisionV2,
     EjecucionEntrenamientoPredictivo,
     EjecucionGeografia,
+    EjecucionOptimizacion,
     EjecucionRuteoV2,
     EjecucionScoringPredictivo,
     EjecucionTerritorialV2,
@@ -83,6 +84,8 @@ from motor_cartera.motor_pagos.ejecuciones import (
     MotorPagosYaInterpretado,
     ejecutar_motor_pagos,
 )
+from motor_cartera.optimizacion import ejecuciones as optimizacion
+from motor_cartera.optimizacion.ejecuciones import OptimizacionYaPublicada, ejecutar_optimizacion
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
 from motor_cartera.predictivo import entrenamiento as entrenamiento_predictivo
@@ -118,6 +121,7 @@ PERDIO_LA_CARRERA = (
     AnalyticsYaGenerada,
     EntrenamientoYaPublicado,
     ScoringYaPublicado,
+    OptimizacionYaPublicada,
 )
 """Lo que levanta un motor cuando otra ejecucion de su fuente publico primero. Para entonces la suya
 ya quedo FALLIDA: no es un error del worker."""
@@ -188,6 +192,7 @@ MANEJADORES: dict[TipoTrabajo, Callable[[int], Any]] = {
     TipoTrabajo.ANALYTICS: ejecutar_analytics,
     TipoTrabajo.PREDICTIVE_TRAINING: ejecutar_entrenamiento,
     TipoTrabajo.PREDICTIVE_SCORING: ejecutar_scoring,
+    TipoTrabajo.OPTIMIZATION: ejecutar_optimizacion,
 }
 """Que ejecuta cada tipo de trabajo, con el id de su recurso. Todos son idempotentes: con el recurso
 ya terminado no hacen nada, y por eso se pueden entregar mas de una vez."""
@@ -718,6 +723,45 @@ def puntuar_predictivo_en_primer_plano(
     procesar_reclamo(reclamo, worker_id, config)
     with sesion() as s:
         return s.get_one(EjecucionScoringPredictivo, ejecucion_id)
+
+
+def optimizar_en_primer_plano(
+    *,
+    scoring_run_id: UUID,
+    decision_run_id: UUID,
+    configuracion_id: UUID,
+    fecha_operacion: date,
+    ruteo_run_id: UUID | None = None,
+    config: Config | None = None,
+) -> EjecucionOptimizacion:
+    """Un plan de optimization/v1 del CLI, con su propio trabajo, en primer plano. Si el proceso
+    muere, cualquier worker lo termina cuando vence el lease, con las mismas entradas. Propaga lo
+    que levanta `optimizacion.abrir` sin registrar nada."""
+    config = config or config_del_entorno
+    worker_id = identificador_worker()
+    with sesion() as s:
+        ejecucion = optimizacion.abrir(
+            s,
+            scoring_run_id=scoring_run_id,
+            decision_run_id=decision_run_id,
+            configuracion_id=configuracion_id,
+            fecha_operacion=fecha_operacion,
+            ruteo_run_id=ruteo_run_id,
+            max_intentos=config.worker_max_intentos,
+            tomado_por=worker_id,
+            lease_segundos=config.worker_lease_segundos,
+        )
+        trabajo = s.exec(
+            select(TrabajoOrquestacion).where(
+                TrabajoOrquestacion.ejecucion_optimizacion_id == ejecucion.id
+            )
+        ).one()
+        s.commit()
+        reclamo = cola.reclamo_de(trabajo)
+        ejecucion_id = ejecucion.id
+    procesar_reclamo(reclamo, worker_id, config)
+    with sesion() as s:
+        return s.get_one(EjecucionOptimizacion, ejecucion_id)
 
 
 def _cerrar(

@@ -113,14 +113,16 @@ def escenario(
     calendarios: list[dict] | None = None,
     prioridades: dict[int, str] | None = None,
     fecha: date = JUEVES,
+    canales: dict[int, str] | None = None,
 ) -> SimpleNamespace:
-    """Un corte con sus cuentas, su decision/v2 (o una con esas prioridades), su geografia, sus
-    bases, su territorial/v2, una configuracion de campo y el plan de campo/v2 de `fecha`."""
+    """Un corte con sus cuentas, su decision/v2 (o una con esas prioridades y esos canales), su
+    geografia, sus bases, su territorial/v2, una configuracion de campo y el plan de campo/v2 de
+    `fecha`."""
     referencia = referencia_tv2(destino)
     ingerir(destino, cuentas)
     decision = decidir(CORTE)
     if prioridades is not None:
-        decision = decision_mixta(decision, prioridades)
+        decision = decision_mixta(decision, prioridades, canales)
     geografia = geolocalizar(CORTE, referencia)
     version_bases = publicar_bases(*bases)
     territorial = asignar_tv2(CORTE, geografia, version_bases)
