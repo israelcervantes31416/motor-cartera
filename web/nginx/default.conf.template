@@ -1,0 +1,77 @@
+# La superficie web en produccion local: los archivos estaticos de la SPA y un proxy de solo
+# lectura hacia la API, en el mismo origen. El navegador nunca ve la clave de la API: el proxy la
+# agrega a cada peticion que deja pasar, y solo deja pasar GET de las rutas de rutas-api.conf.
+# Superficie local/demostrativa sin autenticacion: no se despliega con datos reales (v0.18).
+#
+# La imagen oficial de nginx sustituye ${MC_...} al arrancar (NGINX_ENVSUBST_FILTER=^MC_); las
+# variables de nginx, como $uri, no se tocan.
+
+map $uri $api_permitida {
+    default 0;
+    include /etc/nginx/rutas-api.conf;
+}
+
+upstream api_motor_cartera {
+    server ${MC_API_UPSTREAM};
+}
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+    root /usr/share/nginx/html;
+
+    # Lo minimo que cuesta nada: sin MIME adivinado, sin referer hacia fuera, sin marcos. La CSP
+    # completa y el resto del endurecimiento son de v0.18.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    location = /salud-web {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /api/ {
+        if ($request_method != GET) {
+            add_header Allow "GET" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            default_type application/json;
+            return 405 '{"codigo":"METODO_NO_PERMITIDO","mensaje":"La superficie web es de solo lectura: solo GET.","detalles":[]}';
+        }
+        if ($api_permitida = 0) {
+            add_header X-Content-Type-Options "nosniff" always;
+            default_type application/json;
+            return 404 '{"codigo":"RUTA_NO_EXPUESTA","mensaje":"La superficie web no expone esa ruta de la API.","detalles":[]}';
+        }
+        proxy_pass http://api_motor_cartera/;
+        proxy_set_header X-API-Key "${MC_API_KEY}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie "";
+        proxy_set_header Authorization "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+    }
+
+    # Los archivos con su hash en el nombre no cambian nunca: se guardan un ano.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        try_files $uri =404;
+    }
+
+    # Cualquier otra ruta es de la SPA: la resuelve su router, con su propia pagina 404.
+    location / {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header X-Frame-Options "DENY" always;
+        try_files $uri /index.html;
+    }
+}

@@ -1,0 +1,97 @@
+/* La base: HTML semantico legible, foco visible y nada que se salga de la pantalla. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--superficie-pagina);
+  color: var(--texto);
+  font-family: var(--fuente);
+  font-size: var(--letra-4);
+  line-height: var(--interlineado);
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  margin: 0 0 var(--espacio-3);
+}
+
+h1 {
+  font-size: var(--letra-7);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+}
+
+h2 {
+  font-size: var(--letra-5);
+}
+
+h3 {
+  font-size: var(--letra-4);
+  margin-top: var(--espacio-4);
+}
+
+p {
+  margin: 0 0 var(--espacio-3);
+}
+
+a {
+  color: var(--enlace);
+  text-underline-offset: 2px;
+}
+
+a:visited {
+  color: var(--enlace-visitado);
+}
+
+code {
+  font-family: var(--fuente-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  overflow-x: auto;
+}
+
+:focus-visible {
+  outline: 2px solid var(--foco);
+  outline-offset: 2px;
+}
+
+input,
+select,
+button {
+  font: inherit;
+}
+
+img {
+  max-width: 100%;
+}
+
+dl,
+dd {
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
