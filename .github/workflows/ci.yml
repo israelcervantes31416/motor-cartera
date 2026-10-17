@@ -7,7 +7,9 @@ on:
 
 jobs:
   # Lo que el .gitignore no alcanza a ver: un archivo trackeado aunque sus reglas lo excluyan,
-  # o una hoja de calculo con otro nombre. Revisa el commit que se sube, no una lista aparte.
+  # o una hoja de calculo con otro nombre. Revisa el commit que se sube, no una lista aparte. Y la
+  # app web: su lockfile y su Node fijado trackeados, nada externo en lo que carga el navegador y
+  # sus imagenes base fijadas por su digest.
   archivos:
     runs-on: ubuntu-latest
 
@@ -60,6 +62,46 @@ jobs:
       # pyproject.toml el paso falla, en lugar de resolver otra vez en silencio.
       - name: Dependencias
         run: uv sync --locked --extra dev
+
+      # La app web (web/), con el Node de web/.node-version y las versiones exactas de su
+      # package-lock.json, sin scripts de instalacion.
+      - name: Node para la app web
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Dependencias de la app web
+        working-directory: web
+        run: npm ci --ignore-scripts
+
+      # Los tipos de la app salen del OpenAPI de la API, reducido a lo que su proxy deja pasar: si
+      # una respuesta cambia y nadie regenero el contrato ni los tipos, el diff los delata.
+      - name: Contrato de la app web
+        run: |
+          python scripts/exportar_contrato_web.py
+          (cd web && npm run api:tipos)
+          git diff --exit-code -- web/src/api/
+
+      - name: Lint, formato y tipos de la app web
+        working-directory: web
+        run: |
+          npm run lint
+          npm run format:check
+          npm run typecheck
+
+      # Vitest con MSW y las respuestas capturadas de la API, con sus umbrales de cobertura.
+      - name: Pruebas de la app web
+        working-directory: web
+        run: npm run test:cobertura
+
+      # Los presupuestos del bundle se fijaron antes de medir: si uno se rompe, se optimiza.
+      - name: Build y presupuestos del bundle
+        working-directory: web
+        run: |
+          npm run build
+          npm run bundle:check
 
       - name: Lint
         run: ruff check .
@@ -399,6 +441,46 @@ jobs:
           docker compose exec -T worker motor-cartera comparar-optimizaciones --a "$plan" \
             --b "$(valor optimizacion_campo_run_id)" | tee comparar.txt
           grep -q "no un juicio de negocio" comparar.txt
+
+      # La superficie web (v0.17): nginx sirve el build de la SPA y su proxy de solo lectura hacia la
+      # API, con la clave del lado del servidor. La prueba de humo la recorre como un navegador: sus
+      # recursos locales, sus cabeceras, los metodos y las rutas que el proxy no deja pasar y el
+      # contexto que la prueba de humo publico, abierto entero por app/v1.
+      - name: Prueba de humo de la superficie web
+        run: |
+          set -o pipefail
+          docker compose up -d --wait web
+          python3 scripts/prueba_de_humo.py --web http://localhost:8080 | tee humo_web.txt
+
+      - name: Node para las pruebas E2E
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Playwright con Chromium
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+
+      # Contra la app del compose, con la API real y lo que publico la prueba de humo: los flujos
+      # principales, los errores, el movil (390 x 844), la privacidad de cada respuesta y del DOM,
+      # y axe-core en Chromium (contraste incluido) sobre las pantallas principales.
+      - name: Pruebas E2E de la app web
+        working-directory: web
+        env:
+          MC_E2E_URL: http://localhost:8080
+        run: npx playwright test
+
+      - name: Reporte de Playwright
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
