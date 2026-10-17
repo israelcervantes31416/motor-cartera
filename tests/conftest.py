@@ -106,11 +106,11 @@ def _esquema() -> None:
 
 def _vaciar() -> None:
     """Vacia la base de pruebas. Las ejecuciones del motor de pagos y de la evaluacion de promesas,
-    las versiones de la geografia, las de las bases y las de la red vial, y los entrenamientos
-    predictivos, no cuelgan de ninguna de las otras, asi que el CASCADE no las alcanza: se nombran.
-    TRUNCATE no pasa por los triggers que hacen al lifecycle solo de agregar, ni por los que hacen
-    inmutable lo que publican la geografia, territorial/v2, campo/v2, ruteo/v2 y
-    predictive/model-v1."""
+    las versiones de la geografia, las de las bases y las de la red vial, los entrenamientos
+    predictivos y las configuraciones de optimizacion no cuelgan de ninguna de las otras, asi que
+    el CASCADE no las alcanza: se nombran. TRUNCATE no pasa por los triggers que hacen al lifecycle
+    solo de agregar, ni por los que hacen inmutable lo que publican la geografia, territorial/v2,
+    campo/v2, ruteo/v2, predictive/model-v1 y optimization/v1."""
     from motor_cartera.db.sesion import crear_motor
 
     with crear_motor().begin() as conexion:
@@ -118,8 +118,8 @@ def _vaciar() -> None:
             text(
                 "TRUNCATE corrida, cuenta, rechazo, artefacto_fuente, cuenta_canonica, "
                 "ejecucion_motor_pagos, ejecucion_evaluacion_promesas, version_geografia, "
-                "version_bases_operativas, version_red_vial, ejecucion_entrenamiento_predictivo "
-                "RESTART IDENTITY CASCADE"
+                "version_bases_operativas, version_red_vial, ejecucion_entrenamiento_predictivo, "
+                "version_configuracion_optimizacion RESTART IDENTITY CASCADE"
             )
         )
 
