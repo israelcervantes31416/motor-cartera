@@ -3,7 +3,8 @@
 Motor de ingesta, validación, segmentación, decisión, priorización territorial, planeación de
 campo, ruteo (sintético y por calle), analítica point-in-time, predicción y optimización matemática
 en sombra de cartera de crédito al consumo, construido sobre **datos sintéticos**, con una API REST
-para operarlo y un worker que ejecuta cada etapa desde una cola durable.
+para operarlo, un worker que ejecuta cada etapa desde una cola durable y una app web de solo
+lectura para ver lo que publica.
 
 ## De qué se trata
 
@@ -149,6 +150,17 @@ ejecuta ninguna acción ([docs/optimizacion.md](docs/optimizacion.md),
 [docs/modelo_optimizacion.md](docs/modelo_optimizacion.md) y
 [docs/configuracion_optimizacion.md](docs/configuracion_optimizacion.md)).
 
+Y sobre todo eso, **la app** es una superficie web de solo lectura: un selector de contexto (un
+corte y, de cada motor, la ejecución que se declara por su identificador, sin elegir nunca "la más
+reciente"), un resumen por motor, el explorador de las cuentas del corte, paginado en el servidor,
+la Cuenta 360 (su historia, sus pagos y su atribución, sus gestiones, su decisión, su geografía, su
+campo, su ruteo, su predicción y su optimización) y las pantallas de analytics, predictivo,
+optimización, campo, ruteo y auditoría. No recalcula ni ejecuta nada, no muestra un dato personal ni
+una coordenada, y cada predicción y cada plan dicen a la vista lo que no son. **Superficie
+local/demostrativa sin autenticación; no desplegar con datos reales** ([docs/app.md](docs/app.md),
+[docs/dashboards.md](docs/dashboards.md), [docs/contexto_operativo.md](docs/contexto_operativo.md),
+[docs/frontend.md](docs/frontend.md) y [docs/privacidad_app.md](docs/privacidad_app.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -180,7 +192,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay dieciséis versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay diecisiete versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -270,6 +282,16 @@ punta:
   verificación en enteros; un plan solo se publica si HiGHS demuestra su óptimo, con su
   certificado, su hash y la huella del solver. Todo o nada, en sombra, en un trabajo durable
   `OPTIMIZATION`.
+- **v0.17.0 ✅ App + Dashboards: Superficie Operacional y Cuenta 360**: una SPA de React y
+  TypeScript estricto (`web/`), servida por nginx con un proxy de solo lectura (solo `GET`, solo
+  una lista blanca de rutas y la clave de la API del lado del servidor), sobre `app/v1`: el
+  contexto operativo explícito y validado (cada ejecución existe, es del corte y encadena con las
+  demás), el resumen por motor, el explorador de cuentas paginado, ordenado y filtrado en la base,
+  la Cuenta 360 con once pestañas y el linaje, sin datos personales en ningún nivel; y las pantallas
+  de analytics, predictivo, optimización, campo y ruteo sobre sus motores, con la supresión
+  respetada, los avisos de no causalidad a la vista y sin mapas. Tipos generados del OpenAPI, Vitest
+  con respuestas capturadas de la API, Playwright con axe-core contra el compose, y presupuestos del
+  bundle y de peticiones fijados antes de medir.
 
 Lo que ya hace:
 
@@ -446,6 +468,20 @@ Lo que ya hace:
   `exportar-optimizacion` en CSV, Parquet y JSONL, `diagnosticar-optimizacion` y
   `comparar-optimizaciones`); goldens calculados a mano, propiedades contra la enumeración y un
   benchmark S, M y XL con su sensibilidad, fuera del CI
+- [x] La app web de solo lectura (`web/`): React 19, TypeScript estricto, Vite, TanStack Query y
+  Table y Recharts, servida por nginx en `docker compose up` (en `127.0.0.1:8080`) con un proxy de
+  solo `GET` y lista blanca que pone la clave de la API del lado del servidor
+- [x] `app/v1`: el contexto operativo (opciones, sugerencias compatibles y validación), el resumen,
+  el explorador de cuentas, la Cuenta 360 y sus pestañas, las paradas de una ruta y el linaje, sin
+  datos personales en ningún nivel y sin elegir nunca "lo más reciente"
+- [x] Las pantallas: selector, resumen, cuentas, Cuenta 360, analytics, predictivo (modelo,
+  desempeño, calibración, scoring y drift), optimización (resumen, capacidad, restricciones,
+  asignaciones y solver), campo, ruteo y auditoría; sin mapas, sin botones de acción y con la tabla
+  de cada gráfica
+- [x] El contrato de la web, generado del OpenAPI y verificado en el CI; Vitest con MSW y respuestas
+  capturadas de la API; Playwright contra el compose (flujos, errores, móvil, privacidad y
+  axe-core); la prueba de humo `--web`; presupuestos del bundle y de peticiones, y un benchmark de
+  500,000 cuentas, fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -466,17 +502,17 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time
 ✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift
 ✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida
-➡️ v0.17 — App + Dashboards
-
-v0.18 Cloud + observabilidad + hardening
+✅ v0.17.0 — App + Dashboards: Superficie Operacional y Cuenta 360
+➡️ v0.18 — Cloud, Observabilidad y Hardening
 
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.17, App + Dashboards**: convertir las capas que ya existen (la Cuenta 360,
-analytics, las predicciones, los planes de optimización, el campo y las rutas, con su evidencia, sus
-fichas de modelo, su drift, su capacidad y sus restricciones) en una superficie operacional, sin
-perder la auditabilidad, el punto en el tiempo, la privacidad ni el versionado.
+Lo que sigue es **v0.18, Cloud, Observabilidad y Hardening**: llevar el sistema a un despliegue
+real, con identidad y control de acceso, observabilidad, alta disponibilidad, recuperación ante
+desastres, límites de peticiones y la política de seguridad de contenido, sin perder la
+auditabilidad, el punto en el tiempo, la privacidad ni el versionado. Hasta entonces, la app es una
+superficie local y demostrativa.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -487,8 +523,9 @@ Lo que está frágil o pendiente, sin maquillar, está en
 docker compose up --build
 ```
 
-Eso levanta PostgreSQL (con PostGIS), aplica las migraciones y arranca la API en <http://localhost:8000> y el
-worker, cada uno en su contenedor, sin pasos manuales. La documentación interactiva está en
+Eso levanta PostgreSQL (con PostGIS), aplica las migraciones y arranca la API en <http://localhost:8000>, el
+worker y la app web en <http://localhost:8080> (solo en esa máquina), cada uno en su contenedor,
+sin pasos manuales. La documentación interactiva está en
 <http://localhost:8000/docs>. La clave de desarrollo es `clave-local-de-desarrollo`; se cambia
 con la variable `MC_API_KEY`. Para correr varios workers: `docker compose up --scale worker=3`.
 Los archivos recibidos se guardan en el volumen `fuentes`, aparte del de PostgreSQL: sobreviven a
@@ -1638,6 +1675,40 @@ candidatas) 87.6 s con 1,262 MB; cada nivel `OPTIMAL`, con la mejor cota igual a
 Sobre 10,000 cuentas, el modelo completo y el reducido dan los mismos cuatro óptimos. Por la API, de
 11 a 65 ms por consulta sobre el plan XL, sin un Seq Scan sobre una tabla grande.
 
+## La app
+
+La superficie web de v0.17: de solo lectura, sobre lo que los motores ya publicaron, en un contexto
+explícito. Con el compose queda en <http://localhost:8080> (publicada solo en `127.0.0.1`); el
+selector pide una cartera, un corte y un contexto (puede proponer los compatibles), y nada se abre
+solo. Cada URL lleva su contexto, sus filtros y su página: copiarla reproduce la misma vista.
+
+```bash
+docker compose up --build                       # la app en http://localhost:8080
+cd web && npm ci --ignore-scripts && npm run dev # o en desarrollo, contra la API en :8000
+```
+
+- **Solo lectura, de punta a punta.** El navegador habla con un proxy del mismo origen que deja pasar
+  solo `GET` y solo las rutas de `web/nginx/rutas-api.conf`, y pone la clave de la API del lado del
+  servidor. Ninguna pantalla tiene un botón de acción.
+- **El backend es la fuente de verdad.** `app/v1` compone lo publicado (el contexto, el resumen,
+  el explorador de cuentas, la Cuenta 360 y el linaje) y valida que el contexto encadene; la app
+  ordena, pagina, formatea y dibuja, y no recalcula nada. Un valor no disponible, suprimido o
+  censurado se muestra con su estado, nunca como cero.
+- **Sin datos personales ni coordenadas**, en tres capas: los modelos de `app/v1`, la lista blanca
+  del proxy y los tipos de la app, generados del contrato.
+- **Lo que no es**: analytics describe, una predicción no es un efecto causal ni una recomendación,
+  y un plan es óptimo respecto a su modelo, no causalmente; cada pantalla lo dice a la vista.
+
+Todo está en [docs/app.md](docs/app.md), [docs/dashboards.md](docs/dashboards.md),
+[docs/contexto_operativo.md](docs/contexto_operativo.md), [docs/frontend.md](docs/frontend.md) y
+[docs/privacidad_app.md](docs/privacidad_app.md). El porqué, en las decisiones 248 a 274.
+
+**Medido.** Sobre el corte de 500,000 cuentas con su contexto completo, las rutas de `app/v1` van de
+13 a 62 ms de mediana, salvo el resumen y la distribución de las predicciones (0.54 y 0.52 s, que
+cuentan las 500,000), ordenar por saldo (0.98 s) y filtrar `ALTA` y `CAMPO` juntas (0.48 s); la
+Cuenta 360, 51 ms. Cada pantalla, con el build de producción, llega a su contenido en 270 a 824 ms,
+con 2 a 7 peticiones de datos y hasta 176 KiB de datos; el JavaScript entero pesa 275 KiB en gzip.
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -2311,6 +2382,15 @@ su propio gestor, lo que no se abre (cortes distintos, un ruteo de otra decisió
 en cada punto, dos workers, el lease perdido, la reconstrucción idéntica, la inmutabilidad, la
 privacidad, la API y el CLI. El benchmark de `optimization/v1` no corre en el CI.
 
+La app web se prueba en tres niveles. `app/v1` y la superficie web, con pytest
+(`tests/test_api_app_v1.py`, `tests/test_superficie_web.py`): la compatibilidad de un contexto,
+cada problema, las sugerencias, el resumen, el explorador (cada orden, sentido y filtro, página por
+página, contra la lista entera filtrada y ordenada aparte), la Cuenta 360 y sus pestañas, el linaje,
+cuántas consultas emite cada ruta, ningún dato personal en ningún esquema ni respuesta, la lista
+blanca del proxy y el contrato de la web. Las pantallas, con Vitest, MSW y respuestas capturadas de
+la API (`cd web && npm run test:cobertura`), con sus umbrales de cobertura. Y los flujos, con
+Playwright y axe-core (`npm run e2e`), contra el preview o contra la app del compose.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -2333,8 +2413,16 @@ contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cad
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
 escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía,
 de `campo/v2` y del planificador de `ruteo/v2` son un workflow aparte, que solo corre a mano; los
-de `analytics/v1`, `predictive/model-v1` y `optimization/v1` se corren a mano con su script, sobre
-una base `*_bench` que ya tiene el XL.
+de `analytics/v1`, `predictive/model-v1`, `optimization/v1` y la app se corren a mano con su script,
+sobre una base `*_bench` que ya tiene el XL.
+
+Desde v0.17, el trabajo de pruebas también instala la app web con el Node de `web/.node-version` y
+su `package-lock.json`, regenera su contrato y sus tipos (y falla si difieren), y corre su lint, su
+formato, sus tipos, Vitest con cobertura, el build y los presupuestos del bundle; el de archivos
+revisa también que la app tenga su lockfile, que nada de lo que carga el navegador pida otro origen
+y que sus imágenes estén fijadas por su digest; y el del compose levanta la app con nginx, corre la
+prueba de humo `--web` y las pruebas de Playwright en Chromium contra ella, con la API real y lo
+que la prueba de humo publicó.
 
 ## Arquitectura
 
@@ -2500,6 +2588,13 @@ src/motor_cartera/
 │   ├── ejecuciones.py optimization/v1: abrir con sus entradas declaradas y optimizar, todo o nada
 │   ├── exportacion.py Las asignaciones y el plan agregado en CSV, Parquet y JSONL
 │   └── consultas.py   Lo que leen la API y el CLI, la explicación de una cuenta y la comparación
+├── app_v1/
+│   ├── contexto.py    El contexto operativo: resolver cada ejecución declarada y validar que
+│   │                  exista, sea del corte y encadene con las demás
+│   ├── opciones.py    Las carteras, los cortes, las ejecuciones de un corte y las sugerencias
+│   ├── resumen.py     La distribución de las predicciones de un scoring, contada en la base
+│   ├── cuentas.py     El explorador: las llaves de la página primero, después su detalle
+│   └── linaje.py      De dónde salió cada resultado: cada ejecución y lo que declaró que leyó
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -2536,8 +2631,9 @@ src/motor_cartera/
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
 │                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
-│                      configuración de campo, campo v2, ruteo v2, analytics, predictivo y
-│                      optimización;
+│                      configuración de campo, campo v2, ruteo v2, analytics, predictivo,
+│                      optimización y app/v1 (la fachada de solo lectura de la app, con sus
+│                      modelos sin datos personales);
 │                      subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
@@ -2559,8 +2655,8 @@ migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
                        modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
                        geografía, de campo/v2, de ruteo/v2, de analytics/v1, de
-                       predictive/model-v1 y de optimization/v1, y actualización del catálogo
-                       del INEGI
+                       predictive/model-v1, de optimization/v1 y de la app, actualización del
+                       catálogo del INEGI, y el contrato y las capturas de la app web
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
@@ -2571,8 +2667,11 @@ docs/                  decisiones.md (por qué está hecho así), fuentes.md (la
                        politica_ruteo.md, analytics.md, metricas_analytics.md,
                        cohortes_analytics.md, predictivo.md, features_predictivas.md,
                        modelos_predictivos.md, backtesting_predictivo.md, optimizacion.md,
-                       modelo_optimizacion.md, configuracion_optimizacion.md, los diccionarios
-                       de CARTERA y PAGOS, y carrier.md
+                       modelo_optimizacion.md, configuracion_optimizacion.md, app.md,
+                       contexto_operativo.md, dashboards.md, frontend.md, privacidad_app.md,
+                       los diccionarios de CARTERA y PAGOS, y carrier.md
+web/                   La app de solo lectura: la SPA (src/), su proxy (nginx/ y proxy-api.ts),
+                       sus pruebas (src/**/*.test.ts* y e2e/), su Dockerfile y sus scripts
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -2851,8 +2950,8 @@ y `ruteo/v1` siguen como estaban.
   distancia puede diferir en un metro: la reconstrucción byte por byte pide la preparación publicada.
 - **Un solo perfil y un solo motor.** `car` de OSRM v26.9.0: ni motocicletas, ni a pie, ni camiones,
   ni otro motor de ruteo.
-- **Sin geometrías ni mapas.** La ruta no se dibuja (v0.17); lo que se publica es el orden, las horas
-  y los tramos.
+- **Sin geometrías ni mapas.** La ruta no se dibuja, tampoco en la app de v0.17: lo que se publica
+  es el orden, las horas y los tramos.
 - **No se abre sola.** Una ejecución se pide con su plan y su red, o la encuentra su backfill con
   una red declarada.
 - **Sin particionado** (decisión 174), y medido en una sola máquina, que no era dedicada; OSRM, con
@@ -2866,8 +2965,8 @@ y `ruteo/v1` siguen como estaban.
   planeó no se compara con lo que el gestor hizo: el lifecycle no sabe de rutas.
 - **Un gestor de campo no es un `actor_ref`**, y no hay métricas por persona ni rankings de
   cobradores.
-- **Sin dashboards, gráficas ni reportes visuales** (v0.17): la salida son agregados por la API, la
-  línea de comandos y las exportaciones.
+- **Sin reportes visuales propios**: la salida son agregados por la API, la línea de comandos y
+  las exportaciones, y desde v0.17 la app los muestra tal como se publicaron, con su supresión.
 - **Sin pronósticos, scoring, probabilidades ni recuperación esperada** (v0.15), ni recomendaciones
   automáticas u optimización matemática (v0.16).
 - **Sin multimoneda.** Los montos están en la moneda de la fuente, sin conversión.
@@ -2916,9 +3015,26 @@ y `ruteo/v1` siguen como estaban.
 - No hay *uplift*, ML causal, Decision Engine v3, aprendizaje por refuerzo, ejecución automática ni
   dashboards (v0.17).
 
+**De la app (v0.17.0).** Lo que v0.17.0 deja a propósito para después:
+
+- **Es de solo lectura.** No ejecuta acciones de cobranza: ni gestiones, ni mensajes, ni llamadas,
+  ni visitas, ni promesas, ni planes, ni entrenamientos.
+- **Superficie local/demostrativa sin autenticación; no desplegar con datos reales.** Sin usuarios,
+  sesiones, SSO ni control de acceso: cualquiera que alcance su puerto ve lo que su proxy deja
+  pasar. El compose la publica solo en `127.0.0.1`.
+- **No muestra datos personales ni coordenadas**, ni dibuja mapas, ni exporta desde el navegador.
+- **Analytics es descriptivo; una predicción no es causal; un plan es óptimo respecto a su modelo,
+  no causalmente.**
+- **Sin observabilidad de nube, alta disponibilidad, recuperación ante desastres, límites de
+  peticiones ni la política de seguridad de contenido completa**: son de v0.18.
+- **Ordenar por saldo o por días de atraso tarda cerca de un segundo** sobre 500,000 cuentas (recorre
+  el corte); un índice lo bajaría a milisegundos a cambio de cientos de MB y de tiempo en cada
+  ingesta, y no se agregó sin uso que lo pida.
+- **Sin modo oscuro.**
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
-se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
-hardening**:
+se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud, Observabilidad y
+Hardening**:
 
 - **PostgreSQL es la cola.** No hay un broker dedicado: los workers preguntan por trabajo cada
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.

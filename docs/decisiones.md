@@ -1,4 +1,4 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence y Optimización Matemática
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence, Optimización Matemática y App + Dashboards
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
@@ -8,8 +8,9 @@ Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.1
 Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red Vial, Secuenciación y
 Factibilidad de Jornada (v0.13.0), Collection Analytics: Métricas, Cohortes y Embudos
 Point-in-Time (v0.14.0), Predictive Intelligence: Modelos Temporales, Calibración y Drift
-(v0.15.0) y la Optimización Matemática: Priorización, Capacidad y Asignación Restringida (v0.16.0)
-están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
+(v0.15.0), la Optimización Matemática: Priorización, Capacidad y Asignación Restringida
+(v0.16.0) y la App + Dashboards: Superficie Operacional y Cuenta 360 (v0.17.0) están hechos como
+están, y qué haría distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
@@ -23,8 +24,10 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [features_predictivas.md](features_predictivas.md), en
 [modelos_predictivos.md](modelos_predictivos.md), en
 [backtesting_predictivo.md](backtesting_predictivo.md), en [optimizacion.md](optimizacion.md), en
-[modelo_optimizacion.md](modelo_optimizacion.md) y en
-[configuracion_optimizacion.md](configuracion_optimizacion.md); aquí va el porqué.
+[modelo_optimizacion.md](modelo_optimizacion.md), en
+[configuracion_optimizacion.md](configuracion_optimizacion.md), en [app.md](app.md), en
+[contexto_operativo.md](contexto_operativo.md), en [dashboards.md](dashboards.md), en
+[frontend.md](frontend.md) y en [privacidad_app.md](privacidad_app.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
@@ -32,7 +35,8 @@ de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del M
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
 de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics; las
-197 a 222, de Predictive Intelligence, y las 223 a 247, de la Optimización Matemática.
+197 a 222, de Predictive Intelligence; las 223 a 247, de la Optimización Matemática, y las 248 a
+274, de la App + Dashboards.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
@@ -285,6 +289,33 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 245. [La cola: OPTIMIZATION en el nivel 10, con candado y lease](#245-la-cola-optimization-en-el-nivel-10-con-candado-y-lease)
 246. [El benchmark: S, M, XL y la sensibilidad, con supuestos fijados antes de medir](#246-el-benchmark-s-m-xl-y-la-sensibilidad-con-supuestos-fijados-antes-de-medir)
 247. [Índices medidos, sin particionado; y qué no resuelve v0.16.0](#247-índices-medidos-sin-particionado-y-qué-no-resuelve-v0160)
+248. [Una SPA de React con Vite, sin SSR](#248-una-spa-de-react-con-vite-sin-ssr)
+249. [TypeScript estricto, sin `any`](#249-typescript-estricto-sin-any)
+250. [El backend es la fuente de verdad](#250-el-backend-es-la-fuente-de-verdad)
+251. [v0.17 es de solo lectura](#251-v017-es-de-solo-lectura)
+252. [Sin autenticación falsa](#252-sin-autenticación-falsa)
+253. [`app/v1` solo donde compone](#253-appv1-solo-donde-compone)
+254. [El contexto operativo, explícito](#254-el-contexto-operativo-explícito)
+255. [Nunca "lo más reciente" en silencio](#255-nunca-lo-más-reciente-en-silencio)
+256. [La URL reproduce la vista](#256-la-url-reproduce-la-vista)
+257. [Paginación, orden y filtros en el servidor](#257-paginación-orden-y-filtros-en-el-servidor)
+258. [Sin coordenadas ni mapas](#258-sin-coordenadas-ni-mapas)
+259. [La supresión de analytics se respeta](#259-la-supresión-de-analytics-se-respeta)
+260. [Una predicción no es un efecto causal](#260-una-predicción-no-es-un-efecto-causal)
+261. [Un plan óptimo no es una estrategia causalmente óptima](#261-un-plan-óptimo-no-es-una-estrategia-causalmente-óptima)
+262. [Los tipos salen del OpenAPI de la API](#262-los-tipos-salen-del-openapi-de-la-api)
+263. [TanStack Query para el estado del servidor](#263-tanstack-query-para-el-estado-del-servidor)
+264. [Sin Redux](#264-sin-redux)
+265. [Recursos locales, sin telemetría](#265-recursos-locales-sin-telemetría)
+266. [La accesibilidad, medida y no certificada](#266-la-accesibilidad-medida-y-no-certificada)
+267. [Los presupuestos del bundle, fijados antes de medir](#267-los-presupuestos-del-bundle-fijados-antes-de-medir)
+268. [Un proxy de solo lectura, con lista blanca y la clave del lado del servidor](#268-un-proxy-de-solo-lectura-con-lista-blanca-y-la-clave-del-lado-del-servidor)
+269. [Sin migración vacía](#269-sin-migración-vacía)
+270. [Sin índices nuevos ni particionado sin evidencia](#270-sin-índices-nuevos-ni-particionado-sin-evidencia)
+271. [Sin datos personales en ningún nivel](#271-sin-datos-personales-en-ningún-nivel)
+272. [Las llaves primero: el explorador a escala](#272-las-llaves-primero-el-explorador-a-escala)
+273. [Las pantallas se prueban con respuestas de la API real](#273-las-pantallas-se-prueban-con-respuestas-de-la-api-real)
+274. [El benchmark de la superficie, y qué no resuelve v0.17.0](#274-el-benchmark-de-la-superficie-y-qué-no-resuelve-v0170)
 
 ---
 
@@ -5035,3 +5066,326 @@ reoptimiza rutas; y no hay *uplift*, ML causal, Decision Engine v3, ejecución a
 dashboards. Lo que sigue es v0.17, App y Dashboards: convertir la Cuenta 360, analytics, las
 predicciones, los planes, el campo y las rutas en una superficie operacional, sin perder la
 auditabilidad, el punto en el tiempo, la privacidad ni el versionado.
+
+## 248. Una SPA de React con Vite, sin SSR
+
+**Decisión.** La app (`web/`) es una SPA de React 19 con Vite 8 y React Router 8, construida como
+archivos estáticos y servida por nginx con un proxy hacia la API en el mismo origen. Sin Next, sin
+Remix, sin renderizado en el servidor y sin una biblioteca de componentes: componentes propios,
+pequeños, con HTML semántico y variables CSS.
+
+**Por qué.** La superficie es de solo lectura, interna y detrás de un proxy: no hay SEO que ganar ni
+un primer render que acelerar en el servidor, y un servidor de Node más sería un proceso, una
+superficie de ataque y una versión más que mantener. Los archivos estáticos se sirven con la imagen
+fijada de nginx, que ya hace de proxy. Una biblioteca de componentes traería su peso, su estilo y su
+accesibilidad (o su falta) sin control; las pantallas son tablas, fichas e indicadores.
+
+## 249. TypeScript estricto, sin `any`
+
+**Decisión.** `strict` con `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
+`noImplicitOverride`, `noImplicitReturns` y `verbatimModuleSyntax`; ESLint con
+`strictTypeChecked`, que prohíbe `any` explícito. Lo que el contrato declara como un objeto libre
+(`dict[str, Any]`: una distribución, un certificado, una huella) se lee con funciones que comprueban
+su forma y devuelven `null`, nunca con un `as`.
+
+**Por qué.** El error que más importa aquí es mostrar un valor que no es el publicado: un índice
+fuera de rango que se vuelve `undefined` y luego cero, o un campo opcional tratado como presente. El
+compilador los detiene antes de que lleguen a una pantalla.
+
+## 250. El backend es la fuente de verdad
+
+**Decisión.** La app ordena, pagina, filtra, formatea y dibuja lo que la API publicó, y nada más: no
+recalcula una métrica, un score, una prioridad, un plan, una ruta, una atribución ni un estado, ni
+suma en el navegador dos números publicados. Lo único que `app/v1` agrega (la distribución de las
+predicciones de un scoring) se cuenta en la base.
+
+**Por qué.** Cada número tiene un motor que lo publicó con su versión, su política y su hash; uno
+calculado en el navegador no tendría ninguno, y dos pantallas podrían contradecirse. Si una pantalla
+necesita un agregado que nadie publica, se pide a la API, que lo cuenta una vez y en un solo lugar.
+
+## 251. v0.17 es de solo lectura
+
+**Decisión.** La app no crea gestiones, mensajes, llamadas, visitas ni promesas, no modifica cuentas,
+no ejecuta decisiones, planes de campo, rutas, entrenamientos, scorings ni optimizaciones, no edita
+configuraciones ni publica modelos. No tiene un botón de acción; los `POST` siguen siendo de la API y
+de la línea de comandos, y el proxy de la app solo deja pasar `GET`.
+
+**Por qué.** Una superficie que muestra lo que los motores publicaron no necesita escribir para
+servir, y una acción desde una pantalla exige lo que v0.17 no tiene: autenticación, autorización,
+auditoría de quién hizo qué y confirmaciones. Que el proxy no deje pasar otro método lo garantiza
+aunque una pantalla tuviera un error.
+
+## 252. Sin autenticación falsa
+
+**Decisión.** La app no tiene inicio de sesión, usuarios, roles ni sesiones: ni un `admin/admin`, ni
+un JWT casero, ni roles simulados. Es una superficie local y demostrativa, publicada solo en
+`127.0.0.1`, que no se despliega con datos reales. La clave de la API la pone el proxy.
+
+**Por qué.** Una autenticación de juguete se parece a una de verdad lo suficiente como para que
+alguien la despliegue. Decir "sin autenticación" es honesto y verificable; la autenticación, el
+control de acceso y el endurecimiento son de v0.18, con un proveedor de identidad real.
+
+## 253. `app/v1` solo donde compone
+
+**Decisión.** La API tiene una fachada para la app, `app/v1`, solo donde sin ella la app tendría que
+hacer muchas peticiones, unir respuestas en el navegador o arriesgarse a mezclar ejecuciones: el
+contexto (opciones y validación), el resumen, el explorador de cuentas, la Cuenta 360 y sus
+pestañas, las paradas de una ruta y el linaje. Lo demás, la app lo lee de su motor (`analytics/v1`,
+`predictive/model-v1`, `optimization/v1` y los planes y rutas de `campo/v2` y `ruteo/v2`).
+
+**Por qué.** Una fachada por cada pantalla duplicaría los contratos de los motores y los dejaría
+envejecer por separado. Una sin ninguna obligaría al navegador a unir la Cuenta 360 desde ocho
+motores, a elegir qué ejecución de cada uno leer y a filtrar los datos personales que las rutas de
+dominio traen. `app/v1` compone, valida y presenta; no recalcula.
+
+## 254. El contexto operativo, explícito
+
+**Decisión.** Cada pantalla lee un contexto: un corte y, de cada motor, la ejecución que declara por
+su identificador público (`decision`, `analytics`, `scoring`, `optimizacion`, `campo`, `ruteo`).
+`GET /app/v1/contextos/validar` lo resuelve con lo que cada ejecución dice de sí misma y lo valida:
+que cada una exista, sea del corte y encadene con las demás (lo que una leyó es lo que el contexto
+declara, y dos que leyeron lo mismo leyeron lo mismo). Un contexto incompatible se reporta con cada
+problema y ninguna pantalla lo combina ni lo corrige.
+
+**Por qué.** La recuperación de una analytics, la prioridad de una decisión y el plan de una
+optimización solo se pueden poner lado a lado si salen de la misma cadena. Validarlo en un solo
+lugar, en la API, con lo que cada ejecución registró al publicarse, evita que una pantalla mezcle un
+scoring con la optimización de otro.
+
+## 255. Nunca "lo más reciente" en silencio
+
+**Decisión.** Lo que el contexto no declara no se lee. Ni la API ni la app eligen "la ejecución más
+reciente" de nada. El selector propone contextos compatibles (desde una optimización o desde una
+analytics, validados), pero ninguno se abre solo: la persona elige abrirlo o lo ajusta.
+
+**Por qué.** "Lo más reciente" cambia mientras se mira: dos personas con la misma pantalla verían
+números distintos, y una pantalla podría combinar ejecuciones que nunca se leyeron entre sí. Lo
+publicado por una ejecución no cambia; lo que cambia es cuál se declara, y eso tiene que verse.
+
+## 256. La URL reproduce la vista
+
+**Decisión.** El contexto, los filtros, el orden, la página, la pestaña y la vista viven en la URL,
+en un orden fijo de parámetros. El estado de React no guarda nada de eso.
+
+**Por qué.** Una URL copiada abre la misma vista lógica, con los mismos números, en otro navegador o
+semanas después, porque cada ejecución declarada sigue publicando lo mismo. Es la forma más simple
+de auditar una pantalla: la URL es su evidencia.
+
+## 257. Paginación, orden y filtros en el servidor
+
+**Decisión.** Toda lista se pagina, se ordena y se filtra en la base: el explorador de cuentas (25,
+50 o 100 por página, hasta 100), las asignaciones de la optimización, las predicciones, las cargas,
+las rutas y las paradas. Los filtros del explorador son una lista cerrada de campos públicos y
+operativos (el principio del `cuenta_id`, producto, tramo de atraso, prioridad, canal, estado de la
+predicción y estado en la optimización), y uno de una ejecución no declarada es un 422, no una lista
+vacía.
+
+**Por qué.** Un corte tiene 500,000 cuentas: bajarlas al navegador para filtrarlas sería lento,
+pesado y una copia de la cartera en cada pestaña. Ningún filtro es un dato personal, porque la app
+no tiene ninguno con qué buscar.
+
+## 258. Sin coordenadas ni mapas
+
+**Decisión.** La app no recibe ni dibuja coordenadas, domicilios, puntos de cuentas, celdas,
+tramos, microtramos ni polilíneas. La geografía de una cuenta se muestra como su estado y su
+calidad, su municipio y su entidad y su base asignada; una ruta, como la secuencia de sus paradas
+con su ETA, su servicio y su motivo.
+
+**Por qué.** La ubicación de una cuenta es un dato personal aunque sea sintética, y un mapa de
+cobranza es exactamente lo que no debe poder copiarse de una pantalla. La operación que la app sirve
+(qué gestor, qué base, en qué orden, con qué estado) no necesita un mapa.
+
+## 259. La supresión de analytics se respeta
+
+**Decisión.** Una celda `SUPRIMIDO` de `analytics/v1` se muestra como suprimida, sin valor: no se
+grafica, no se reconstruye (ni como el TOTAL menos el resto) y una composición que la excluye dice
+que está incompleta. Las fórmulas y las definiciones se leen del catálogo de la API, no se copian.
+
+**Por qué.** La supresión protege a los grupos chicos; reconstruirla en el navegador la anularía. Y
+una definición copiada a la app envejecería sin aviso cuando el catálogo cambie de versión.
+
+## 260. Una predicción no es un efecto causal
+
+**Decisión.** Cada pantalla con una predicción dice, a la vista, *Predicción, no efecto causal ni
+recomendación de acción.*, con su versión del modelo, su `as_of`, su `known_at` y si lleva
+imputación. Las contribuciones de una explicación se rotulan *contribución al score*, nunca
+*causa*, y el drift lleva *Drift no implica automáticamente degradación del modelo.* Una prueba
+revisa el texto de cada fuente de la app: ninguna afirma que una acción causará algo, que un canal
+incrementará la recuperación, un ROI esperado ni *uplift*, salvo para negarlo.
+
+**Por qué.** Un número junto a una cuenta se lee como una instrucción. Las predicciones de
+`predictive/model-v1` son asociaciones de la operación histórica, no el efecto de gestionar; la
+pantalla tiene que decirlo donde se mira, no en la documentación.
+
+## 261. Un plan óptimo no es una estrategia causalmente óptima
+
+**Decisión.** Cada pantalla con un plan de `optimization/v1` dice *Óptimo respecto al modelo
+declarado; no estrategia causalmente óptima.*, con el estado del solver, el gap, la cota y lo que el
+plan no dice. Una ejecución sin óptimo demostrado (`TIME_LIMIT`, `INFEASIBLE`) se muestra con su
+estado y su resultado, sin esconderla y sin un plan.
+
+**Por qué.** El valor de oportunidad es la recuperación positiva esperada bajo la política
+histórica, no el beneficio incremental de contactar. Un óptimo matemático de supuestos equivocados
+sigue siendo una mala decisión, y la pantalla no puede presentarlo como otra cosa.
+
+## 262. Los tipos salen del OpenAPI de la API
+
+**Decisión.** `scripts/exportar_contrato_web.py` reduce el OpenAPI de la API a las operaciones `GET`
+que el proxy deja pasar y a sus esquemas (`web/src/api/openapi.json`, determinista), y
+openapi-typescript genera de él los tipos de la app. El CI los regenera y falla si difieren de los
+del repositorio.
+
+**Por qué.** Un modelo copiado a mano en TypeScript envejece en silencio cuando la API cambia; uno
+generado no compila. Y reducido a lo que el proxy deja pasar, la app ni siquiera puede escribir una
+llamada a una ruta que no podría hacer.
+
+## 263. TanStack Query para el estado del servidor
+
+**Decisión.** Cada recurso es una consulta de TanStack Query con una llave que lleva todo lo que fija
+su respuesta: el contexto entero, los identificadores, los filtros, la página y el orden. Lo
+publicado por una ejecución `EXITOSA` se guarda diez minutos; un contexto con una ejecución
+`EN_PROCESO` se revalida cada 30 segundos. Se reintenta una vez una falla de red o un 5xx. Sin
+WebSockets, sin SSE y sin *polling* agresivo.
+
+**Por qué.** Lo publicado no cambia, así que puede guardarse; lo que hay que evitar es que dos
+contextos compartan una entrada, y la llave lo impide. Las cancelaciones, los estados de carga y de
+error y la página anterior mientras llega la siguiente vienen resueltos.
+
+## 264. Sin Redux
+
+**Decisión.** No hay un almacén global de estado: la URL guarda el estado de la pantalla y TanStack
+Query el del servidor. ESLint prohíbe importar Redux, lodash, moment, date-fns y axios.
+
+**Por qué.** No queda estado que compartir entre pantallas que no sea uno de esos dos. Un almacén más
+sería una segunda fuente de verdad, y cada dependencia, peso y una versión que mantener.
+
+## 265. Recursos locales, sin telemetría
+
+**Decisión.** Todo se sirve del mismo origen: el JavaScript, el CSS, el ícono y las fuentes (las del
+sistema). Sin CDN, sin Google Fonts, sin mapas externos, sin analítica, sin Sentry ni ningún servicio
+que reciba algo desde el navegador. Una prueba revisa cada fuente y `index.html`; Playwright, cada
+petición.
+
+**Por qué.** Cada recurso externo es una petición que le dice a un tercero quién mira qué y cuándo,
+y una dependencia de su disponibilidad. Un error de render se escribe en la consola de quien lo ve, y
+nada más.
+
+## 266. La accesibilidad, medida y no certificada
+
+**Decisión.** HTML semántico, teclado, foco visible, un enlace para saltar al contenido, tablas con
+`caption` y `scope`, gráficas con su tabla equivalente, estados con texto e icono, ARIA solo donde
+el HTML no alcanza; axe-core en Vitest y en Playwright (con contraste, en Chromium) sobre las
+pantallas principales, con cero violaciones serias o críticas como compuerta. La paleta de las
+gráficas se validó para daltonismo.
+
+**Por qué.** Lo que se puede medir se mide en cada cambio; lo demás se hace bien por diseño. Una
+herramienta no certifica WCAG 2.2 AA, así que la app no dice que lo cumple: dice qué se midió.
+
+## 267. Los presupuestos del bundle, fijados antes de medir
+
+**Decisión.** El shell inicial, 250 KiB gzip como máximo; ningún paquete diferido de JS, más de 350
+KiB; todo el JS, 1.2 MiB. Y por pantalla, con el build de producción: el resumen, hasta 8
+peticiones de datos; la Cuenta 360, hasta 10; ninguna, más de 2 MiB de datos. Cada pantalla es un
+paquete diferido, y las gráficas, otro.
+
+**Por qué.** Un presupuesto fijado después de medir solo describe lo que salió. Fijado antes, un
+paquete que crece obliga a optimizar, no a subir el límite. Medido: 132.6 KiB de shell, 111.7 KiB el
+mayor diferido (las gráficas), 275.4 KiB de JS en total; el resumen, 3 peticiones de datos, y la
+Cuenta 360, 2.
+
+## 268. Un proxy de solo lectura, con lista blanca y la clave del lado del servidor
+
+**Decisión.** El navegador habla con un proxy del mismo origen (nginx en el compose; el servidor de
+Vite en desarrollo, con el mismo comportamiento) que deja pasar solo `GET`, solo las rutas de
+`web/nginx/rutas-api.conf` (la única fuente: nginx la incluye, Vite la lee, el exportador del
+contrato y las pruebas la usan), y pone la clave de la API en cada petición. Otro método es 405
+`METODO_NO_PERMITIDO`; otra ruta, 404 `RUTA_NO_EXPUESTA`, sin llegar a la API. Sin CORS.
+
+**Por qué.** La clave en el navegador sería de cualquiera que abra la consola. Una lista blanca, y
+no una lista negra, hace que una ruta nueva de la API no aparezca en la app sin que alguien decida
+exponerla; y las rutas de dominio que llevan un `CLIENTE_UNICO` no son alcanzables aunque la app
+tuviera un error.
+
+## 269. Sin migración vacía
+
+**Decisión.** v0.17 no agrega una migración: la cabeza de Alembic sigue en la 0017. La app no
+guarda nada (ni preferencias, ni usuarios, ni vistas guardadas) y `app/v1` lee lo que ya existe.
+
+**Por qué.** Una migración sin un cambio de esquema que la justifique es historia falsa; una que
+creara tablas de usuarios o de preferencias inventaría una persistencia que v0.17 no necesita.
+
+## 270. Sin índices nuevos ni particionado sin evidencia
+
+**Decisión.** Ningún índice ni particionado nuevo. Las consultas de `app/v1` entran por los índices
+que los motores ya tienen: la llave (ejecución, cuenta) de cada tabla, el índice del corte de
+`snapshot_cuenta` y los de las predicciones por probabilidad.
+
+**Por qué.** El benchmark de 500,000 cuentas lo decidió. Las rutas lentas de la primera corrida se
+arreglaron sin índices (decisión 272). Quedan dos, medidas: ordenar por saldo o por días de atraso
+recorre `snapshot_cuenta` en paralelo (976 ms), y un índice (corte, saldo, cuenta) lo bajaría a
+0.14 ms, pero ocupa 381 MB (el 20 % de la tabla del benchmark), tarda 24 s en construirse y cada
+ingesta de un corte lo pagaría, igual que el de días de atraso; contar `ALTA` y `CAMPO` juntas
+revisa las filas de una de las dos (483 ms). Ninguno es un orden o un filtro de omisión: si el uso
+los pide, son de v0.18.
+
+## 271. Sin datos personales en ningún nivel
+
+**Decisión.** Las respuestas de `app/v1` son modelos derivados de los del dominio sin
+`cliente_unico`, `actor_ref`, `idempotency_key` ni `observacion`, en cualquier nivel de anidación
+(`sin_datos_personales`), con su nombre más `App`. La cuenta se identifica por su `cuenta_id`
+técnico. Las pruebas recorren cada esquema de `app/v1` y cada respuesta; la prueba de humo y
+Playwright revisan cada respuesta que la app recibe.
+
+**Por qué.** Quitar los campos en la pantalla dejaría el dato en la red y en la cache del navegador.
+Quitarlos del modelo hace que ni siquiera se serialicen. La observación de una gestión y la llave
+de un evento son texto libre que nadie valida: pueden traer un nombre o un teléfono aunque el
+contrato pida que no, así que tampoco salen.
+
+## 272. Las llaves primero: el explorador a escala
+
+**Decisión.** El explorador pagina en dos pasos: primero las llaves de la página, en la tabla más
+chica que basta para filtrarlas y ordenarlas (el índice del corte; el de la ejecución que filtra; o,
+si el scoring tiene una predicción por cada cuenta del corte, su índice por probabilidad), y después
+solo esas llaves se completan con lo de cada ejecución, en el orden de la página. La distribución de
+un scoring se cuenta en una sola pasada en paralelo, con un `FILTER` de comparaciones exactas por
+décimo.
+
+**Por qué.** En la primera corrida del benchmark, la página 10,000 tardaba 2.9 s y ordenar por
+`p_recuperacion_positiva_30d` 1.5 s, porque unían las 500,000 cuentas con cada ejecución antes de
+quedarse con 50; ahora, 62 ms y 27 ms. La distribución tardaba 1.9 s con `width_bucket` sobre
+`numeric` y `GROUPING SETS`; ahora, 0.52 s, sin punto flotante, que podría poner en el décimo de al
+lado un valor que cae justo en su frontera. Una prueba compara cada orden, sentido y filtro, página
+por página, con la lista entera filtrada y ordenada aparte, por los dos caminos del scoring.
+
+## 273. Las pantallas se prueban con respuestas de la API real
+
+**Decisión.** Vitest prueba cada pantalla con MSW y respuestas capturadas de la API
+(`scripts/capturar_fixtures_web.py`, en proceso, sobre la base sintética de la prueba de humo): solo
+de rutas que el proxy deja pasar, recortadas, revisadas contra datos personales y tipadas por el
+contrato. Playwright prueba los flujos contra la app del compose, con la API real y lo que la prueba
+de humo publicó.
+
+**Por qué.** Respuestas inventadas a mano prueban la pantalla contra lo que alguien cree que la API
+responde; capturadas y tipadas, contra lo que responde, y un cambio del contrato las delata al
+compilar. No son datos reales: son del generador sintético.
+
+## 274. El benchmark de la superficie, y qué no resuelve v0.17.0
+
+**Decisión.** El benchmark (`scripts/benchmark_app.py` y `web/scripts/medir-paginas.mjs`, fuera del
+CI) mide, sobre el corte de 500,000 cuentas con el contexto que el selector propone, declarado antes
+de medir, cada ruta que las pantallas leen (mediana, p95, sentencias y su tiempo en PostgreSQL) y
+cada pantalla con el build de producción (hasta su contenido, sus peticiones y sus bytes).
+
+**Medido.** Las rutas de `app/v1`, de 13 a 62 ms de mediana, salvo el resumen y la distribución (0.54
+y 0.52 s), ordenar por saldo (0.98 s) y `ALTA` con `CAMPO` (0.48 s); la Cuenta 360, 51 ms; las
+rutas de los motores, de 10 a 27 ms. Las pantallas, de 270 a 824 ms hasta su contenido, con 2 a 7
+peticiones de datos y hasta 176 KiB de datos. Los detalles, en [app.md](app.md#lo-medido).
+
+**Qué no resuelve v0.17.0.** Es de solo lectura y no ejecuta ninguna acción de cobranza; no tiene
+autenticación, SSO, control de acceso ni usuarios, y no se despliega públicamente ni con datos
+reales; no muestra datos personales ni coordenadas; analytics es descriptivo; una predicción no es
+causal; un plan es óptimo respecto a su modelo, no causalmente; y no hay observabilidad de nube, alta
+disponibilidad, recuperación ante desastres, límites de peticiones ni la política de seguridad de
+contenido completa. Lo que sigue es v0.18, Cloud, Observabilidad y Hardening: llevar el sistema a un
+despliegue con identidad, permisos, observabilidad y endurecimiento, sin perder la auditabilidad, el
+punto en el tiempo, la privacidad ni el versionado.

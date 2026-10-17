@@ -11859,7 +11859,7 @@
   "info": {
     "description": "Las operaciones GET de la API que el proxy de la superficie web deja pasar (web/nginx/rutas-api.conf), con los esquemas que usan. Generado por scripts/exportar_contrato_web.py: no se edita a mano.",
     "title": "motor-cartera: la superficie web",
-    "version": "0.16.0"
+    "version": "0.17.0"
   },
   "openapi": "3.1.0",
   "paths": {
