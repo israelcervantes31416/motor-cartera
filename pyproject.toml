@@ -19,6 +19,7 @@ dependencies = [
     "pyarrow>=21",
     "pyshp>=3.1",
     "numpy>=1.26",
+    "scipy>=1.15",
 ]
 
 [project.optional-dependencies]
