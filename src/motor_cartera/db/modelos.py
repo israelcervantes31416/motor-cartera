@@ -5600,6 +5600,729 @@ class DriftPredictivo(SQLModel, table=True):
     """Los bordes de TRAIN y las proporciones de TRAIN y del scoring: distribuciones, no cuentas."""
 
 
+# --- optimization/v1 ------------------------------------------------------------------------------
+#
+# Desde la 0017. optimization/v1 decide, dada una capacidad operativa limitada, que cuentas atender
+# y con que recurso, cumpliendo las restricciones declaradas: un plan de soporte a decision, en
+# sombra, que no ejecuta nada. Dos capas que no se mezclan. La CONFIGURACION de un escenario es
+# configuracion operacional versionada (VersionConfiguracionOptimizacion, con su matriz de
+# admisibilidad AdmisibilidadCanalOptimizacion, sus pools PoolCapacidadOptimizacion y sus
+# restricciones RestriccionOptimizacion), BORRADOR o PUBLICADA, con el hash de su contenido. Una
+# EJECUCION declara exactamente su scoring predictivo, su decision/v2 (del mismo corte: lo garantiza
+# la base), su configuracion y, si hay CAMPO o BASE, su ruteo/v2 (cuyo plan de campo es de esa misma
+# decision: tambien lo garantiza la base), y publica todo o nada un resultado por cuenta del
+# universo (ResultadoOptimizacionCuenta), el uso de cada pool (UsoPoolOptimizacion) y cada
+# restriccion con su holgura (ResultadoRestriccionOptimizacion). Lo publicado no se reescribe: los
+# triggers de la 0017 rechazan cualquier UPDATE o DELETE sobre la configuracion publicada, sus
+# filas, los resultados y una ejecucion terminada. Ninguna tabla guarda un dato personal ni una
+# coordenada.
+
+CANALES_OPERATIVOS_OPTIMIZACION = ("DIGITAL", "TELEFONICA", "CAMPO")
+CANALES_DECISION_OPTIMIZACION = ("DIGITAL", "TELEFONICA", "CAMPO", "OTRO")
+ALCANCES_OPTIMIZACION = ("GLOBAL", "BASE", "GESTOR_CAMPO")
+TIPOS_RESTRICCION_OPTIMIZACION = (
+    "MIN_CUENTAS",
+    "MAX_CUENTAS",
+    "MIN_PARTICIPACION_BPS",
+    "MAX_PARTICIPACION_BPS",
+)
+DIMENSIONES_OPTIMIZACION = ("PRODUCTO", "ATRASO_BUCKET", "PRIORIDAD_DECISION", "BASE")
+ESTADOS_CUENTA_OPTIMIZACION = ("ASIGNADA", "NO_SELECCIONADA", "NO_ELEGIBLE")
+MOTIVOS_NO_ELEGIBLE_OPTIMIZACION = (
+    "PREDICCION_CON_IMPUTACION",
+    "SIN_CANAL_ADMISIBLE",
+    "CONFIG_EXCLUYE_CANAL",
+    "CAMPO_NO_PROGRAMADA",
+    "SIN_POOL_APLICABLE",
+)
+ESTADOS_SOLVER_OPTIMIZACION = (
+    "OPTIMAL",
+    "INFEASIBLE",
+    "TIME_LIMIT",
+    "ITERATION_LIMIT",
+    "UNBOUNDED",
+    "INFEASIBLE_OR_UNBOUNDED",
+    "NUMERICAL_ERROR",
+    "SOLVER_ERROR",
+    "NO_INVOCADO",
+)
+
+COHERENCIA_DEL_POOL = (
+    f"codigo ~ '{PATRON_CODIGO_BASE}' "
+    f"AND canal IN {_en(CANALES_OPERATIVOS_OPTIMIZACION)} "
+    f"AND tipo_alcance IN {_en(ALCANCES_OPTIMIZACION)} "
+    "AND (canal = 'CAMPO') = (tipo_alcance = 'GESTOR_CAMPO') "
+    "AND (tipo_alcance = 'GLOBAL') = (referencia_alcance IS NULL) "
+    f"AND (referencia_alcance IS NULL OR referencia_alcance ~ '{PATRON_CODIGO_BASE}') "
+    "AND (capacidad IS NOT NULL OR canal = 'CAMPO') AND (capacidad IS NULL OR capacidad >= 1) "
+    "AND unidades_recurso_por_asignacion BETWEEN 1 AND 1000000"
+)
+"""CAMPO se asigna solo por gestor, y un pool de gestor solo es de CAMPO; un pool GLOBAL no tiene
+referencia y uno de BASE o de gestor si; solo CAMPO puede no declarar capacidad (entonces es la de
+las paradas PROGRAMADA de su gestor)."""
+
+VOCABULARIO_DE_LA_RESTRICCION = (
+    f"codigo ~ '{PATRON_CODIGO_BASE}' "
+    f"AND tipo IN {_en(TIPOS_RESTRICCION_OPTIMIZACION)} "
+    f"AND dimension IN {_en(DIMENSIONES_OPTIMIZACION)} "
+    "AND limite >= 0 "
+    "AND (tipo NOT IN ('MIN_PARTICIPACION_BPS', 'MAX_PARTICIPACION_BPS') OR limite <= 10000) "
+    "AND (dimension <> 'PRODUCTO' OR valor_dimension IN "
+    "('CONSUMO', 'TARJETA', 'NOMINA', 'AUTOMOTRIZ')) "
+    "AND (dimension <> 'ATRASO_BUCKET' OR valor_dimension IN "
+    "('0', '1-30', '31-60', '61-90', '91+')) "
+    "AND (dimension <> 'PRIORIDAD_DECISION' OR valor_dimension IN "
+    "('BAJA', 'MEDIA', 'ALTA', 'MUY_ALTA')) "
+    f"AND (dimension <> 'BASE' OR valor_dimension ~ '{PATRON_CODIGO_BASE}')"
+)
+"""Solo dimensiones operacionales publicas, con su vocabulario; una participacion, en puntos
+base."""
+
+PUBLICACION_DE_OPTIMIZACION = (
+    "(estado = 'EXITOSA' AND resultado = 'PLAN_PUBLICADO' AND cuentas_universo > 0 "
+    "AND cuentas_publicadas = cuentas_universo AND hash_plan IS NOT NULL "
+    "AND solver_status = 'OPTIMAL' AND objetivo_primario_centavos IS NOT NULL "
+    "AND objetivo_secundario IS NOT NULL AND unidades_recurso IS NOT NULL "
+    "AND desempate_canonico IS NOT NULL) "
+    "OR (estado <> 'EXITOSA' AND cuentas_publicadas = 0 AND cuentas_asignadas = 0 "
+    "AND hash_plan IS NULL AND objetivo_primario_centavos IS NULL "
+    "AND objetivo_secundario IS NULL AND unidades_recurso IS NULL AND desempate_canonico IS NULL)"
+)
+"""Una EXITOSA publico un resultado por cuenta del universo, con su hash y sus objetivos, y solo con
+el optimo demostrado; las demas no publicaron ningun plan."""
+
+CONTEOS_DE_OPTIMIZACION = (
+    "cuentas_universo >= 0 AND cuentas_elegibles >= 0 AND cuentas_con_imputacion >= 0 "
+    "AND cuentas_retenidas >= 0 AND cuentas_asignadas >= 0 AND cuentas_publicadas >= 0 "
+    "AND clases >= 0 AND variables >= 0 AND restricciones_solver >= 0 "
+    "AND elementos_no_nulos >= 0 AND cuentas_elegibles <= cuentas_universo "
+    "AND cuentas_con_imputacion <= cuentas_universo AND cuentas_retenidas <= cuentas_elegibles "
+    "AND cuentas_asignadas <= cuentas_retenidas AND cuentas_publicadas <= cuentas_universo"
+)
+
+CADENA_DE_CAMPO = (
+    "(ejecucion_ruteo_v2_id IS NULL) = (ejecucion_campo_v2_id IS NULL) "
+    "AND (ejecucion_ruteo_v2_id IS NULL) = (ejecucion_territorial_v2_id IS NULL) "
+    "AND (ejecucion_ruteo_v2_id IS NULL) = (version_configuracion_campo_id IS NULL) "
+    "AND (ejecucion_ruteo_v2_id IS NULL) = (version_bases_operativas_id IS NULL)"
+)
+"""El ruteo, su plan de campo, su territorial/v2, su configuracion de campo y su version de bases
+van juntos o no van: las llaves foraneas compuestas solo se revisan con todas sus columnas."""
+
+COHERENCIA_DEL_RESULTADO = (
+    f"estado IN {_en(ESTADOS_CUENTA_OPTIMIZACION)} "
+    "AND (estado = 'ASIGNADA') = (motivo = 'EN_SOLUCION_OPTIMA') "
+    "AND (estado = 'NO_SELECCIONADA') = (motivo = 'FUERA_DE_SOLUCION_OPTIMA') "
+    f"AND (estado = 'NO_ELEGIBLE') = (motivo IN {_en(MOTIVOS_NO_ELEGIBLE_OPTIMIZACION)}) "
+    "AND (estado = 'ASIGNADA') = (pool_capacidad_optimizacion_id IS NOT NULL) "
+    "AND (estado = 'ASIGNADA') = (canal_asignado IS NOT NULL) "
+    "AND (estado = 'ASIGNADA') = (unidades_recurso IS NOT NULL) "
+    f"AND (canal_asignado IS NULL OR canal_asignado IN {_en(CANALES_OPERATIVOS_OPTIMIZACION)}) "
+    f"AND canal_decision IN {_en(CANALES_DECISION_OPTIMIZACION)} "
+    "AND (canal_asignado IS NOT DISTINCT FROM 'CAMPO') = (gestor_campo_id IS NOT NULL) "
+    "AND (gestor_campo_id IS NULL) = (orden_ruteo_original IS NULL) "
+    "AND (orden_ruteo_original IS NULL OR orden_ruteo_original >= 1) "
+    "AND (unidades_recurso IS NULL OR unidades_recurso >= 1) "
+    "AND (estado <> 'NO_ELEGIBLE' OR NOT retenida) AND (estado <> 'ASIGNADA' OR retenida) "
+    "AND valor_oportunidad_centavos >= 0 AND p_contacto_14d BETWEEN 0 AND 1"
+)
+"""Solo una ASIGNADA tiene pool, canal y unidades, y solo una de CAMPO tiene gestor y su orden
+original en la ruta; una NO_ELEGIBLE tiene un motivo factual de su catalogo y nunca entra al modelo;
+una ASIGNADA siempre se retuvo."""
+
+
+class EstadoVersionOptimizacion(StrEnum):
+    """Una version BORRADOR esta registrada con su hash y no se puede usar; PUBLICADA, se usa y ya
+    no cambia. Solo se pasa de BORRADOR a PUBLICADA."""
+
+    BORRADOR = "BORRADOR"
+    PUBLICADA = "PUBLICADA"
+
+
+class VersionConfiguracionOptimizacion(SQLModel, table=True):
+    """Una version de la configuracion de un escenario de optimizacion: su matriz de admisibilidad,
+    sus pools con su capacidad y sus unidades, sus restricciones, el total de cuentas, el
+    presupuesto de unidades y si admite predicciones CON_IMPUTACION.
+
+    Es configuracion operacional versionada, no la politica ni datos de CARTERA. Se identifica por
+    el SHA-256 de su contenido en forma canonica: el mismo contenido es la misma version, que se
+    reutiliza. PUBLICADA, no cambia (un trigger lo impide): cambiar una capacidad es otra version.
+    """
+
+    __tablename__ = "version_configuracion_optimizacion"
+    __table_args__ = (
+        sa.UniqueConstraint("hash_contenido", name="uq_version_configuracion_optimizacion_hash"),
+        sa.Index("ix_configuracion_optimizacion_estado", "estado", "id"),
+        sa.CheckConstraint(
+            "hash_contenido ~ '^[0-9a-f]{64}$'", name=conv("ck_configuracion_optimizacion_hash")
+        ),
+        sa.CheckConstraint(
+            "(estado = 'PUBLICADA') = (publicada_en IS NOT NULL)",
+            name=conv("ck_configuracion_optimizacion_publicada"),
+        ),
+        sa.CheckConstraint(
+            "pools > 0 AND pools_activos >= 1 AND pools_activos <= pools "
+            "AND restricciones >= 0 AND restricciones_activas >= 0 "
+            "AND restricciones_activas <= restricciones "
+            "AND (max_cuentas_atendidas IS NULL OR max_cuentas_atendidas >= 1) "
+            "AND (max_unidades_recurso IS NULL OR max_unidades_recurso >= 1)",
+            name=conv("ck_configuracion_optimizacion_conteos"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    configuracion_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico."""
+    nombre: str = Field(max_length=120)
+    """Una etiqueta para personas. No entra en el hash."""
+    version_configuracion: str = Field(max_length=32)
+    """optimization-config/v1: la forma canonica con que se calculo el hash."""
+    hash_contenido: str = Field(max_length=64)
+    estado: EstadoVersionOptimizacion = Field(
+        sa_type=sa.Enum(
+            EstadoVersionOptimizacion,
+            name="estado_configuracion",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        )
+    )
+    permitir_predicciones_con_imputacion: bool
+    """Declarado, sin valor por omision: si una prediccion CON_IMPUTACION puede ser elegible."""
+    max_cuentas_atendidas: int | None = Field(default=None, sa_type=sa.BigInteger)
+    max_unidades_recurso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """Unidades abstractas de esfuerzo, no dinero."""
+    pools: int
+    pools_activos: int
+    restricciones: int
+    restricciones_activas: int
+    metadatos: dict = Field(sa_type=JSONB)
+    """Lo que dice de si misma sin entrar en el hash: sus supuestos, sus pools por canal y sus
+    advertencias."""
+    creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    publicada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+
+
+class AdmisibilidadCanalOptimizacion(SQLModel, table=True):
+    """Una celda de la matriz de admisibilidad de una configuracion: si, para una cuenta a la que
+    decision/v2 le recomendo `canal_decision`, `canal_operativo` es operativamente admisible.
+    Admisible no es efectivo: no dice que ese canal funcione mejor."""
+
+    __tablename__ = "admisibilidad_canal_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_optimizacion_id"],
+            ["version_configuracion_optimizacion.id"],
+            name="fk_admisibilidad_optimizacion_version",
+        ),
+        sa.CheckConstraint(
+            f"canal_decision IN {_en(CANALES_DECISION_OPTIMIZACION)} "
+            f"AND canal_operativo IN {_en(CANALES_OPERATIVOS_OPTIMIZACION)}",
+            name=conv("ck_admisibilidad_optimizacion_canales"),
+        ),
+    )
+
+    version_configuracion_optimizacion_id: int = Field(primary_key=True)
+    canal_decision: str = Field(primary_key=True, max_length=12)
+    canal_operativo: str = Field(primary_key=True, max_length=12)
+    permitido: bool
+
+
+class PoolCapacidadOptimizacion(SQLModel, table=True):
+    """Un pool de capacidad de una configuracion: cuantas cuentas puede atender un recurso de un
+    canal, en un alcance, y cuantas unidades abstractas de esfuerzo consume cada asignacion. Un pool
+    de CAMPO es de un gestor (su codigo), y su capacidad nunca pasa de las paradas PROGRAMADA de ese
+    gestor en el ruteo declarado."""
+
+    __tablename__ = "pool_capacidad_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_optimizacion_id"],
+            ["version_configuracion_optimizacion.id"],
+            name="fk_pool_optimizacion_version",
+        ),
+        sa.UniqueConstraint(
+            "version_configuracion_optimizacion_id", "codigo", name="uq_pool_optimizacion_codigo"
+        ),
+        # Lo que referencia cada resultado y cada uso: el pool junto con su configuracion. Asi la
+        # base garantiza que un plan solo asigna a pools de la configuracion que declaro.
+        sa.UniqueConstraint(
+            "id", "version_configuracion_optimizacion_id", name="uq_pool_optimizacion_id_version"
+        ),
+        # Un pool de CAMPO por gestor en cada configuracion.
+        sa.Index(
+            "ux_pool_optimizacion_gestor",
+            "version_configuracion_optimizacion_id",
+            "referencia_alcance",
+            unique=True,
+            postgresql_where=sa.text("canal = 'CAMPO'"),
+        ),
+        sa.CheckConstraint(COHERENCIA_DEL_POOL, name=conv("ck_pool_optimizacion_coherencia")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    version_configuracion_optimizacion_id: int
+    codigo: str = Field(max_length=32)
+    canal: str = Field(max_length=12)
+    tipo_alcance: str = Field(max_length=16)
+    referencia_alcance: str | None = Field(default=None, max_length=32)
+    """El codigo de la base (BASE) o del gestor (GESTOR_CAMPO); NULL en GLOBAL."""
+    capacidad: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """Declarada. Solo un pool de CAMPO puede no declararla."""
+    unidades_recurso_por_asignacion: int
+    """Unidades abstractas de esfuerzo, no dinero."""
+    activo: bool
+
+
+class RestriccionOptimizacion(SQLModel, table=True):
+    """Una restriccion de cobertura de una configuracion: un minimo o un maximo de cuentas, o de
+    participacion en puntos base, de un grupo de una dimension operacional publica."""
+
+    __tablename__ = "restriccion_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_optimizacion_id"],
+            ["version_configuracion_optimizacion.id"],
+            name="fk_restriccion_optimizacion_version",
+        ),
+        sa.CheckConstraint(
+            VOCABULARIO_DE_LA_RESTRICCION, name=conv("ck_restriccion_optimizacion_vocabulario")
+        ),
+    )
+
+    limite: int = Field(sa_type=sa.BigInteger)
+    """Cuentas, o puntos base (0 a 10,000) en una participacion."""
+    version_configuracion_optimizacion_id: int = Field(primary_key=True)
+    codigo: str = Field(primary_key=True, max_length=32)
+    tipo: str = Field(max_length=24)
+    dimension: str = Field(max_length=20)
+    valor_dimension: str = Field(max_length=32)
+    activa: bool
+
+
+class EstadoOptimizacion(StrEnum):
+    """En que quedo una ejecucion de optimization/v1. Solo una EXITOSA publica un plan."""
+
+    EN_PROCESO = "EN_PROCESO"
+    EXITOSA = "EXITOSA"
+    FALLIDA = "FALLIDA"
+
+
+class ResultadoOptimizacion(StrEnum):
+    """Como termino una ejecucion de optimization/v1."""
+
+    PLAN_PUBLICADO = "PLAN_PUBLICADO"
+    """EXITOSA: publico el plan optimo demostrado, con un resultado por cuenta del universo."""
+    YA_OPTIMIZADA = "YA_OPTIMIZADA"
+    """FALLIDA: otra ejecucion publico primero la misma firma de entrada."""
+    INFACTIBLE = "INFACTIBLE"
+    """FALLIDA: la configuracion no admite ningun plan; con su diagnostico. No es un error."""
+    OPTIMO_NO_DEMOSTRADO = "OPTIMO_NO_DEMOSTRADO"
+    """FALLIDA: el solver agoto su limite sin demostrar el optimo: no se publica ningun plan."""
+    ERROR_NUMERICO = "ERROR_NUMERICO"
+    """FALLIDA: la solucion del solver, en enteros, no cumplia o no reproducia lo fijado."""
+    ERROR_DEL_SOLVER = "ERROR_DEL_SOLVER"
+    COEFICIENTES_FUERA_DE_RANGO = "COEFICIENTES_FUERA_DE_RANGO"
+    """FALLIDA: un coeficiente o una suma posible no cabia exacta: no se construyo el modelo."""
+    ENTRADAS_NO_EXITOSAS = "ENTRADAS_NO_EXITOSAS"
+    """FALLIDA: una entrada declarada ya no esta EXITOSA o PUBLICADA."""
+    CONFIGURACION_INCOMPATIBLE = "CONFIGURACION_INCOMPATIBLE"
+    """FALLIDA: la configuracion nombra un gestor o una base que la cadena del ruteo no tiene."""
+    DATOS_INCONSISTENTES = "DATOS_INCONSISTENTES"
+    SOLVER_DISTINTO = "SOLVER_DISTINTO"
+    """FALLIDA: el worker resuelve con otra huella que la declarada en la firma."""
+    VERSION_NO_SOPORTADA = "VERSION_NO_SOPORTADA"
+    ERROR_INTERNO = "ERROR_INTERNO"
+    INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
+
+
+class EjecucionOptimizacion(SQLModel, table=True):
+    """Una ejecucion de optimization/v1: el plan de una fecha de operacion, con entradas
+    declaradas exactas.
+
+    Declara su scoring predictivo y su decision/v2, del mismo corte (lo garantizan sus llaves
+    foraneas compuestas), su configuracion y, si usa CAMPO o BASE, su ruteo/v2 con la cadena de su
+    plan de campo: el plan es de la misma decision/v2 (tambien lo garantiza la base). Nunca "el
+    ultimo scoring", "la ultima decision", "la ultima ruta" ni "la ultima configuracion". Guarda las
+    versiones, los hashes de la politica y de la configuracion, la huella del solver y la firma de
+    todo lo que fija el plan; y, al terminar, su certificado: cada nivel lexicografico con su
+    estado, su objetivo, su cota, su gap y su tiempo.
+    """
+
+    __tablename__ = "ejecucion_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_scoring_predictivo_id", "corte_canonico_id"],
+            ["ejecucion_scoring_predictivo.id", "ejecucion_scoring_predictivo.corte_canonico_id"],
+            name="fk_optimizacion_scoring",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_decision_v2_id", "corte_canonico_id"],
+            ["ejecucion_decision_v2.id", "ejecucion_decision_v2.corte_canonico_id"],
+            name="fk_optimizacion_decision",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_ruteo_v2_id", "ejecucion_campo_v2_id"],
+            ["ejecucion_ruteo_v2.id", "ejecucion_ruteo_v2.ejecucion_campo_v2_id"],
+            name="fk_optimizacion_ruteo",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "ejecucion_campo_v2_id",
+                "ejecucion_decision_v2_id",
+                "ejecucion_territorial_v2_id",
+                "version_configuracion_campo_id",
+                "version_bases_operativas_id",
+            ],
+            [
+                "ejecucion_campo_v2.id",
+                "ejecucion_campo_v2.ejecucion_decision_v2_id",
+                "ejecucion_campo_v2.ejecucion_territorial_v2_id",
+                "ejecucion_campo_v2.version_configuracion_campo_id",
+                "ejecucion_campo_v2.version_bases_operativas_id",
+            ],
+            name="fk_optimizacion_campo",
+        ),
+        sa.ForeignKeyConstraint(
+            ["version_configuracion_optimizacion_id"],
+            ["version_configuracion_optimizacion.id"],
+            name="fk_optimizacion_configuracion",
+        ),
+        # Lo que referencia cada resultado y cada uso: la ejecucion junto con su configuracion.
+        sa.UniqueConstraint(
+            "id", "version_configuracion_optimizacion_id", name="uq_optimizacion_id_configuracion"
+        ),
+        sa.Index(
+            "ux_optimizacion_exitosa",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EXITOSA'"),
+        ),
+        sa.Index(
+            "ux_optimizacion_en_proceso",
+            "firma_inputs",
+            unique=True,
+            postgresql_where=sa.text("estado = 'EN_PROCESO'"),
+        ),
+        # Las listas de la API y del CLI, la mas reciente primero.
+        sa.Index("ix_optimizacion_estado", "estado", "id"),
+        sa.Index("ix_optimizacion_scoring", "ejecucion_scoring_predictivo_id", "id"),
+        sa.Index("ix_optimizacion_configuracion", "version_configuracion_optimizacion_id", "id"),
+        sa.CheckConstraint(
+            "firma_inputs ~ '^[0-9a-f]{64}$' AND hash_politica ~ '^[0-9a-f]{64}$' "
+            "AND hash_configuracion ~ '^[0-9a-f]{64}$' AND solver_fingerprint ~ '^[0-9a-f]{64}$' "
+            "AND (hash_plan IS NULL OR hash_plan ~ '^[0-9a-f]{64}$')",
+            name=conv("ck_optimizacion_firmas"),
+        ),
+        sa.CheckConstraint(
+            "(estado = 'EN_PROCESO') = (resultado IS NULL) "
+            "AND (estado = 'EN_PROCESO') = (solver_status IS NULL) "
+            f"AND (solver_status IS NULL OR solver_status IN {_en(ESTADOS_SOLVER_OPTIMIZACION)})",
+            name=conv("ck_optimizacion_resultado"),
+        ),
+        sa.CheckConstraint(CADENA_DE_CAMPO, name=conv("ck_optimizacion_cadena")),
+        sa.CheckConstraint(CONTEOS_DE_OPTIMIZACION, name=conv("ck_optimizacion_conteos")),
+        sa.CheckConstraint(PUBLICACION_DE_OPTIMIZACION, name=conv("ck_optimizacion_publicacion")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    optimizacion_run_id: UUID = Field(default_factory=uuid4, unique=True)
+    """Identificador publico de este intento. Lo determinista es su firma y su plan."""
+    ejecucion_scoring_predictivo_id: int
+    ejecucion_decision_v2_id: int
+    corte_canonico_id: int
+    """El de su scoring y el de su decision/v2: el mismo, lo exigen sus llaves foraneas."""
+    ejecucion_ruteo_v2_id: int | None = None
+    ejecucion_campo_v2_id: int | None = None
+    ejecucion_territorial_v2_id: int | None = None
+    version_configuracion_campo_id: int | None = None
+    version_bases_operativas_id: int | None = None
+    """La cadena del ruteo declarado: su plan de campo/v2 (de la misma decision/v2), su
+    territorial/v2, su configuracion de campo y su version de bases. Todas o ninguna."""
+    version_configuracion_optimizacion_id: int
+    fecha_operacion: date
+    """El dia que se planea: el del ruteo declarado, si hay uno."""
+    version_motor: str = Field(max_length=32)
+    """optimization/v1."""
+    version_politica: str = Field(max_length=40)
+    """optimization-public-v1."""
+    hash_politica: str = Field(max_length=64)
+    hash_configuracion: str = Field(max_length=64)
+    solver_fingerprint: str = Field(max_length=64)
+    """SHA-256 de la huella del solver con que se firmo: SciPy, HiGHS, Python, sistema,
+    arquitectura y parametros."""
+    firma_inputs: str = Field(max_length=64)
+    """SHA-256 de lo que fija el plan: las entradas exactas con sus firmas, los hashes, la fecha y
+    la huella del solver. La misma firma no se publica dos veces."""
+    estado: EstadoOptimizacion = Field(
+        default=EstadoOptimizacion.EN_PROCESO,
+        sa_type=sa.Enum(
+            EstadoOptimizacion,
+            name="estado_optimizacion",
+            native_enum=False,
+            create_constraint=True,
+            length=12,
+        ),
+    )
+    resultado: str | None = Field(default=None, max_length=40)
+    cuentas_universo: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las cuentas del corte: una prediccion y una decision cada una."""
+    cuentas_elegibles: int = Field(default=0, sa_type=sa.BigInteger)
+    cuentas_con_imputacion: int = Field(default=0, sa_type=sa.BigInteger)
+    cuentas_retenidas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Las elegibles que entraron al modelo despues de la reduccion exacta."""
+    cuentas_asignadas: int = Field(default=0, sa_type=sa.BigInteger)
+    cuentas_publicadas: int = Field(default=0, sa_type=sa.BigInteger)
+    """Los resultados por cuenta publicados: todos los del universo en una EXITOSA, cero en las
+    demas."""
+    clases: int = 0
+    """Las clases de dominancia de las elegibles."""
+    variables: int = Field(default=0, sa_type=sa.BigInteger)
+    restricciones_solver: int = Field(default=0, sa_type=sa.BigInteger)
+    elementos_no_nulos: int = Field(default=0, sa_type=sa.BigInteger)
+    objetivo_primario_centavos: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """El valor de oportunidad predicho del plan, en centavos: no dinero que se vaya a recuperar."""
+    objetivo_secundario: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """La suma de p_contacto_14d de las asignadas, en unidades de 1e-8: solo un desempate."""
+    unidades_recurso: int | None = Field(default=None, sa_type=sa.BigInteger)
+    desempate_canonico: int | None = Field(default=None, sa_type=sa.BigInteger)
+    solver_status: str | None = Field(default=None, max_length=24)
+    """El estado del solver en la ultima etapa que corrio: OPTIMAL en una EXITOSA."""
+    best_bound: Decimal | None = Field(default=None, max_digits=30, decimal_places=4)
+    """La mejor cota de HiGHS del nivel 1, en centavos, si la expuso."""
+    mip_gap: Decimal | None = Field(default=None, max_digits=24, decimal_places=12)
+    """El gap relativo de HiGHS del nivel 1, si lo expuso."""
+    solver_seconds: Decimal = Field(default=Decimal(0), max_digits=14, decimal_places=3)
+    """La suma de los segundos del solver en sus etapas."""
+    hash_plan: str | None = Field(default=None, max_length=64)
+    """SHA-256 del plan canonico: asignaciones, uso de pools, restricciones y objetivos, sin
+    instantes, duraciones ni identificadores de la ejecucion."""
+    huella_solver: dict = Field(sa_type=JSONB)
+    """La huella con que se firmo, legible."""
+    certificado: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """El modelo, la reduccion y cada nivel con su estado, su objetivo, su cota, su gap y sus
+    nodos: la evidencia de optimalidad, o por que no la hay."""
+    diagnostico: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """El prechequeo (errores y advertencias) y, si fue infactible, la relajacion minima."""
+    resumen: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    """Lo publicado, contado en la transaccion que lo publico: por estado, motivo, canal y pool,
+    las restricciones activas y el drift del scoring declarado."""
+    tiempos: dict | None = Field(default=None, sa_type=JSONB(none_as_null=True))
+    iniciada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
+    terminada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    detalle: str | None = None
+
+
+class ResultadoOptimizacionCuenta(SQLModel, table=True):
+    """Lo que un plan concluyo de una cuenta del universo: ASIGNADA a un pool, NO_SELECCIONADA
+    (era elegible y el plan optimo no la asigna) o NO_ELEGIBLE con su motivo factual.
+
+    Guarda el valor y el p_contacto con que entro, las dimensiones operacionales que usaron sus
+    restricciones (canal y prioridad de decision/v2, producto y tramo del snapshot, base de
+    territorial/v2) y, si quedo en CAMPO, su gestor y su orden original en la ruta de ruteo/v2.
+    Ningun dato personal ni coordenada. Ni se actualiza ni se borra.
+    """
+
+    __tablename__ = "resultado_optimizacion_cuenta"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_optimizacion_id", "version_configuracion_optimizacion_id"],
+            [
+                "ejecucion_optimizacion.id",
+                "ejecucion_optimizacion.version_configuracion_optimizacion_id",
+            ],
+            name="fk_resultado_optimizacion_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["corte_canonico_id", "cuenta_canonica_id"],
+            ["snapshot_cuenta.corte_canonico_id", "snapshot_cuenta.cuenta_canonica_id"],
+            name="fk_resultado_optimizacion_snapshot",
+        ),
+        sa.ForeignKeyConstraint(
+            ["pool_capacidad_optimizacion_id", "version_configuracion_optimizacion_id"],
+            [
+                "pool_capacidad_optimizacion.id",
+                "pool_capacidad_optimizacion.version_configuracion_optimizacion_id",
+            ],
+            name="fk_resultado_optimizacion_pool",
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestor_campo_id"], ["gestor_campo.id"], name="fk_resultado_optimizacion_gestor"
+        ),
+        sa.ForeignKeyConstraint(
+            ["base_operativa_id"], ["base_operativa.id"], name="fk_resultado_optimizacion_base"
+        ),
+        # Una pagina (y su total) de cada filtro de la lista blanca de la API, en el orden de la
+        # cuenta: estado, canal, pool, producto, prioridad y base; y los planes de una cuenta. Sin
+        # los de producto, prioridad y base, el total de esos filtros recorria la tabla (el
+        # benchmark XL lo midio).
+        sa.Index(
+            "ix_resultado_optimizacion_estado",
+            "ejecucion_optimizacion_id",
+            "estado",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_canal",
+            "ejecucion_optimizacion_id",
+            "canal_asignado",
+            "cuenta_canonica_id",
+            postgresql_where=sa.text("canal_asignado IS NOT NULL"),
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_pool",
+            "ejecucion_optimizacion_id",
+            "pool_capacidad_optimizacion_id",
+            "cuenta_canonica_id",
+            postgresql_where=sa.text("pool_capacidad_optimizacion_id IS NOT NULL"),
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_producto",
+            "ejecucion_optimizacion_id",
+            "producto",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_prioridad",
+            "ejecucion_optimizacion_id",
+            "prioridad",
+            "cuenta_canonica_id",
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_base",
+            "ejecucion_optimizacion_id",
+            "base_operativa_id",
+            "cuenta_canonica_id",
+            postgresql_where=sa.text("base_operativa_id IS NOT NULL"),
+        ),
+        sa.Index(
+            "ix_resultado_optimizacion_cuenta", "cuenta_canonica_id", "ejecucion_optimizacion_id"
+        ),
+        sa.CheckConstraint(COHERENCIA_DEL_RESULTADO, name=conv("ck_resultado_optimizacion_estado")),
+    )
+
+    # Las columnas de 8 bytes primero.
+    valor_oportunidad_centavos: int = Field(sa_type=sa.BigInteger)
+    """recuperacion_positiva_esperada_30d del scoring declarado, en centavos: sin multiplicarla
+    por ninguna probabilidad."""
+    ejecucion_optimizacion_id: int = Field(primary_key=True)
+    cuenta_canonica_id: int = Field(primary_key=True)
+    corte_canonico_id: int
+    version_configuracion_optimizacion_id: int
+    """La de su ejecucion: lo exige su llave foranea compuesta."""
+    pool_capacidad_optimizacion_id: int | None = None
+    gestor_campo_id: int | None = None
+    """Solo en CAMPO: el gestor de su parada PROGRAMADA, el de su pool."""
+    base_operativa_id: int | None = None
+    """Su base en territorial/v2 de la cadena del ruteo, si la tiene."""
+    orden_ruteo_original: int | None = None
+    """Solo en CAMPO: su orden de visita en la ruta de ruteo/v2. El plan no cambia el orden."""
+    unidades_recurso: int | None = None
+    p_contacto_14d: Decimal = Field(max_digits=9, decimal_places=8)
+    """Del scoring declarado: solo desempata entre planes del mismo valor."""
+    estado: str = Field(max_length=16)
+    motivo: str = Field(max_length=32)
+    canal_decision: str = Field(max_length=12)
+    """El canal que le recomendo decision/v2."""
+    canal_asignado: str | None = Field(default=None, max_length=12)
+    prioridad: str = Field(max_length=12)
+    """La prioridad final de decision/v2."""
+    producto: str = Field(max_length=20)
+    atraso_bucket: str = Field(max_length=8)
+    retenida: bool
+    """Si entro al modelo despues de la reduccion exacta. Una elegible no retenida tenia, en su
+    clase de restricciones, al menos u[s] cuentas con mejor orden canonico."""
+
+
+class UsoPoolOptimizacion(SQLModel, table=True):
+    """El uso de un pool de la configuracion en un plan: su capacidad declarada y efectiva, cuantas
+    cuentas elegibles y retenidas tenia, cuantas uso, su holgura y las unidades que consumio."""
+
+    __tablename__ = "uso_pool_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_optimizacion_id", "version_configuracion_optimizacion_id"],
+            [
+                "ejecucion_optimizacion.id",
+                "ejecucion_optimizacion.version_configuracion_optimizacion_id",
+            ],
+            name="fk_uso_pool_optimizacion_ejecucion",
+        ),
+        sa.ForeignKeyConstraint(
+            ["pool_capacidad_optimizacion_id", "version_configuracion_optimizacion_id"],
+            [
+                "pool_capacidad_optimizacion.id",
+                "pool_capacidad_optimizacion.version_configuracion_optimizacion_id",
+            ],
+            name="fk_uso_pool_optimizacion_pool",
+        ),
+        sa.ForeignKeyConstraint(
+            ["gestor_campo_id"], ["gestor_campo.id"], name="fk_uso_pool_optimizacion_gestor"
+        ),
+        sa.CheckConstraint(
+            "capacidad_efectiva >= 0 AND (capacidad_declarada IS NULL OR "
+            "capacidad_efectiva <= capacidad_declarada) AND utilizada >= 0 "
+            "AND utilizada <= capacidad_efectiva AND holgura = capacidad_efectiva - utilizada "
+            "AND retenidas <= elegibles AND utilizada <= retenidas "
+            "AND unidades_consumidas >= utilizada",
+            name=conv("ck_uso_pool_optimizacion_conteos"),
+        ),
+    )
+
+    capacidad_declarada: int | None = Field(default=None, sa_type=sa.BigInteger)
+    capacidad_efectiva: int = Field(sa_type=sa.BigInteger)
+    elegibles: int = Field(sa_type=sa.BigInteger)
+    retenidas: int = Field(sa_type=sa.BigInteger)
+    utilizada: int = Field(sa_type=sa.BigInteger)
+    holgura: int = Field(sa_type=sa.BigInteger)
+    unidades_consumidas: int = Field(sa_type=sa.BigInteger)
+    ejecucion_optimizacion_id: int = Field(primary_key=True)
+    pool_capacidad_optimizacion_id: int = Field(primary_key=True)
+    version_configuracion_optimizacion_id: int
+    gestor_campo_id: int | None = None
+    """En CAMPO: el gestor de la configuracion de campo del ruteo que tiene el codigo del pool."""
+
+
+class ResultadoRestriccionOptimizacion(SQLModel, table=True):
+    """Una restriccion de un plan con su lado izquierdo, su derecho, su holgura y si quedo activa
+    (holgura cero, en enteros): cada capacidad de pool, el total de cuentas, el presupuesto y cada
+    cobertura. Una participacion, en su forma lineal (10,000 por las del grupo contra los puntos
+    base por el total), con su limite resuelto a cuentas."""
+
+    __tablename__ = "resultado_restriccion_optimizacion"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["ejecucion_optimizacion_id"],
+            ["ejecucion_optimizacion.id"],
+            name="fk_restriccion_resultado_ejecucion",
+        ),
+        sa.Index(
+            "ix_restriccion_resultado_binding", "ejecucion_optimizacion_id", "binding", "codigo"
+        ),
+        sa.CheckConstraint(
+            "operador IN ('<=', '>=') AND holgura >= 0 AND binding = (holgura = 0) "
+            "AND ((operador = '<=' AND holgura = rhs - lhs) "
+            "OR (operador = '>=' AND holgura = lhs - rhs))",
+            name=conv("ck_restriccion_resultado_holgura"),
+        ),
+    )
+
+    lhs: int = Field(sa_type=sa.BigInteger)
+    rhs: int = Field(sa_type=sa.BigInteger)
+    holgura: int = Field(sa_type=sa.BigInteger)
+    cuentas_grupo: int | None = Field(default=None, sa_type=sa.BigInteger)
+    total: int | None = Field(default=None, sa_type=sa.BigInteger)
+    limite_resuelto: int | None = Field(default=None, sa_type=sa.BigInteger)
+    """En una participacion: ceil o floor de los puntos base por el total, en cuentas."""
+    ejecucion_optimizacion_id: int = Field(primary_key=True)
+    codigo: str = Field(primary_key=True, max_length=40)
+    tipo: str = Field(max_length=24)
+    dimension: str | None = Field(default=None, max_length=20)
+    valor_dimension: str | None = Field(default=None, max_length=32)
+    operador: str = Field(max_length=2)
+    binding: bool
+
+
 # --- la orquestacion durable ----------------------------------------------------------------------
 #
 # Desde la 0006 los motores no corren dentro de la peticion que los pide: la peticion deja el
@@ -5637,7 +6360,8 @@ OBJETIVO_DEL_TRABAJO = (
     "AND (tipo = 'RUTEO_V2') = (ejecucion_ruteo_v2_id IS NOT NULL) "
     "AND (tipo = 'ANALYTICS') = (ejecucion_analytics_id IS NOT NULL) "
     "AND (tipo = 'PREDICTIVE_TRAINING') = (ejecucion_entrenamiento_predictivo_id IS NOT NULL) "
-    "AND (tipo = 'PREDICTIVE_SCORING') = (ejecucion_scoring_predictivo_id IS NOT NULL)"
+    "AND (tipo = 'PREDICTIVE_SCORING') = (ejecucion_scoring_predictivo_id IS NOT NULL) "
+    "AND (tipo = 'OPTIMIZATION') = (ejecucion_optimizacion_id IS NOT NULL)"
 )
 """Exactamente un objetivo, el de su tipo: el tipo tiene un solo valor, y cada equivalencia obliga a
 que su objetivo exista y a que los demas esten vacios."""
@@ -5826,6 +6550,11 @@ class TipoTrabajo(StrEnum):
     PREDICTIVE_SCORING = "PREDICTIVE_SCORING"
     """Desde la 0016: las predicciones de las cuentas de un corte con una version PUBLICADA
     declarada, y su drift. Lo piden POST /predictivo/scorings o score-predictivo."""
+    OPTIMIZATION = "OPTIMIZATION"
+    """Desde la 0017: el plan de optimization/v1 de una fecha, sobre un scoring predictivo, una
+    decision/v2, una configuracion PUBLICADA y, si usa CAMPO o BASE, un ruteo/v2 declarados. Lo
+    piden POST /optimizacion/ejecuciones u optimizar-cartera. Lee lo publicado y no cambia nada: no
+    ejecuta ninguna accion."""
 
 
 class EstadoTrabajo(StrEnum):
@@ -5918,6 +6647,11 @@ class TrabajoOrquestacion(SQLModel, table=True):
             ["ejecucion_scoring_predictivo.id"],
             name="fk_trabajo_scoring_predictivo",
         ),
+        sa.ForeignKeyConstraint(
+            ["ejecucion_optimizacion_id"],
+            ["ejecucion_optimizacion.id"],
+            name="fk_trabajo_optimizacion",
+        ),
         sa.UniqueConstraint("corrida_id", name="uq_trabajo_corrida"),
         sa.UniqueConstraint("ejecucion_decision_id", name="uq_trabajo_decision"),
         sa.UniqueConstraint("ejecucion_territorial_id", name="uq_trabajo_territorial"),
@@ -5939,6 +6673,7 @@ class TrabajoOrquestacion(SQLModel, table=True):
         sa.UniqueConstraint(
             "ejecucion_scoring_predictivo_id", name="uq_trabajo_scoring_predictivo"
         ),
+        sa.UniqueConstraint("ejecucion_optimizacion_id", name="uq_trabajo_optimizacion"),
         sa.CheckConstraint(OBJETIVO_DEL_TRABAJO, name=conv("ck_trabajo_objetivo")),
         sa.CheckConstraint(PROPIEDAD_DEL_TRABAJO, name=conv("ck_trabajo_lease")),
         sa.CheckConstraint(
@@ -6013,6 +6748,8 @@ class TrabajoOrquestacion(SQLModel, table=True):
     """El objetivo de un trabajo PREDICTIVE_TRAINING, desde la 0016."""
     ejecucion_scoring_predictivo_id: int | None = None
     """El objetivo de un trabajo PREDICTIVE_SCORING, desde la 0016."""
+    ejecucion_optimizacion_id: int | None = None
+    """El objetivo de un trabajo OPTIMIZATION, desde la 0017."""
     intentos: int = 0
     """Cuantas veces un worker lo tomo para ejecutarlo."""
     max_intentos: int

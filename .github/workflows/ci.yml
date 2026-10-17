@@ -113,7 +113,8 @@ jobs:
   # geografia/v1, las bases operativas, territorial/v2, campo/v2 y ruteo/v2, sobre una red vial
   # sintetica que prepara y sirve OSRM v26.9.0 con su imagen fijada. Al final, un escenario
   # predictivo pequeno, en su propia cartera, entrena predictive/model-v1 y lo usa para puntuar,
-  # medir el drift y explicar una prediccion.
+  # medir el drift y explicar una prediccion; y optimization/v1 arma, en sombra, el plan optimo de
+  # su ultimo corte y uno con CAMPO sobre el corte oficial y su ruteo/v2.
   compose:
     runs-on: ubuntu-latest
 
@@ -326,7 +327,8 @@ jobs:
       # propone sin entrenar nada; la prueba de humo lo entrena por la API y el worker lo publica,
       # puntua el ultimo corte, mide su drift, explica una prediccion y puntua el corte de TEST en
       # BACKTEST con su feature_known_at. El resumen y el drift salen por la linea de comandos, y el
-      # desempeno de ese BACKTEST con los labels del manifiesto reproduce las metricas de TEST.
+      # desempeno de ese BACKTEST con los labels del manifiesto reproduce las metricas de TEST. Con
+      # --optimizacion sigue optimization/v1 (el paso siguiente revisa su linea de comandos).
       - name: Predictive Intelligence
         run: |
           set -o pipefail
@@ -339,7 +341,9 @@ jobs:
             --escenario datos/predictivo --validation 1 --test 1 \
             --destino datos/predictivo/manifiesto.json | tee manifiesto_predictivo.txt
           grep -q "No se entreno nada" manifiesto_predictivo.txt
-          python3 scripts/prueba_de_humo.py --predictivo datos/predictivo | tee humo_predictivo.txt
+          ruteo=$(awk '/^ruteo_run_id/ {print $2}' humo.txt)
+          python3 scripts/prueba_de_humo.py --predictivo datos/predictivo --optimizacion \
+            --ruteo-oficial "$ruteo" | tee humo_predictivo.txt
           valor() { awk -v llave="$1" '$1 == llave {print $2}' humo_predictivo.txt; }
           docker compose exec -T worker motor-cartera resumen-modelo-predictivo \
             --modelo "$(valor modelo_version_id)" | tee resumen_predictivo.txt
@@ -363,6 +367,38 @@ jobs:
           assert diferencias and max(abs(d) for d in diferencias) <= 1e-12, diferencias
           print(f"{len(diferencias)} metricas de TEST reproducidas por el BACKTEST")
           EOF
+
+      # optimization/v1 por la linea de comandos, sobre los planes que la prueba de humo publico:
+      # el resumen con su certificado, la exportacion de las asignaciones y del plan agregado en
+      # CSV, Parquet y JSONL (sin un dato personal), el diagnostico de la infactible y la
+      # comparacion de los dos planes. Ningun comando ejecuta una accion.
+      - name: Optimizacion Matematica
+        run: |
+          set -o pipefail
+          valor() { awk -v llave="$1" '$1 == llave {print $2}' humo_predictivo.txt; }
+          plan=$(valor optimizacion_run_id)
+          docker compose exec -T worker motor-cartera resumen-optimizacion --ejecucion "$plan" \
+            | tee resumen_optimizacion.txt
+          grep -q "EXITOSA (PLAN_PUBLICADO)" resumen_optimizacion.txt
+          test "$(grep -c "): OPTIMAL, objetivo" resumen_optimizacion.txt)" -eq 4
+          grep -q "No demuestra que el canal asignado cause" resumen_optimizacion.txt
+          for formato in csv parquet jsonl; do
+            docker compose exec -T worker motor-cartera exportar-optimizacion --ejecucion "$plan" \
+              --formato "$formato" --destino "datos/optimizacion.$formato" | tee exportar.txt
+            grep -q "filas de asignaciones" exportar.txt
+          done
+          docker compose exec -T worker motor-cartera exportar-optimizacion --ejecucion "$plan" \
+            --contenido pools --destino datos/optimizacion_pools.csv
+          # Con -e, un "! grep" nunca detiene el paso: se pregunta con if.
+          if grep -qiE "cliente_unico|actor_ref|latitud|longitud|telefono" datos/optimizacion.csv
+          then exit 1; fi
+          docker compose exec -T worker motor-cartera diagnosticar-optimizacion \
+            --ejecucion "$(valor optimizacion_infactible_run_id)" | tee diagnostico.txt
+          grep -q "MINIMO_SUPERA_ELEGIBLES" diagnostico.txt
+          grep -q "Sin plan publicado" diagnostico.txt
+          docker compose exec -T worker motor-cartera comparar-optimizaciones --a "$plan" \
+            --b "$(valor optimizacion_campo_run_id)" | tee comparar.txt
+          grep -q "no un juicio de negocio" comparar.txt
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la

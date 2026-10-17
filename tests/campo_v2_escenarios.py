@@ -151,11 +151,15 @@ def decidir(corte: date = CORTE) -> EjecucionDecisionV2:
     return decidida
 
 
-def decision_mixta(real: EjecucionDecisionV2, prioridades: dict[int, str]) -> EjecucionDecisionV2:
+def decision_mixta(
+    real: EjecucionDecisionV2,
+    prioridades: dict[int, str],
+    canales: dict[int, str] | None = None,
+) -> EjecucionDecisionV2:
     """Otra decision/v2 EXITOSA del mismo corte, con las features de `real` y, para cada numero de
     cliente de `prioridades`, esa prioridad y el canal CAMPO; las demas cuentas, BAJA y DIGITAL.
     Para probar el orden por prioridad de campo/v2 sin depender de que public-v1 solo mande MUY_ALTA
-    a CAMPO."""
+    a CAMPO. `canales` fija el canal de una cuenta, en lugar de esa regla."""
     with sesion() as s:
         columnas = [
             c
@@ -202,7 +206,10 @@ def decision_mixta(real: EjecucionDecisionV2, prioridades: dict[int, str]) -> Ej
         )
         for cliente_unico, cuenta in cuentas.items():
             prioridad = prioridades.get(int(cliente_unico[2:]), "BAJA")
-            canal = "CAMPO" if int(cliente_unico[2:]) in prioridades else "DIGITAL"
+            canal = (canales or {}).get(
+                int(cliente_unico[2:]),
+                "CAMPO" if int(cliente_unico[2:]) in prioridades else "DIGITAL",
+            )
             nivel = NIVEL[Prioridad(prioridad)]
             s.execute(
                 text(

@@ -3312,6 +3312,383 @@ def evaluar_predictivo(
         typer.echo(f"Escrito: {salida}")
 
 
+# --- optimization/v1 ------------------------------------------------------------------------------
+
+
+@app.command("crear-config-optimizacion")
+def crear_config_optimizacion(
+    archivo: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False, help="El JSON de la configuracion.")
+    ],
+    publicar: Annotated[
+        bool,
+        typer.Option("--publicar", help="Publicarla: solo una PUBLICADA se usa para planear."),
+    ] = False,
+) -> None:
+    """Registra una version de la configuracion de optimizacion: valida el documento entero
+    (fail-closed, con todos sus problemas), lo lleva a su forma canonica, calcula su hash y la
+    guarda BORRADOR, o PUBLICADA con --publicar; o reutiliza la version que ya tiene ese mismo
+    contenido. Termina con codigo 1 si no es valida."""
+    import json
+
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.optimizacion import configuracion as configuracion_
+
+    try:
+        contenido = configuracion_.leer(json.loads(archivo.read_text(encoding="utf-8")))
+        with sesion() as s:
+            registrada = configuracion_.registrar(s, contenido, publicar=publicar)
+            s.commit()
+            v = registrada.version
+            s.refresh(v)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"{archivo.name} no es JSON: {exc.msg}.", err=True)
+        raise typer.Exit(code=1) from exc
+    except configuracion_.ConfiguracionInvalida as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if registrada.creada:
+        accion = "registrada"
+    else:
+        accion = "ya existia: se reutiliza" + (
+            " y se publico" if registrada.publicada_ahora else ""
+        )
+    typer.echo(f"Configuracion de optimizacion {v.configuracion_id}: {accion} ({v.estado})")
+    typer.echo(
+        f"  {v.nombre}: {v.pools} pools ({v.pools_activos} activos), {v.restricciones} "
+        f"restricciones ({v.restricciones_activas} activas)"
+    )
+    typer.echo(
+        f"  maximo de cuentas {v.max_cuentas_atendidas or 'sin limite'}, maximo de unidades "
+        f"{v.max_unidades_recurso or 'sin limite'}; predicciones CON_IMPUTACION "
+        + ("admitidas" if v.permitir_predicciones_con_imputacion else "excluidas")
+    )
+    por_canal = v.metadatos.get("pools_por_canal", {})
+    typer.echo("  pools activos: " + ", ".join(f"{c} {n}" for c, n in por_canal.items()))
+    for aviso in v.metadatos.get("advertencias", []):
+        typer.echo(f"  advertencia: {aviso}")
+    if v.metadatos.get("supuestos"):
+        typer.echo(f"  supuestos: {v.metadatos['supuestos']}")
+    typer.echo(f"  hash {v.hash_contenido} ({v.version_configuracion})")
+    typer.echo(f"configuracion_id {v.configuracion_id}")
+
+
+@app.command("optimizar-cartera")
+def optimizar_cartera(
+    scoring_: Annotated[
+        str, typer.Option("--scoring", help="Un scoring EXITOSA de un modelo PUBLICADA.")
+    ],
+    decision: Annotated[
+        str, typer.Option("--decision", help="Una decision/v2 EXITOSA del mismo corte.")
+    ],
+    configuracion: Annotated[
+        str, typer.Option("--configuracion", help="Una configuracion PUBLICADA, por su UUID.")
+    ],
+    fecha_operacion: Annotated[
+        datetime | None,
+        typer.Option(
+            "--fecha-operacion",
+            formats=["%Y-%m-%d"],
+            help="El dia que se planea: obligatoria, no se infiere; con --ruteo, la del ruteo.",
+        ),
+    ] = None,
+    ruteo: Annotated[
+        str | None,
+        typer.Option(
+            "--ruteo",
+            help="Un ruteo/v2 EXITOSA de esa misma decision/v2: obligatorio si la configuracion "
+            "usa CAMPO o BASE.",
+        ),
+    ] = None,
+) -> None:
+    """Planea con optimization/v1 en primer plano y sin la API, con su propio trabajo de la cola
+    durable y todas sus entradas declaradas: nunca "el ultimo" scoring, decision, ruteo ni
+    configuracion. Resuelve los cuatro niveles lexicograficos y publica el plan solo si su
+    optimo quedo demostrado, todo o nada. No ejecuta ninguna accion. Termina con codigo 1 si no
+    publico un plan."""
+    from uuid import UUID
+
+    from motor_cartera.db.modelos import EstadoOptimizacion
+    from motor_cartera.optimizacion import ejecuciones
+    from motor_cartera.orquestacion.worker import optimizar_en_primer_plano
+
+    dia = _fecha_obligatoria(fecha_operacion, "optimizar-cartera")
+    try:
+        e = optimizar_en_primer_plano(
+            scoring_run_id=UUID(scoring_),
+            decision_run_id=UUID(decision),
+            configuracion_id=UUID(configuracion),
+            fecha_operacion=dia,
+            ruteo_run_id=None if ruteo is None else UUID(ruteo),
+        )
+    except ejecuciones.OptimizacionInvalida as exc:
+        typer.echo(f"{exc.codigo}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (ejecuciones.OptimizacionEnProceso, ejecuciones.OptimizacionYaPublicada) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"optimization/v1 {e.optimizacion_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(
+        f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}, solver "
+        f"{e.solver_fingerprint[:12]}..."
+    )
+    if e.hash_plan:
+        typer.echo(
+            f"  {e.cuentas_asignadas:,} asignadas de {e.cuentas_elegibles:,} elegibles "
+            f"({e.cuentas_universo:,} en el universo); valor {e.objetivo_primario_centavos:,} "
+            f"centavos, {e.unidades_recurso:,} unidades"
+        )
+        typer.echo(f"  hash del plan {e.hash_plan}")
+    typer.echo(f"  {e.detalle}")
+    typer.echo(f"optimizacion_run_id {e.optimizacion_run_id}")
+    if e.estado != EstadoOptimizacion.EXITOSA:
+        raise typer.Exit(code=1)
+
+
+def _optimizacion(s, ejecucion: str):
+    """La vista de una ejecucion de optimization/v1 por su UUID; si no existe, codigo 1."""
+    from uuid import UUID
+
+    from motor_cartera.optimizacion import consultas
+
+    try:
+        return consultas.obtener_ejecucion(s, UUID(ejecucion))
+    except consultas.NoEncontrado as exc:
+        typer.echo(f"No existe la ejecucion {ejecucion}.", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _imprimir_niveles(certificado: dict | None) -> None:
+    for n in (certificado or {}).get("niveles", []):
+        cota = "-" if n["mejor_cota"] is None else f"{n['mejor_cota']:,.4f}"
+        objetivo = "-" if n["objetivo"] is None else f"{n['objetivo']:,}"
+        gap = "-" if n["gap_relativo"] is None else f"{n['gap_relativo']:.3g}"
+        typer.echo(
+            f"  nivel {n['nivel']} ({n['sentido']}): {n['estado']}, objetivo {objetivo}, cota "
+            f"{cota}, gap {gap}, {n['metodo'] or 'sin variables'}, {n['variables']:,} variables "
+            f"libres, {n['fijadas_por_dualidad']:,} fijadas por dualidad, {n['segundos']:.2f} s"
+        )
+
+
+@app.command("resumen-optimizacion")
+def resumen_optimizacion(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="El optimizacion_run_id.")],
+) -> None:
+    """Resume una ejecucion de optimization/v1: sus entradas declaradas, sus hashes, la huella del
+    solver, la reduccion exacta, el certificado de cada nivel, los objetivos, el uso por canal y
+    las restricciones activas. Agregado: ninguna cuenta."""
+    from motor_cartera.db.modelos import EstadoOptimizacion
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.optimizacion.politica import AVISO, EstadoCuenta, Motivo
+
+    with sesion() as s:
+        v = _optimizacion(s, ejecucion)
+    e = v.ejecucion
+    huella = e.huella_solver or {}
+    typer.echo(f"optimization/v1 {e.optimizacion_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(
+        f"  corte {v.fecha_corte.isoformat()} ({v.corte_id}), fecha de operacion "
+        f"{e.fecha_operacion.isoformat()}"
+    )
+    typer.echo(
+        f"  scoring {v.scoring_run_id} (modelo {v.modelo_version_id}), decision/v2 "
+        f"{v.decision_run_id}, ruteo/v2 {v.ruteo_run_id or '-'}"
+    )
+    typer.echo(f"  configuracion {v.configuracion_id} ({e.hash_configuracion[:12]}...)")
+    typer.echo(
+        f"  {e.version_politica} ({e.hash_politica[:12]}...), firma {e.firma_inputs}, solver "
+        f"{e.solver_fingerprint[:12]}... (SciPy {huella.get('scipy')}, HiGHS {huella.get('highs')})"
+    )
+    if e.estado == EstadoOptimizacion.EN_PROCESO:
+        typer.echo("  Todavia no termina: un worker la resuelve.")
+        return
+    typer.echo(
+        f"  universo {e.cuentas_universo:,}, elegibles {e.cuentas_elegibles:,}, con imputacion "
+        f"{e.cuentas_con_imputacion:,}, retenidas {e.cuentas_retenidas:,} en {e.clases:,} clases"
+    )
+    typer.echo(
+        f"  modelo: {e.variables:,} variables, {e.restricciones_solver:,} restricciones, "
+        f"{e.elementos_no_nulos:,} no nulos; solver {e.solver_seconds} s"
+    )
+    _imprimir_niveles(e.certificado)
+    if e.estado != EstadoOptimizacion.EXITOSA:
+        typer.echo(f"  {e.detalle}")
+        typer.echo(f"  Sin plan publicado: diagnosticar-optimizacion --ejecucion {ejecucion}")
+        return
+    r = e.resumen or {}
+    typer.echo(
+        f"  objetivos: valor {e.objetivo_primario_centavos:,} centavos, contacto "
+        f"{e.objetivo_secundario:,} (1e-8), {e.unidades_recurso:,} unidades, desempate "
+        f"{e.desempate_canonico:,}"
+    )
+    # JSONB no guarda el orden de las llaves: se imprimen en el de sus catalogos.
+    estados, motivos = r.get("estados", {}), r.get("motivos", {})
+    typer.echo("  estados: " + ", ".join(f"{x} {estados.get(x, 0):,}" for x in EstadoCuenta))
+    typer.echo("  motivos: " + ", ".join(f"{m} {motivos[m]:,}" for m in Motivo if m in motivos))
+    for canal, c in sorted(r.get("por_canal", {}).items()):
+        typer.echo(
+            f"  {canal}: {c['pools']} pools, capacidad {c['capacidad']:,}, utilizada "
+            f"{c['utilizada']:,} ({c['utilizacion']}), {c['unidades']:,} unidades, valor "
+            f"{c['valor_centavos']:,} centavos"
+        )
+    restricciones = r.get("restricciones", {})
+    typer.echo(
+        f"  restricciones: {restricciones.get('total', 0):,}, activas "
+        f"{restricciones.get('binding', 0):,}; declaradas activas "
+        f"{restricciones.get('binding_declaradas') or 'ninguna'}"
+    )
+    reduccion = r.get("reduccion", {})
+    typer.echo(
+        f"  reduccion exacta: {reduccion.get('eliminadas', 0):,} de "
+        f"{reduccion.get('elegibles', 0):,} elegibles fuera del modelo "
+        f"({reduccion.get('porcentaje_eliminado', 0)} %)"
+    )
+    typer.echo(f"  hash del plan {e.hash_plan}")
+    tiempos = e.tiempos or {}
+    fases = tiempos.get("fases_segundos", {})
+    orden = ("universo", "solver", "plan", "staging", "publicacion")
+    typer.echo(
+        "  tiempos: "
+        + ", ".join(
+            f"{k} {fases[k]:.2f} s"
+            for k in sorted(fases, key=lambda k: (orden.index(k) if k in orden else len(orden), k))
+        )
+        + f"; total {tiempos.get('total_segundos')} s, memoria pico "
+        f"{tiempos.get('memoria_pico_mb')} MB"
+    )
+    typer.echo(AVISO)
+
+
+@app.command("exportar-optimizacion")
+def exportar_optimizacion(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="Un optimizacion_run_id EXITOSA.")],
+    formato: Annotated[str, typer.Option(help="csv, parquet o jsonl.")] = "csv",
+    contenido: Annotated[
+        str,
+        typer.Option(
+            help="asignaciones (una fila por cuenta), pools (el plan agregado: el uso de cada "
+            "pool) o restricciones (cada una con su lado izquierdo, derecho y holgura)."
+        ),
+    ] = "asignaciones",
+    destino: Annotated[str | None, typer.Option(help="El archivo que se escribe.")] = None,
+) -> None:
+    """Exporta un plan publicado: sus asignaciones (el cuenta_id publico, el estado, el motivo,
+    los canales, el pool, la prioridad, el producto, el tramo de atraso, la base, el gestor, el
+    orden original en el ruteo, el valor de oportunidad en centavos y p_contacto exacta) o su plan
+    agregado (por pool o por restriccion). Sin nombres, direcciones, telefonos, CLIENTE_UNICO,
+    actor_ref ni coordenadas. Las asignaciones salen por conjuntos (COPY), sin cargar el plan en
+    memoria."""
+    from motor_cartera.db.modelos import EstadoOptimizacion
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.optimizacion import exportacion
+
+    formato, contenido = formato.lower(), contenido.lower()
+    if formato not in exportacion.FORMATOS:
+        typer.echo("--formato es csv, parquet o jsonl.", err=True)
+        raise typer.Exit(code=2)
+    if contenido not in exportacion.CONTENIDOS:
+        typer.echo("--contenido es asignaciones, pools o restricciones.", err=True)
+        raise typer.Exit(code=2)
+    ruta = Path(destino or f"datos/optimizacion_{ejecucion}_{contenido}.{formato}")
+    with sesion() as s:
+        v = _optimizacion(s, ejecucion)
+        if v.ejecucion.estado != EstadoOptimizacion.EXITOSA:
+            typer.echo(
+                f"La ejecucion {ejecucion} esta {v.ejecucion.estado} ({v.ejecucion.resultado}): "
+                "no publico un plan.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        filas = exportacion.exportar(s, v.ejecucion, ruta, formato, contenido)
+    typer.echo(f"Escrito: {ruta} ({filas:,} filas de {contenido} del plan {ejecucion})")
+
+
+@app.command("diagnosticar-optimizacion")
+def diagnosticar_optimizacion(
+    ejecucion: Annotated[str, typer.Option("--ejecucion", help="El optimizacion_run_id.")],
+) -> None:
+    """Por que una ejecucion termino como termino, sin inventar un plan: su prechequeo (errores y
+    advertencias), lo que el solver demostro en cada nivel y, si el solver dijo que era
+    infactible, su diagnostico de relajacion (una relajacion minima posible, no un IIS). Termina
+    con codigo 1 si la ejecucion no existe o no ha terminado."""
+    from motor_cartera.db.modelos import EstadoOptimizacion
+    from motor_cartera.db.sesion import sesion
+
+    with sesion() as s:
+        v = _optimizacion(s, ejecucion)
+    e = v.ejecucion
+    if e.estado == EstadoOptimizacion.EN_PROCESO:
+        typer.echo(f"La ejecucion {ejecucion} no ha terminado.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"optimization/v1 {e.optimizacion_run_id}: {e.estado} ({e.resultado})")
+    typer.echo(f"  solver: {e.solver_status or '-'}")
+    typer.echo(f"  {e.detalle}")
+    diagnostico = e.diagnostico or {}
+    hallazgos = diagnostico.get("hallazgos", [])
+    typer.echo(f"  prechequeo: {len(hallazgos)} hallazgos")
+    for h in hallazgos:
+        typer.echo(f"    {h['severidad']} {h['codigo']}: {h['mensaje']}")
+    _imprimir_niveles(e.certificado)
+    relajacion = diagnostico.get("diagnostico_relajacion")
+    if relajacion is not None:
+        typer.echo(f"  diagnostico de relajacion: {relajacion['estado']}")
+        for r in relajacion.get("relajaciones", []):
+            typer.echo(
+                f"    {r['restriccion']}: {r['sentido']} en {r['relajar_en']:,} {r['unidad']}"
+            )
+        if relajacion.get("nota"):
+            typer.echo(f"    {relajacion['nota']}")
+    if e.estado == EstadoOptimizacion.EXITOSA:
+        typer.echo(f"  Plan publicado: hash {e.hash_plan}.")
+    else:
+        typer.echo("  Sin plan publicado: ningun plan se publica sin su prueba de optimalidad.")
+
+
+@app.command("comparar-optimizaciones")
+def comparar_optimizaciones(
+    a: Annotated[str, typer.Option("--a", help="Un optimizacion_run_id EXITOSA.")],
+    b: Annotated[str, typer.Option("--b", help="Otro optimizacion_run_id EXITOSA.")],
+) -> None:
+    """Compara dos planes publicados, por conjuntos: que entradas declaradas difieren, sus
+    objetivos, y cuantas cuentas conservan su asignacion, cambian de pool o de canal, o quedan
+    asignadas en uno solo. Describe diferencias entre dos modelos declarados: no dice cual es
+    mejor para el negocio."""
+    from motor_cartera.db.modelos import EstadoOptimizacion
+    from motor_cartera.db.sesion import sesion
+    from motor_cartera.optimizacion import consultas
+
+    with sesion() as s:
+        va, vb = _optimizacion(s, a), _optimizacion(s, b)
+        for v in (va, vb):
+            if v.ejecucion.estado != EstadoOptimizacion.EXITOSA:
+                typer.echo(
+                    f"La ejecucion {v.ejecucion.optimizacion_run_id} esta {v.ejecucion.estado}: "
+                    "no publico un plan.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+        c = consultas.comparar(s, va, vb)
+    typer.echo(f"optimization/v1 A {a} contra B {b}")
+    typer.echo(f"  entradas distintas: {', '.join(c.entradas_distintas) or 'ninguna'}")
+    for nombre, (x, y) in c.objetivos.items():
+        delta = "" if x is None or y is None else f" (B - A {y - x:+,})"
+        typer.echo(f"  {nombre}: A {x:,}, B {y:,}{delta}")
+    typer.echo(
+        f"  cuentas en los dos {c.en_ambos:,}, solo en A {c.solo_en_a:,}, solo en B {c.solo_en_b:,}"
+    )
+    typer.echo(
+        f"  misma asignacion {c.misma_asignacion:,}, otro pool del mismo canal "
+        f"{c.otro_pool_mismo_canal:,}, otro canal {c.otro_canal:,}"
+    )
+    typer.echo(
+        f"  asignadas en los dos {c.asignada_en_ambos:,}, solo en A {c.asignada_solo_en_a:,}, "
+        f"solo en B {c.asignada_solo_en_b:,}; Jaccard {c.jaccard_asignadas}"
+    )
+    for canal_a, fila in c.canales.items():
+        typer.echo(f"  A {canal_a:>10} -> " + ", ".join(f"{k} {n:,}" for k, n in fila.items()))
+    typer.echo("Es una comparacion de dos optimos de modelos declarados, no un juicio de negocio.")
+
+
 @app.command()
 def worker(
     una_vez: Annotated[

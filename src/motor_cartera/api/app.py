@@ -32,6 +32,7 @@ from motor_cartera.api import (
     lifecycle,
     motor_pagos,
     movimientos,
+    optimizacion,
     orquestacion,
     pagos,
     predictivo,
@@ -294,6 +295,33 @@ recomienda una accion y no cambia decision/v2, campo/v2 ni ruteo/v2.
     orden de una lista cerrada), `/drift` y `/cuentas/{cuenta_id}/explicacion`.
 50. `GET /cuentas/{cuenta_id}/predictivo`: las predicciones publicadas de una cuenta.
 
+**Optimization** (`optimization/v1`) arma, en sombra, el plan de una fecha: que cuentas atender y
+por que canal (`DIGITAL`, `TELEFONICA` o `CAMPO`) bajo capacidades, presupuesto de unidades y
+coberturas declaradas en una **configuracion** versionada. Maximiza la recuperacion positiva
+esperada a 30 dias de un scoring publicado (en centavos, sin multiplicarla por ninguna
+probabilidad); empata con la probabilidad de contacto, las menos unidades y un orden canonico, en
+cuatro niveles lexicograficos, cada uno con el optimo del anterior fijo. Cada ejecucion declara su
+scoring, su decision/v2 del mismo corte, su configuracion PUBLICADA y, si usa CAMPO o BASE, su
+ruteo/v2: **nada se elige como "lo ultimo"**. CAMPO solo es una parada PROGRAMADA de su propio
+gestor; el plan no reordena ninguna ruta. **Solo se publica un optimo demostrado**: con tiempo
+agotado la ejecucion termina `OPTIMO_NO_DEMOSTRADO`, y una infactible trae su diagnostico.
+
+51. `GET /optimizacion/politica`: el objetivo, su semantica, la reduccion exacta, la huella del
+    solver y las limitaciones.
+52. `POST /optimizacion/configuraciones` (`?publicar=true`), `GET /optimizacion/configuraciones` y
+    `/optimizacion/configuraciones/{configuracion_id}`: la matriz de admisibilidad, los pools y las
+    restricciones; el mismo contenido es la misma version.
+53. `POST /optimizacion/ejecuciones`, en un trabajo `OPTIMIZATION`. `GET /optimizacion/ejecuciones`
+    y `/optimizacion/ejecuciones/{optimizacion_run_id}`: sus entradas, sus hashes y su certificado
+    de optimalidad por nivel.
+54. `.../resultados` (por estado, canal, pool, producto, prioridad o base), `.../capacidad`,
+    `.../restricciones` (lado izquierdo, derecho, holgura y si quedo activa), `.../diagnostico` y
+    `.../cuentas/{cuenta_id}`: por que una cuenta quedo como quedo.
+55. `GET /cuentas/{cuenta_id}/optimizacion`: lo que cada plan publicado concluyo de una cuenta.
+
+Es el optimo del modelo declarado, no una estrategia causalmente optima: un canal asignado no es la
+evidencia de que ese canal cause la recuperacion. No ejecuta nada.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -445,6 +473,14 @@ ETIQUETAS = [
         "verificadas. Predice resultados observados bajo la operacion historica: no es causal, no "
         "recomienda y no cambia decision/v2, campo/v2 ni ruteo/v2.",
     },
+    {
+        "name": "optimizacion",
+        "description": "Optimization (optimization/v1): configuraciones versionadas de "
+        "admisibilidad, capacidad y coberturas, y planes de una fecha que asignan cuentas a "
+        "canales y pools con un MILP lexicografico exacto sobre entradas declaradas. Solo se "
+        "publica un optimo demostrado. Es el optimo del modelo declarado, en sombra: no es causal, "
+        "no ejecuta nada y no cambia decision/v2, campo/v2 ni ruteo/v2.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -492,5 +528,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(ruteo_v2.router, dependencies=protegidas)
     app.include_router(analytics.router, dependencies=protegidas)
     app.include_router(predictivo.router, dependencies=protegidas)
+    app.include_router(optimizacion.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

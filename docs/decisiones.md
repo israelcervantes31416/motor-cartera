@@ -1,4 +1,4 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics y Predictive Intelligence
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence y Optimización Matemática
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
@@ -7,8 +7,9 @@ Conciliación (v0.8.0), el Lifecycle de Cobranza y Atribución Operativa (v0.9.0
 Engine v2 (v0.10.0), la Geografía Real, Territorial v2 y Bases Operativas (v0.11.0), Campo v2:
 Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red Vial, Secuenciación y
 Factibilidad de Jornada (v0.13.0), Collection Analytics: Métricas, Cohortes y Embudos
-Point-in-Time (v0.14.0) y Predictive Intelligence: Modelos Temporales, Calibración y Drift
-(v0.15.0) están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
+Point-in-Time (v0.14.0), Predictive Intelligence: Modelos Temporales, Calibración y Drift
+(v0.15.0) y la Optimización Matemática: Priorización, Capacidad y Asignación Restringida (v0.16.0)
+están hechos como están, y qué haría distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
@@ -20,20 +21,22 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [analytics.md](analytics.md), en [metricas_analytics.md](metricas_analytics.md), en
 [cohortes_analytics.md](cohortes_analytics.md), en [predictivo.md](predictivo.md), en
 [features_predictivas.md](features_predictivas.md), en
-[modelos_predictivos.md](modelos_predictivos.md) y en
-[backtesting_predictivo.md](backtesting_predictivo.md); aquí va el porqué.
+[modelos_predictivos.md](modelos_predictivos.md), en
+[backtesting_predictivo.md](backtesting_predictivo.md), en [optimizacion.md](optimizacion.md), en
+[modelo_optimizacion.md](modelo_optimizacion.md) y en
+[configuracion_optimizacion.md](configuracion_optimizacion.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
 de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del Motor de Pagos; las
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
-de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics, y las
-197 a 222, de Predictive Intelligence.
+de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics; las
+197 a 222, de Predictive Intelligence, y las 223 a 247, de la Optimización Matemática.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
-*Desde v0.13.0* o *Desde v0.15.0*.
+*Desde v0.13.0*, *Desde v0.15.0* o *Desde v0.16.0*.
 
 1. [La corrida es una entidad, no un campo](#1-la-corrida-es-una-entidad-no-un-campo)
 2. [*Fail-closed* en dos niveles: registro y archivo](#2-fail-closed-en-dos-niveles-registro-y-archivo)
@@ -257,6 +260,31 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 220. [Las predicciones corren en sombra](#220-las-predicciones-corren-en-sombra)
 221. [Sin transacciones largas; el benchmark M y el XL](#221-sin-transacciones-largas-el-benchmark-m-y-el-xl)
 222. [Índices medidos, sin particionado; y qué no resuelve v0.15.0](#222-índices-medidos-sin-particionado-y-qué-no-resuelve-v0150)
+223. [Optimizar no es inferir causalidad](#223-optimizar-no-es-inferir-causalidad)
+224. [En sombra: un plan de soporte a decisión](#224-en-sombra-un-plan-de-soporte-a-decisión)
+225. [El valor de oportunidad es la recuperación positiva esperada](#225-el-valor-de-oportunidad-es-la-recuperación-positiva-esperada)
+226. [Sin multiplicar por la probabilidad de recuperación](#226-sin-multiplicar-por-la-probabilidad-de-recuperación)
+227. [p_contacto solo desempata](#227-p_contacto-solo-desempata)
+228. [decision/v2 es la frontera de admisibilidad](#228-decisionv2-es-la-frontera-de-admisibilidad)
+229. [Entradas declaradas; la base garantiza la cadena](#229-entradas-declaradas-la-base-garantiza-la-cadena)
+230. [CAMPO solo desde paradas PROGRAMADA de su propio gestor](#230-campo-solo-desde-paradas-programada-de-su-propio-gestor)
+231. [Sin reoptimizar rutas](#231-sin-reoptimizar-rutas)
+232. [Unidades de recurso abstractas](#232-unidades-de-recurso-abstractas)
+233. [Sin modelo de costos monetarios](#233-sin-modelo-de-costos-monetarios)
+234. [Un MILP con HiGHS, el de SciPy](#234-un-milp-con-highs-el-de-scipy)
+235. [Reducción exacta de candidatos por dominancia](#235-reducción-exacta-de-candidatos-por-dominancia)
+236. [Matrices dispersas y enteros exactos](#236-matrices-dispersas-y-enteros-exactos)
+237. [Optimización lexicográfica por etapas](#237-optimización-lexicográfica-por-etapas)
+238. [Relajación primero y fijación por dualidad](#238-relajación-primero-y-fijación-por-dualidad)
+239. [Solo se publica un óptimo demostrado](#239-solo-se-publica-un-óptimo-demostrado)
+240. [La huella del solver](#240-la-huella-del-solver)
+241. [Sin atributos protegidos ni identificadores como dimensión](#241-sin-atributos-protegidos-ni-identificadores-como-dimensión)
+242. [Sin ejecución automática](#242-sin-ejecución-automática)
+243. [La configuración: versionada, cerrada y con hash](#243-la-configuración-versionada-cerrada-y-con-hash)
+244. [Todo o nada, por conjuntos](#244-todo-o-nada-por-conjuntos)
+245. [La cola: OPTIMIZATION en el nivel 10, con candado y lease](#245-la-cola-optimization-en-el-nivel-10-con-candado-y-lease)
+246. [El benchmark: S, M, XL y la sensibilidad, con supuestos fijados antes de medir](#246-el-benchmark-s-m-xl-y-la-sensibilidad-con-supuestos-fijados-antes-de-medir)
+247. [Índices medidos, sin particionado; y qué no resuelve v0.16.0](#247-índices-medidos-sin-particionado-y-qué-no-resuelve-v0160)
 
 ---
 
@@ -4311,6 +4339,10 @@ predicción, y un agregado sigue siendo una descripción de lo observado.
 optimización necesita una función objetivo de negocio que nadie ha declarado. Mezclarlas con la
 descripción haría que un número descriptivo se leyera como una instrucción.
 
+*Desde v0.16.0*, la optimización existe, en su propio motor (`optimization/v1`), con su política, su
+configuración versionada y su certificado (las decisiones 223 a 247): analytics sigue sin recomendar
+ni optimizar, y no lee los planes.
+
 ## 195. Los agregados se materializan, con su hash
 
 **Decisión.** Cada ejecución materializa sus agregados y sus controles en tablas (`agregado_analytics`,
@@ -4653,6 +4685,10 @@ con la operación real (su drift, su desempeño cuando maduran los labels). Usar
 convertiría cada error del modelo en un error operativo. Cómo consumirlas sin confundir predicción
 con causalidad es el diseño de v0.16.
 
+*Desde v0.16.0*, `optimization/v1` lee las predicciones publicadas de un scoring declarado para
+armar un plan, también en sombra (la decisión 224): la recuperación positiva esperada es su valor de
+oportunidad, sin multiplicarla por ninguna probabilidad, y nada operacional lee el plan.
+
 ## 221. Sin transacciones largas; el benchmark M y el XL
 
 **Decisión.** Un entrenamiento construye su dataset ancla por ancla, cada una en su propia
@@ -4705,3 +4741,297 @@ Engine v3 ni optimización. Lo que sigue es v0.16, Optimización Matemática: co
 predicciones, la capacidad, el territorio, los recursos de campo y las restricciones de ruteo para
 decidir, con restricciones explícitas, sin suponer que cambiar de acción causa la probabilidad
 predicha.
+
+## 223. Optimizar no es inferir causalidad
+
+**Decisión.** `optimization/v1` encuentra el óptimo de un modelo de asignación declarado: cuentas a
+canales y pools bajo capacidades, presupuesto y coberturas. Cada respuesta, el certificado, el CLI y
+la documentación dicen que es el óptimo del modelo declarado, no una estrategia causalmente óptima, y
+ninguna salida tiene un campo como *uplift*, recuperación incremental o efecto esperado de un canal.
+
+**Por qué.** El valor que optimiza es una predicción bajo la política histórica: dice qué tan valiosa
+fue una cuenta con la forma en que se operó, no cuánto cambia el resultado si se le asigna un canal.
+Un óptimo exacto sobre ese valor es un buen uso de la capacidad respecto a esas predicciones; vendido
+como el efecto de una acción, sería una afirmación causal que los datos no sostienen. Un óptimo
+matemático de supuestos incorrectos sigue siendo una mala decisión de negocio.
+
+## 224. En sombra: un plan de soporte a decisión
+
+**Decisión.** Un plan se publica en sus propias tablas, en un trabajo de la cola, y nada de
+`decision/v2`, `campo/v2`, `ruteo/v2`, el lifecycle ni `analytics/v1` lo lee. No registra gestiones,
+no envía mensajes, no llama y no crea visitas.
+
+**Por qué.** Igual que las predicciones de v0.15 (la decisión 220), un plan tiene que verse en
+paralelo con la operación antes de mover nada: qué asigna, qué deja fuera y cómo cambia con su
+configuración. Ejecutarlo desde el primer día convertiría cada supuesto de una configuración en una
+acción.
+
+## 225. El valor de oportunidad es la recuperación positiva esperada
+
+**Decisión.** El valor de una cuenta es su `recuperacion_positiva_esperada_30d` del scoring
+declarado, en centavos exactos (por 100, sin redondeo: la predicción tiene dos decimales).
+
+**Por qué.** Es la única salida de v0.15 en unidades de dinero, y ya es la esperanza de
+max(recuperación neta, 0) en la ventana: el valor esperado de la oportunidad, no una probabilidad.
+Los centavos enteros hacen exacto el objetivo y su verificación.
+
+## 226. Sin multiplicar por la probabilidad de recuperación
+
+**Decisión.** El valor no se multiplica por `p_recuperacion_positiva_30d`, `p_contacto_14d` ni
+`p_promesa_30d`. La definición de la política lo dice (`no_se_multiplica_por`), y las pruebas lo
+comprueban: el objetivo es la suma exacta de los valores que entran.
+
+**Por qué.** La recuperación esperada ya integra la probabilidad de recuperar: multiplicarla otra vez
+contaría dos veces la incertidumbre y premiaría a las cuentas por ser predecibles, no por su valor.
+Multiplicarla por el contacto sería, además, suponer que contactar causa la recuperación.
+
+## 227. p_contacto solo desempata
+
+**Decisión.** `p_contacto_14d` (en enteros de 10⁻⁸) es el segundo nivel lexicográfico: solo elige
+entre planes del mismo valor de oportunidad. Nunca entra al primero.
+
+**Por qué.** Entre dos planes que capturan el mismo valor predicho, atender las cuentas que la
+operación histórica contactó más es una preferencia razonable y explícita. Mezclarlo con el valor,
+con un peso, cambiaría el óptimo económico por una cantidad arbitraria, y no es la probabilidad de
+éxito del canal asignado.
+
+## 228. decision/v2 es la frontera de admisibilidad
+
+**Decisión.** El canal que `decision/v2` recomendó a una cuenta, con la matriz de admisibilidad de la
+configuración, dice qué canales operativos puede recibir. La optimización no decide canales fuera de
+esa frontera y no cambia la decisión.
+
+**Por qué.** `decision/v2` es la política operacional explicable y versionada; la optimización asigna
+capacidad dentro de ella. Una matriz explícita (y no una regla escondida) deja ver qué se permitió:
+admisible no es efectivo, y una configuración que permite `TELEFONICA` para una cuenta de `DIGITAL`
+lo declara.
+
+## 229. Entradas declaradas; la base garantiza la cadena
+
+**Decisión.** Una ejecución declara su scoring, su `decision/v2`, su configuración y, con `CAMPO` o
+`BASE`, su `ruteo/v2`; nunca "el último". El scoring y la decisión son del mismo corte, con `as_of`
+igual a su fecha; el ruteo es de un plan de campo de esa misma decisión, y la fecha de operación es la
+del ruteo. Las llaves foráneas compuestas de la ejecución usan restricciones únicas que esas tablas ya
+tenían, sin cambiar ninguna tabla anterior.
+
+**Por qué.** Un plan que mezcla la predicción de un corte con la decisión de otro, o el ruteo de otra
+decisión, es incoherente aunque cada pieza sea válida. "El último" depende del momento de la
+consulta y no se puede reconstruir; una firma con las entradas exactas sí. Que la base lo garantice
+evita que un error del código publique una cadena mezclada.
+
+## 230. CAMPO solo desde paradas PROGRAMADA de su propio gestor
+
+**Decisión.** Un pool de `CAMPO` es de un gestor (`GESTOR_CAMPO`) y solo alcanza las paradas
+`PROGRAMADA` de ese gestor en el `ruteo/v2` declarado; su capacidad efectiva es la menor de la
+declarada y esas paradas. Una parada `SIN_TIEMPO`, `NO_ENRUTABLE` o `NO_ENRUTABLE_BASE` nunca es
+`CAMPO`, y una cuenta nunca va con otro gestor.
+
+**Por qué.** `ruteo/v2` ya demostró que esas paradas caben en la jornada de su gestor por la red
+vial. Elegir un subconjunto de una ruta factible la deja factible; asignar a otro gestor o convertir
+una parada que no cupo crearía visitas que nadie demostró posibles.
+
+## 231. Sin reoptimizar rutas
+
+**Decisión.** El plan no reordena paradas, no agrega cuentas a una ruta, no mueve cuentas entre
+bases o gestores y no publica geometrías ni ETA nuevas: cada cuenta en `CAMPO` conserva su
+`orden_ruteo_original`, y antes de publicar una consulta por conjuntos lo comprueba.
+
+**Por qué.** Reoptimizar rutas es otro problema (un VRP con jornadas y red vial) que `ruteo/v2`
+resuelve con su política; mezclarlo con la asignación de capacidad haría el modelo mucho más difícil
+sin demostrar nada mejor. Quitar paradas puede dejar a un gestor con tiempo libre: es una
+limitación declarada.
+
+## 232. Unidades de recurso abstractas
+
+**Decisión.** Cada pool declara cuántas unidades de recurso consume una asignación (un entero de 1 a
+1,000,000), y la configuración, un presupuesto opcional. El tercer nivel minimiza las unidades.
+
+**Por qué.** Una visita no cuesta lo mismo que un mensaje, y un presupuesto de esfuerzo es una
+restricción operacional real, pero su conversión a dinero no está declarada en ninguna parte. Unas
+unidades abstractas y explícitas permiten restringir y desempatar por esfuerzo sin inventar costos.
+
+## 233. Sin modelo de costos monetarios
+
+**Decisión.** No hay costos en dinero, ROI ni margen: el objetivo es valor de oportunidad predicho, y
+las unidades de recurso no son costos.
+
+**Por qué.** Un modelo de costos real necesita datos de la operación (salarios, tarifas, tiempos)
+que el proyecto no tiene y no debe inventar. Restarle un costo inventado al valor daría un número con
+apariencia de utilidad sin serlo.
+
+## 234. Un MILP con HiGHS, el de SciPy
+
+**Decisión.** El modelo es un programa lineal entero mixto con variables binarias, resuelto con HiGHS
+a través de `scipy.optimize` (`linprog` y `milp`), sin otro backend. SciPy entra a las dependencias.
+
+**Por qué.** La asignación con capacidades, presupuesto y coberturas lineales es un MILP; HiGHS es un
+solver de código abierto que demuestra optimalidad (cota y gap) y viene con SciPy, que el proyecto ya
+usaba en sus pruebas: no agrega un binario ni una licencia. Una heurística no daría un certificado.
+
+## 235. Reducción exacta de candidatos por dominancia
+
+**Decisión.** Antes del modelo, las cuentas elegibles se agrupan por su firma de restricciones (sus
+pools elegibles y su pertenencia a cada cobertura activa); de cada clase se retienen las primeras
+u[s] en orden canónico (valor, contacto, cuenta), con u[s] el mínimo de cotas seguras. Nunca un
+*top N*. El teorema y su prueba están en [modelo_optimizacion.md](modelo_optimizacion.md).
+
+**Por qué.** En una cartera, cientos de miles de cuentas comparten unas pocas firmas: dentro de una
+clase, una cuenta peor solo entra si las mejores no caben, y las cotas dicen cuántas pueden caber.
+Retener solo esas no cambia el óptimo (ni el desempate) y reduce el modelo: el 55 % de las elegibles
+en M y el 44 % en XL. Un *top N* por score dejaría fuera cuentas que una cobertura necesita.
+
+## 236. Matrices dispersas y enteros exactos
+
+**Decisión.** El modelo se construye como una matriz dispersa (CSR) con coeficientes enteros, sin
+ninguna variable de un par imposible; antes de construirlo se comprueba que cada coeficiente, cota y
+suma posible cabe en 2⁵³ − 1, y la solución se verifica en aritmética entera. Las cotas de la
+reducción y del prechequeo también se suman en enteros, con cada capacidad topada en el número de
+cuentas: ningún plan usa más, y ninguna suma envuelve.
+
+**Por qué.** Una matriz densa de 500,000 cuentas por 2,700 pools no cabe en memoria y casi toda es
+cero. Los enteros exactos en el rango de un `double` hacen que lo que el solver ve sea exactamente lo
+declarado, y que la verificación no dependa de tolerancias. La revisión previa al merge encontró que
+esas cotas se sumaban sin tope (en `int64`, y una en `float64`): con más de mil pools de capacidad
+2⁵³ − 1, la suma envolvía a un negativo y la reducción dejaba fuera cuentas que el óptimo usa. Las
+capacidades de los benchmarks están lejos de eso: sus mediciones no cambian.
+
+## 237. Optimización lexicográfica por etapas
+
+**Decisión.** Cuatro niveles (valor, contacto, unidades, desempate canónico), resueltos por etapas:
+cada una fija con una igualdad el óptimo exacto de las anteriores. Ninguna constante gigante mezcla
+los objetivos.
+
+**Por qué.** Un objetivo ponderado con *big-M* necesita pesos tan grandes que destruyen la precisión
+numérica o tan chicos que dejan de ser lexicográficos. Las etapas expresan exactamente la jerarquía,
+y cada una tiene su propio certificado. El cuarto nivel (un peso canónico no separable por cuenta y
+pool) hace reproducible la elección entre planes empatados en los tres primeros.
+
+## 238. Relajación primero y fijación por dualidad
+
+**Decisión.** Cada etapa resuelve primero su relajación lineal (punto interior con *crossover*); si
+su vértice óptimo es entero, es el óptimo del entero; si no, *branch-and-bound*. Entre etapas, la
+dualidad débil fija las variables que ningún óptimo usa o deja de usar.
+
+**Por qué.** Con la matriz de una asignación, la relajación casi siempre tiene un vértice entero, y
+demostrarlo por la relajación es mucho más rápido que un *branch-and-bound* completo: medido sobre un
+problema sintético de la forma del XL, el nivel 1 por `milp` no terminaba en 20 minutos y por la
+relajación tardó 48 s; sin la fijación, el nivel 2 tardaba 921 s y el 4 terminaba con un error del
+solver, y con ella el XL entero, 62 s. La fijación es una consecuencia de la etapa (dualidad débil,
+con su margen de punto flotante), no una heurística, y la solución completa se verifica en enteros.
+Sin presolve de HiGHS: con las filas densas de las participaciones, el presolve tardaba más que
+resolver.
+
+## 239. Solo se publica un óptimo demostrado
+
+**Decisión.** Un plan se publica solo si cada nivel termina `OPTIMAL` (cota = objetivo, gap 0) y su
+solución se verifica en enteros. `TIME_LIMIT` es `OPTIMO_NO_DEMOSTRADO`, `INFEASIBLE` es `INFACTIBLE`
+con su diagnóstico, y nada de eso publica un plan.
+
+**Por qué.** Una solución factible sin su prueba no es el óptimo, y llamarla así haría inauditable el
+certificado. Un plan sin publicar con su diagnóstico es más útil que un plan que parece óptimo.
+
+## 240. La huella del solver
+
+**Decisión.** Cada ejecución guarda su `solver_fingerprint`: el SHA-256 del algoritmo, las versiones
+de SciPy, HiGHS, NumPy y Python, el sistema, la arquitectura y los parámetros. Entra a la firma, y un
+worker con otra huella no publica bajo ella (`SOLVER_DISTINTO`).
+
+**Por qué.** Los óptimos de las cuatro etapas son únicos, pero el camino (y, en un empate exacto en
+las cuatro, el plan) puede cambiar con otra versión del solver. La huella hace explícito con qué se
+demostró el plan, y que reconstruirlo exige lo mismo.
+
+## 241. Sin atributos protegidos ni identificadores como dimensión
+
+**Decisión.** Las dimensiones de una cobertura son el producto, el tramo de atraso, la prioridad de
+`decision/v2` y la base. Ninguna es un `cuenta_id`, un `CLIENTE_UNICO`, un `actor_ref`, un gestor ni
+un atributo sensible o su aproximación, y ningún resultado lleva un dato personal ni una coordenada.
+
+**Por qué.** Una cobertura por persona o por un atributo protegido convertiría el plan en una regla
+de trato diferenciado sin base declarada. Las dimensiones operacionales públicas bastan para exigir
+cobertura de cartera.
+
+## 242. Sin ejecución automática
+
+**Decisión.** No hay un comando ni una ruta que ejecute un plan, envíe, llame, visite o aplique nada.
+
+**Por qué.** Ejecutar es una decisión de negocio con su responsable, su política de contacto y sus
+controles, que esta versión no tiene. Un plan en sombra que nadie ejecuta no puede dañar a nadie.
+
+## 243. La configuración: versionada, cerrada y con hash
+
+**Decisión.** Una configuración es un documento JSON con un esquema cerrado (sin SQL, sin Python, sin
+expresiones), validado entero, con todos sus problemas juntos; su forma canónica (sin el nombre ni
+los supuestos) tiene su SHA-256, el mismo contenido es la misma versión, y solo una `PUBLICADA`, que
+ya no cambia, se usa para planear. El flag de imputación no tiene valor por omisión.
+
+**Por qué.** Las capacidades y las coberturas son los supuestos de un plan: tienen que ser
+inspeccionables, comparables y fijos. Un esquema cerrado no ejecuta nada que no se haya revisado, y
+el hash permite saber si dos planes usaron los mismos supuestos.
+
+## 244. Todo o nada, por conjuntos
+
+**Decisión.** El universo y los pares elegibles se arman en PostgreSQL por conjuntos (JOIN por
+igualdad, en tablas temporales que se descartan) y llegan a Python por `COPY`; el plan se prepara en
+una tabla temporal y se publica con un `INSERT … SELECT`, junto con el uso de cada pool, cada
+restricción y el cierre de la ejecución, en una sola transacción. Ninguna transacción queda abierta
+mientras el solver corre.
+
+**Por qué.** 500,000 objetos ORM no caben en un tiempo razonable ni en memoria; los conjuntos sí. Un
+plan a medias sería peor que ninguno: o se publica entero, con su hash, o no se publica nada (las
+pruebas inyectan una falla en cada uno de sus puntos).
+
+## 245. La cola: OPTIMIZATION en el nivel 10, con candado y lease
+
+**Decisión.** Cada ejecución es un trabajo durable `OPTIMIZATION`, después de `PREDICTIVE_SCORING`;
+un candado de PostgreSQL por ejecución hace que un segundo worker espere al primero, y solo publica el
+dueño vigente de su trabajo. El `POST` nunca resuelve el MILP.
+
+**Por qué.** Un plan lee un scoring y una decisión ya publicados, y nunca debe retrasar una etapa
+operacional ni un scoring. Resolver dentro de una petición HTTP ataría un minuto de CPU a una
+conexión. Un worker que perdió su lease mientras resolvía no publica: el nuevo dueño resuelve desde
+el principio, y la firma impide publicar dos veces.
+
+## 246. El benchmark: S, M, XL y la sensibilidad, con supuestos fijados antes de medir
+
+**Decisión.** El benchmark (`scripts/benchmark_optimizacion.py`, fuera del CI) mide la exactitud (S:
+10,000 cuentas con y sin reducción, y la enumeración en instancias pequeñas), una formulación rica
+(M: ~114,000 cuentas), la escala (XL: 500,000 cuentas con CAMPO) y la sensibilidad de la capacidad
+(−20 %, nominal y +20 %), con `optimization-benchmark/public-v1`: supuestos sintéticos fijados en el
+código antes de medir y registrados antes del primer plan.
+
+**Por qué.** La exactitud se demuestra en un tamaño donde el modelo completo también se resuelve; la
+escala, con la cartera completa y su cadena de campo real. Ajustar las capacidades después de ver los
+números haría que el benchmark midiera la configuración, no el optimizador.
+
+**Medido.** S: los mismos cuatro óptimos con y sin reducción; la enumeración coincide en las 200
+instancias. M: 113,876 cuentas, 60,790 variables, cada nivel `OPTIMAL` por su relajación entera, 8.2 s
+en total. XL: 500,000 cuentas, 279,787 retenidas en 7,235 clases, 408,204 variables, 131,108
+restricciones y 2,492,352 no nulos; cada nivel `OPTIMAL`, cota = objetivo, gap 0; 87.6 s en total
+(el solver 31.3 s, la publicación 39.5 s), 1,262 MB de memoria pico y 338.8 MiB de WAL. La
+sensibilidad: con 20 % más de capacidad el óptimo captura 7.2 % más de valor de oportunidad
+predicho, y con 20 % menos, 9.3 % menos. Los detalles, en
+[optimizacion.md](optimizacion.md#lo-medido).
+
+## 247. Índices medidos, sin particionado; y qué no resuelve v0.16.0
+
+**Decisión.** Los índices de las tablas nuevas son los de sus consultas: la llave (ejecución, cuenta)
+de los resultados; (ejecución, filtro, cuenta) para cada filtro de la lista blanca de la API (estado,
+canal, pool, producto, prioridad y base); (cuenta, ejecución) para los planes de una cuenta; la llave
+(ejecución, pool) del uso; (ejecución, *binding*, código) de las restricciones; las únicas parciales
+por firma de las ejecuciones, y (estado, id), (scoring, id) y (configuración, id) para sus listas. No
+hay particionado.
+
+**Por qué.** Cada consulta de la API entra por un índice que empieza por la ejecución o por la
+cuenta. El benchmark encontró que el total de los filtros `producto`, `prioridad` y `base` recorría
+la tabla de resultados (87 ms en PostgreSQL), y sus tres índices se agregaron antes del PR; con ellos,
+ninguna consulta recorre una tabla grande (de 11 a 65 ms de mediana por la API, sobre 841,628
+resultados), y no hace falta particionar.
+
+**Qué no resuelve v0.16.0.** Un plan es óptimo respecto al modelo declarado, no una estrategia
+causalmente óptima; el valor es la recuperación positiva esperada bajo la política histórica, no el
+beneficio incremental de contactar; un canal asignado no es evidencia de que ese canal cause la
+recuperación; las capacidades del benchmark son sintéticas y las unidades no son costos; `CAMPO` no
+reoptimiza rutas; y no hay *uplift*, ML causal, Decision Engine v3, ejecución automática ni
+dashboards. Lo que sigue es v0.17, App y Dashboards: convertir la Cuenta 360, analytics, las
+predicciones, los planes, el campo y las rutas en una superficie operacional, sin perder la
+auditabilidad, el punto en el tiempo, la privacidad ni el versionado.
