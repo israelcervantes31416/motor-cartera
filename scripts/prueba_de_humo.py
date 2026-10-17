@@ -75,6 +75,17 @@ probabilidades, su riesgo complementario exacto, su recuperacion positiva espera
 feature_hash; su drift, una explicacion verificada y las predicciones de una cuenta; y el scoring
 BACKTEST del corte de TEST con su feature_known_at. Sin el archivo, solo hace eso.
 
+Con --optimizacion (y --predictivo), recorre optimization/v1 en sombra sobre el ultimo corte del
+escenario, con su scoring y una decision/v2 OPERATIVO del mismo corte: una configuracion pequena
+(un solo pool DIGITAL) registrada, reutilizada y publicada; la ejecucion, que la API deja EN_PROCESO
+y el worker resuelve; el certificado de los cuatro niveles (OPTIMAL, cota = objetivo, gap 0); el
+valor del plan contra el optimo calculado aqui aparte; la capacidad sin exceder, ninguna asignacion
+inadmisible, todo o nada, la explicacion de una cuenta y sus planes; un minimo imposible,
+INFACTIBLE sin ningun resultado y con su diagnostico; y un scoring de otro corte, que no se abre.
+Con --ruteo-oficial, tambien CAMPO sobre el corte oficial: su scoring a la frontera de su
+decision/v2 y un pool por gestor con paradas PROGRAMADA; cada cuenta en CAMPO es una parada
+PROGRAMADA de su propio gestor, con su orden.
+
 Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
 laptop:
 
@@ -89,6 +100,8 @@ laptop:
         --pagos pagos.zip --geografia --campo --ruteo <red_vial_version_id>
         --base-ruteo=<lon>,<lat> --analytics
     python scripts/prueba_de_humo.py --predictivo datos/predictivo
+    python scripts/prueba_de_humo.py --predictivo datos/predictivo --optimizacion
+        --ruteo-oficial <ruteo_run_id>
 
 La base va unida a su opcion: en Mexico su longitud es negativa, y separada, argparse la toma por
 otra opcion.
@@ -2415,7 +2428,7 @@ def seguir_lo_predictivo(ruta: str) -> dict:
         time.sleep(1)
 
 
-def lo_predictivo(directorio: Path) -> None:
+def lo_predictivo(directorio: Path) -> dict:
     """predictive/model-v1 de punta a punta, sobre un escenario predictivo ya cargado (carga.json)
     y el manifiesto que propuso construir-manifiesto-predictivo (manifiesto.json): las definiciones,
     un entrenamiento por la API y su version, valida y con sus hashes; un scoring con sus
@@ -2663,6 +2676,418 @@ def lo_predictivo(directorio: Path) -> None:
     print(f"label_known_at {test['label_known_at']}")
     print(f"pagos_completos_hasta {test['pagos_completos_hasta']}")
     print(f"lifecycle_completo_hasta {test['lifecycle_completo_hasta']}")
+    return {
+        "modelo_version_id": modelo_id,
+        "scoring": s,
+        "scoring_backtest": b,
+        "ultimo": ultimo,
+    }
+
+
+# --- optimization/v1 ------------------------------------------------------------------------------
+
+RUTAS_DE_OPTIMIZACION = (
+    "/optimizacion/politica",
+    "/optimizacion/configuraciones",
+    "/optimizacion/configuraciones/{configuracion_id}",
+    "/optimizacion/configuraciones/{configuracion_id}/publicacion",
+    "/optimizacion/ejecuciones",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}/resultados",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}/capacidad",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}/restricciones",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}/diagnostico",
+    "/optimizacion/ejecuciones/{optimizacion_run_id}/cuentas/{cuenta_id}",
+    "/cuentas/{cuenta_id}/optimizacion",
+)
+CUPO_DE_HUMO = 50
+SUPUESTOS_DE_HUMO = "SUPUESTOS SINTETICOS de la prueba de humo: solo para probar el optimizador."
+NO_CAUSAL = "no la evidencia de que ese canal cause"
+
+
+def _configuracion_de_humo(nombre: str, admisibles: list[tuple[str, str]], pools: list, **otros):
+    return {
+        "nombre": nombre,
+        "permitir_predicciones_con_imputacion": False,
+        "admisibilidad": [
+            {"canal_decision": d, "canal_operativo": o, "permitido": True} for d, o in admisibles
+        ],
+        "pools": pools,
+        "restricciones": [],
+        "supuestos": SUPUESTOS_DE_HUMO,
+        **otros,
+    }
+
+
+def _pool(codigo: str, canal: str, capacidad: int | None, unidades: int, **alcance) -> dict:
+    return {
+        "codigo": codigo,
+        "canal": canal,
+        "tipo_alcance": alcance.get("tipo_alcance", "GLOBAL"),
+        "referencia_alcance": alcance.get("referencia_alcance"),
+        "capacidad": capacidad,
+        "unidades_recurso_por_asignacion": unidades,
+        "activo": True,
+    }
+
+
+def _publicar_configuracion(documento: dict) -> dict:
+    estado, encabezados, creada = enviar("/optimizacion/configuraciones", documento)
+    esperar(
+        estado == 201
+        and creada["estado"] == "BORRADOR"
+        and creada["hash_verificado"]
+        and ubicacion_de(encabezados)
+        == f"/optimizacion/configuraciones/{creada['configuracion_id']}",
+        f"POST /optimizacion/configuraciones ({documento['nombre']}): {estado} BORRADOR, hash "
+        f"{creada.get('hash_contenido', '')[:12]}...",
+    )
+    estado, _, publicada = enviar(
+        f"/optimizacion/configuraciones/{creada['configuracion_id']}/publicacion", {}
+    )
+    esperar(
+        estado == 200
+        and publicada["estado"] == "PUBLICADA"
+        and publicada["hash_contenido"] == creada["hash_contenido"],
+        f"POST .../publicacion: {estado} PUBLICADA, el mismo hash",
+    )
+    return publicada
+
+
+def _optimizar(entrada: dict) -> dict:
+    """La ejecucion: 201 EN_PROCESO (el MILP no corre en la peticion) y, despues, lo que dejo el
+    worker."""
+    estado, encabezados, abierta = enviar("/optimizacion/ejecuciones", entrada)
+    esperar(
+        estado == 201
+        and abierta["estado"] == "EN_PROCESO"
+        and abierta["hash_plan"] is None
+        and abierta["cuentas_publicadas"] == 0
+        and ubicacion_de(encabezados)
+        == f"/optimizacion/ejecuciones/{abierta['optimizacion_run_id']}",
+        f"POST /optimizacion/ejecuciones: {estado} EN_PROCESO, sin plan todavia",
+    )
+    return seguir_lo_predictivo(ubicacion_de(encabezados))
+
+
+def _todos(ruta: str) -> list[dict]:
+    elementos, pagina = [], 1
+    while True:
+        separador = "&" if "?" in ruta else "?"
+        estado, _, cuerpo = pedir("GET", f"{ruta}{separador}por_pagina=500&pagina={pagina}")
+        esperar(estado == 200, f"GET {ruta}: {estado}")
+        elementos += cuerpo["elementos"]
+        if pagina * 500 >= cuerpo["total"]:
+            return elementos
+        pagina += 1
+
+
+def _certificado_optimo(e: dict, donde: str) -> None:
+    niveles = e["certificado"]["niveles"]
+    # Un nivel sin variables libres no llama al solver: los anteriores ya lo determinaron.
+    por_highs = sum(n["invocado"] for n in niveles)
+    esperar(
+        (e["estado"], e["resultado"], e["solver_status"])
+        == ("EXITOSA", "PLAN_PUBLICADO", "OPTIMAL")
+        and [n["nivel"] for n in niveles] == [1, 2, 3, 4]
+        and all(n["estado"] == "OPTIMAL" for n in niveles)
+        and all(abs(n["mejor_cota"] - n["objetivo"]) <= 1e-6 for n in niveles)
+        and all(n["gap_relativo"] == 0 for n in niveles)
+        and e["mip_gap"] == "0.000000000000"
+        and e["cuentas_publicadas"] == e["cuentas_universo"] > 0
+        and re.fullmatch(r"[0-9a-f]{64}", e["hash_plan"] or ""),
+        f"{donde}: EXITOSA, el optimo de los cuatro niveles demostrado (OPTIMAL, cota = objetivo, "
+        f"gap 0; {por_highs} por HiGHS y {len(niveles) - por_highs} sin variables libres) en "
+        f"{e.get('solver_seconds')} s; {e.get('cuentas_asignadas', 0):,} asignadas de "
+        f"{e.get('cuentas_universo', 0):,}, hash {(e.get('hash_plan') or '')[:12]}...",
+    )
+
+
+def la_optimizacion(predictivo: dict, ruteo_oficial: str | None) -> None:
+    """optimization/v1 de punta a punta, en sombra. Sobre el ultimo corte del escenario predictivo,
+    con su scoring y una decision/v2 OPERATIVO del mismo corte: una configuracion pequena (un solo
+    pool DIGITAL, sin imputacion) cuyo optimo se calcula aqui aparte (la suma de las mayores
+    recuperaciones esperadas COMPLETA que caben), sin violar la capacidad ni asignar un canal
+    inadmisible; una infactible, sin plan y con su diagnostico; y entradas de cortes distintos, que
+    no se abren. Con un ruteo/v2 del corte oficial, CAMPO: solo paradas PROGRAMADA, cada una con
+    su gestor y su orden."""
+    from decimal import Decimal
+
+    print("optimization/v1")
+    estado, _, openapi = pedir("GET", "/openapi.json", con_clave=False)
+    esperar(
+        estado == 200 and all(r in openapi["paths"] for r in RUTAS_DE_OPTIMIZACION),
+        "GET /openapi.json: con optimization/v1",
+    )
+    esperar(
+        not any(
+            any(p in ruta for p in ("ejecutar", "enviar", "llamar", "visitar", "aplicar"))
+            for ruta in openapi["paths"]
+            if "optimizacion" in ruta
+        ),
+        "ninguna ruta de optimization/v1 ejecuta una accion",
+    )
+    estado, _, politica = pedir("GET", "/optimizacion/politica")
+    esperar(
+        estado == 200
+        and politica["version"] == "optimization-public-v1"
+        and re.fullmatch(r"[0-9a-f]{64}", politica["hash"])
+        and re.fullmatch(r"[0-9a-f]{64}", politica["solver_fingerprint"])
+        and "p_recuperacion_positiva_30d" in politica["definicion"]["valor"]["no_se_multiplica_por"]
+        and any("causalmente optima" in x for x in politica["limitaciones"]),
+        f"GET /optimizacion/politica: {politica.get('version')} ({politica.get('hash', '')[:12]}"
+        f"...), HiGHS {politica.get('huella_solver', {}).get('highs')}; el valor no se multiplica "
+        "por ninguna probabilidad",
+    )
+
+    # La decision/v2 del ultimo corte del escenario: OPERATIVO, del mismo corte que el scoring.
+    s, ultimo = predictivo["scoring"], predictivo["ultimo"]
+    estado, encabezados, abierta = enviar("/decisiones-v2", {"corte_id": ultimo["corte_id"]})
+    decision = seguir(ubicacion_de(encabezados)) if estado == 201 else abierta
+    esperar(
+        decision.get("estado") == "EXITOSA" and decision["as_of"] == s["as_of"],
+        f"POST /decisiones-v2 del corte {ultimo['fecha_corte']}: {decision.get('estado')}, as_of "
+        f"{decision.get('as_of')} = el del scoring",
+    )
+
+    documento = _configuracion_de_humo(
+        "Prueba de humo: un solo pool DIGITAL",
+        [("DIGITAL", "DIGITAL"), ("TELEFONICA", "DIGITAL"), ("CAMPO", "DIGITAL")],
+        [_pool("DIGITAL_GLOBAL", "DIGITAL", CUPO_DE_HUMO, 1)],
+    )
+    configuracion = _publicar_configuracion(documento)
+    estado, _, otra = enviar("/optimizacion/configuraciones", documento)
+    esperar(
+        estado == 200
+        and otra["reutilizada"]
+        and otra["configuracion_id"] == configuracion["configuracion_id"],
+        f"el mismo contenido otra vez: {estado}, la misma version",
+    )
+    entrada = {
+        "scoring_run_id": s["scoring_run_id"],
+        "decision_run_id": decision["decision_run_id"],
+        "configuracion_id": configuracion["configuracion_id"],
+        "fecha_operacion": (datetime.fromisoformat(ultimo["fecha_corte"]) + timedelta(days=1))
+        .date()
+        .isoformat(),
+    }
+    e = _optimizar(entrada)
+    _certificado_optimo(e, "el plan de un pool DIGITAL")
+    run = e["optimizacion_run_id"]
+
+    # El optimo, calculado aqui sin el solver: con un solo pool y sin coberturas, las de mayor
+    # recuperacion positiva esperada COMPLETA que caben. En centavos exactos, sin ninguna p.
+    mejores = _todos(
+        f"/predictivo/scorings/{s['scoring_run_id']}/predicciones?estado=COMPLETA"
+        "&orden=RECUPERACION_POSITIVA_ESPERADA_30D&sentido=DESC"
+    )[:CUPO_DE_HUMO]
+    esperado = sum(int(Decimal(p["recuperacion_positiva_esperada_30d"]) * 100) for p in mejores)
+    esperar(
+        e["objetivo_primario_centavos"] == esperado,
+        f"el valor del plan, {e['objetivo_primario_centavos']:,} centavos, es la suma de las "
+        f"{len(mejores)} mayores recuperaciones esperadas COMPLETA, calculada aqui",
+    )
+    estado, _, capacidad = pedir("GET", f"/optimizacion/ejecuciones/{run}/capacidad")
+    (uso,) = capacidad.get("elementos", [None])
+    esperar(
+        estado == 200
+        and uso["pool"] == "DIGITAL_GLOBAL"
+        and uso["utilizada"] <= uso["capacidad"] == CUPO_DE_HUMO
+        and uso["holgura"] == uso["capacidad"] - uso["utilizada"]
+        and uso["utilizada"] == e["cuentas_asignadas"],
+        f"GET .../capacidad: {uso and uso['utilizada']} de {CUPO_DE_HUMO}, ninguna capacidad "
+        "excedida",
+    )
+    estado, _, restricciones = pedir("GET", f"/optimizacion/ejecuciones/{run}/restricciones")
+    esperar(
+        estado == 200
+        and all(
+            r["binding"] == (r["holgura"] == 0) and r["holgura"] >= 0
+            for r in restricciones["elementos"]
+        )
+        and any(r["codigo"] == "POOL:DIGITAL_GLOBAL" for r in restricciones["elementos"]),
+        f"GET .../restricciones: {restricciones.get('total')}, cada una con su holgura",
+    )
+    resultados = _todos(f"/optimizacion/ejecuciones/{run}/resultados")
+    asignadas = [r for r in resultados if r["estado"] == "ASIGNADA"]
+    imputadas = pedir(
+        "GET", f"/predictivo/scorings/{s['scoring_run_id']}/predicciones?estado=CON_IMPUTACION"
+    )[2]["total"]
+    no_elegibles = [r for r in resultados if r["estado"] == "NO_ELEGIBLE"]
+    esperar(
+        len(resultados) == e["cuentas_universo"] == s["predicciones_publicadas"]
+        and len(asignadas) == e["cuentas_asignadas"]
+        and all(
+            (r["canal_asignado"], r["pool"]) == ("DIGITAL", "DIGITAL_GLOBAL") for r in asignadas
+        )
+        and len(no_elegibles) == imputadas
+        and all(r["motivo"] == "PREDICCION_CON_IMPUTACION" for r in no_elegibles),
+        f"GET .../resultados: {len(resultados):,} cuentas, todo o nada; ninguna asignacion "
+        f"inadmisible; {imputadas:,} CON_IMPUTACION no elegibles",
+    )
+    cuenta = asignadas[0]["cuenta_id"]
+    estado, _, explicada = pedir("GET", f"/optimizacion/ejecuciones/{run}/cuentas/{cuenta}")
+    esperar(
+        estado == 200
+        and explicada["resultado"]["estado"] == "ASIGNADA"
+        and NO_CAUSAL in explicada["explicacion"],
+        f"GET .../cuentas/{{cuenta_id}}: {estado}, su resultado y por que, sin causalidad",
+    )
+    estado, _, planes = pedir("GET", f"/cuentas/{cuenta}/optimizacion")
+    esperar(
+        estado == 200 and run in [p["optimizacion_run_id"] for p in planes["elementos"]],
+        f"GET /cuentas/{{cuenta_id}}/optimizacion: {estado}, el plan publicado",
+    )
+    estado, _, error = enviar("/optimizacion/ejecuciones", entrada)
+    esperar(
+        estado == 409 and error["codigo"] == "OPTIMIZACION_YA_PUBLICADA",
+        f"las mismas entradas otra vez: {estado} {error.get('codigo')}",
+    )
+    otro_corte = {**entrada, "scoring_run_id": predictivo["scoring_backtest"]["scoring_run_id"]}
+    estado, _, error = enviar("/optimizacion/ejecuciones", otro_corte)
+    esperar(
+        estado == 422 and error["codigo"] == "CORTES_DISTINTOS",
+        f"un scoring de otro corte: {estado} {error.get('codigo')}, sin abrir nada",
+    )
+
+    # Una infactible: un minimo que ninguna cartera puede cumplir. Sin plan, con su diagnostico.
+    imposible = _publicar_configuracion(
+        {
+            **documento,
+            "nombre": "Prueba de humo: un minimo imposible",
+            "restricciones": [
+                {
+                    "codigo": "MIN_AUTOMOTRIZ",
+                    "tipo": "MIN_CUENTAS",
+                    "dimension": "PRODUCTO",
+                    "valor_dimension": "AUTOMOTRIZ",
+                    "limite": 1_000_000,
+                    "activa": True,
+                }
+            ],
+        }
+    )
+    f = _optimizar({**entrada, "configuracion_id": imposible["configuracion_id"]})
+    estado, _, diagnostico = pedir(
+        "GET", f"/optimizacion/ejecuciones/{f['optimizacion_run_id']}/diagnostico"
+    )
+    estado_r, _, error = pedir(
+        "GET", f"/optimizacion/ejecuciones/{f['optimizacion_run_id']}/resultados"
+    )
+    esperar(
+        (f.get("estado"), f.get("resultado"), f.get("solver_status"))
+        == ("FALLIDA", "INFACTIBLE", "NO_INVOCADO")
+        and f["cuentas_publicadas"] == 0
+        and f["hash_plan"] is None
+        and estado == 200
+        and not diagnostico["plan_publicado"]
+        and diagnostico["diagnostico"]["hallazgos"][0]["codigo"] == "MINIMO_SUPERA_ELEGIBLES"
+        and (estado_r, error.get("codigo")) == (409, "OPTIMIZACION_NO_PUBLICADA"),
+        "un minimo imposible: FALLIDA (INFACTIBLE) antes del solver, sin ningun resultado, con su "
+        "diagnostico",
+    )
+    print(f"optimizacion_run_id {run}")
+    print(f"optimizacion_infactible_run_id {f['optimizacion_run_id']}")
+    if ruteo_oficial is not None:
+        el_campo_optimizado(predictivo, ruteo_oficial)
+
+
+def el_campo_optimizado(predictivo: dict, ruteo_run_id: str) -> None:
+    """CAMPO sobre el corte oficial: su scoring (BACKTEST, con la frontera de su decision/v2), la
+    decision/v2 de su plan de campo y el ruteo/v2 declarado. Un pool por gestor con paradas
+    PROGRAMADA, sin capacidad declarada: su capacidad efectiva son esas paradas. Cada cuenta en
+    CAMPO es una parada PROGRAMADA de su propio gestor, con su orden de visita, que no cambia."""
+    estado, _, ruteo = pedir("GET", f"/ruteo-v2/ejecuciones/{ruteo_run_id}")
+    _, _, plan = pedir("GET", f"/campo-v2/planes/{ruteo['campo_run_id']}")
+    _, _, decision = pedir("GET", f"/decisiones-v2/{plan['decision_run_id']}")
+    esperar(
+        estado == 200 and ruteo["estado"] == plan["estado"] == decision["estado"] == "EXITOSA",
+        f"la cadena del corte oficial: decision/v2 {decision['decision_run_id'][:8]}..., campo/v2 "
+        f"{plan['campo_run_id'][:8]}..., ruteo/v2 {ruteo_run_id[:8]}...",
+    )
+    pedido = {
+        "modelo_version_id": predictivo["modelo_version_id"],
+        "corte_id": plan["corte"]["corte_id"],
+        "modo": "BACKTEST",
+        "known_at": decision["known_at"],
+    }
+    estado, encabezados, _ = enviar("/predictivo/scorings", pedido)
+    s = seguir_lo_predictivo(ubicacion_de(encabezados))
+    esperar(
+        estado == 201 and s.get("estado") == "EXITOSA" and s["as_of"] == decision["as_of"],
+        f"el scoring del corte oficial con el modelo publicado, a la frontera de su decision/v2: "
+        f"{s.get('estado')}, {s.get('predicciones_publicadas', 0):,} predicciones",
+    )
+    programadas = _todos(f"/ruteo-v2/ejecuciones/{ruteo_run_id}/paradas?estado=PROGRAMADA")
+    por_gestor: dict[str, int] = {}
+    for p in programadas:
+        por_gestor[p["gestor"]] = por_gestor.get(p["gestor"], 0) + 1
+    esperar(
+        bool(por_gestor), f"{len(programadas)} paradas PROGRAMADA de {len(por_gestor)} gestores"
+    )
+    documento = _configuracion_de_humo(
+        "Prueba de humo: CAMPO por gestor",
+        [
+            ("DIGITAL", "DIGITAL"),
+            ("TELEFONICA", "TELEFONICA"),
+            ("CAMPO", "CAMPO"),
+            ("CAMPO", "TELEFONICA"),
+        ],
+        [
+            _pool("DIGITAL_GLOBAL", "DIGITAL", 20, 1),
+            _pool("TELEFONICA_GLOBAL", "TELEFONICA", 10, 4),
+            *(
+                _pool(
+                    f"CAMPO_{g}",
+                    "CAMPO",
+                    None,
+                    20,
+                    tipo_alcance="GESTOR_CAMPO",
+                    referencia_alcance=g,
+                )
+                for g in sorted(por_gestor)
+            ),
+        ],
+        # Declarado: el modelo es de otra cartera, y sus predicciones de este corte pueden venir
+        # con imputacion.
+        permitir_predicciones_con_imputacion=True,
+    )
+    configuracion = _publicar_configuracion(documento)
+    e = _optimizar(
+        {
+            "scoring_run_id": s["scoring_run_id"],
+            "decision_run_id": decision["decision_run_id"],
+            "configuracion_id": configuracion["configuracion_id"],
+            "fecha_operacion": ruteo["fecha_operacion"],
+            "ruteo_run_id": ruteo_run_id,
+        }
+    )
+    _certificado_optimo(e, "el plan con CAMPO")
+    run = e["optimizacion_run_id"]
+    paradas = {p["cuenta_id"]: p for p in programadas}
+    en_campo = _todos(f"/optimizacion/ejecuciones/{run}/resultados?canal=CAMPO")
+    esperar(
+        all(
+            r["cuenta_id"] in paradas
+            and r["gestor"] == paradas[r["cuenta_id"]]["gestor"]
+            and r["pool"] == f"CAMPO_{r['gestor']}"
+            and r["orden_ruteo_original"] == paradas[r["cuenta_id"]]["orden_visita"]
+            for r in en_campo
+        ),
+        f"{len(en_campo)} cuentas en CAMPO, cada una una parada PROGRAMADA de su propio gestor, "
+        "con su orden de visita",
+    )
+    usos = _todos(f"/optimizacion/ejecuciones/{run}/capacidad?canal=CAMPO")
+    esperar(
+        len(usos) == len(por_gestor)
+        and all(
+            u["capacidad"] == por_gestor[u["referencia_alcance"]]
+            and u["utilizada"] <= u["capacidad"]
+            for u in usos
+        ),
+        "la capacidad efectiva de cada gestor son sus paradas PROGRAMADA, y ninguna se excede",
+    )
+    print(f"optimizacion_campo_run_id {run}")
 
 
 def main(
@@ -2677,13 +3102,17 @@ def main(
     base_ruteo: str | None = None,
     analitica: bool = False,
     predictivo: Path | None = None,
+    optimizacion: bool = False,
+    ruteo_oficial: str | None = None,
 ) -> None:
     print(f"Prueba de humo contra {BASE} con {archivo or predictivo}")
 
     estado, salud = esperar_a_la_api()
     esperar(estado == 200 and salud.get("base_de_datos") == "ok", "GET /salud 200, base ok")
     if archivo is None:
-        lo_predictivo(predictivo)
+        publicado = lo_predictivo(predictivo)
+        if optimizacion:
+            la_optimizacion(publicado, ruteo_oficial)
         print("Todo en orden.")
         return
 
@@ -3133,7 +3562,9 @@ def main(
             if analitica:
                 la_analitica(corte, del_dia, decision, geografia_del_corte, operacion)
     if predictivo is not None:
-        lo_predictivo(predictivo)
+        publicado = lo_predictivo(predictivo)
+        if optimizacion:
+            la_optimizacion(publicado, ruteo_oficial)
     print("Todo en orden.")
 
 
@@ -3183,6 +3614,17 @@ if __name__ == "__main__":
         help="Un escenario predictivo ya cargado, con el manifiesto.json que propuso "
         "construir-manifiesto-predictivo: recorre predictive/model-v1.",
     )
+    argumentos.add_argument(
+        "--optimizacion",
+        action="store_true",
+        help="Con --predictivo: recorre optimization/v1 sobre el ultimo corte del escenario, con "
+        "su scoring y una decision/v2 del mismo corte.",
+    )
+    argumentos.add_argument(
+        "--ruteo-oficial",
+        metavar="RUTEO_RUN_ID",
+        help="Con --optimizacion: tambien CAMPO, sobre el corte oficial y ese ruteo/v2.",
+    )
     leidos = argumentos.parse_args()
     if leidos.archivo is None:
         if leidos.predictivo is None:
@@ -3213,6 +3655,10 @@ if __name__ == "__main__":
         argumentos.error("--ruteo va con --campo.")
     if leidos.analytics and leidos.ruteo is None:
         argumentos.error("--analytics va con --ruteo.")
+    if leidos.optimizacion and leidos.predictivo is None:
+        argumentos.error("--optimizacion va con --predictivo.")
+    if leidos.ruteo_oficial is not None and not leidos.optimizacion:
+        argumentos.error("--ruteo-oficial va con --optimizacion.")
     main(
         leidos.archivo,
         leidos.oficial,
@@ -3225,4 +3671,6 @@ if __name__ == "__main__":
         base_ruteo=leidos.base_ruteo,
         analitica=leidos.analytics,
         predictivo=leidos.predictivo,
+        optimizacion=leidos.optimizacion,
+        ruteo_oficial=leidos.ruteo_oficial,
     )
