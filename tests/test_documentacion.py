@@ -532,20 +532,24 @@ def test_las_decisiones_estan_todas_y_en_orden():
     numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
     indice = [int(n) for n in re.findall(r"^(\d+)\. \[", texto, re.MULTILINE)]
 
-    assert numeros == list(range(1, 223))
+    assert numeros == list(range(1, 248))
     assert indice == numeros
     introduccion = " ".join(texto[:4500].split())
     assert "las 175 a 196, de Collection Analytics" in introduccion
     assert "las 197 a 222, de Predictive Intelligence" in introduccion
+    assert "las 223 a 247, de la Optimización Matemática" in introduccion
 
 
-def test_el_readme_marca_v0_15_publicada_y_v0_16_la_que_sigue():
+def test_el_readme_marca_v0_16_publicada_y_v0_17_la_que_sigue():
     texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
 
-    assert "✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time" in texto
     assert "✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift" in texto
-    assert "➡️ v0.16 — Optimización Matemática" in texto
-    assert "➡️ v0.15" not in texto
+    assert (
+        "✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida"
+        in texto
+    )
+    assert "➡️ v0.17 — App + Dashboards" in texto
+    assert "➡️ v0.16" not in texto
 
 
 # --- predictive/model-v1 --------------------------------------------------------------------------
@@ -662,3 +666,148 @@ def test_la_documentacion_predictiva_no_promete_causalidad():
     principal = " ".join((DOCS / "predictivo.md").read_text(encoding="utf-8").split())
     assert "Una predicción no es causal." in principal
     assert "no estiman causalidad" in principal.lower()
+
+
+# --- optimization/v1 ------------------------------------------------------------------------------
+
+DOCUMENTOS_DE_OPTIMIZACION = (
+    "optimizacion.md",
+    "modelo_optimizacion.md",
+    "configuracion_optimizacion.md",
+)
+
+
+def test_el_documento_de_optimizacion_define_cada_estado_resultado_motivo_error_y_falla():
+    """Cada estado y motivo de una cuenta, cada estado y resultado de una ejecucion, cada estado del
+    solver, cada hallazgo del prechequeo y cada error de abrir tiene su fila en optimizacion.md; los
+    puntos de falla se nombran."""
+    from motor_cartera.db.modelos import EstadoOptimizacion, ResultadoOptimizacion
+    from motor_cartera.optimizacion import ejecuciones
+    from motor_cartera.optimizacion.politica import EstadoCuenta, EstadoSolver, Motivo
+
+    filas = _codigos_de_tablas("optimizacion.md")
+    texto = (DOCS / "optimizacion.md").read_text(encoding="utf-8")
+    errores = {
+        clase.codigo
+        for clase in vars(ejecuciones).values()
+        if isinstance(clase, type) and issubclass(clase, ejecuciones.OptimizacionInvalida)
+    }
+    assert len(errores) == 17 and errores <= filas
+    assert {"OPTIMIZACION_EN_PROCESO", "OPTIMIZACION_YA_PUBLICADA"} <= filas
+    assert {"CONFIGURACION_INVALIDA", "FILTRO_DESCONOCIDO", "OPTIMIZACION_NO_PUBLICADA"} <= filas
+    assert {e.value for e in EstadoCuenta} <= filas
+    assert {m.value for m in Motivo} <= filas
+    assert {e.value for e in EstadoOptimizacion} <= filas
+    assert {r.value for r in ResultadoOptimizacion} | {"CERRADA_AL_BAJAR"} <= filas
+    assert {e.value for e in EstadoSolver} <= filas
+    for punto in ejecuciones.PUNTOS_DE_FALLA:
+        assert f"`{punto}`" in texto, punto
+
+
+def test_cada_hallazgo_del_prechequeo_esta_documentado():
+    """Los codigos que el codigo puede producir, leidos de su fuente, son los documentados."""
+    fuente = "".join(
+        (DOCS.parent / "src" / "motor_cartera" / "optimizacion" / f).read_text(encoding="utf-8")
+        for f in ("formulacion.py", "ejecuciones.py")
+    )
+    producidos = set(re.findall(r'Hallazgo\(\s*"([A-Z_]+)"', fuente))
+    assert len(producidos) == 11 and producidos <= _codigos_de_tablas("optimizacion.md")
+
+
+def test_las_versiones_y_el_hash_de_optimizacion_documentados_son_los_del_servicio():
+    from motor_cartera.optimizacion.configuracion import VERSION_CONFIGURACION
+    from motor_cartera.optimizacion.politica import (
+        ALGORITMO,
+        PUBLIC_V1,
+        VERSION_MOTOR,
+        hash_politica,
+    )
+
+    texto = (DOCS / "optimizacion.md").read_text(encoding="utf-8")
+    for valor in (
+        VERSION_MOTOR,
+        PUBLIC_V1.version,
+        hash_politica(PUBLIC_V1),
+        VERSION_CONFIGURACION,
+        ALGORITMO,
+        "optimization-benchmark/public-v1",
+    ):
+        assert valor in texto, valor
+
+
+def test_el_modelo_documenta_su_formulacion_formal():
+    """Conjuntos, parametros, variables, jerarquia de objetivos, restricciones, el teorema de la
+    reduccion con su prueba, la fijacion por dualidad y la regla de publicacion: no solo prosa."""
+    texto = (DOCS / "modelo_optimizacion.md").read_text(encoding="utf-8")
+    for seccion in (
+        "## Conjuntos",
+        "## Parámetros",
+        "## Variables",
+        "## Restricciones",
+        "## La jerarquía de objetivos",
+        "## El teorema de la reducción de candidatos",
+        "## La fijación por dualidad entre etapas",
+        "## La regla de publicación",
+    ):
+        assert seccion in texto, seccion
+    assert "*Prueba.*" in texto and "**Teorema (reducción exacta).**" in texto
+    assert "no un IIS" in texto
+
+
+def test_la_configuracion_documenta_cada_llave_tipo_dimension_y_alcance():
+    from motor_cartera.optimizacion import configuracion as c
+    from motor_cartera.optimizacion.politica import (
+        PRIORIDADES,
+        PRODUCTOS,
+        TRAMOS,
+        Dimension,
+        TipoAlcance,
+        TipoRestriccion,
+    )
+
+    texto = (DOCS / "configuracion_optimizacion.md").read_text(encoding="utf-8")
+    for llave in (
+        *c.LLAVES_DEL_DOCUMENTO,
+        *c.LLAVES_DE_UNA_ADMISIBILIDAD,
+        *c.LLAVES_DE_UN_POOL,
+        *c.LLAVES_DE_UNA_RESTRICCION,
+    ):
+        assert f"`{llave}`" in texto, llave
+    for valor in (*TipoRestriccion, *Dimension, *TipoAlcance, *PRODUCTOS, *TRAMOS, *PRIORIDADES):
+        assert f"`{valor}`" in texto, valor
+    assert "Estos límites existen únicamente para medir el optimizador." in texto
+
+
+def test_la_documentacion_de_optimizacion_no_promete_causalidad():
+    """Golden 131: ningun documento ni ninguna respuesta introducen un uplift, una recuperacion
+    incremental o un efecto esperado del canal; ninguno promete dinero adicional; el principal dice
+    sus limitaciones con todas sus letras."""
+    for archivo in DOCUMENTOS_DE_OPTIMIZACION:
+        texto = " ".join((DOCS / archivo).read_text(encoding="utf-8").lower().split())
+        for campo in ("incremental_recovery", "expected_channel_effect", "uplift_"):
+            assert campo not in texto, (archivo, campo)
+        for frase in (
+            "generará",
+            "causó el pago",
+            "causado por",
+            "impacto causal",
+            "tratamiento óptimo",
+        ):
+            assert frase not in texto, (archivo, frase)
+        for oracion in re.split(r"(?<=\.) ", texto):
+            if "uplift" in oracion:
+                assert "no hay" in oracion, (archivo, oracion)
+    principal = " ".join((DOCS / "optimizacion.md").read_text(encoding="utf-8").split())
+    for frase in (
+        "Es óptimo respecto al modelo declarado. No es una estrategia causalmente óptima.",
+        "recuperación positiva esperada bajo la política histórica",
+        "no la evidencia de que ese canal causará mayor recuperación",
+        "las unidades de recurso no son costos reales",
+        "Un óptimo matemático de supuestos incorrectos sigue siendo una mala decisión de negocio.",
+    ):
+        assert frase in principal, frase
+    from motor_cartera.api import esquemas_optimizacion
+
+    fuente = Path(esquemas_optimizacion.__file__).read_text(encoding="utf-8").lower()
+    for campo in ("uplift", "incremental_recovery", "expected_channel_effect"):
+        assert campo not in fuente, campo

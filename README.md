@@ -1,9 +1,9 @@
 # motor-cartera
 
 Motor de ingesta, validación, segmentación, decisión, priorización territorial, planeación de
-campo, ruteo (sintético y por calle) y analítica point-in-time de cartera de crédito al consumo,
-construido sobre **datos sintéticos**, con una API REST para operarlo y un worker que ejecuta cada
-etapa desde una cola durable.
+campo, ruteo (sintético y por calle), analítica point-in-time, predicción y optimización matemática
+en sombra de cartera de crédito al consumo, construido sobre **datos sintéticos**, con una API REST
+para operarlo y un worker que ejecuta cada etapa desde una cola durable.
 
 ## De qué se trata
 
@@ -135,6 +135,20 @@ predicción no es causal**: no dice qué acción tomar, y nada operacional la le
 [docs/modelos_predictivos.md](docs/modelos_predictivos.md) y
 [docs/backtesting_predictivo.md](docs/backtesting_predictivo.md)).
 
+Desde v0.16.0, la **Optimización Matemática** arma, en sombra, el plan óptimo de una fecha. Con un
+scoring, una `decision/v2` del mismo corte, una **configuración** versionada (pools de capacidad
+`DIGITAL`, `TELEFONICA` y `CAMPO`, una matriz de admisibilidad explícita, un presupuesto de unidades
+de recurso y coberturas) y, con `CAMPO`, el `ruteo/v2` de esa decisión, `optimization/v1` resuelve un
+MILP lexicográfico exacto con HiGHS: el máximo valor de oportunidad (la recuperación positiva
+esperada, en centavos, **sin multiplicarla por ninguna probabilidad**), luego el mayor contacto
+predicho, el menor esfuerzo y un orden canónico. `CAMPO` solo elige paradas `PROGRAMADA` de su
+propio gestor, sin reoptimizar rutas, y una reducción exacta por dominancia deja fuera candidatos sin
+cambiar el óptimo. **Solo se publica un óptimo demostrado** (cota = objetivo, gap 0, en cada nivel).
+**Es el óptimo del modelo de asignación declarado, no una estrategia causalmente óptima**, y no
+ejecuta ninguna acción ([docs/optimizacion.md](docs/optimizacion.md),
+[docs/modelo_optimizacion.md](docs/modelo_optimizacion.md) y
+[docs/configuracion_optimizacion.md](docs/configuracion_optimizacion.md)).
+
 ## Datos
 
 **Ningún dato real entra a este repositorio.** Todo lo que el sistema procesa lo produce el
@@ -166,7 +180,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay quince versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay dieciséis versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -246,6 +260,16 @@ punta:
   publicados como JSON canónico solo si superan su baseline en TEST; scoring con predicciones
   cuantizadas, `feature_hash`, explicación verificada y drift contra TRAIN, en sombra. Todo o nada,
   en trabajos durables `PREDICTIVE_TRAINING` y `PREDICTIVE_SCORING`.
+- **v0.16.0 ✅ Optimización Matemática: Priorización, Capacidad y Asignación Restringida**: el plan
+  óptimo de una fecha (`optimization/v1`, con la política `optimization-public-v1` y su hash) sobre
+  entradas declaradas y compatibles (un scoring de un modelo publicado, la `decision/v2` del mismo
+  corte, una configuración publicada y, con `CAMPO`, el `ruteo/v2` de esa decisión): un MILP con
+  variables binarias por par elegible, capacidades, presupuesto de unidades y coberturas por
+  cuentas o puntos base, cuatro objetivos lexicográficos fijados por etapas, una reducción exacta
+  de candidatos por dominancia, la relajación lineal y la fijación por dualidad entre etapas, y la
+  verificación en enteros; un plan solo se publica si HiGHS demuestra su óptimo, con su
+  certificado, su hash y la huella del solver. Todo o nada, en sombra, en un trabajo durable
+  `OPTIMIZATION`.
 
 Lo que ya hace:
 
@@ -407,6 +431,21 @@ Lo que ya hace:
   `entrenar-predictivo`, `resumen-modelo-predictivo`, `score-predictivo`, `drift-predictivo` y
   `evaluar-predictivo`); un escenario longitudinal sintético con señal pública
   (`escenario-predictivo/v1`) y un benchmark fuera del CI
+- [x] `optimization/v1`: configuraciones versionadas con un esquema cerrado (sin SQL, Python ni
+  expresiones), su forma canónica y su hash; entradas declaradas y compatibles (nunca «la última»),
+  garantizadas también por llaves foráneas compuestas; el universo y los pares elegibles por
+  conjuntos en PostgreSQL, con cada motivo de no elegibilidad
+- [x] Un MILP exacto con HiGHS (el de SciPy): matriz dispersa con enteros exactos, cuatro niveles
+  lexicográficos sin *big-M*, la reducción de candidatos por dominancia con su teorema, la
+  relajación lineal primero y la fijación por dualidad entre etapas; solo un óptimo demostrado se
+  publica (`OPTIMO_NO_DEMOSTRADO`, `INFACTIBLE` con su diagnóstico de relajación); `CAMPO` solo desde
+  paradas `PROGRAMADA` de su propio gestor, sin reoptimizar rutas
+- [x] La API (política, configuraciones, ejecuciones, resultados con una lista blanca de filtros,
+  capacidad, restricciones, diagnóstico, la explicación de una cuenta y sus planes) y el CLI
+  (`crear-config-optimizacion`, `optimizar-cartera`, `resumen-optimizacion`,
+  `exportar-optimizacion` en CSV, Parquet y JSONL, `diagnosticar-optimizacion` y
+  `comparar-optimizaciones`); goldens calculados a mano, propiedades contra la enumeración y un
+  benchmark S, M y XL con su sensibilidad, fuera del CI
 
 La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 
@@ -426,19 +465,18 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.13.0 — Ruteo vial v2: Red Vial, Secuenciación y Factibilidad de Jornada
 ✅ v0.14.0 — Collection Analytics: Métricas, Cohortes y Embudos Point-in-Time
 ✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift
-➡️ v0.16 — Optimización Matemática
+✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida
+➡️ v0.17 — App + Dashboards
 
-v0.17 Aplicación + dashboards
 v0.18 Cloud + observabilidad + hardening
 
 v1.0 Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.16, Optimización Matemática**: consumir las probabilidades, la recuperación
-positiva esperada y el riesgo de `predictive/model-v1`, con la capacidad, el territorio, los recursos
-de campo y las restricciones de ruteo, para decidir con restricciones explícitas qué cuentas
-priorizar, qué canal considerar y cómo usar la capacidad, sin suponer que cambiar de acción causa la
-probabilidad predicha: ese problema se trata explícitamente en su diseño.
+Lo que sigue es **v0.17, App + Dashboards**: convertir las capas que ya existen (la Cuenta 360,
+analytics, las predicciones, los planes de optimización, el campo y las rutas, con su evidencia, sus
+fichas de modelo, su drift, su capacidad y sus restricciones) en una superficie operacional, sin
+perder la auditabilidad, el punto en el tiempo, la privacidad ni el versionado.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -1554,6 +1592,52 @@ de uno de otro generador (25 en ALTO). Por la API, de 11 a 28 ms por consulta y 
 de una cuenta, sin un Seq Scan sobre una tabla grande. Son datos sintéticos: validan la arquitectura y
 la estadística, no el desempeño en una cartera real.
 
+## Optimización Matemática
+
+`optimization/v1` responde, para una fecha de operación y con entradas declaradas, qué cuentas
+atender y por qué canal bajo la capacidad, el presupuesto y las coberturas de una configuración, con
+el máximo valor de oportunidad predicho. Corre en sombra: **es el óptimo del modelo declarado, no una
+estrategia causalmente óptima**, no ejecuta nada y nada de `decision/v2`, `campo/v2` ni `ruteo/v2`
+lo lee.
+
+- **Entradas declaradas y compatibles.** Un scoring `EXITOSA` de un modelo `PUBLICADA`, la
+  `decision/v2` del mismo corte, una configuración `PUBLICADA` y, con `CAMPO` o `BASE`, el
+  `ruteo/v2` de esa misma decisión, con su fecha. Nunca «la última»; la base también lo garantiza.
+- **El valor es la recuperación positiva esperada**, en centavos, sin multiplicarla por ninguna
+  probabilidad; `p_contacto_14d` solo desempata, y después el menor esfuerzo y un orden canónico.
+- **Un MILP exacto.** Cuatro niveles lexicográficos fijados por etapas, la reducción exacta de
+  candidatos por dominancia, la relajación lineal con la fijación por dualidad, y la verificación
+  en enteros. **Solo se publica un óptimo demostrado**: `OPTIMAL`, cota = objetivo y gap 0 en cada
+  nivel; si no, `OPTIMO_NO_DEMOSTRADO` o `INFACTIBLE` con su diagnóstico.
+- **`CAMPO` solo desde paradas `PROGRAMADA`** de su propio gestor en el ruteo declarado, con su
+  orden: el plan no reoptimiza ninguna ruta.
+
+```bash
+K="X-API-Key: clave-local-de-desarrollo"
+docker compose exec worker motor-cartera crear-config-optimizacion datos/configuracion.json --publicar
+docker compose exec worker motor-cartera optimizar-cartera --scoring <scoring_run_id> \
+  --decision <decision_run_id> --configuracion <configuracion_id> --fecha-operacion 2026-07-09
+docker compose exec worker motor-cartera resumen-optimizacion --ejecucion <optimizacion_run_id>
+docker compose exec worker motor-cartera exportar-optimizacion --ejecucion <optimizacion_run_id> \
+  --formato parquet
+curl -s -H "$K" "http://localhost:8000/optimizacion/ejecuciones/<optimizacion_run_id>/resultados?estado=ASIGNADA"
+curl -s -H "$K" "http://localhost:8000/optimizacion/ejecuciones/<optimizacion_run_id>/restricciones?binding=true"
+curl -s -H "$K" "http://localhost:8000/optimizacion/ejecuciones/<optimizacion_run_id>/cuentas/<cuenta_id>"
+```
+
+Todo está en [docs/optimizacion.md](docs/optimizacion.md),
+[docs/modelo_optimizacion.md](docs/modelo_optimizacion.md) y
+[docs/configuracion_optimizacion.md](docs/configuracion_optimizacion.md). El porqué, en las
+decisiones 223 a 247.
+
+**Medido.** Con capacidades sintéticas fijadas antes de medir (`optimization-benchmark/public-v1`,
+que existen únicamente para medir el optimizador), el plan de 113,876 cuentas (60,790 variables)
+tardó 8.2 s, y el de 500,000 cuentas con `CAMPO` en 2,683 gestores (408,204 variables, 131,108
+restricciones y 2,492,352 no nulos, después de que la reducción exacta dejara fuera el 44 % de las
+candidatas) 87.6 s con 1,262 MB; cada nivel `OPTIMAL`, con la mejor cota igual al objetivo y gap 0.
+Sobre 10,000 cuentas, el modelo completo y el reducido dan los mismos cuatro óptimos. Por la API, de
+11 a 65 ms por consulta sobre el plan XL, sin un Seq Scan sobre una tabla grande.
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -1893,6 +1977,14 @@ El porqué de cada pieza está en [docs/decisiones.md](docs/decisiones.md), secc
 | `GET /predictivo/scorings/{scoring_run_id}/predicciones` | Las predicciones, filtradas en la base por el rango de cada salida, producto, entidad y estado, y ordenadas por una lista cerrada; paginadas | 200, 401, 404, 409, 422 |
 | `GET /predictivo/scorings/{scoring_run_id}/drift` y `/cuentas/{cuenta_id}/explicacion` | El drift por feature y por salida; la explicación de una predicción, verificada con su `feature_hash` | 200, 401, 404, 409, 422 |
 | `GET /cuentas/{cuenta_id}/predictivo` | Las predicciones publicadas de la cuenta, de la más reciente a la más antigua | 200, 401, 404, 422 |
+| `GET /optimizacion/politica` | `optimization-public-v1` con su hash, la huella del solver y las limitaciones | 200, 401 |
+| `POST /optimizacion/configuraciones` | Registra una configuración de optimización (`?publicar=true`) o reutiliza la del mismo contenido | 200, 201, 401, 422 |
+| `GET /optimizacion/configuraciones` y `/{configuracion_id}` | Las configuraciones (filtro `estado`) y una con su matriz, sus pools, sus restricciones y `hash_verificado`; `POST .../{configuracion_id}/publicacion` publica un `BORRADOR` | 200, 401, 404, 422 |
+| `POST /optimizacion/ejecuciones` | Pide un plan con sus entradas exactas (scoring, `decision/v2`, configuración, fecha y, con `CAMPO` o `BASE`, `ruteo/v2`); lo resuelve el worker | 201, 401, 404, 409, 422 |
+| `GET /optimizacion/ejecuciones` y `/{optimizacion_run_id}` | Las ejecuciones (filtros `estado`, `configuracion_id` y `scoring_run_id`) y una con sus entradas, sus hashes, su certificado y su resumen | 200, 401, 404, 422 |
+| `GET /optimizacion/ejecuciones/{optimizacion_run_id}/resultados` | Los resultados por cuenta, filtrados en la base por una lista blanca (`estado`, `canal`, `pool`, `producto`, `prioridad`, `base`); paginados | 200, 401, 404, 409, 422 |
+| `GET /optimizacion/ejecuciones/{optimizacion_run_id}/capacidad`, `/restricciones` y `/diagnostico` | El uso de cada pool; cada restricción con su lado izquierdo, derecho, holgura y si quedó activa; y por qué terminó como terminó, sin inventar un plan | 200, 401, 404, 409, 422 |
+| `GET /optimizacion/ejecuciones/{optimizacion_run_id}/cuentas/{cuenta_id}` y `/cuentas/{cuenta_id}/optimizacion` | Por qué una cuenta quedó como quedó en un plan; lo que cada plan publicado concluyó de ella | 200, 401, 404, 409, 422 |
 | `GET /salud` | La API vive y la base contesta. No pide clave | 200, 503 |
 
 Todas las respuestas de error tienen la misma forma, también las que genera el framework:
@@ -2205,6 +2297,20 @@ imputación, las categorías desconocidas, Platt, el hash del artefacto, las mé
 tests/test_predictivo_propiedades.py`) no necesitan base. El benchmark de `predictive/model-v1` no
 corre en el CI.
 
+`optimization/v1` se prueba sin base con el golden manual (diez cuentas, tres pools, un total, un
+presupuesto y dos coberturas, cuyo óptimo se calcula a mano) y con propiedades contra una
+enumeración independiente de cada asignación posible (`pytest tests/test_optimizacion_formulacion.py
+tests/test_optimizacion_configuracion.py`): cada cuenta en un pool a lo más, ninguna capacidad, total,
+presupuesto ni cobertura violados, el redondeo de las participaciones en sus fronteras, lo
+infactible, lo no demostrado, el modelo reducido igual al completo, la monotonía del valor con más
+capacidad, el plan independiente del orden de las entradas y los hashes de la configuración y de la
+política. Contra PostgreSQL (`pytest tests/test_optimizacion_ejecuciones.py
+tests/test_optimizacion_campo.py tests/test_api_optimizacion.py tests/test_cli_optimizacion.py`), el
+golden en la base de punta a punta, la admisibilidad, la imputación, solo paradas `PROGRAMADA` y con
+su propio gestor, lo que no se abre (cortes distintos, un ruteo de otra decisión), fallas inyectadas
+en cada punto, dos workers, el lease perdido, la reconstrucción idéntica, la inmutabilidad, la
+privacidad, la API y el CLI. El benchmark de `optimization/v1` no corre en el CI.
+
 El CI tiene tres trabajos: la revisión de los archivos trackeados; lint, formato,
 migraciones (suben, coinciden con los modelos y bajan) y pruebas contra una PostgreSQL de
 servicio, que también cubren la cola durable, el worker, el flujo automático y los tres motores:
@@ -2220,13 +2326,15 @@ ni el del motor, ni el de `campo/v2` encuentran nada pendiente, que el de `ruteo
 que falta y que el de `analytics/v1` reporta lo ambiguo sin elegir, compara en modo sombra la
 decisión v2 del corte oficial con su decisión v1, entrena un modelo predictivo pequeño con su
 escenario sintético, en su propia cartera, lo usa para puntuar, medir el drift y explicar una
-predicción, y comprueba que el `BACKTEST` del corte de TEST reproduce sus métricas; baja los
+predicción, comprueba que el `BACKTEST` del corte de TEST reproduce sus métricas y arma con
+`optimization/v1` el plan óptimo de su último corte (con su óptimo calculado aparte) y uno con
+`CAMPO` sobre el corte oficial y su ruteo; baja los
 contenedores sin borrar los volúmenes, los vuelve a levantar y verifica que cada artefacto siga en
 el almacén con sus mismos bytes. La PostgreSQL de los dos trabajos trae PostGIS. Los benchmarks de
 escala, del modelo histórico, del motor de pagos, del lifecycle, de `decision/v2`, de la geografía,
 de `campo/v2` y del planificador de `ruteo/v2` son un workflow aparte, que solo corre a mano; los
-de `analytics/v1` y `predictive/model-v1` se corren a mano con su script, sobre una base `*_bench`
-que ya tiene el XL.
+de `analytics/v1`, `predictive/model-v1` y `optimization/v1` se corren a mano con su script, sobre
+una base `*_bench` que ya tiene el XL.
 
 ## Arquitectura
 
@@ -2378,6 +2486,20 @@ src/motor_cartera/
 │   ├── escenario.py   Cargar un escenario predictivo semana por semana, con su bitácora
 │   ├── candado.py     El candado de una ejecución: un advisory lock, sin transacción abierta
 │   └── medicion.py    Los tiempos por fase, la memoria pico y el entorno
+├── optimizacion/
+│   ├── politica.py    optimization-public-v1: el valor, los objetivos, la precisión, los canales,
+│   │                  los motivos y su hash
+│   ├── configuracion.py optimization-config/v1: leer el esquema cerrado, la forma canónica, el
+│   │                  hash, registrar y publicar
+│   ├── formulacion.py El núcleo puro: el problema, el prechequeo, la reducción exacta, el modelo
+│   │                  disperso, las cuatro etapas, la verificación en enteros, el diagnóstico de
+│   │                  relajación y el hash del plan
+│   ├── solver.py      HiGHS por SciPy: la relajación, el branch-and-bound, sus estados, los duales
+│   │                  y la huella del solver
+│   ├── sql.py         El universo y los pares elegibles, por conjuntos
+│   ├── ejecuciones.py optimization/v1: abrir con sus entradas declaradas y optimizar, todo o nada
+│   ├── exportacion.py Las asignaciones y el plan agregado en CSV, Parquet y JSONL
+│   └── consultas.py   Lo que leen la API y el CLI, la explicación de una cuenta y la comparación
 ├── orquestacion/
 │   ├── cola.py        La cola durable: tomar con SKIP LOCKED, lease, latido, devolver y cerrar
 │   ├── worker.py      El worker: ejecuta cada trabajo con su latido y lo cierra con lo que sigue
@@ -2401,7 +2523,10 @@ src/motor_cartera/
 │                      ejecuciones con su manifiesto, sus agregados y sus controles) y
 │                      predictive/model-v1 (los entrenamientos con sus anclas y sus
 │                      interpretaciones, las versiones del modelo con sus componentes, los
-│                      scorings, sus predicciones y su drift)
+│                      scorings, sus predicciones y su drift) y optimization/v1 (las
+│                      configuraciones con su admisibilidad, sus pools y sus restricciones, las
+│                      ejecuciones, el resultado de cada cuenta, el uso de cada pool y cada
+│                      restricción)
 ├── generador/         Único origen de datos del proyecto: la cartera de cartera/v1 (sintetico.py),
 │                      las fuentes oficiales, sus perfiles y el escenario longitudinal (oficial.py),
 │                      el lifecycle sintético de cada periodo del escenario (lifecycle.py), la
@@ -2411,7 +2536,8 @@ src/motor_cartera/
 │                      ruteo, cuentas (Cuenta 360), historia, motor de pagos, movimientos,
 │                      gestiones, acuerdos (promesas y convenios), lifecycle, evaluaciones,
 │                      atribuciones, decisiones v2, geografía, bases, territorial v2, la
-│                      configuración de campo, campo v2, ruteo v2, analytics y predictivo;
+│                      configuración de campo, campo v2, ruteo v2, analytics, predictivo y
+│                      optimización;
 │                      subidas, esquemas, errores y autenticación
 └── cli.py             Comandos: generar, generar-oficial, generar-escenario, cargar, cargar-pagos,
                        cargar-lifecycle, verificar-fuentes, backfill-historia,
@@ -2426,12 +2552,15 @@ src/motor_cartera/
                        backfill-analytics, generar-escenario-predictivo,
                        cargar-escenario-predictivo, construir-manifiesto-predictivo,
                        entrenar-predictivo, resumen-modelo-predictivo, score-predictivo,
-                       drift-predictivo, evaluar-predictivo y worker
+                       drift-predictivo, evaluar-predictivo, crear-config-optimizacion,
+                       optimizar-cartera, resumen-optimizacion, exportar-optimizacion,
+                       diagnosticar-optimizacion, comparar-optimizaciones y worker
 migraciones/           Versiones de Alembic
 scripts/               Prueba de humo, control de archivos trackeados, benchmarks de escala, del
                        modelo histórico, del motor de pagos, del lifecycle, de decision/v2, de la
-                       geografía, de campo/v2, de ruteo/v2, de analytics/v1 y de
-                       predictive/model-v1, y actualización del catálogo del INEGI
+                       geografía, de campo/v2, de ruteo/v2, de analytics/v1, de
+                       predictive/model-v1 y de optimization/v1, y actualización del catálogo
+                       del INEGI
 docs/                  decisiones.md (por qué está hecho así), fuentes.md (las fuentes oficiales),
                        historia.md (el modelo histórico), cuenta_360.md (su API), motor_pagos.md
                        (el motor de pagos), lifecycle.md (el lifecycle de cobranza y la evaluación
@@ -2441,8 +2570,9 @@ docs/                  decisiones.md (por qué está hecho así), fuentes.md (la
                        configuracion_campo.md, particion_campo.md, ruteo_v2.md, red_vial.md,
                        politica_ruteo.md, analytics.md, metricas_analytics.md,
                        cohortes_analytics.md, predictivo.md, features_predictivas.md,
-                       modelos_predictivos.md, backtesting_predictivo.md, los diccionarios de
-                       CARTERA y PAGOS, y carrier.md
+                       modelos_predictivos.md, backtesting_predictivo.md, optimizacion.md,
+                       modelo_optimizacion.md, configuracion_optimizacion.md, los diccionarios
+                       de CARTERA y PAGOS, y carrier.md
 ```
 
 Todo lo que se escribe cuelga de una **Corrida**. Si alguien pregunta de dónde salió un
@@ -2771,6 +2901,21 @@ y `ruteo/v1` siguen como estaban.
 - **Sin backfill predictivo**: cada scoring declara su versión y su corte.
 - **Una cartera por modelo**: un scoring de otra cartera se calcula y su drift lo dice.
 
+**De la Optimización Matemática (v0.16.0).** Aunque un plan sea un óptimo matemático demostrado:
+
+- **Es óptimo respecto al modelo declarado. No es una estrategia causalmente óptima.**
+- La función objetivo usa la **recuperación positiva esperada bajo la política histórica**, no el
+  beneficio incremental de contactar.
+- **Un canal asignado es una asignación de recurso compatible con las restricciones, no la
+  evidencia de que ese canal causará mayor recuperación.**
+- Las capacidades del benchmark son **sintéticas**, y las unidades de recurso **no son costos
+  reales**: no hay un modelo de costos monetarios.
+- **Un óptimo matemático de supuestos incorrectos sigue siendo una mala decisión de negocio.**
+- `CAMPO` no reoptimiza rutas ni mueve cuentas entre gestores o bases, y no hay planeación dentro
+  del día.
+- No hay *uplift*, ML causal, Decision Engine v3, aprendizaje por refuerzo, ejecución automática ni
+  dashboards (v0.17).
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
 se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud + observabilidad +
 hardening**:
@@ -2779,11 +2924,12 @@ hardening**:
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
 - **Un worker procesa un trabajo a la vez.** Escalar es correr más procesos worker
   (`docker compose up --scale worker=3`); no hay autoscaling.
-- **Ocho niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
+- **Once niveles de prioridad, y nada más.** Entre los trabajos que ya se pueden tomar van primero
   los operacionales, después los `HISTORIA`, los `MOTOR_PAGOS`, los `ATRIBUCION` y
-  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, los `TERRITORIAL_V2`, los `CAMPO_V2` y
-  al final los `RUTEO_V2` (que solo toma un worker cuyo proveedor de ruteo responde); dentro de cada
-  nivel, en el orden en que se crearon.
+  `EVALUACION_PROMESAS`, los `DECISION_V2` y `GEOGRAFIA`, los `TERRITORIAL_V2`, los `CAMPO_V2`, los
+  `RUTEO_V2` (que solo toma un worker cuyo proveedor de ruteo responde), los `ANALYTICS`, los
+  `PREDICTIVE_TRAINING` y `PREDICTIVE_SCORING` y al final los `OPTIMIZATION`; dentro de cada nivel,
+  en el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
   tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
