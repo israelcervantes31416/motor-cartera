@@ -336,3 +336,139 @@ def test_fuera_de_un_repositorio_no_se_da_por_bueno(tmp_path):
 
     assert resultado.returncode == 2
     assert "No se pudieron revisar los archivos trackeados" in resultado.stderr
+
+
+# --- la app web ---------------------------------------------------------------------------------
+
+DIGEST = "@sha256:" + "0" * 64
+
+
+@pytest.fixture
+def web(repo) -> Path:
+    """La app web en regla: su lockfile, su Node fijado, recursos locales y un Dockerfile fijado."""
+    archivos = {
+        "web/package-lock.json": '{"lockfileVersion": 3}\n',
+        "web/.node-version": "24.21.0\n",
+        "web/index.html": '<!doctype html><script type="module" src="/src/main.tsx"></script>\n',
+        # La API local del servidor de desarrollo no es un recurso externo.
+        "web/src/main.tsx": 'const API = "http://localhost:8000";\n',
+        "web/src/estilos.css": "body { font-family: system-ui, sans-serif; }\n",
+        "web/Dockerfile": (
+            f"FROM node:24.21.0-alpine{DIGEST} AS construccion\nFROM nginx:1{DIGEST}\n"
+        ),
+    }
+    for ruta, texto in archivos.items():
+        (repo / ruta).parent.mkdir(parents=True, exist_ok=True)
+        (repo / ruta).write_text(texto)
+    git(repo, "add", ".")
+    return repo
+
+
+def test_la_app_web_en_regla_pasa(web):
+    resultado = revisar(web)
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+
+
+@pytest.mark.parametrize("ruta", ["web/package-lock.json", "web/.node-version"])
+def test_la_app_web_sin_su_instalacion_reproducible_no_pasa(web, ruta):
+    git(web, "rm", "--cached", "-q", ruta)
+
+    resultado = revisar(web)
+
+    assert resultado.returncode == 1
+    assert f"{ruta}: falta en el indice" in resultado.stdout
+
+
+@pytest.mark.parametrize(
+    ("ruta", "texto"),
+    [
+        ("web/index.html", '<script src="https://cdn.example.com/react.js"></script>\n'),
+        ("web/src/estilos.css", "@import url(https://fonts.example.com/css?family=Inter);\n"),
+        ("web/src/telemetria.ts", 'fetch("https://analytics.example.com/evento");\n'),
+        ("web/public/logo.svg", '<svg><image href="http://imagenes.example.com/x.png"/></svg>\n'),
+    ],
+)
+def test_lo_que_carga_el_navegador_no_pide_nada_fuera_del_mismo_origen(web, ruta, texto):
+    (web / ruta).parent.mkdir(parents=True, exist_ok=True)
+    (web / ruta).write_text(texto)
+    git(web, "add", ruta)
+
+    resultado = revisar(web)
+
+    assert resultado.returncode == 1
+    assert f"{ruta}: pide algo fuera del mismo origen: http" in resultado.stdout
+
+
+@pytest.mark.parametrize(
+    ("ruta", "texto", "externa"),
+    [
+        # Un SVG con su espacio de nombres sigue sin poder pedir una imagen de fuera.
+        (
+            "web/public/logo.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            '<image href="http://imagenes.example.com/x.png"/></svg>\n',
+            "http://imagenes.example.com/x.png",
+        ),
+        # Lo que solo empieza como esta maquina no es esta maquina.
+        ("web/src/api.ts", 'fetch("http://localhost.example.com/x");\n', "localhost.example.com"),
+        ("web/src/api.ts", 'fetch("http://localhost:80@example.com/x");\n', "@example.com"),
+    ],
+)
+def test_lo_que_parece_local_no_esconde_otro_origen(web, ruta, texto, externa):
+    (web / ruta).parent.mkdir(parents=True, exist_ok=True)
+    (web / ruta).write_text(texto)
+    git(web, "add", ruta)
+
+    resultado = revisar(web)
+
+    assert resultado.returncode == 1
+    assert f"{ruta}: pide algo fuera del mismo origen: " in resultado.stdout
+    assert externa in resultado.stdout
+    assert "w3.org" not in resultado.stdout
+
+
+@pytest.mark.parametrize(
+    ("ruta", "texto"),
+    [
+        (
+            "web/public/favicon.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+            "</svg>\n",
+        ),
+        # La URL base de jsdom en las pruebas, sin puerto ni ruta.
+        ("web/src/app.test.tsx", 'const url = new URL("/cuentas", "http://localhost");\n'),
+        ("web/src/proxy.ts", "const API = `http://127.0.0.1:8000${ruta}`;\n"),
+    ],
+)
+def test_un_espacio_de_nombres_xml_o_esta_maquina_no_son_otro_origen(web, ruta, texto):
+    (web / ruta).parent.mkdir(parents=True, exist_ok=True)
+    (web / ruta).write_text(texto)
+    git(web, "add", ruta)
+
+    resultado = revisar(web)
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+
+
+def test_los_archivos_generados_y_el_lockfile_no_se_revisan_como_recursos(web):
+    (web / "web/src/api").mkdir(parents=True)
+    (web / "web/src/api/esquema.ts").write_text("// https://ejemplo.invalido/contrato\n")
+    (web / "web/package-lock.json").write_text('{"resolved": "https://registry.npmjs.org/x"}\n')
+    git(web, "add", ".")
+
+    assert revisar(web).returncode == 0
+
+
+def test_una_imagen_base_sin_su_digest_no_pasa(web):
+    (web / "web/Dockerfile").write_text("FROM node:24-alpine AS construccion\n")
+    git(web, "add", "web/Dockerfile")
+
+    resultado = revisar(web)
+
+    assert resultado.returncode == 1
+    assert "web/Dockerfile: una imagen base sin su digest: FROM node:24-alpine" in resultado.stdout
+
+
+def test_un_repositorio_sin_la_app_web_no_la_pide(repo):
+    assert revisar(repo).returncode == 0

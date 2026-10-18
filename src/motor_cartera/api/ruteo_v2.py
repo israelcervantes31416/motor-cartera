@@ -326,7 +326,7 @@ def paradas(
         total=total,
         pagina=parametros.pagina,
         por_pagina=parametros.por_pagina,
-        elementos=[_parada(p, zona) for p in filas],
+        elementos=[parada_respuesta(p, zona) for p in filas],
     )
 
 
@@ -365,7 +365,7 @@ def paradas_de_ruta(
         total=total,
         pagina=parametros.pagina,
         por_pagina=parametros.por_pagina,
-        elementos=[_parada(p, zona) for p in filas],
+        elementos=[parada_respuesta(p, zona) for p in filas],
     )
 
 
@@ -400,7 +400,7 @@ def ruteo_de_cuenta(
         por_pagina=parametros.por_pagina,
         elementos=[
             ParadaDeCuentaRespuesta(
-                **_parada(h.vista, ZoneInfo(h.zona_horaria)).model_dump(),
+                **parada_respuesta(h.vista, ZoneInfo(h.zona_horaria)).model_dump(),
                 ruteo_run_id=h.ejecucion.ruteo_run_id,
                 fecha_operacion=h.ejecucion.fecha_operacion,
                 zona_horaria=h.zona_horaria,
@@ -484,7 +484,7 @@ def _ruta(v: RutaVista, vista: EjecucionVista) -> RutaRespuesta:
     )
 
 
-def _parada(v: ParadaVista, zona: ZoneInfo) -> ParadaRespuesta:
+def parada_respuesta(v: ParadaVista, zona: ZoneInfo) -> ParadaRespuesta:
     p = v.parada
     return ParadaRespuesta(
         cuenta_id=v.cuenta_id,

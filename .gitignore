@@ -8,6 +8,16 @@ __pycache__/
 .coverage
 htmlcov/
 
+# La app web: sus dependencias, lo que construye y lo que dejan sus pruebas se rehacen con npm.
+web/node_modules/
+web/dist/
+web/coverage/
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/e2e/.contexto.json
+*.tsbuildinfo
+
 # Datos: NADA de datos reales entra a este repositorio, nunca.
 # El generador produce todo lo que el proyecto necesita.
 datos/*

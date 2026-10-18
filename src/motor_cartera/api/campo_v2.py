@@ -211,7 +211,7 @@ def asignaciones(
         total=total,
         pagina=parametros.pagina,
         por_pagina=parametros.por_pagina,
-        elementos=[_asignacion(v) for v in filas],
+        elementos=[asignacion_respuesta(v) for v in filas],
     )
 
 
@@ -338,7 +338,7 @@ def campo_de_cuenta(
         por_pagina=parametros.por_pagina,
         elementos=[
             AsignacionCampoDeCuentaRespuesta(
-                **_asignacion(h.vista).model_dump(),
+                **asignacion_respuesta(h.vista).model_dump(),
                 campo_run_id=h.ejecucion.campo_run_id,
                 fecha_operacion=h.ejecucion.fecha_operacion,
                 corte=CorteRespuesta(corte_id=h.corte_id, fecha_corte=h.fecha_corte),
@@ -361,7 +361,7 @@ def _vista(s: Session, campo_run_id: UUID) -> PlanVista:
         ) from exc
 
 
-def _asignacion(v: AsignacionVista) -> AsignacionCampoRespuesta:
+def asignacion_respuesta(v: AsignacionVista) -> AsignacionCampoRespuesta:
     a = v.asignacion
     return AsignacionCampoRespuesta(
         cuenta_id=v.cuenta_id,

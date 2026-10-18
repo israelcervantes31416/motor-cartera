@@ -86,6 +86,12 @@ Con --ruteo-oficial, tambien CAMPO sobre el corte oficial: su scoring a la front
 decision/v2 y un pool por gestor con paradas PROGRAMADA; cada cuenta en CAMPO es una parada
 PROGRAMADA de su propio gestor, con su orden.
 
+Con --web, recorre la superficie web (la app de v0.17 y su proxy de solo lectura) en esa URL,
+como la veria un navegador: el build y sus recursos locales, las cabeceras de seguridad, la clave
+que pone el proxy, los metodos y las rutas que no deja pasar, y el contexto que la prueba de humo
+dejo publicado, abierto entero por app/v1 (sugerencia, validacion, resumen, cuentas, Cuenta 360 y
+linaje), sin un dato personal. Sin el archivo ni --predictivo, solo hace eso.
+
 Solo usa la biblioteca estandar, para correr igual en el CI, dentro del contenedor o en una
 laptop:
 
@@ -102,6 +108,7 @@ laptop:
     python scripts/prueba_de_humo.py --predictivo datos/predictivo
     python scripts/prueba_de_humo.py --predictivo datos/predictivo --optimizacion
         --ruteo-oficial <ruteo_run_id>
+    python scripts/prueba_de_humo.py --web http://localhost:8080
 
 La base va unida a su opcion: en Mexico su longitud es negativa, y separada, argparse la toma por
 otra opcion.
@@ -122,6 +129,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -3090,6 +3098,175 @@ def el_campo_optimizado(predictivo: dict, ruteo_run_id: str) -> None:
     print(f"optimizacion_campo_run_id {run}")
 
 
+# --- la superficie web: la app y su proxy de solo lectura ----------------------------------------
+
+PERSONALES_WEB = re.compile(
+    r'"(cliente_unico|actor_ref|idempotency_key|observacion|telefono|curp|rfc|domicilio|latitud|'
+    r'longitud|lat|lon|lng|geometry|geometria|polyline|polilinea)"\s*:|CU\d{10}',
+    re.IGNORECASE,
+)
+EJECUCIONES_DEL_CONTEXTO = (
+    "decision_run_id",
+    "analytics_run_id",
+    "scoring_run_id",
+    "optimizacion_run_id",
+    "campo_run_id",
+    "ruteo_run_id",
+)
+
+
+def pedir_web(url: str, metodo: str = "GET", *, extra: dict | None = None):
+    """Una peticion a la app web, como la haria un navegador: sin la clave de la API."""
+    peticion = urllib.request.Request(url, headers=extra or {}, method=metodo)
+    try:
+        with urllib.request.urlopen(peticion, timeout=30) as respuesta:
+            return respuesta.status, dict(respuesta.headers), respuesta.read()
+    except urllib.error.HTTPError as error:
+        return error.code, dict(error.headers), error.read()
+
+
+def _codigo(cuerpo: bytes) -> str | None:
+    """El codigo de un error JSON, o None si el cuerpo no es uno."""
+    try:
+        return json.loads(cuerpo).get("codigo")
+    except (ValueError, AttributeError):
+        return None
+
+
+def _json_web(web: str, ruta: str) -> dict:
+    estado, _, cuerpo = pedir_web(web + "/api" + ruta)
+    esperar(estado == 200, f"GET /api{ruta.split('?')[0]} por el proxy: 200")
+    esperar(
+        not PERSONALES_WEB.search(cuerpo.decode()),
+        f"/api{ruta.split('?')[0]}: sin datos personales",
+    )
+    return json.loads(cuerpo)
+
+
+def la_web(web: str) -> None:
+    """La app y su proxy: el build sirve, sus recursos son locales, el proxy pone la clave, solo
+    deja leer las rutas de su lista blanca, y el contexto de la prueba de humo se abre entero, sin
+    un dato personal."""
+    web = web.rstrip("/")
+    print(f"La superficie web en {web}")
+
+    estado, encabezados, cuerpo = pedir_web(web + "/salud-web")
+    esperar(estado == 200, "GET /salud-web: 200")
+
+    estado, encabezados, cuerpo = pedir_web(web + "/")
+    html = cuerpo.decode()
+    esperar(
+        estado == 200 and "text/html" in (encabezado(encabezados, "content-type") or ""),
+        "GET /: 200 text/html",
+    )
+    esperar('<div id="raiz"></div>' in html, "index.html monta la app en #raiz")
+    esperar(not re.search(r"(src|href)=\"(https?:)?//", html), "index.html: ningun recurso externo")
+    esperar(encabezado(encabezados, "x-content-type-options") == "nosniff", "nosniff")
+    esperar(encabezado(encabezados, "x-frame-options") == "DENY", "X-Frame-Options DENY")
+    esperar(
+        encabezado(encabezados, "referrer-policy") == "no-referrer", "Referrer-Policy no-referrer"
+    )
+    esperar(
+        not re.search(r"\d", encabezado(encabezados, "server") or ""),
+        "el servidor no anuncia su version",
+    )
+    esperar("no-cache" in (encabezado(encabezados, "cache-control") or ""), "index.html: no-cache")
+
+    recursos = re.findall(r'(?:src|href)="(/assets/[^"]+)"', html)
+    esperar(any(r.endswith(".js") for r in recursos), f"index.html carga {len(recursos)} recursos")
+    for recurso in recursos:
+        estado, encabezados, cuerpo = pedir_web(web + recurso, extra={"Accept-Encoding": "gzip"})
+        tipo = encabezado(encabezados, "content-type") or ""
+        esperado = "javascript" if recurso.endswith(".js") else "css"
+        esperar(estado == 200 and esperado in tipo, f"GET {recurso}: 200 {tipo}")
+        esperar(
+            "immutable" in (encabezado(encabezados, "cache-control") or ""), f"{recurso}: immutable"
+        )
+        esperar(encabezado(encabezados, "content-encoding") == "gzip", f"{recurso}: gzip")
+
+    estado, _, cuerpo = pedir_web(web + "/cuentas/una-ruta-profunda?corte=x")
+    esperar(
+        estado == 200 and b'id="raiz"' in cuerpo, "una ruta profunda de la app sirve index.html"
+    )
+
+    estado, _, cuerpo = pedir_web(web + "/api/salud")
+    esperar(estado == 200, "GET /api/salud por el proxy: 200")
+    salud = json.loads(cuerpo)
+    esperar(salud.get("base_de_datos") == "ok", "la API detras del proxy tiene su base")
+    esperar(salud.get("version") == version_del_repositorio(), f"version {salud.get('version')}")
+
+    # El proxy pone la clave: el navegador nunca la tiene, y una que mande se reemplaza.
+    estado, _, _ = pedir_web(web + "/api/app/v1/contextos/opciones?por_pagina=1")
+    esperar(estado == 200, "el proxy pone la clave de la API: 200 sin clave")
+    estado, _, _ = pedir_web(
+        web + "/api/app/v1/contextos/opciones?por_pagina=1", extra={"X-API-Key": "otra"}
+    )
+    esperar(estado == 200, "una clave que mande el navegador no cuenta: el proxy pone la suya")
+
+    # Solo GET, y solo lo de la lista blanca.
+    for metodo in ("POST", "PUT", "PATCH", "DELETE"):
+        estado, _, cuerpo = pedir_web(web + "/api/app/v1/contextos/opciones", metodo)
+        esperar(
+            estado == 405 and _codigo(cuerpo) == "METODO_NO_PERMITIDO",
+            f"{metodo} /api/...: 405 METODO_NO_PERMITIDO",
+        )
+    estado, _, _ = pedir_web(web + "/api/app/v1/contextos/opciones?por_pagina=1", "HEAD")
+    esperar(estado == 405, "HEAD /api/...: 405, solo GET")
+    for ruta in (
+        "/api/cuentas",
+        "/api/gestiones",
+        "/api/docs",
+        "/api/openapi.json",
+        "/api/corridas",
+    ):
+        estado, _, cuerpo = pedir_web(web + ruta)
+        esperar(
+            estado == 404 and _codigo(cuerpo) == "RUTA_NO_EXPUESTA",
+            f"GET {ruta}: 404 RUTA_NO_EXPUESTA",
+        )
+
+    # El contexto de la prueba de humo, como lo abre el selector: un corte con una sugerencia que
+    # declara las seis ejecuciones, validada, con su resumen, sus cuentas y una Cuenta 360.
+    inicio = _json_web(web, "/app/v1/contextos/opciones?por_pagina=1")
+    completa = None
+    for cartera in inicio["carteras"]:
+        cortes = _json_web(web, f"/app/v1/contextos/opciones?cartera_id={cartera['cartera_id']}")
+        for corte in cortes["cortes"]:
+            opciones = _json_web(web, f"/app/v1/contextos/opciones?corte_id={corte['corte_id']}")
+            completa = next(
+                (
+                    s["contexto"]
+                    for s in opciones["sugerencias"]
+                    if all(s["contexto"].get(e) for e in EJECUCIONES_DEL_CONTEXTO)
+                ),
+                None,
+            )
+            if completa:
+                break
+        if completa:
+            break
+    esperar(completa is not None, "el selector propone un contexto con las seis ejecuciones")
+    consulta = urllib.parse.urlencode({k: v for k, v in completa.items() if v})
+    validado = _json_web(web, f"/app/v1/contextos/validar?{consulta}")
+    esperar(validado["compatible"] and not validado["problemas"], "el contexto propuesto encadena")
+    resumen = _json_web(web, f"/app/v1/resumen?{consulta}")
+    bloques = ("analytics", "decision", "predictivo", "optimizacion", "campo", "ruteo")
+    esperar(
+        all(resumen[b]["estado_fuente"] == "DISPONIBLE" for b in bloques),
+        "el resumen trae los seis bloques DISPONIBLE",
+    )
+    cuentas = _json_web(web, f"/app/v1/cuentas?{consulta}&por_pagina=50")
+    esperar(
+        cuentas["total"] == validado["corte"]["cuentas"] and len(cuentas["elementos"]) <= 50,
+        f"el explorador pagina {len(cuentas['elementos'])} de {cuentas['total']} cuentas",
+    )
+    cuenta = cuentas["elementos"][0]["cuenta_id"]
+    cuenta_360 = _json_web(web, f"/app/v1/cuentas/{cuenta}?{consulta}")
+    esperar(cuenta_360["cuenta_id"] == cuenta, "la Cuenta 360 de la primera cuenta")
+    linaje = _json_web(web, f"/app/v1/linaje?{consulta}")
+    esperar(len(linaje["nodos"]) >= 7, f"el linaje del contexto: {len(linaje['nodos'])} nodos")
+
+
 def main(
     archivo: Path | None,
     oficial: Path | None = None,
@@ -3104,15 +3281,19 @@ def main(
     predictivo: Path | None = None,
     optimizacion: bool = False,
     ruteo_oficial: str | None = None,
+    web: str | None = None,
 ) -> None:
-    print(f"Prueba de humo contra {BASE} con {archivo or predictivo}")
+    print(f"Prueba de humo contra {BASE} con {archivo or predictivo or web}")
 
     estado, salud = esperar_a_la_api()
     esperar(estado == 200 and salud.get("base_de_datos") == "ok", "GET /salud 200, base ok")
     if archivo is None:
-        publicado = lo_predictivo(predictivo)
-        if optimizacion:
-            la_optimizacion(publicado, ruteo_oficial)
+        if predictivo is not None:
+            publicado = lo_predictivo(predictivo)
+            if optimizacion:
+                la_optimizacion(publicado, ruteo_oficial)
+        if web is not None:
+            la_web(web)
         print("Todo en orden.")
         return
 
@@ -3565,6 +3746,8 @@ def main(
         publicado = lo_predictivo(predictivo)
         if optimizacion:
             la_optimizacion(publicado, ruteo_oficial)
+    if web is not None:
+        la_web(web)
     print("Todo en orden.")
 
 
@@ -3625,10 +3808,16 @@ if __name__ == "__main__":
         metavar="RUTEO_RUN_ID",
         help="Con --optimizacion: tambien CAMPO, sobre el corte oficial y ese ruteo/v2.",
     )
+    argumentos.add_argument(
+        "--web",
+        metavar="URL",
+        help="La URL de la superficie web (la app y su proxy): la recorre como un navegador, con "
+        "el contexto que la prueba de humo ya publico.",
+    )
     leidos = argumentos.parse_args()
     if leidos.archivo is None:
-        if leidos.predictivo is None:
-            argumentos.error("Falta el archivo, o --predictivo.")
+        if leidos.predictivo is None and leidos.web is None:
+            argumentos.error("Falta el archivo, --predictivo o --web.")
         if any(
             (
                 leidos.oficial,
@@ -3642,7 +3831,7 @@ if __name__ == "__main__":
                 leidos.analytics,
             )
         ):
-            argumentos.error("Sin el archivo, solo va --predictivo.")
+            argumentos.error("Sin el archivo, solo van --predictivo y --web.")
     if (leidos.oficial is None) != (leidos.corte is None):
         argumentos.error("--oficial y --corte van juntos.")
     if leidos.geografia and leidos.oficial is None:
@@ -3673,4 +3862,5 @@ if __name__ == "__main__":
         predictivo=leidos.predictivo,
         optimizacion=leidos.optimizacion,
         ruteo_oficial=leidos.ruteo_oficial,
+        web=leidos.web,
     )

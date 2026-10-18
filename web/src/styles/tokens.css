@@ -1,0 +1,77 @@
+/*
+ * Los tokens del sistema visual: espaciado, radios, tamanos de letra, superficies, bordes, texto y
+ * estados. Ningun componente escribe un color o una medida suelta: usa un token. Los colores de
+ * texto cumplen 4.5:1 sobre sus superficies; los de estado van siempre con texto y un icono.
+ * La paleta de las graficas (validada) esta en src/components/Graficas.tsx.
+ */
+:root {
+  color-scheme: light;
+
+  /* Espaciado: una escala de 4 px. */
+  --espacio-1: 4px;
+  --espacio-2: 8px;
+  --espacio-3: 12px;
+  --espacio-4: 16px;
+  --espacio-5: 24px;
+  --espacio-6: 32px;
+  --espacio-7: 48px;
+
+  --radio-1: 4px;
+  --radio-2: 6px;
+  --radio-3: 8px;
+  --radio-pildora: 999px;
+
+  /* Tipografia: la del sistema, sin descargar nada. */
+  --fuente: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fuente-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --letra-1: 0.75rem;
+  --letra-2: 0.8125rem;
+  --letra-3: 0.875rem;
+  --letra-4: 1rem;
+  --letra-5: 1.125rem;
+  --letra-6: 1.375rem;
+  --letra-7: 1.75rem;
+  --interlineado: 1.45;
+
+  /* Superficies. */
+  --superficie-pagina: #f6f6f3;
+  --superficie: #ffffff;
+  --superficie-grafica: #fcfcfb;
+  --superficie-sutil: #f1f1ed;
+  --superficie-encabezado: #f3f3f0;
+
+  /* Bordes. */
+  --borde: #d9d8d1;
+  --borde-fuerte: #b9b8b0;
+  --rejilla: #e1e0d9;
+
+  /* Texto: primario, secundario y tenue, sobre --superficie y --superficie-pagina. */
+  --texto: #0b0b0b;
+  --texto-secundario: #52514e;
+  --texto-tenue: #66655f;
+  --enlace: #1c5cab;
+  --enlace-visitado: #1c4f8f;
+  --acento: #1c5cab;
+  --acento-texto: #ffffff;
+  --foco: #1c5cab;
+
+  /* Estados: fondo, borde y texto, con contraste AA del texto sobre su fondo. */
+  --ok-fondo: #e6f4e6;
+  --ok-borde: #9ccc9c;
+  --ok-texto: #0f5a0f;
+  --info-fondo: #e8f0fb;
+  --info-borde: #9ec5f4;
+  --info-texto: #184f95;
+  --aviso-fondo: #fdf3dc;
+  --aviso-borde: #e9c46a;
+  --aviso-texto: #6b4600;
+  --error-fondo: #fbe9e8;
+  --error-borde: #eba4a3;
+  --error-texto: #9b1c1c;
+  --neutro-fondo: #f1f1ed;
+  --neutro-borde: #c9c8c0;
+  --neutro-texto: #42413e;
+
+  --sombra: 0 1px 2px rgba(11, 11, 11, 0.06);
+  --ancho-navegacion: 220px;
+}

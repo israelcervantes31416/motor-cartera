@@ -488,6 +488,15 @@ def historial(
     return total, [_en_historia(fila) for fila in filas]
 
 
+def de_plan(s: Session, cuenta: CuentaCanonica, ejecucion_id: int) -> AsignacionEnHistoria | None:
+    """La asignacion de la cuenta en ese plan EXITOSA, si fue su candidata: la que declara un
+    contexto de la app (app/v1), en lugar de la ultima. Por (plan, cuenta)."""
+    fila = s.exec(
+        _de_la_cuenta(cuenta).where(AsignacionCampoCuenta.ejecucion_campo_v2_id == ejecucion_id)
+    ).one_or_none()
+    return None if fila is None else _en_historia(fila)
+
+
 def ultima(
     s: Session, cuenta: CuentaCanonica, al: date | None = None
 ) -> AsignacionEnHistoria | None:

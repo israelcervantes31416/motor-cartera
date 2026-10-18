@@ -16,6 +16,7 @@ from motor_cartera import __version__
 from motor_cartera.api import (
     acuerdos,
     analytics,
+    app_v1,
     atribuciones,
     bases,
     campo,
@@ -322,6 +323,24 @@ agotado la ejecucion termina `OPTIMO_NO_DEMOSTRADO`, y una infactible trae su di
 Es el optimo del modelo declarado, no una estrategia causalmente optima: un canal asignado no es la
 evidencia de que ese canal cause la recuperacion. No ejecuta nada.
 
+**La app** (`app/v1`) es la fachada de lectura de la superficie web: solo `GET`, bajo un **contexto
+operativo** explicito (el `corte_id` y cada ejecucion que una pantalla lee, por su identificador
+publico). Nada se elige como "lo ultimo", un contexto cuyas ejecuciones no encadenan no se combina
+(`409 CONTEXTO_INCOMPATIBLE`), y ninguna respuesta lleva un CLIENTE_UNICO, un actor_ref ni una
+coordenada. Existe solo donde ahorra viajes o uniones en el navegador; lo demas lo lee de sus rutas.
+
+56. `GET /app/v1/contextos/opciones` y `/app/v1/contextos/validar`: las carteras, sus cortes, las
+    ejecuciones de un corte y los contextos compatibles que se pueden proponer; y si un contexto
+    encadena, con cada problema.
+57. `GET /app/v1/resumen`: cada bloque del contexto, tal como lo publico su ejecucion, y
+    `/app/v1/predictivo/scorings/{scoring_run_id}/distribucion`: la distribucion de las predicciones
+    publicadas, contada en la base.
+58. `GET /app/v1/cuentas`: las cuentas del corte, filtradas, ordenadas y paginadas en la base; y
+    `/app/v1/cuentas/{cuenta_id}`, `/decision`, `/historia`, `/linea-de-tiempo`, `/pagos` y
+    `/gestiones`: la Cuenta 360 en el contexto, sin datos personales.
+59. `GET /app/v1/ruteo/rutas/{ruta_id}/paradas` y `GET /app/v1/linaje`: las paradas de una ruta en
+    su orden, y de donde sale cada resultado del contexto.
+
 **Etapas a mano.** `POST /corridas/{run_id}/decisiones`,
 `POST /decisiones/{decision_run_id}/territoriales` y
 `POST /territoriales/{territorial_run_id}/ruteos` piden una etapa sobre un recurso que no es de un
@@ -481,6 +500,14 @@ ETIQUETAS = [
         "publica un optimo demostrado. Es el optimo del modelo declarado, en sombra: no es causal, "
         "no ejecuta nada y no cambia decision/v2, campo/v2 ni ruteo/v2.",
     },
+    {
+        "name": "app",
+        "description": "app/v1: la fachada de solo lectura de la superficie web. Compone, bajo un "
+        "contexto operativo explicito (el corte y cada ejecucion por su identificador publico), lo "
+        "que los dominios ya publicaron: valida que el contexto encadene, resume cada bloque, "
+        "pagina las cuentas del corte, arma la Cuenta 360 sin datos personales y dibuja el linaje. "
+        "No ejecuta, no recalcula y no elige nada como 'lo ultimo'.",
+    },
     {"name": "salud", "description": "Si la API vive y la base contesta."},
 ]
 
@@ -529,5 +556,6 @@ def crear_app(config: Config | None = None) -> FastAPI:
     app.include_router(analytics.router, dependencies=protegidas)
     app.include_router(predictivo.router, dependencies=protegidas)
     app.include_router(optimizacion.router, dependencies=protegidas)
+    app.include_router(app_v1.router, dependencies=protegidas)
     app.include_router(salud.router)
     return app

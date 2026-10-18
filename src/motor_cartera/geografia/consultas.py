@@ -269,6 +269,17 @@ def historial(
     return total, [GeografiaEnHistoria(*fila) for fila in filas]
 
 
+def de_ejecucion(
+    s: Session, cuenta: CuentaCanonica, ejecucion_geografia_id: int
+) -> GeografiaEnHistoria | None:
+    """La geografia de la cuenta en esa ejecucion EXITOSA, si la tiene: la que declara un contexto
+    de la app (app/v1), en lugar de la vigente."""
+    fila = s.exec(
+        _de_la_cuenta(cuenta).where(EjecucionGeografia.id == ejecucion_geografia_id)
+    ).first()
+    return None if fila is None else GeografiaEnHistoria(*fila)
+
+
 def vigente(
     s: Session, cuenta: CuentaCanonica, al: date | None = None
 ) -> GeografiaEnHistoria | None:

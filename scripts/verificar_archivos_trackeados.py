@@ -17,6 +17,11 @@ sus archivos:
     FlatGeobuf o un extracto de OpenStreetMap (.osm.pbf). Un csv, un GeoJSON, un OSM XML o un
     volcado en SQL plano no tienen firma, asi que a esos solo los detiene su nombre.
 
+Y, si el indice trae la app web (web/), que su instalacion sea reproducible (web/package-lock.json
+y web/.node-version trackeados), que lo que carga el navegador (web/index.html, web/public y
+web/src, sin los archivos generados) no pida nada fuera del mismo origen, y que cada imagen base de
+web/Dockerfile este fijada por su digest.
+
 Solo usa git y la biblioteca estandar, para correr igual en el CI que en una laptop, donde
 antes de un commit revisa tambien lo que ya esta en stage:
 
@@ -28,8 +33,10 @@ revisar (sin git, fuera de un repositorio): lo que no se pudo revisar no se da p
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 # Lo que el .gitignore prohibe por nombre, reconocido por sus primeros bytes.
 FIRMAS = {
@@ -68,6 +75,27 @@ LARGO_FIRMA = max(
     *(desde + len(firma) for desde, firma in FIRMAS_ADENTRO),
 )
 REGULARES = (b"100644", b"100755")  # los enlaces y los submodulos no tienen contenido propio
+
+
+WEB_OBLIGATORIOS = {
+    b"web/package-lock.json": "el lockfile de npm: sin el, `npm ci` no reproduce la instalacion",
+    b"web/.node-version": "la version de Node fijada que usan el CI y el Dockerfile",
+}
+WEB_DEL_NAVEGADOR = (b"web/index.html", b"web/public/", b"web/src/")
+"""Lo que el navegador carga: nada de aqui puede pedir algo fuera del mismo origen."""
+WEB_GENERADOS = {
+    b"web/src/api/esquema.ts",
+    b"web/src/api/openapi.json",
+    b"web/src/test/capturas.ts",
+}
+"""El contrato y las capturas de las pruebas: los escribe un script, y no los carga el navegador."""
+WEB_TEXTOS = (b".html", b".ts", b".tsx", b".css", b".js", b".mjs", b".svg", b".json")
+URL = re.compile(rb"https?://[^\s\"'`)<>]+", re.IGNORECASE)
+LOCALES = {"localhost", "127.0.0.1"}
+"""Esta maquina, con su puerto o sin el: el servidor de desarrollo y la URL base de jsdom."""
+ESPACIO_DE_NOMBRES_XML = re.compile(rb"""\bxmlns(?::[\w.-]+)?\s*=\s*(["'])[^"']*\1""")
+"""Un `xmlns` (el `http://www.w3.org/2000/svg` de un SVG) nombra un vocabulario: no se pide."""
+WEB_DOCKERFILE = b"web/Dockerfile"
 
 
 class NoSePudoRevisar(Exception):
@@ -142,6 +170,73 @@ def primeros_bytes(raiz: str, objetos: list[bytes]) -> list[bytes]:
     return cabezas
 
 
+def contenidos(raiz: str, objetos: list[bytes]) -> list[bytes]:
+    """El contenido entero de cada objeto, leido del indice: solo los textos chicos de la web."""
+    resultado = []
+    with subprocess.Popen(
+        ["git", "cat-file", "--batch"], cwd=raiz, stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    ) as proceso:
+        for objeto in objetos:
+            proceso.stdin.write(objeto + b"\n")
+            proceso.stdin.flush()
+            encabezado = proceso.stdout.readline().split()
+            if len(encabezado) != 3:
+                raise NoSePudoRevisar(f"git no pudo leer el objeto {objeto.decode()}")
+            contenido = proceso.stdout.read(int(encabezado[2]))
+            proceso.stdout.read(1)  # el salto de linea que lo cierra
+            resultado.append(contenido)
+        proceso.stdin.close()
+    return resultado
+
+
+def problemas_de_la_web(raiz: str, regulares: list[tuple[bytes, bytes]]) -> dict[bytes, list[str]]:
+    """Lo que la app web necesita y lo que no puede tener, si el indice la trae."""
+    rutas = {ruta: objeto for objeto, ruta in regulares}
+    if not any(ruta.startswith(b"web/") for ruta in rutas):
+        return {}
+    problemas = {
+        ruta: [f"falta en el indice: {que_es}"]
+        for ruta, que_es in WEB_OBLIGATORIOS.items()
+        if ruta not in rutas
+    }
+    revisadas = sorted(
+        ruta
+        for ruta in rutas
+        if ruta.startswith(WEB_DEL_NAVEGADOR)
+        and ruta.endswith(WEB_TEXTOS)
+        and ruta not in WEB_GENERADOS
+    )
+    if WEB_DOCKERFILE in rutas:
+        revisadas.append(WEB_DOCKERFILE)
+    for ruta, texto in zip(revisadas, contenidos(raiz, [rutas[r] for r in revisadas]), strict=True):
+        if ruta == WEB_DOCKERFILE:
+            for linea in texto.splitlines():
+                if linea.strip().upper().startswith(b"FROM ") and b"@sha256:" not in linea:
+                    problemas.setdefault(ruta, []).append(
+                        f"una imagen base sin su digest: {linea.strip().decode(errors='replace')}"
+                    )
+            continue
+        for externa in externas(texto):
+            problemas.setdefault(ruta, []).append(f"pide algo fuera del mismo origen: {externa}")
+    return problemas
+
+
+def externas(texto: bytes) -> list[str]:
+    """Las URL absolutas de un texto cuyo anfitrion no es esta maquina, sin contar un `xmlns`.
+    Cuenta el anfitrion, no el principio: `localhost.example.com` y `localhost@example.com` son de
+    fuera."""
+    encontradas = []
+    for url in URL.findall(ESPACIO_DE_NOMBRES_XML.sub(b"", texto)):
+        url = url.decode(errors="replace")
+        try:
+            anfitrion = urlsplit(url).hostname
+        except ValueError:
+            anfitrion = None
+        if anfitrion not in LOCALES:
+            encontradas.append(url)
+    return encontradas
+
+
 def main() -> int:
     try:
         raiz = git("rev-parse", "--show-toplevel").decode().strip()
@@ -150,6 +245,7 @@ def main() -> int:
         entradas = indice(raiz)
         regulares = [(objeto, ruta) for modo, objeto, ruta in entradas if modo in REGULARES]
         cabezas = primeros_bytes(raiz, [objeto for objeto, _ in regulares])
+        de_la_web = problemas_de_la_web(raiz, regulares)
     except (NoSePudoRevisar, OSError) as error:
         print(f"No se pudieron revisar los archivos trackeados: {error}", file=sys.stderr)
         return 2
@@ -166,7 +262,7 @@ def main() -> int:
                 problemas.setdefault(ruta, []).append(f"por dentro es {que_es}")
 
     total = len({ruta for _, _, ruta in entradas})
-    if not problemas:
+    if not problemas and not de_la_web:
         print(
             f"{total} archivos trackeados: ninguno lo excluye el .gitignore ni es por dentro "
             "una hoja de calculo, un comprimido, un formato de datos, un volcado, cartografia o "
@@ -174,13 +270,18 @@ def main() -> int:
         )
         return 0
 
-    print(f"De {total} archivos trackeados, estos no deben estar en el repositorio:")
-    for ruta in sorted(problemas):
-        print(f"  {ruta.decode(errors='replace')}: {'; '.join(problemas[ruta])}")
-    print(
-        "Sacalos del indice con `git rm --cached <archivo>`. Si ya se subieron, tambien siguen "
-        "en la historia."
-    )
+    if problemas:
+        print(f"De {total} archivos trackeados, estos no deben estar en el repositorio:")
+        for ruta in sorted(problemas):
+            print(f"  {ruta.decode(errors='replace')}: {'; '.join(problemas[ruta])}")
+        print(
+            "Sacalos del indice con `git rm --cached <archivo>`. Si ya se subieron, tambien siguen "
+            "en la historia."
+        )
+    if de_la_web:
+        print("La app web no cumple:")
+        for ruta in sorted(de_la_web):
+            print(f"  {ruta.decode(errors='replace')}: {'; '.join(de_la_web[ruta])}")
     return 1
 
 

@@ -1,0 +1,10 @@
+# Lo que no viaja al contexto de construccion de la imagen web: se reconstruye adentro o no es de
+# la imagen.
+node_modules
+dist
+coverage
+playwright-report
+test-results
+blob-report
+e2e/.contexto.json
+.vite

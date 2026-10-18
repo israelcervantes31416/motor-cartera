@@ -1,0 +1,11 @@
+dist
+coverage
+node_modules
+playwright-report
+test-results
+blob-report
+package-lock.json
+src/api/esquema.ts
+src/api/openapi.json
+src/test/capturas.ts
+e2e/.contexto.json

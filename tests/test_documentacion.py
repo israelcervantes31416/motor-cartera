@@ -532,24 +532,26 @@ def test_las_decisiones_estan_todas_y_en_orden():
     numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
     indice = [int(n) for n in re.findall(r"^(\d+)\. \[", texto, re.MULTILINE)]
 
-    assert numeros == list(range(1, 248))
+    assert numeros == list(range(1, 275))
     assert indice == numeros
-    introduccion = " ".join(texto[:4500].split())
+    introduccion = " ".join(texto[:5000].split())
     assert "las 175 a 196, de Collection Analytics" in introduccion
     assert "las 197 a 222, de Predictive Intelligence" in introduccion
     assert "las 223 a 247, de la Optimización Matemática" in introduccion
+    assert "las 248 a 274, de la App + Dashboards" in introduccion
 
 
-def test_el_readme_marca_v0_16_publicada_y_v0_17_la_que_sigue():
+def test_el_readme_marca_v0_17_publicada_y_v0_18_la_que_sigue():
     texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
 
-    assert "✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift" in texto
     assert (
         "✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida"
         in texto
     )
-    assert "➡️ v0.17 — App + Dashboards" in texto
-    assert "➡️ v0.16" not in texto
+    assert "✅ v0.17.0 — App + Dashboards: Superficie Operacional y Cuenta 360" in texto
+    assert "➡️ v0.18 — Cloud, Observabilidad y Hardening" in texto
+    assert "➡️ v0.17" not in texto
+    assert "Superficie local/demostrativa sin autenticación; no desplegar con datos reales" in texto
 
 
 # --- predictive/model-v1 --------------------------------------------------------------------------
@@ -811,3 +813,72 @@ def test_la_documentacion_de_optimizacion_no_promete_causalidad():
     fuente = Path(esquemas_optimizacion.__file__).read_text(encoding="utf-8").lower()
     for campo in ("uplift", "incremental_recovery", "expected_channel_effect"):
         assert campo not in fuente, campo
+
+
+# --- la app (v0.17) -------------------------------------------------------------------------------
+
+DOCUMENTOS_DE_LA_APP = (
+    "app.md",
+    "contexto_operativo.md",
+    "dashboards.md",
+    "frontend.md",
+    "privacidad_app.md",
+)
+WEB = DOCS.parent / "web"
+
+
+def _junto(archivo: Path) -> str:
+    return " ".join(archivo.read_text(encoding="utf-8").split())
+
+
+def test_cada_ruta_de_la_app_esta_documentada():
+    import json
+
+    contrato = json.loads((WEB / "src" / "api" / "openapi.json").read_text(encoding="utf-8"))
+    texto = (DOCS / "app.md").read_text(encoding="utf-8")
+    rutas = [ruta for ruta in contrato["paths"] if ruta.startswith("/app/v1/")]
+    assert len(rutas) >= 13
+    for ruta in rutas:
+        assert f"`GET {ruta}`" in texto, ruta
+
+
+def test_los_avisos_de_la_app_estan_documentados_tal_cual():
+    """Los avisos que la app muestra a la vista (web/src/components/Avisos.tsx) dicen lo mismo en
+    la documentacion: la pantalla no promete otra cosa que lo documentado."""
+    fuente = " ".join(
+        (WEB / "src" / "components" / "Avisos.tsx").read_text(encoding="utf-8").split()
+    )
+    avisos = dict(re.findall(r'export const (AVISO_\w+) = "([^"]+)";', fuente))
+    nombres = {"AVISO_PREDICCION", "AVISO_OPTIMO", "AVISO_ATRIBUCION", "AVISO_DRIFT", "AVISO_DEMO"}
+    assert nombres <= set(avisos)
+    documentos = " ".join(_junto(DOCS / archivo) for archivo in DOCUMENTOS_DE_LA_APP)
+    for nombre in ("AVISO_PREDICCION", "AVISO_OPTIMO", "AVISO_ATRIBUCION", "AVISO_DRIFT"):
+        assert avisos[nombre] in documentos, nombre
+    assert avisos["AVISO_DEMO"].rstrip(".") in _junto(DOCS / "app.md")
+    assert avisos["AVISO_DEMO"].rstrip(".") in _junto(DOCS / "privacidad_app.md")
+
+
+def test_la_documentacion_de_la_app_no_promete_causalidad():
+    """Ninguna promesa causal, salvo para negarla: que una accion causara algo, que un canal
+    incrementara la recuperacion, un ROI esperado o un uplift."""
+    causales = re.compile(
+        r"causar[aá]|incrementar[aá] la recuperaci[oó]n|\broi esperado|\buplift\b", re.IGNORECASE
+    )
+    for archivo in DOCUMENTOS_DE_LA_APP:
+        texto = _junto(DOCS / archivo)
+        for hallazgo in causales.finditer(texto):
+            antes = texto[max(0, hallazgo.start() - 80) : hallazgo.start()]
+            assert re.search(r"\b(no|ni|sin|nunca)\b[^.]*$", antes, re.IGNORECASE), (
+                archivo,
+                texto[max(0, hallazgo.start() - 80) : hallazgo.end()],
+            )
+    assert "no implica causalidad" in _junto(DOCS / "dashboards.md")
+
+
+def test_la_lista_blanca_documentada_es_la_del_proxy():
+    """Lo que privacidad_app.md dice que el proxy deja pasar es lo que deja pasar."""
+    lista = (WEB / "nginx" / "rutas-api.conf").read_text(encoding="utf-8")
+    texto = _junto(DOCS / "privacidad_app.md")
+    for prefijo in ("app/v1", "analytics", "predictivo", "optimizacion", "campo-v2", "ruteo-v2"):
+        assert f"/api/{prefijo}" in lista, prefijo
+    assert "solo GET" in texto and "RUTA_NO_EXPUESTA" in texto and "METODO_NO_PERMITIDO" in texto
