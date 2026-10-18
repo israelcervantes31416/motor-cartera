@@ -13,6 +13,7 @@ una geometria ni un actor_ref.
 from __future__ import annotations
 
 import functools
+import inspect
 import operator
 import types
 from copy import copy
@@ -103,9 +104,11 @@ def sin_datos_personales(modelo: type[BaseModel]) -> type[BaseModel]:
         info = copy(campo)
         info.annotation = anotacion
         campos[nombre] = (anotacion, info)
+    # cleandoc y no strip: Python 3.12 conserva la sangria de un docstring (3.13 ya la quita al
+    # compilar), y con ella el contrato de la web dependeria de la version que lo exporta.
     return create_model(
         f"{modelo.__name__}App",
-        __doc__=(modelo.__doc__ or "").strip() + "\n\nSin datos personales (app/v1).",
+        __doc__=inspect.cleandoc(modelo.__doc__ or "") + "\n\nSin datos personales (app/v1).",
         __module__=__name__,
         **campos,
     )

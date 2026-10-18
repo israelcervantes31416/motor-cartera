@@ -12,8 +12,10 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from motor_cartera.api import crear_app
+from motor_cartera.api.esquemas_app_v1 import sin_datos_personales
 from motor_cartera.config import Config
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -159,6 +161,23 @@ def test_por_el_proxy_solo_hay_lecturas(api):
 def test_el_contrato_de_la_web_corresponde_a_la_api():
     guardado = (WEB / "src" / "api" / "openapi.json").read_bytes().decode("utf-8")
     assert exportador.generar() == guardado
+
+
+def test_el_contrato_no_depende_de_la_sangria_que_python_deja_en_un_docstring():
+    """Python 3.12 conserva la sangria de un docstring y 3.13 la quita al compilar: el modelo sin
+    datos personales que se deriva de uno se describe igual con las dos."""
+
+    class ConCliente(BaseModel):
+        cuenta_id: str
+        cliente_unico: str
+
+    ConCliente.__doc__ = "Una cuenta.\n\n    Con su cliente.\n    "  # como la deja Python 3.12
+
+    derivado = sin_datos_personales(ConCliente)
+
+    assert derivado.model_json_schema()["description"] == (
+        "Una cuenta.\n\nCon su cliente.\n\nSin datos personales (app/v1)."
+    )
 
 
 def test_nginx_solo_deja_leer_pone_la_clave_y_lee_la_lista_blanca():
