@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 # Lo que el .gitignore prohibe por nombre, reconocido por sus primeros bytes.
 FIRMAS = {
@@ -89,7 +90,11 @@ WEB_GENERADOS = {
 }
 """El contrato y las capturas de las pruebas: los escribe un script, y no los carga el navegador."""
 WEB_TEXTOS = (b".html", b".ts", b".tsx", b".css", b".js", b".mjs", b".svg", b".json")
-EXTERNO = re.compile(rb"https?://(?!localhost[:/]|127\.0\.0\.1[:/])[^\s\"'`)<>]+", re.IGNORECASE)
+URL = re.compile(rb"https?://[^\s\"'`)<>]+", re.IGNORECASE)
+LOCALES = {"localhost", "127.0.0.1"}
+"""Esta maquina, con su puerto o sin el: el servidor de desarrollo y la URL base de jsdom."""
+ESPACIO_DE_NOMBRES_XML = re.compile(rb"""\bxmlns(?::[\w.-]+)?\s*=\s*(["'])[^"']*\1""")
+"""Un `xmlns` (el `http://www.w3.org/2000/svg` de un SVG) nombra un vocabulario: no se pide."""
 WEB_DOCKERFILE = b"web/Dockerfile"
 
 
@@ -211,11 +216,25 @@ def problemas_de_la_web(raiz: str, regulares: list[tuple[bytes, bytes]]) -> dict
                         f"una imagen base sin su digest: {linea.strip().decode(errors='replace')}"
                     )
             continue
-        for externo in EXTERNO.findall(texto):
-            problemas.setdefault(ruta, []).append(
-                f"pide algo fuera del mismo origen: {externo.decode(errors='replace')}"
-            )
+        for externa in externas(texto):
+            problemas.setdefault(ruta, []).append(f"pide algo fuera del mismo origen: {externa}")
     return problemas
+
+
+def externas(texto: bytes) -> list[str]:
+    """Las URL absolutas de un texto cuyo anfitrion no es esta maquina, sin contar un `xmlns`.
+    Cuenta el anfitrion, no el principio: `localhost.example.com` y `localhost@example.com` son de
+    fuera."""
+    encontradas = []
+    for url in URL.findall(ESPACIO_DE_NOMBRES_XML.sub(b"", texto)):
+        url = url.decode(errors="replace")
+        try:
+            anfitrion = urlsplit(url).hostname
+        except ValueError:
+            anfitrion = None
+        if anfitrion not in LOCALES:
+            encontradas.append(url)
+    return encontradas
 
 
 def main() -> int:
