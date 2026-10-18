@@ -9,6 +9,7 @@ No necesitan una base: revisan el OpenAPI que la API declara y los archivos de w
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -191,6 +192,18 @@ def test_nginx_solo_deja_leer_pone_la_clave_y_lee_la_lista_blanca():
     assert 'proxy_set_header Cookie "";' in plantilla
     assert "Access-Control-Allow-Origin" not in plantilla
     assert "nginx/rutas-api.conf /etc/nginx/rutas-api.conf" in dockerfile
+
+
+def test_dentro_de_un_if_de_nginx_solo_van_directivas_que_nginx_admite_ahi():
+    """nginx no arranca si un `if` lleva una directiva que no admite ahi (default_type, por
+    ejemplo), y eso solo se veria al levantar el compose."""
+    plantilla = (WEB / "nginx" / "default.conf.template").read_text(encoding="utf-8")
+    bloques = re.findall(r"^\s*if \([^\n]*\) \{\n(.*?)^\s*\}$", plantilla, re.MULTILINE | re.DOTALL)
+
+    assert len(bloques) == 2
+    for bloque in bloques:
+        directivas = set(re.findall(r"^\s*([a-z_]+)\s", bloque, re.MULTILINE))
+        assert directivas <= {"add_header", "return", "rewrite", "set", "break"}, directivas
 
 
 def test_el_proxy_de_vite_lee_la_misma_lista_y_solo_deja_leer():

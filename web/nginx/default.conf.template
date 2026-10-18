@@ -27,8 +27,10 @@ server {
     add_header Referrer-Policy "no-referrer" always;
     add_header X-Frame-Options "DENY" always;
 
+    # JavaScript con sus dos tipos (text/javascript, el de RFC 9239, y application/javascript):
+    # se comprime con el que le asigne el mime.types de la imagen.
     gzip on;
-    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
 
     location = /salud-web {
@@ -38,15 +40,16 @@ server {
     }
 
     location /api/ {
+        # Lo que el proxy responde por si mismo (el 405 y el 404) es JSON. default_type va aqui:
+        # nginx no lo admite dentro de un if, y una respuesta de la API trae su propio tipo.
+        default_type application/json;
         if ($request_method != GET) {
             add_header Allow "GET" always;
             add_header X-Content-Type-Options "nosniff" always;
-            default_type application/json;
             return 405 '{"codigo":"METODO_NO_PERMITIDO","mensaje":"La superficie web es de solo lectura: solo GET.","detalles":[]}';
         }
         if ($api_permitida = 0) {
             add_header X-Content-Type-Options "nosniff" always;
-            default_type application/json;
             return 404 '{"codigo":"RUTA_NO_EXPUESTA","mensaje":"La superficie web no expone esa ruta de la API.","detalles":[]}';
         }
         proxy_pass http://api_motor_cartera/;
