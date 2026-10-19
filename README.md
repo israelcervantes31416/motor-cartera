@@ -156,10 +156,21 @@ reciente"), un resumen por motor, el explorador de las cuentas del corte, pagina
 la Cuenta 360 (su historia, sus pagos y su atribución, sus gestiones, su decisión, su geografía, su
 campo, su ruteo, su predicción y su optimización) y las pantallas de analytics, predictivo,
 optimización, campo, ruteo y auditoría. No recalcula ni ejecuta nada, no muestra un dato personal ni
-una coordenada, y cada predicción y cada plan dicen a la vista lo que no son. **Superficie
-local/demostrativa sin autenticación; no desplegar con datos reales** ([docs/app.md](docs/app.md),
-[docs/dashboards.md](docs/dashboards.md), [docs/contexto_operativo.md](docs/contexto_operativo.md),
-[docs/frontend.md](docs/frontend.md) y [docs/privacidad_app.md](docs/privacidad_app.md)).
+una coordenada, y cada predicción y cada plan dicen a la vista lo que no son
+([docs/app.md](docs/app.md), [docs/dashboards.md](docs/dashboards.md),
+[docs/contexto_operativo.md](docs/contexto_operativo.md), [docs/frontend.md](docs/frontend.md) y
+[docs/privacidad_app.md](docs/privacidad_app.md)). En el compose de desarrollo no tiene usuarios, y
+lo dice a la vista: «Desarrollo local sin usuarios (clave de servicio del proxy); no desplegar así ni
+con datos reales».
+
+Y **desde v0.18 se despliega**: el compose de producción tiene TLS, usuarios que inician sesión con
+OpenID Connect (PKCE, por un BFF: ningún token en el navegador), permisos por ruta en una matriz que
+el arranque verifica, secretos montados, contenedores endurecidos, logs, métricas, trazas y
+auditoría sin datos personales, alertas con sus runbooks, respaldos de la base y del almacén con su
+restauración ensayada, y una arquitectura de referencia en Google Cloud validada y nunca aplicada
+([docs/production.md](docs/production.md), [docs/security.md](docs/security.md),
+[docs/observability.md](docs/observability.md), [docs/backups.md](docs/backups.md) y
+[docs/cloud-gcp.md](docs/cloud-gcp.md)).
 
 ## Datos
 
@@ -192,7 +203,7 @@ python scripts/verificar_archivos_trackeados.py
 
 ## Estado
 
-Hay diecisiete versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
+Hay dieciocho versiones terminadas, y cada una es una rebanada vertical que funciona de punta a
 punta:
 
 - **v0.1.0 ✅ Ingesta + certificación** (la fase 1): una cartera se publica solo si pasa el
@@ -292,6 +303,18 @@ punta:
   respetada, los avisos de no causalidad a la vista y sin mapas. Tipos generados del OpenAPI, Vitest
   con respuestas capturadas de la API, Playwright con axe-core contra el compose, y presupuestos del
   bundle y de peticiones fijados antes de medir.
+- **v0.18.0 ✅ Cloud, Observabilidad y Hardening: Production Readiness**: un compose de producción
+  (`docker-compose.production.yml`) con un edge de TLS como única puerta (límites por IP con `429` y
+  `Retry-After`, CSP sin `unsafe-inline` ni `unsafe-eval`, HSTS), OpenID Connect con PKCE por
+  oauth2-proxy y la sesión en el servidor, la API que valida cada token ella misma y autoriza cada
+  ruta por una matriz explícita de cuatro permisos, claves de servicio por su hash, configuración que
+  falla cerrada, secretos como archivos, un rol de base por servicio y contenedores sin raíz, sin
+  capacidades y de solo lectura. Logs JSON redactados, métricas de Prometheus por plantilla de ruta,
+  trazas de OpenTelemetry que fallan abiertas, auditoría `security-audit/v1` con seudónimos, alertas
+  con runbooks y objetivos de servicio. Respaldos de la base y del almacén verificados y restaurados
+  en un entorno nuevo, simulacros de falla, carga registrada con k6, la cadena de suministro fijada
+  y escaneada (Trivy, pip-audit, npm audit, gitleaks, SBOM) y una referencia de Google Cloud en
+  OpenTofu, validada en el CI y nunca aplicada.
 
 Lo que ya hace:
 
@@ -503,16 +526,13 @@ La ruta completa, versión por versión (✅ publicada; ➡️ la que sigue):
 ✅ v0.15.0 — Predictive Intelligence: Modelos Temporales, Calibración y Drift
 ✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida
 ✅ v0.17.0 — App + Dashboards: Superficie Operacional y Cuenta 360
-➡️ v0.18 — Cloud, Observabilidad y Hardening
-
-v1.0 Collection Intelligence Platform
+✅ v0.18.0 — Cloud, Observabilidad y Hardening: Production Readiness
+➡️ v1.0.0 — Collection Intelligence Platform
 ```
 
-Lo que sigue es **v0.18, Cloud, Observabilidad y Hardening**: llevar el sistema a un despliegue
-real, con identidad y control de acceso, observabilidad, alta disponibilidad, recuperación ante
-desastres, límites de peticiones y la política de seguridad de contenido, sin perder la
-auditabilidad, el punto en el tiempo, la privacidad ni el versionado. Hasta entonces, la app es una
-superficie local y demostrativa.
+Lo que sigue es **v1.0.0, Collection Intelligence Platform**: integrar lo que cada versión construyó
+en una plataforma completa de inteligencia de cobranza, sin perder la auditabilidad, el punto en el
+tiempo, la privacidad ni la seguridad que se ganaron en el camino.
 
 Lo que está frágil o pendiente, sin maquillar, está en
 [Limitaciones conocidas](#limitaciones-conocidas).
@@ -530,6 +550,11 @@ sin pasos manuales. La documentación interactiva está en
 con la variable `MC_API_KEY`. Para correr varios workers: `docker compose up --scale worker=3`.
 Los archivos recibidos se guardan en el volumen `fuentes`, aparte del de PostgreSQL: sobreviven a
 un `docker compose down` (sin `-v`, que borra los volúmenes).
+
+Ese compose es de **desarrollo**: sin usuarios, con la clave universal y la documentación de la API.
+El despliegue de producción local (TLS en `https://motor-cartera.localhost:8443`, usuarios de Dex,
+permisos, observabilidad, respaldos) es `docker-compose.production.yml`:
+[docs/production.md](docs/production.md).
 
 ## El flujo completo
 
@@ -1709,6 +1734,58 @@ cuentan las 500,000), ordenar por saldo (0.98 s) y filtrar `ALTA` y `CAMPO` junt
 Cuenta 360, 51 ms. Cada pantalla, con el build de producción, llega a su contenido en 270 a 824 ms,
 con 2 a 7 peticiones de datos y hasta 176 KiB de datos; el JavaScript entero pesa 275 KiB en gzip.
 
+## Producción, seguridad y operación
+
+v0.18 lleva motor-cartera a un despliegue: lo mismo que hace, con identidad, permisos,
+endurecimiento, observabilidad y recuperación, sin agregar lógica de cobranza.
+
+```bash
+uv run --extra dev python scripts/generar_secretos_locales.py secretos   # efimeros
+docker compose -f docker-compose.production.yml up -d --build --wait
+# https://motor-cartera.localhost:8443, con los usuarios de secretos/usuarios.json
+```
+
+- **Una sola puerta.** El edge (nginx) es el único con puertos (solo en `127.0.0.1`): TLS 1.2/1.3,
+  HSTS, CSP sin `unsafe-inline` ni `unsafe-eval`, límites por IP con `429` y `Retry-After`, cuerpos,
+  cabeceras y tiempos acotados, y solo `GET` de la lista blanca hacia la API.
+- **Personas con sesión, servicios con clave.** OpenID Connect con PKCE por oauth2-proxy (Dex en
+  local; el IdP corporativo en un despliegue), la sesión en el servidor (cerrar sesión la revoca) y
+  ningún token en el navegador. La API valida cada token ella misma (firma, emisor, audiencia,
+  vigencia, `kid`, con su JWKS que falla cerrada) y acepta un token de persona solo si llega por el
+  edge. Los servicios usan claves guardadas por su SHA-256, cada una con sus permisos.
+- **Cada ruta, su permiso.** Cuatro permisos (`mc.read`, `mc.audit`, `mc.execute`, `mc.configure`) y
+  una matriz explícita de las 161 operaciones: la API no arranca si una no está clasificada
+  ([docs/matriz-autorizacion.md](docs/matriz-autorizacion.md)).
+- **Falla cerrada.** Producción es el entorno por omisión: sin OIDC, sin el secreto del gateway o con
+  la clave universal de desarrollo, la API no arranca; no existe un modo sin autenticación.
+- **Secretos como archivos**, un rol de base por servicio y contenedores sin raíz, sin capacidades,
+  de solo lectura, con límites y en redes internas.
+- **Observable sin datos personales**: logs JSON redactados con `request_id` y `trace_id`, métricas
+  de Prometheus por plantilla de ruta, trazas de OpenTelemetry (que fallan abiertas), la auditoría
+  `security-audit/v1` con seudónimos, 15 alertas de umbral inicial con su runbook y objetivos de
+  servicio ([docs/observability.md](docs/observability.md), [docs/slos.md](docs/slos.md),
+  [docs/runbooks/](docs/runbooks/README.md)).
+- **Respaldada y restaurable**: `scripts/respaldo.py` respalda la base y el almacén juntos, verifica
+  cada byte antes de tocar nada y restaura solo en un entorno nuevo, validando filas, restricciones y
+  artefactos ([docs/backups.md](docs/backups.md)).
+- **Probada rompiéndola**: simulacros de falla (la base, la API, el worker, OSRM, la telemetría) y
+  carga con k6 registrada antes de correrla ([docs/carga.md](docs/carga.md)).
+- **Una cadena de suministro fijada**: imágenes por digest, acciones por SHA, lockfiles con hashes,
+  Trivy, pip-audit, npm audit, gitleaks y SBOM en el CI
+  ([docs/cadena-de-suministro.md](docs/cadena-de-suministro.md)).
+- **Una referencia de Google Cloud** en OpenTofu (`infra/gcp`), validada en cada run y **nunca
+  aplicada** ([docs/cloud-gcp.md](docs/cloud-gcp.md)).
+
+El modelo de amenazas, escrito antes de implementar, está en
+[docs/threat-model.md](docs/threat-model.md); los controles, en [docs/security.md](docs/security.md);
+la revisión de cierre con lo que se encontró y se corrigió, en
+[docs/security-review-v018.md](docs/security-review-v018.md). El porqué, en las decisiones 275 a 303.
+
+**Medido** (2026-10-18, en una máquina con Docker): una API sostuvo 25 lecturas por segundo de la
+mezcla de la app con un p95 de 121 ms, y el edge con la sesión suma unos 3 ms; exportar trazas sube
+el p95 un 17 %. Con la base caída, la API y el worker se recuperan solos en 1.1 s; el respaldo de la
+prueba de humo (83 tablas, 156,297 filas, 97 artefactos) se restaura y se valida en unos 11 s.
+
 ## El Motor Territorial
 
 **Entrada:** una ejecución de decisión `EXITOSA` de `decision/v1`. De cada decisión solo cuenta
@@ -2218,6 +2295,19 @@ tengas instalado.
 ```bash
 pytest
 ```
+
+v0.18 agrega las pruebas de la seguridad y de la operación: la configuración que falla cerrada
+(`tests/test_config_produccion.py`), cada regla de un token y de la JWKS
+(`tests/test_seguridad_tokens.py`), la matriz, cada permiso y cada credencial
+(`tests/test_api_autorizacion.py`), los logs, las métricas, las trazas y la cola
+(`tests/test_observabilidad.py`), ningún dato personal en los logs de una corrida completa
+(`tests/test_logs_sin_datos_personales.py`), la salud, los límites de cuerpo y el candado de las
+migraciones, el respaldo y su restauración (`tests/test_respaldo.py`, con `pg_dump` y `pg_restore` de
+verdad en el CI), la política de la referencia de la nube (`tests/test_iac.py`) y la cadena de
+suministro (`tests/test_cadena_de_suministro.py`). Contra el compose de producción corren su prueba
+de humo del edge, la interna y la de los contenedores, Playwright con usuarios de Dex, los
+simulacros de falla, la restauración en un entorno nuevo y la carga corta
+([docs/production.md](docs/production.md#cómo-se-verifica)).
 
 Las pruebas que tocan la base corren contra PostgreSQL real, con el esquema creado por las
 migraciones (no por `create_all`), así que también prueban la migración. Usan
@@ -3019,22 +3109,39 @@ y `ruteo/v1` siguen como estaban.
 
 - **Es de solo lectura.** No ejecuta acciones de cobranza: ni gestiones, ni mensajes, ni llamadas,
   ni visitas, ni promesas, ni planes, ni entrenamientos.
-- **Superficie local/demostrativa sin autenticación; no desplegar con datos reales.** Sin usuarios,
-  sesiones, SSO ni control de acceso: cualquiera que alcance su puerto ve lo que su proxy deja
-  pasar. El compose la publica solo en `127.0.0.1`.
+- **El compose de desarrollo no tiene usuarios.** Cualquiera que alcance su puerto ve lo que su
+  proxy deja pasar, y la app lo dice: «Desarrollo local sin usuarios (clave de servicio del proxy);
+  no desplegar así ni con datos reales». Lo publica solo en `127.0.0.1`. La sesión, los permisos y
+  el endurecimiento son del compose de producción (v0.18).
 - **No muestra datos personales ni coordenadas**, ni dibuja mapas, ni exporta desde el navegador.
 - **Analytics es descriptivo; una predicción no es causal; un plan es óptimo respecto a su modelo,
   no causalmente.**
-- **Sin observabilidad de nube, alta disponibilidad, recuperación ante desastres, límites de
-  peticiones ni la política de seguridad de contenido completa**: son de v0.18.
+- **La observabilidad, los respaldos, los límites de peticiones y la política de seguridad de
+  contenido** llegaron en v0.18; la alta disponibilidad sigue fuera del compose (ver abajo).
 - **Ordenar por saldo o por días de atraso tarda cerca de un segundo** sobre 500,000 cuentas (recorre
   el corte); un índice lo bajaría a milisegundos a cambio de cientos de MB y de tiempo en cada
   ingesta, y no se agregó sin uso que lo pida.
 - **Sin modo oscuro.**
 
+**De producción, seguridad y operación (v0.18.0).** Lo que v0.18.0 deja a propósito para después:
+
+- **No despliega en la nube.** La referencia de Google Cloud (`infra/gcp`) se valida en cada run y
+  nunca se aplicó; le falta, entre otras cosas, la plantilla del edge para correr detrás del
+  balanceador ([docs/cloud-gcp.md](docs/cloud-gcp.md#lo-que-falta-para-un-despliegue-real)).
+- **El tráfico interno no va cifrado** (entre el edge, la API, la base y OSRM, en redes de Docker
+  aisladas).
+- **Dex es solo para desarrollo y pruebas**, y no bloquea una cuenta por intentos fallidos: el edge
+  limita los envíos de contraseña por IP. Un despliegue usa el IdP corporativo.
+- **Una sola PostgreSQL, sin réplica**, en el compose: sin alta disponibilidad.
+- **La auditoría no es a prueba de manipulación**: depende de la plataforma de logs.
+- **Las imágenes de terceros se escanean sin bloquear el CI**, y las propias no son reproducibles bit
+  por bit (las correcciones de Alpine se aplican al construir).
+- **Los objetivos de servicio y los umbrales de las alertas son iniciales**: no hay historia de
+  operación real.
+- **No hubo pentest externo.**
+
 **De la orquestación durable.** La cola, el worker y el flujo resuelven que el trabajo sobreviva y
-se recupere, no la operación en producción. Esto le toca a **v0.18 — Cloud, Observabilidad y
-Hardening**:
+se recupere. v0.18 le dio métricas, alertas, trazas, simulacros y runbooks; lo demás sigue igual:
 
 - **PostgreSQL es la cola.** No hay un broker dedicado: los workers preguntan por trabajo cada
   `MC_WORKER_POLL_SEGUNDOS`, y la cola comparte la base con todo lo demás.
@@ -3048,9 +3155,8 @@ Hardening**:
   en el orden en que se crearon.
   No hay prioridades por despacho, por cartera ni por urgencia.
 - **Sin cola de mensajes muertos externa.** Un trabajo que agota sus intentos queda `FALLIDO` en su
-  tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`, y nadie avisa: se ve consultando la API.
-- **Sin métricas, alertas ni trazas distribuidas productivas.** Hay bitácora de la API y del
-  worker, y los flujos y trabajos se consultan por la API.
+  tabla, con su recurso `FALLIDA` y su flujo `DETENIDO`; desde v0.18 lo avisa la alerta
+  `MCTrabajosFallidos` ([docs/runbooks/worker-stuck.md](docs/runbooks/worker-stuck.md)).
 
 Y dos que son del diseño, no pendientes:
 

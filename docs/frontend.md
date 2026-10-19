@@ -128,10 +128,14 @@ contenedor, nunca la página. No hay modo oscuro todavía.
 Sin `dangerouslySetInnerHTML` ni `innerHTML` (ESLint y una prueba que revisa el texto de cada
 fuente), sin source maps publicados, sin un recurso de otro origen (una prueba lo revisa en cada
 fuente y en `index.html`, y Playwright revisa cada petición). nginx pone `X-Content-Type-Options:
-nosniff`, `X-Frame-Options: DENY` y `Referrer-Policy: no-referrer`, y los archivos con hash se
-guardan un año (`immutable`); `index.html`, `no-cache`. La política de seguridad de contenido
-completa es de v0.18. La app no tiene autenticación: la clave de la API la pone el proxy, y el
-navegador nunca la ve.
+nosniff`, `X-Frame-Options: DENY` y `Referrer-Policy: same-origin`, y los archivos con hash se
+guardan un año (`immutable`); `index.html`, `no-cache`. `same-origin` y no `no-referrer`: con
+`no-referrer` el navegador manda `Origin: null` en un `POST` del mismo origen, y cerrar sesión, que
+el edge acepta solo con el `Origin` de la app, fallaría (lo encontró Playwright, v0.18). La política
+de seguridad de contenido, desde v0.18, es todo del mismo origen sin `unsafe-inline` ni
+`unsafe-eval` (`web/nginx/cabeceras.conf`). En desarrollo la clave de la API la pone el proxy y el
+navegador nunca la ve; en producción la sesión es de oauth2-proxy y el token de acceso lo pone el
+edge, también fuera del alcance del JavaScript ([security.md](security.md)).
 
 ## Las pruebas
 
