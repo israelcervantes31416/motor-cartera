@@ -63,7 +63,8 @@ v0.18), `sbom-web.cdx.json` (71) y `sbom-respaldo.cdx.json` (127).
 de las acciones, de los digests de las imágenes (`docker` y `docker-compose`) y, mensuales, del
 proveedor de OpenTofu. Cada fuente espera **7 días** después de una versión nueva antes de
 proponerla (`cooldown`): una versión comprometida suele descubrirse en esos días. Cada PR pasa por el
-CI completo.
+CI completo. La cola abierta al cerrar v0.18, con la decisión sobre cada PR, está en
+[dependencias-v1.md](dependencias-v1.md).
 
 ## Qué es reproducible
 
