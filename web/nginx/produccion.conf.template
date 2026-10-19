@@ -1,0 +1,276 @@
+# El edge de produccion: la unica puerta publica. Sirve la SPA y su proxy de solo lectura hacia la
+# API, con TLS, la sesion de cada persona (oauth2-proxy, OpenID Connect con PKCE), cabeceras de
+# seguridad y CSP, limites de peticiones, de cuerpos, de cabeceras y de tiempo. La imagen oficial
+# sustituye ${MC_...} al arrancar (NGINX_ENVSUBST_FILTER=^MC_); las variables de nginx no se tocan.
+#
+# La API nunca recibe del navegador una credencial ni una identidad: el edge borra las que trae y
+# pone el token de acceso de la sesion (que oauth2-proxy guarda cifrado en la cookie, nunca visible
+# para el JavaScript de la pagina) y la credencial del gateway. Ver docs/security.md.
+
+map $uri $api_permitida {
+    default 0;
+    include /etc/nginx/rutas-api.conf;
+}
+
+# Las lecturas que mas cuestan (cada una recorre un corte entero): su propio limite, mas estrecho.
+map $uri $ruta_costosa {
+    default "";
+    "~^/api/app/v1/resumen$" $binary_remote_addr;
+    "~^/api/app/v1/predictivo/scorings/[^/]+/distribucion$" $binary_remote_addr;
+    "~^/api/analytics/ejecuciones/[^/]+/agregados$" $binary_remote_addr;
+}
+
+# Limites por IP del cliente. El edge es el primer salto: no se cree ningun X-Forwarded-For de un
+# cliente. Detras de un balanceador se declaran sus rangos (set_real_ip_from) en otra plantilla.
+limit_req_zone $binary_remote_addr zone=lecturas:10m rate=${MC_EDGE_LECTURAS_POR_SEGUNDO}r/s;
+limit_req_zone $ruta_costosa zone=costosas:10m rate=${MC_EDGE_COSTOSAS_POR_SEGUNDO}r/s;
+limit_req_zone $binary_remote_addr zone=autenticacion:10m rate=${MC_EDGE_AUTENTICACION_POR_MINUTO}r/m;
+# Solo los POST de credenciales cuentan contra el limite de contrasenas: ver el formulario no.
+map $request_method $envio_de_credenciales {
+    POST $binary_remote_addr;
+    default "";
+}
+limit_req_zone $envio_de_credenciales zone=contrasenas:10m rate=${MC_EDGE_CONTRASENAS_POR_MINUTO}r/m;
+limit_conn_zone $binary_remote_addr zone=conexiones:10m;
+limit_req_status 429;
+limit_conn_status 429;
+limit_req_log_level warn;
+
+# Una linea JSON por peticion, sin la IP, sin el user-agent, sin la query ni las cabeceras: el
+# camino ($uri) y como termino. El request_id es el que el edge genero y pasa a la API.
+log_format edge escape=json '{"timestamp":"$time_iso8601","service":"edge","event":"http.edge",'
+    '"request_id":"$request_id","method":"$request_method","path":"$uri","status":$status,'
+    '"duration_s":$request_time,"upstream_status":"$upstream_status","bytes":$body_bytes_sent}';
+
+resolver ${MC_EDGE_RESOLVER} valid=10s ipv6=off;
+
+upstream api_motor_cartera {
+    zone api_motor_cartera 64k;
+    server ${MC_API_UPSTREAM} resolve;
+}
+
+upstream oauth2_proxy {
+    zone oauth2_proxy 64k;
+    server ${MC_OAUTH2_PROXY_UPSTREAM} resolve;
+}
+
+server_tokens off;
+
+# http: solo redirige a https (y la salud del contenedor, sin redirigir).
+server {
+    listen 8080 default_server;
+    server_name _;
+    access_log /dev/stdout edge;
+
+    location = /salud-web {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location / {
+        return 301 https://${MC_EDGE_HOST}$request_uri;
+    }
+}
+
+server {
+    listen 8443 ssl default_server;
+    http2 on;
+    server_name _;
+    root /usr/share/nginx/html;
+    access_log /dev/stdout edge;
+
+    ssl_certificate /run/secrets/edge_tls_certificado;
+    ssl_certificate_key /run/secrets/edge_tls_llave;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:TLS:2m;
+    ssl_session_timeout 1h;
+    ssl_session_tickets off;
+
+    # Cuerpos, cabeceras y tiempos acotados. Las lecturas de la app no traen cuerpo; el formulario de
+    # inicio de sesion, uno pequeno. La cookie de sesion de oauth2-proxy puede ocupar dos o tres
+    # partes de 4 KiB: de ahi el buffer de 16 KiB por cabecera.
+    client_max_body_size 16k;
+    client_body_buffer_size 16k;
+    client_header_buffer_size 4k;
+    large_client_header_buffers 4 16k;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    send_timeout 30s;
+    keepalive_timeout 30s;
+    limit_conn conexiones ${MC_EDGE_CONEXIONES_POR_IP};
+
+    include /etc/nginx/cabeceras-tls.conf;
+
+    error_page 429 = @limitado;
+    error_page 413 = @demasiado_grande;
+
+    location @limitado {
+        default_type application/json;
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Retry-After "1" always;
+        add_header Cache-Control "no-store" always;
+        return 429 '{"codigo":"DEMASIADAS_PETICIONES","mensaje":"Demasiadas peticiones: espera un momento y reintenta.","detalles":[]}';
+    }
+
+    location @demasiado_grande {
+        default_type application/json;
+        include /etc/nginx/cabeceras-tls.conf;
+        return 413 '{"codigo":"CUERPO_DEMASIADO_GRANDE","mensaje":"El cuerpo de la peticion es demasiado grande.","detalles":[]}';
+    }
+
+    location @sin_sesion {
+        default_type application/json;
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Cache-Control "no-store" always;
+        return 401 '{"codigo":"SESION_REQUERIDA","mensaje":"No hay una sesion valida: inicia sesion.","detalles":[]}';
+    }
+
+    location = /salud-web {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # El inicio de sesion: oauth2-proxy arma la peticion de autorizacion (con PKCE, state y nonce) y
+    # recibe el callback. Solo esas dos rutas; las demas de oauth2-proxy no se exponen.
+    location ~ ^/oauth2/(start|callback)$ {
+        limit_except GET {
+            deny all;
+        }
+        limit_req zone=autenticacion burst=60 nodelay;
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/proxy-oauth2.conf;
+    }
+
+    # Cerrar sesion: solo POST y solo desde el mismo origen (CSRF). La cookie es SameSite=Lax: otro
+    # sitio no la manda en un POST, y este revisa ademas Origin.
+    location = /oauth2/sign_out {
+        default_type application/json;
+        if ($request_method != POST) {
+            add_header Allow "POST" always;
+            return 405 '{"codigo":"METODO_NO_PERMITIDO","mensaje":"Cerrar sesion es POST.","detalles":[]}';
+        }
+        if ($http_origin != "https://${MC_EDGE_HOST}") {
+            return 403 '{"codigo":"ORIGEN_NO_PERMITIDO","mensaje":"Cerrar sesion solo desde la app.","detalles":[]}';
+        }
+        limit_req zone=autenticacion burst=60 nodelay;
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/proxy-oauth2.conf;
+    }
+
+    # La subpeticion de cada lectura: si la cookie tiene una sesion valida, oauth2-proxy responde 202
+    # con el token de acceso en una cabecera. internal: el navegador nunca la puede pedir, asi que
+    # nunca ve esa cabecera.
+    location = /oauth2/auth {
+        internal;
+        proxy_pass http://oauth2_proxy;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Uri $request_uri;
+        proxy_set_header Authorization "";
+        proxy_set_header X-API-Key "";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 5s;
+    }
+
+    location /oauth2/ {
+        default_type application/json;
+        include /etc/nginx/cabeceras-tls.conf;
+        return 404 '{"codigo":"RUTA_NO_EXPUESTA","mensaje":"La superficie web no expone esa ruta.","detalles":[]}';
+    }
+
+    # La API: solo GET de la lista blanca, solo con sesion.
+    location /api/ {
+        default_type application/json;
+        client_max_body_size 1k;
+        if ($request_method != GET) {
+            add_header Allow "GET" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            return 405 '{"codigo":"METODO_NO_PERMITIDO","mensaje":"La superficie web es de solo lectura: solo GET.","detalles":[]}';
+        }
+        if ($api_permitida = 0) {
+            add_header X-Content-Type-Options "nosniff" always;
+            return 404 '{"codigo":"RUTA_NO_EXPUESTA","mensaje":"La superficie web no expone esa ruta de la API.","detalles":[]}';
+        }
+        limit_req zone=lecturas burst=${MC_EDGE_LECTURAS_RAFAGA} nodelay;
+        limit_req zone=costosas burst=${MC_EDGE_COSTOSAS_RAFAGA} nodelay;
+
+        auth_request /oauth2/auth;
+        auth_request_set $token_de_acceso $upstream_http_x_auth_request_access_token;
+        # Si oauth2-proxy renovo la sesion (el token vencia), la cookie nueva llega al navegador.
+        auth_request_set $cookie_renovada $upstream_http_set_cookie;
+        # Una location con su propio error_page no hereda los del servidor: se repiten aqui.
+        error_page 401 = @sin_sesion;
+        error_page 429 = @limitado;
+        error_page 413 = @demasiado_grande;
+
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Set-Cookie $cookie_renovada;
+        add_header Cache-Control "no-store" always;
+
+        proxy_pass http://api_motor_cartera/;
+        proxy_hide_header X-Request-ID;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Authorization "Bearer $token_de_acceso";
+        proxy_set_header X-MC-Gateway "${MC_GATEWAY_SECRET}";
+        # Ninguna credencial ni identidad del cliente pasa: ni su cookie, ni una clave, ni cabeceras
+        # que algun proxy usaria para decir quien es, ni un traceparent que decidiera el muestreo.
+        proxy_set_header Cookie "";
+        proxy_set_header X-API-Key "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-User "";
+        proxy_set_header X-Forwarded-Email "";
+        proxy_set_header X-Forwarded-Groups "";
+        proxy_set_header X-Forwarded-Preferred-Username "";
+        proxy_set_header X-Auth-Request-User "";
+        proxy_set_header X-Auth-Request-Email "";
+        proxy_set_header X-Auth-Request-Groups "";
+        proxy_set_header X-Auth-Request-Access-Token "";
+        proxy_set_header X-MC-Subject "";
+        proxy_set_header X-MC-Roles "";
+        proxy_set_header X-MC-Permisos "";
+        proxy_set_header X-Remote-User "";
+        proxy_set_header traceparent "";
+        proxy_set_header tracestate "";
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 60s;
+    }
+
+    # Los archivos con su hash en el nombre no cambian nunca: se guardan un ano. Sin sesion: no
+    # llevan datos.
+    location /assets/ {
+        limit_except GET {
+            deny all;
+        }
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    # El proveedor de identidad local (solo el compose de produccion local) se incluye aqui.
+    include /etc/nginx/conf.d/servidor/*.conf;
+
+    # Cualquier otra ruta es de la SPA: la resuelve su router. index.html no lleva datos; la app pide
+    # su sesion a /api/app/v1/sesion y, sin una, muestra como iniciarla.
+    location / {
+        limit_except GET {
+            deny all;
+        }
+        include /etc/nginx/cabeceras-tls.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri /index.html;
+    }
+}

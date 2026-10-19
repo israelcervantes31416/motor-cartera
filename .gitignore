@@ -16,7 +16,15 @@ web/test-results/
 web/playwright-report/
 web/blob-report/
 web/e2e/.contexto.json
+web/e2e/.sesiones/
 *.tsbuildinfo
+
+# Los secretos efimeros del compose de produccion local (scripts/generar_secretos_locales.py), los
+# respaldos que deja scripts/respaldo.py y los resultados de las pruebas de carga: nunca
+# entran al repositorio.
+secretos/
+respaldos/
+resultados/
 
 # Datos: NADA de datos reales entra a este repositorio, nunca.
 # El generador produce todo lo que el proyecto necesita.
@@ -81,3 +89,9 @@ datos/*
 *.osrm
 *.osrm.*
 *.tar
+
+# OpenTofu: los proveedores descargados, el estado y los planes nunca entran (el lock si).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan

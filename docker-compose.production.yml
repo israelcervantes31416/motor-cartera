@@ -1,0 +1,696 @@
+# El despliegue de PRODUCCION LOCAL (production-like). Ejecutable en una maquina, con secretos
+# efimeros: lo mismo que se desplegaria, sin nube.
+#
+#   python scripts/generar_secretos_locales.py secretos          # una vez por maquina o corrida
+#   docker compose -f docker-compose.production.yml up -d --wait
+#   https://motor-cartera.localhost:8443                         # el unico puerto publicado
+#
+# Que lo hace de produccion, y no de desarrollo (docker-compose.yml):
+#   - MC_APP_ENV=production: la configuracion falla cerrada; sin documentacion de la API, sin clave
+#     universal, logs JSON. Las personas entran con OpenID Connect (Dex, el IdP local de pruebas)
+#     por oauth2-proxy (Authorization Code con PKCE, sesion del lado del servidor en Valkey).
+#   - Solo el edge publica puertos, y solo en 127.0.0.1: https en 8443 y http en 8081, que solo
+#     redirige. La API, la base, OSRM, el IdP y la observabilidad no se publican.
+#   - Redes separadas: publica (solo el edge), frontal (edge y API), identidad (edge, oauth2-proxy,
+#     Dex y la API), sesiones (oauth2-proxy y Valkey), datos (la base y quien la usa), ruteo (el
+#     worker y OSRM) y observabilidad. Todas internas salvo la publica: ningun contenedor sale a
+#     internet.
+#   - Secretos como archivos montados (Docker secrets), nunca en este archivo ni en el entorno. Cada
+#     servicio monta solo los suyos.
+#   - Cada contenedor: usuario no root, sistema de archivos de solo lectura (con tmpfs solo donde
+#     escribe), cap_drop ALL, no-new-privileges, limites de memoria, CPU y procesos, logs rotados
+#     (driver local) y su healthcheck.
+#   - Roles de base por servicio: la API y el worker solo DML; las migraciones, el esquema.
+#
+# Perfiles: `ruteo` (OSRM, con una red ya preparada en datos/red_vial), `observabilidad` (colector
+# de OpenTelemetry, Prometheus, Alertmanager, Jaeger y Grafana), `respaldo` y `herramientas` (de
+# un solo uso). Ver docs/production.md.
+
+name: motor-cartera-produccion
+
+x-endurecido: &endurecido
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # Los secretos son legibles por este grupo y no por todos (scripts/generar_secretos_locales.py).
+  group_add:
+    - "${MC_SECRETOS_GID:-10999}"
+
+x-app: &app
+  <<: *endurecido
+  build:
+    context: .
+    target: produccion
+  image: motor-cartera:produccion
+  user: "10001:10001"
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+
+x-entorno-app: &entorno-app
+  MC_APP_ENV: production
+  MC_LOG_FORMATO: json
+  MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
+  MC_METRICAS_PUERTO: "9464"
+  # Vacio, no se exporta ninguna traza (los logs siguen llevando el trace_id). Con el perfil
+  # observabilidad: MC_OTEL_ENDPOINT=http://otel-collector:4318. Si el colector no responde, las
+  # trazas se descartan sin tocar las peticiones.
+  MC_OTEL_ENDPOINT: ${MC_OTEL_ENDPOINT:-}
+  MC_OTEL_MUESTREO: ${MC_OTEL_MUESTREO:-1.0}
+
+services:
+  postgres:
+    <<: *endurecido
+    image: postgis/postgis:16-3.5-alpine@sha256:47e961a569fd52ff31f0fe205ed91eeab17d9f5fff6722e6d7ea6b588748b293
+    # Como el usuario postgres desde el arranque: el volumen ya es suyo, y asi no necesita ninguna
+    # capacidad para cambiar de usuario ni de dueno.
+    user: "70:70"
+    environment:
+      POSTGRES_USER: mc_superusuario
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superusuario
+      POSTGRES_DB: cartera
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+    secrets:
+      - postgres_superusuario
+      - db_migraciones
+      - db_api
+      - db_worker
+      - db_respaldo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/20-roles.sh:/docker-entrypoint-initdb.d/20-roles.sh:ro
+    tmpfs:
+      - /var/run/postgresql:size=8m,mode=2777
+      - /tmp:size=64m,mode=1777
+    networks:
+      - datos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mc_superusuario -d cartera"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+          pids: 256
+
+  # Migrar es un paso propio, de un solo uso, con su propio rol (el dueno del esquema) y un candado
+  # consultivo en PostgreSQL: dos migraciones a la vez se serializan.
+  migraciones:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *entorno-app
+      MC_DATABASE_URL_FILE: /run/secrets/dsn_migraciones
+      MC_OTEL_ENDPOINT: ""
+    secrets:
+      - dsn_migraciones
+    networks:
+      - datos
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512m
+          pids: 64
+
+  api:
+    <<: *app
+    environment:
+      <<: *entorno-app
+      MC_DATABASE_URL_FILE: /run/secrets/dsn_api
+      MC_API_KEYS_FILE: /run/secrets/api_claves
+      MC_GATEWAY_SECRETS_FILE: /run/secrets/gateway_secretos
+      MC_AUDITORIA_CLAVE_FILE: /run/secrets/auditoria_clave
+      MC_OIDC_ISSUER: https://motor-cartera.localhost:8443/dex
+      MC_OIDC_AUDIENCE: motor-cartera-api
+      MC_OIDC_JWKS_URL: https://dex:5554/dex/keys
+      MC_OIDC_CA_FILE: /run/secrets/ca_certificado
+      MC_OIDC_AZP_PERMITIDOS: motor-cartera-web
+      MC_OIDC_GRUPOS: mc-lectores=VIEWER;mc-auditores=AUDITOR;mc-operadores=OPERATOR;mc-administradores=ADMIN
+    secrets:
+      - dsn_api
+      - api_claves
+      - gateway_secretos
+      - auditoria_clave
+      - ca_certificado
+    volumes:
+      - fuentes:/var/lib/motor-cartera/fuentes
+    networks:
+      - frontal
+      - identidad
+      - datos
+      - observabilidad
+    # La readiness: si la base cae, el contenedor queda unhealthy, pero Docker no lo reinicia (vivo
+    # no depende de la base) y vuelve a healthy cuando regresa.
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 25s
+    depends_on:
+      migraciones:
+        condition: service_completed_successfully
+      dex:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+          pids: 256
+
+  worker:
+    <<: *app
+    command: ["motor-cartera", "worker"]
+    environment:
+      <<: *entorno-app
+      MC_DATABASE_URL_FILE: /run/secrets/dsn_worker
+      MC_METRICAS_PUERTO: "9465"
+      MC_OSRM_URL: http://osrm:5000
+    secrets:
+      - dsn_worker
+    volumes:
+      - fuentes:/var/lib/motor-cartera/fuentes
+    networks:
+      - datos
+      - ruteo
+      - observabilidad
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9465/health/live', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    # Con SIGTERM termina el trabajo en curso y sale. Si tarda mas, Docker lo mata y el trabajo
+    # vuelve a la cola cuando vence su lease.
+    stop_grace_period: 30s
+    depends_on:
+      migraciones:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1536m
+          pids: 256
+
+  osrm:
+    <<: *endurecido
+    image: ghcr.io/project-osrm/osrm-backend:v26.9.0-debian@sha256:8a1b1bc938412f15f9b5b32d794c4ec6bf4a85dfbbabfa0a014b70b187edb53b
+    profiles: ["ruteo"]
+    user: "65534:65534"
+    command:
+      - osrm-routed
+      - --algorithm
+      - mld
+      - --verbosity
+      - WARNING
+      - --max-nearest-locations
+      - "100"
+      - /redes/${MC_RED_VIAL_HUELLA:-sin-red}/red.osrm
+    volumes:
+      - ./datos/red_vial:/redes:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - ruteo
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5000"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+          pids: 128
+
+  # El IdP de desarrollo y pruebas. En un despliegue real es externo: ver docs/security.md.
+  dex:
+    <<: *endurecido
+    image: ghcr.io/dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+    entrypoint:
+      - /bin/sh
+      - -c
+      - . /run/secrets/dex_entorno && exec /usr/local/bin/docker-entrypoint dex serve /etc/dex/config.yaml
+    volumes:
+      - ./infra/dex/config.yaml:/etc/dex/config.yaml:ro
+    secrets:
+      - dex_entorno
+      - dex_tls_certificado
+      - dex_tls_llave
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - identidad
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5558/healthz/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 128m
+          pids: 64
+
+  # Las sesiones de oauth2-proxy, del lado del servidor: la cookie solo lleva un identificador, y
+  # cerrar sesion la borra aqui (una cookie copiada antes ya no vale). Sin persistencia.
+  valkey:
+    <<: *endurecido
+    image: valkey/valkey:8.1.10-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+    user: "999:1000"
+    command: ["valkey-server", "/run/secrets/valkey_conf"]
+    secrets:
+      - valkey_conf
+    tmpfs:
+      - /data:size=16m,mode=1777
+    networks:
+      - sesiones
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping 2>&1 | grep -q -E 'PONG|NOAUTH'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 96m
+          pids: 64
+
+  # El BFF de la sesion: Authorization Code con PKCE contra el IdP, la sesion en Valkey y el token de
+  # acceso solo hacia el edge. El navegador no ve ningun token. Imagen distroless, sin shell: sin
+  # healthcheck de Docker; la prueba de humo interna consulta su /ready.
+  oauth2-proxy:
+    <<: *endurecido
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.4@sha256:b1b2021fe8f4004573e8d690dec6c7bb29cc44364572cf8510a05bf3a0ae2ded
+    command:
+      - --config=/run/secrets/oauth2_proxy_cfg
+      - --http-address=0.0.0.0:4180
+      - --provider=oidc
+      - --provider-display-name=Motor Cartera
+      - --client-id=motor-cartera-web
+      - --code-challenge-method=S256
+      # Sin forzar el consentimiento en cada inicio de sesion: el cliente es propio y Dex lo salta.
+      - --approval-prompt=auto
+      - --insecure-oidc-skip-nonce=false
+      - --skip-oidc-discovery=true
+      - --oidc-issuer-url=https://motor-cartera.localhost:8443/dex
+      - --login-url=https://motor-cartera.localhost:8443/dex/auth
+      - --redeem-url=https://dex:5554/dex/token
+      - --oidc-jwks-url=https://dex:5554/dex/keys
+      - --provider-ca-file=/run/secrets/ca_certificado
+      - --scope=openid email profile groups offline_access audience:server:client_id:motor-cartera-api
+      - --redirect-url=https://motor-cartera.localhost:8443/oauth2/callback
+      - --whitelist-domain=motor-cartera.localhost:8443
+      - --email-domain=*
+      - --upstream=static://202
+      - --session-store-type=redis
+      - --cookie-name=__Host-mc_sesion
+      - --cookie-secure=true
+      - --cookie-httponly=true
+      - --cookie-samesite=lax
+      - --cookie-path=/
+      - --cookie-expire=8h
+      - --cookie-refresh=5m
+      - --cookie-csrf-per-request=true
+      - --cookie-csrf-expire=5m
+      - --set-xauthrequest=true
+      - --pass-access-token=true
+      - --skip-provider-button=true
+      - --reverse-proxy=true
+      - --trusted-proxy-ip=${MC_RED_IDENTIDAD_SUBRED:-10.203.41.0/24}
+      - --request-id-header=X-Request-ID
+      - --show-debug-on-error=false
+      - --auth-logging=false
+      - --request-logging=true
+      - --request-logging-format={{.RequestID}} {{.Timestamp}} {{.RequestMethod}} {{.StatusCode}} {{.RequestDuration}}
+      - --silence-ping-logging=true
+    secrets:
+      - oauth2_proxy_cfg
+      - ca_certificado
+    networks:
+      - identidad
+      - sesiones
+    depends_on:
+      dex:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 96m
+          pids: 64
+
+  edge:
+    <<: *endurecido
+    build: ./web
+    image: motor-cartera-web:produccion
+    user: "101:101"
+    environment:
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/plantillas/produccion
+      MC_API_UPSTREAM: api:8000
+      MC_OAUTH2_PROXY_UPSTREAM: oauth2-proxy:4180
+      MC_DEX_UPSTREAM: dex:5554
+      MC_EDGE_HOST: motor-cartera.localhost:8443
+      MC_EDGE_RESOLVER: 127.0.0.11
+      # Limites iniciales por IP, no verdades universales (docs/security.md, decision 290).
+      MC_EDGE_LECTURAS_POR_SEGUNDO: "${MC_EDGE_LECTURAS_POR_SEGUNDO:-30}"
+      MC_EDGE_LECTURAS_RAFAGA: "${MC_EDGE_LECTURAS_RAFAGA:-60}"
+      MC_EDGE_COSTOSAS_POR_SEGUNDO: "${MC_EDGE_COSTOSAS_POR_SEGUNDO:-5}"
+      MC_EDGE_COSTOSAS_RAFAGA: "${MC_EDGE_COSTOSAS_RAFAGA:-10}"
+      MC_EDGE_AUTENTICACION_POR_MINUTO: "${MC_EDGE_AUTENTICACION_POR_MINUTO:-120}"
+      MC_EDGE_CONTRASENAS_POR_MINUTO: "${MC_EDGE_CONTRASENAS_POR_MINUTO:-10}"
+      MC_EDGE_CONEXIONES_POR_IP: "${MC_EDGE_CONEXIONES_POR_IP:-60}"
+    volumes:
+      - ./infra/edge/idp-local.conf.template:/etc/nginx/plantillas/produccion/servidor/idp-local.conf.template:ro
+    secrets:
+      - edge_tls_certificado
+      - edge_tls_llave
+      - gateway_secretos
+      - ca_certificado
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /etc/nginx/conf.d:size=1m,mode=1777
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8081:8080"
+    networks:
+      - publica
+      - frontal
+      - identidad
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/salud-web"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      api:
+        condition: service_healthy
+      oauth2-proxy:
+        condition: service_started
+      dex:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 128m
+          pids: 128
+
+  # --- perfil observabilidad ---------------------------------------------------------------------
+
+  otel-collector:
+    <<: *endurecido
+    image: otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+    profiles: ["observabilidad"]
+    user: "10001:10001"
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/observabilidad/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - observabilidad
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256m
+          pids: 64
+
+  jaeger:
+    <<: *endurecido
+    image: jaegertracing/jaeger:2.21.0@sha256:3d0ac795ff98aa04d1be04311d2dac6c25b4bfc8322dc02e53bc5b170c5018c3
+    profiles: ["observabilidad"]
+    user: "10001:10001"
+    command: ["--config=/etc/jaeger/config.yaml"]
+    volumes:
+      - ./infra/observabilidad/jaeger.yaml:/etc/jaeger/config.yaml:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - observabilidad
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 384m
+          pids: 64
+
+  prometheus:
+    <<: *endurecido
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    profiles: ["observabilidad"]
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+      - --storage.tsdb.retention.size=512MB
+    volumes:
+      - ./infra/observabilidad/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observabilidad/alertas.yml:/etc/prometheus/alertas.yml:ro
+      - prometheus:/prometheus
+    networks:
+      - observabilidad
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 384m
+          pids: 64
+
+  alertmanager:
+    <<: *endurecido
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    profiles: ["observabilidad"]
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./infra/observabilidad/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    tmpfs:
+      - /alertmanager:size=16m,mode=1777
+    networks:
+      - observabilidad
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 96m
+          pids: 64
+
+  grafana:
+    <<: *endurecido
+    image: grafana/grafana:13.1.8@sha256:1a8e58976a6cd349d1ffdd27a14b92053816c7c60e6b7e157013e9bf0b9cec5f
+    profiles: ["observabilidad"]
+    user: "472:0"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PATHS_DATA: /var/lib/grafana
+      GF_PATHS_LOGS: /tmp/grafana-logs
+      GF_LOG_MODE: console
+    secrets:
+      - grafana_admin
+    volumes:
+      - ./infra/observabilidad/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observabilidad/grafana/dashboards:/var/lib/grafana-dashboards:ro
+      - grafana:/var/lib/grafana
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      - observabilidad
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256m
+          pids: 128
+
+  # --- de un solo uso ------------------------------------------------------------------------------
+
+  # El respaldo (scripts/respaldo.py, con pg_dump 16, el mismo mayor del servidor): la base con el rol
+  # que solo lee y el almacen de artefactos montado de solo lectura. Escribe solo en el directorio de
+  # respaldos. `docker compose --profile respaldo run --rm respaldo` hace uno.
+  respaldo:
+    <<: *endurecido
+    build:
+      context: .
+      dockerfile: infra/respaldo/Dockerfile
+    image: motor-cartera-respaldo:local
+    profiles: ["respaldo"]
+    restart: "no"
+    command: ["respaldar", "--destino", "/respaldos"]
+    # El dueno de los archivos de respaldo en el host: en Linux, el usuario que corre el compose.
+    user: "${MC_RESPALDO_USUARIO:-70:70}"
+    environment:
+      MC_RESPALDO_DSN_FILE: /run/secrets/dsn_respaldo
+      MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
+    secrets:
+      - dsn_respaldo
+    volumes:
+      - fuentes:/var/lib/motor-cartera/fuentes:ro
+      - ${MC_RESPALDOS_DIR:-./respaldos}:/respaldos
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks:
+      - datos
+
+  # La restauracion: con el rol dueno del esquema (lo que restaura queda suyo, y los privilegios por
+  # omision le dan DML a la API y al worker) y como el usuario de la aplicacion, el unico que escribe
+  # en el almacen. Los respaldos se montan de solo lectura: restaurar nunca los modifica.
+  #   docker compose --profile restauracion run --rm restauracion restaurar /respaldos/<respaldo>
+  restauracion:
+    <<: *endurecido
+    build:
+      context: .
+      dockerfile: infra/respaldo/Dockerfile
+    image: motor-cartera-respaldo:local
+    profiles: ["restauracion"]
+    restart: "no"
+    user: "10001:10001"
+    environment:
+      MC_RESTAURACION_DSN_FILE: /run/secrets/dsn_migraciones
+      MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
+    secrets:
+      - dsn_migraciones
+    volumes:
+      - fuentes:/var/lib/motor-cartera/fuentes
+      - ${MC_RESPALDOS_DIR:-./respaldos}:/respaldos:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks:
+      - datos
+
+  # La prueba de humo de adentro (scripts/prueba_de_humo_produccion.py --interna): habla directo con la API, el
+  # worker, OSRM y oauth2-proxy por las redes internas, con una clave de servicio.
+  herramientas:
+    <<: *app
+    profiles: ["herramientas"]
+    restart: "no"
+    command: ["python", "/herramientas/prueba_de_humo_produccion.py", "--interna"]
+    environment:
+      MC_HUMO_CLAVES_FILE: /run/secrets/claves_humo
+      MC_URL_API: http://api:8000
+    secrets:
+      - claves_humo
+      - ca_certificado
+    volumes:
+      - ./scripts:/herramientas:ro
+    networks:
+      - frontal
+      - identidad
+      - sesiones
+      - datos
+      - ruteo
+      - observabilidad
+    healthcheck:
+      disable: true
+
+networks:
+  publica: {}
+  frontal:
+    internal: true
+  identidad:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${MC_RED_IDENTIDAD_SUBRED:-10.203.41.0/24}
+  sesiones:
+    internal: true
+  datos:
+    internal: true
+  ruteo:
+    internal: true
+  observabilidad:
+    internal: true
+
+volumes:
+  pgdata:
+  fuentes:
+  prometheus:
+  grafana:
+
+secrets:
+  postgres_superusuario:
+    file: ${MC_SECRETOS_DIR:-./secretos}/postgres_superusuario
+  db_migraciones:
+    file: ${MC_SECRETOS_DIR:-./secretos}/db_migraciones
+  db_api:
+    file: ${MC_SECRETOS_DIR:-./secretos}/db_api
+  db_worker:
+    file: ${MC_SECRETOS_DIR:-./secretos}/db_worker
+  db_respaldo:
+    file: ${MC_SECRETOS_DIR:-./secretos}/db_respaldo
+  dsn_migraciones:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dsn_migraciones
+  dsn_api:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dsn_api
+  dsn_worker:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dsn_worker
+  dsn_respaldo:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dsn_respaldo
+  api_claves:
+    file: ${MC_SECRETOS_DIR:-./secretos}/api_claves
+  claves_humo:
+    file: ${MC_SECRETOS_DIR:-./secretos}/claves_humo
+  gateway_secretos:
+    file: ${MC_SECRETOS_DIR:-./secretos}/gateway_secretos
+  auditoria_clave:
+    file: ${MC_SECRETOS_DIR:-./secretos}/auditoria_clave
+  ca_certificado:
+    file: ${MC_SECRETOS_DIR:-./secretos}/ca_certificado
+  edge_tls_certificado:
+    file: ${MC_SECRETOS_DIR:-./secretos}/edge_tls_certificado
+  edge_tls_llave:
+    file: ${MC_SECRETOS_DIR:-./secretos}/edge_tls_llave
+  dex_tls_certificado:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dex_tls_certificado
+  dex_tls_llave:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dex_tls_llave
+  dex_entorno:
+    file: ${MC_SECRETOS_DIR:-./secretos}/dex_entorno
+  oauth2_proxy_cfg:
+    file: ${MC_SECRETOS_DIR:-./secretos}/oauth2_proxy_cfg
+  valkey_conf:
+    file: ${MC_SECRETOS_DIR:-./secretos}/valkey_conf
+  grafana_admin:
+    file: ${MC_SECRETOS_DIR:-./secretos}/grafana_admin

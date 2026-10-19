@@ -1,10 +1,11 @@
-# La superficie web en produccion local: los archivos estaticos de la SPA y un proxy de solo
-# lectura hacia la API, en el mismo origen. El navegador nunca ve la clave de la API: el proxy la
-# agrega a cada peticion que deja pasar, y solo deja pasar GET de las rutas de rutas-api.conf.
-# Superficie local/demostrativa sin autenticacion: no se despliega con datos reales (v0.18).
+# La superficie web de DESARROLLO (docker-compose.yml): los archivos estaticos de la SPA y un proxy de
+# solo lectura hacia la API, en el mismo origen, por http en 127.0.0.1. El navegador nunca ve la
+# clave de la API: el proxy la agrega a cada peticion que deja pasar, y solo deja pasar GET de las
+# rutas de rutas-api.conf. Sin usuarios ni sesiones: es la conveniencia de una maquina de
+# desarrollo. La de produccion es produccion.conf.template (TLS, sesion OIDC, limites).
 #
-# La imagen oficial de nginx sustituye ${MC_...} al arrancar (NGINX_ENVSUBST_FILTER=^MC_); las
-# variables de nginx, como $uri, no se tocan.
+# La imagen oficial sustituye ${MC_...} al arrancar (NGINX_ENVSUBST_FILTER=^MC_); las variables de
+# nginx, como $uri, no se tocan.
 
 map $uri $api_permitida {
     default 0;
@@ -21,11 +22,8 @@ server {
     server_tokens off;
     root /usr/share/nginx/html;
 
-    # Lo minimo que cuesta nada: sin MIME adivinado, sin referer hacia fuera, sin marcos. La CSP
-    # completa y el resto del endurecimiento son de v0.18.
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer" always;
-    add_header X-Frame-Options "DENY" always;
+    # Las mismas cabeceras de seguridad y la misma CSP que en produccion, sin HSTS: aqui no hay TLS.
+    include /etc/nginx/cabeceras.conf;
 
     # JavaScript con sus dos tipos (text/javascript, el de RFC 9239, y application/javascript):
     # se comprime con el que le asigne el mime.types de la imagen.
@@ -52,29 +50,31 @@ server {
             add_header X-Content-Type-Options "nosniff" always;
             return 404 '{"codigo":"RUTA_NO_EXPUESTA","mensaje":"La superficie web no expone esa ruta de la API.","detalles":[]}';
         }
+        include /etc/nginx/cabeceras.conf;
         proxy_pass http://api_motor_cartera/;
+        proxy_hide_header X-Request-ID;
+        proxy_set_header X-Request-ID $request_id;
         proxy_set_header X-API-Key "${MC_API_KEY}";
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Cookie "";
         proxy_set_header Authorization "";
+        proxy_set_header traceparent "";
         proxy_connect_timeout 5s;
         proxy_read_timeout 60s;
     }
 
     # Los archivos con su hash en el nombre no cambian nunca: se guardan un ano.
     location /assets/ {
+        include /etc/nginx/cabeceras.conf;
         add_header Cache-Control "public, max-age=31536000, immutable" always;
-        add_header X-Content-Type-Options "nosniff" always;
         try_files $uri =404;
     }
 
     # Cualquier otra ruta es de la SPA: la resuelve su router, con su propia pagina 404.
     location / {
+        include /etc/nginx/cabeceras.conf;
         add_header Cache-Control "no-cache" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer" always;
-        add_header X-Frame-Options "DENY" always;
         try_files $uri /index.html;
     }
 }
