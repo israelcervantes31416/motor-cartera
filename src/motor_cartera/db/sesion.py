@@ -20,12 +20,23 @@ def crear_motor(url: str | None = None):
         # no quedarse colgada hasta que el sistema operativo se rinda.
         # timezone=UTC: los instantes salen igual sin importar como este configurado el
         # servidor de PostgreSQL.
+        # hide_parameters: un error de la base no lleva los valores de la sentencia a su mensaje,
+        # ni por lo tanto a la bitacora: un parametro puede ser un CLIENTE_UNICO.
         _motor = create_engine(
             url or config.database_url,
             echo=False,
             pool_pre_ping=True,
+            hide_parameters=True,
             connect_args={"connect_timeout": 5, "options": "-c timezone=UTC"},
         )
+        from motor_cartera.observabilidad.trazas import instrumentar_motor
+
+        instrumentar_motor(_motor)
+    return _motor
+
+
+def motor_actual():
+    """El motor de este proceso si ya se creo, o None: las metricas del pool no lo crean."""
     return _motor
 
 

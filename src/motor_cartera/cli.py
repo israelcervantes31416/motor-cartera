@@ -3705,13 +3705,26 @@ def worker(
     este proceso lo toma, ejecuta su motor y encadena la etapa que sigue. Se pueden correr varios
     a la vez: nunca toman el mismo trabajo. Con --una-vez procesa a lo mas uno y sale, con
     codigo 0 aunque la cola este vacia.
+
+    Valida su configuracion al arrancar (en produccion, una base explicita): con una invalida no
+    arranca. Sus logs son JSON en produccion, y con MC_METRICAS_PUERTO sirve sus metricas y su salud
+    (/health/live, /health/ready) en ese puerto interno.
     """
+    from motor_cartera.config import config, validar
+    from motor_cartera.observabilidad import preparar_proceso, trazas
     from motor_cartera.orquestacion.worker import ejecutar_worker
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    )
-    procesado = ejecutar_worker(una_vez=una_vez)
+    validar(config, "worker")
+    preparar_proceso(config, "worker")
+    if config.app_env == "test":
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+        )
+    try:
+        procesado = ejecutar_worker(una_vez=una_vez)
+    finally:
+        # Lo que quedo en el lote de trazas se exporta antes de salir, con su tiempo de espera.
+        trazas.apagar()
     if not una_vez:
         return
     if procesado is None:
