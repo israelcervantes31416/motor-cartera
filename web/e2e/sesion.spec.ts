@@ -91,9 +91,12 @@ test.describe("una sesion propia", () => {
     await abrir(page, enContexto("/resumen"), "Resumen");
 
     await page.context().clearCookies();
-    await page.getByRole("navigation", { name: "Secciones" }).getByRole("link", {
-      name: "Cuentas",
-    }).click();
+    await page
+      .getByRole("navigation", { name: "Secciones" })
+      .getByRole("link", {
+        name: "Cuentas",
+      })
+      .click();
 
     await expect(page.getByRole("heading", { level: 1, name: "Tu sesión expiró" })).toBeVisible();
   });
