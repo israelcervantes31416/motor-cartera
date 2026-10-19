@@ -94,7 +94,7 @@ def generar() -> str:
     from motor_cartera.api import crear_app
     from motor_cartera.config import Config
 
-    api = crear_app(Config(api_key="exportacion-del-contrato")).openapi()
+    api = crear_app(Config(app_env="development", api_key="exportacion-del-contrato")).openapi()
     texto = json.dumps(
         contrato(api, rutas_permitidas()), ensure_ascii=False, indent=2, sort_keys=True
     )

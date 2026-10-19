@@ -131,6 +131,7 @@ def registrar_manejadores(app: FastAPI) -> None:
             400: ("PETICION_ILEGIBLE", f"La peticion no se pudo interpretar: {exc.detail}"),
             404: ("RUTA_NO_ENCONTRADA", f"No existe la ruta {ruta}."),
             405: ("METODO_NO_PERMITIDO", f"{ruta} no admite {request.method}."),
+            413: ("CUERPO_DEMASIADO_GRANDE", str(exc.detail)),
         }.get(exc.status_code, (f"HTTP_{exc.status_code}", str(exc.detail)))
         respuesta = ErrorRespuesta(codigo=codigo, mensaje=mensaje)
         return _responder(exc.status_code, respuesta, exc.headers)
@@ -138,8 +139,10 @@ def registrar_manejadores(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _inesperado(request: Request, _: Exception) -> JSONResponse:
         # El detalle va a la bitacora, no al cliente: un traceback le dice a un atacante
-        # mas de lo que le sirve a un usuario.
-        log.exception("error no controlado en %s %s", request.method, request.url.path)
+        # mas de lo que le sirve a un usuario. Normalmente lo atiende antes el middleware de
+        # observacion (motor_cartera.api.observacion), con el request_id; este queda de respaldo.
+        ruta = getattr(request.scope.get("route"), "path", "sin ruta")
+        log.exception("error no controlado en %s %s", request.method, ruta)
         respuesta = ErrorRespuesta(
             codigo="ERROR_INTERNO",
             mensaje="Error interno. No es un problema de la peticion; quedo en la bitacora.",

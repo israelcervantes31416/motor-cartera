@@ -405,7 +405,9 @@ def consultar(destino: Path, geografia_run_id: str, territorial_run_id: str) -> 
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-geografia-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     # Una cuenta asignada, su municipio y su base; la base con mas cuentas.
     ((cuenta, cvegeo, codigo),) = _sql(
         "SELECT c.cuenta_id, m.cvegeo, b.codigo FROM asignacion_territorial_v2 a "

@@ -259,7 +259,9 @@ def consultar(destino: Path) -> dict:
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-lifecycle-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     # La cuenta con mas eventos (el peor caso de una cuenta) y una con un pago ambiguo.
     ((mas_eventos,),) = _sql(
         "SELECT c.cuenta_id FROM (SELECT cuenta_canonica_id, count(*) AS n FROM evento_lifecycle "

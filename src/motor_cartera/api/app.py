@@ -43,9 +43,17 @@ from motor_cartera.api import (
     territorial,
     territorial_v2,
 )
+from motor_cartera.api.autorizacion import (
+    MATRIZ,
+    Autenticador,
+    agregar_seguridad_al_openapi,
+    autorizar,
+    verificar_matriz,
+)
 from motor_cartera.api.errores import registrar_manejadores
-from motor_cartera.api.seguridad import exigir_api_key
-from motor_cartera.config import Config
+from motor_cartera.api.limites import LimiteDeCuerpo
+from motor_cartera.api.observacion import Observacion
+from motor_cartera.config import Config, validar
 from motor_cartera.config import config as config_del_entorno
 
 DESCRIPCION = """
@@ -350,8 +358,14 @@ responden `409`: `FLUJO_EN_PROCESO` si el flujo la va a correr, o `FLUJO_DETENID
 ahi y se reanuda. Una vez publicada, una etapa no se repite: `409 DECISION_YA_GENERADA`,
 `TERRITORIAL_YA_GENERADO` o `RUTEO_YA_GENERADO`.
 
-**Autenticacion.** Toda ruta, salvo `/salud` y esta documentacion, exige la cabecera
-`X-API-Key` con la clave de `MC_API_KEY`. Usa el boton *Authorize*.
+**Autenticacion y permisos.** Toda ruta, salvo `/salud`, `/health/live`, `/health/ready` y esta
+documentacion (que no existe en produccion), exige una credencial y un permiso. Una persona entra
+con OpenID Connect por el edge, que presenta su token de acceso (`Authorization: Bearer`); un
+servicio interno, con su clave (`X-API-Key`), y en desarrollo la clave de `MC_API_KEY`. Cada
+operacion exige su permiso: `mc.read` para leer, `mc.audit` para la evidencia, los trabajos de la
+cola y el linaje, `mc.execute` para pedir trabajo o registrar un evento y `mc.configure` para
+publicar configuracion. Sin credencial valida, `401`; sin el permiso, `403 PERMISO_INSUFICIENTE`.
+La matriz completa esta en docs/matriz-autorizacion.md. Usa el boton *Authorize*.
 
 **Errores.** Todas las respuestas 4xx y 5xx tienen la misma forma (`ErrorRespuesta`).
 Compara `codigo`, que es estable; `mensaje` es para personas y puede cambiar.
@@ -508,54 +522,97 @@ ETIQUETAS = [
         "pagina las cuentas del corte, arma la Cuenta 360 sin datos personales y dibuja el linaje. "
         "No ejecuta, no recalcula y no elige nada como 'lo ultimo'.",
     },
-    {"name": "salud", "description": "Si la API vive y la base contesta."},
+    {
+        "name": "salud",
+        "description": "Si la API vive (liveness), si esta lista para atender (readiness: la base "
+        "contesta con el esquema esperado) y el reporte de siempre.",
+    },
 ]
+
+ROUTERS = (
+    corridas,
+    pagos,
+    orquestacion,
+    cartera,
+    decisiones,
+    territorial,
+    ruteo,
+    cuentas,
+    historia,
+    motor_pagos,
+    movimientos,
+    gestiones,
+    acuerdos,
+    lifecycle,
+    evaluaciones,
+    atribuciones,
+    decisiones_v2,
+    geografia,
+    bases,
+    territorial_v2,
+    campo,
+    campo_v2,
+    ruteo_v2,
+    analytics,
+    predictivo,
+    optimizacion,
+    app_v1,
+    salud,
+)
 
 
 def crear_app(config: Config | None = None) -> FastAPI:
-    """Construye la API. Sin MC_API_KEY no arranca: una API que arranca sin clave, arranca
-    abierta, y eso es fail-open."""
+    """Construye la API. Con una configuracion que no le permite arrancar (en produccion: sin
+    OpenID Connect, sin la credencial del gateway, sin la clave de auditoria, con la clave universal
+    de desarrollo...; fuera de produccion, sin ninguna credencial que aceptar) levanta
+    ConfiguracionInvalida y no arranca: una API mal configurada no arranca abierta."""
     config = config or config_del_entorno
-    clave = config.api_key.get_secret_value() if config.api_key else ""
-    if not clave:
-        raise RuntimeError("MC_API_KEY no esta definida: la API no arranca sin clave.")
+    validar(config, "api")
+    from motor_cartera.observabilidad import metricas, preparar_proceso
 
+    preparar_proceso(config, "api")
+    documentacion = not config.es_produccion
     app = FastAPI(
         title="motor-cartera",
         version=__version__,
         description=DESCRIPCION,
         openapi_tags=ETIQUETAS,
+        dependencies=[Depends(autorizar)],
+        # En produccion la API no publica su documentacion ni su OpenAPI: no hacen falta para
+        # operarla, y le dirian a quien llegue a la red interna cada ruta que existe.
+        docs_url="/docs" if documentacion else None,
+        redoc_url="/redoc" if documentacion else None,
+        openapi_url="/openapi.json" if documentacion else None,
+        # La telemetria nativa de FastAPI, apagada entera: su span de servidor lleva la ruta real y
+        # la query (un identificador de cliente adentro) y sus logs, los valores de entrada de una
+        # validacion fallida. El span y el log de la peticion los emite Observacion, con la
+        # plantilla de la ruta y sin datos.
+        telemetry={
+            "tracing": False,
+            "metrics": False,
+            "logs": False,
+            "operation_spans": False,
+            "auto_configure": False,
+        },
     )
-    app.state.api_key = clave
     app.state.config = config
+    app.state.matriz = dict(MATRIZ)
+    app.state.autenticador = Autenticador.de_config(config)
     registrar_manejadores(app)
-    protegidas = [Depends(exigir_api_key)]
-    app.include_router(corridas.router, dependencies=protegidas)
-    app.include_router(pagos.router, dependencies=protegidas)
-    app.include_router(orquestacion.router, dependencies=protegidas)
-    app.include_router(cartera.router, dependencies=protegidas)
-    app.include_router(decisiones.router, dependencies=protegidas)
-    app.include_router(territorial.router, dependencies=protegidas)
-    app.include_router(ruteo.router, dependencies=protegidas)
-    app.include_router(cuentas.router, dependencies=protegidas)
-    app.include_router(historia.router, dependencies=protegidas)
-    app.include_router(motor_pagos.router, dependencies=protegidas)
-    app.include_router(movimientos.router, dependencies=protegidas)
-    app.include_router(gestiones.router, dependencies=protegidas)
-    app.include_router(acuerdos.router, dependencies=protegidas)
-    app.include_router(lifecycle.router, dependencies=protegidas)
-    app.include_router(evaluaciones.router, dependencies=protegidas)
-    app.include_router(atribuciones.router, dependencies=protegidas)
-    app.include_router(decisiones_v2.router, dependencies=protegidas)
-    app.include_router(geografia.router, dependencies=protegidas)
-    app.include_router(bases.router, dependencies=protegidas)
-    app.include_router(territorial_v2.router, dependencies=protegidas)
-    app.include_router(campo.router, dependencies=protegidas)
-    app.include_router(campo_v2.router, dependencies=protegidas)
-    app.include_router(ruteo_v2.router, dependencies=protegidas)
-    app.include_router(analytics.router, dependencies=protegidas)
-    app.include_router(predictivo.router, dependencies=protegidas)
-    app.include_router(optimizacion.router, dependencies=protegidas)
-    app.include_router(app_v1.router, dependencies=protegidas)
-    app.include_router(salud.router)
+    # El ultimo que se agrega es el mas externo: la observacion ve tambien el 413 del limite.
+    app.add_middleware(LimiteDeCuerpo, maximo_bytes=config.tamano_maximo_cuerpo_kb * 1024)
+    app.add_middleware(Observacion)
+    for modulo in ROUTERS:
+        app.include_router(modulo.router)
+    original = app.openapi
+
+    def openapi() -> dict:
+        if app.openapi_schema is None:
+            agregar_seguridad_al_openapi(original(), app.state.matriz)
+        return app.openapi_schema
+
+    app.openapi = openapi
+    verificar_matriz(app)
+    if config.app_env != "test":
+        metricas.registrar_cola()
     return app

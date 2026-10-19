@@ -682,7 +682,9 @@ def consultar(destino: Path, run_id: str, cuenta: str, base: str | None) -> dict
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-optimizacion-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     run = f"/optimizacion/ejecuciones/{run_id}"
     resultados = f"{run}/resultados?por_pagina=100"
     rutas = {
