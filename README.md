@@ -163,11 +163,12 @@ una coordenada, y cada predicción y cada plan dicen a la vista lo que no son
 lo dice a la vista: «Desarrollo local sin usuarios (clave de servicio del proxy); no desplegar así ni
 con datos reales».
 
-Y **desde v0.18 se despliega**: el compose de producción tiene TLS, usuarios que inician sesión con
-OpenID Connect (PKCE, por un BFF: ningún token en el navegador), permisos por ruta en una matriz que
-el arranque verifica, secretos montados, contenedores endurecidos, logs, métricas, trazas y
-auditoría sin datos personales, alertas con sus runbooks, respaldos de la base y del almacén con su
-restauración ensayada, y una arquitectura de referencia en Google Cloud validada y nunca aplicada
+Y **desde v0.18 queda preparado para desplegarse en producción**: el compose de producción tiene TLS,
+usuarios que inician sesión con OpenID Connect (PKCE, por un BFF: ningún token en el navegador),
+permisos por ruta en una matriz que el arranque verifica, secretos montados, contenedores
+endurecidos, logs, métricas, trazas y auditoría sin datos personales, alertas con sus runbooks,
+respaldos de la base y del almacén con su restauración ensayada, y una arquitectura de referencia en
+Google Cloud validada y nunca aplicada
 ([docs/production.md](docs/production.md), [docs/security.md](docs/security.md),
 [docs/observability.md](docs/observability.md), [docs/backups.md](docs/backups.md) y
 [docs/cloud-gcp.md](docs/cloud-gcp.md)).
