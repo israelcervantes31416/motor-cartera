@@ -11,7 +11,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 AS uv
 
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS base
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS base
 
 # El entorno va en /opt/venv y no en /app/.venv: el compose de desarrollo monta el repositorio sobre
 # /app y lo taparia. Sin descargas, uv usa el Python 3.12 de la imagen.
