@@ -838,13 +838,17 @@ def test_app_v1_solo_lee_y_documenta_cada_ruta(cliente_app):
         "/app/v1/cuentas/{cuenta_id}/gestiones",
         "/app/v1/ruteo/rutas/{ruta_id}/paradas",
         "/app/v1/linaje",
+        "/app/v1/sesion",
     }
     for ruta, metodos in rutas.items():
         assert set(metodos) == {"get"}, ruta
         operacion = metodos["get"]
         assert operacion["summary"] and len(operacion["description"]) > 80, ruta
         assert operacion["tags"] == ["app"], ruta
-        assert {"200", "401", "422"} <= set(operacion["responses"]), ruta
+        # Cada una documenta la credencial que falta y el permiso que no alcanza; y su 422, salvo
+        # la sesion, que no tiene ningun parametro que pueda no cumplir el contrato.
+        assert {"200", "401", "403"} <= set(operacion["responses"]), ruta
+        assert "422" in operacion["responses"] or ruta == "/app/v1/sesion", ruta
         assert "$ref" in json.dumps(operacion["responses"]["200"]), ruta
         for prohibida in ("ejecutar", "enviar", "llamar", "visitar", "aplicar", "optimizar"):
             assert prohibida not in ruta, (ruta, prohibida)

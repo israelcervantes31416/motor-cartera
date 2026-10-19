@@ -63,6 +63,44 @@
   display: none;
 }
 
+/* La sesion en la cabecera: quien entro (sus permisos, sin su nombre) y como salir. */
+.cabecera__sesion {
+  margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  font-size: var(--letra-2);
+  color: var(--texto-secundario);
+}
+
+.salida {
+  display: inline;
+  margin: 0;
+}
+
+.boton.boton--discreto {
+  min-height: 28px;
+  padding: 0 var(--espacio-2);
+  font-size: var(--letra-2);
+}
+
+/* Las pantallas sin sesion: iniciar sesion, la sesion vencida y la falta de permiso. */
+.contenido--acceso {
+  display: flex;
+  justify-content: center;
+}
+
+.acceso {
+  max-width: 36rem;
+  width: 100%;
+}
+
+.acceso__nota {
+  font-size: var(--letra-2);
+  color: var(--texto-secundario);
+}
+
 .app__cuerpo {
   flex: 1;
   display: grid;
@@ -902,6 +940,11 @@
 
   .boton.cabecera__menu {
     display: inline-flex;
+  }
+
+  .cabecera__sesion {
+    margin-left: 0;
+    width: 100%;
   }
 
   .navegacion {

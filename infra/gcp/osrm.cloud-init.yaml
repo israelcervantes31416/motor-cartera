@@ -1,0 +1,33 @@
+#cloud-config
+# La VM de OSRM (Container-Optimized OS): monta de solo lectura el disco con la red preparada y corre
+# osrm-routed por systemd, con la imagen fijada por su digest, como el compose de produccion: sin
+# privilegios, sin capacidades, de solo lectura y con --verbosity WARNING (su bitacora INFO repite
+# cada peticion con sus coordenadas). La huella de la red vigente esta en /mnt/disks/red-vial/VIGENTE.
+
+bootcmd:
+  - mkdir -p /mnt/disks/red-vial
+  - mount -o ro,noexec,nosuid,nodev /dev/disk/by-id/google-red-vial /mnt/disks/red-vial
+
+write_files:
+  - path: /etc/systemd/system/osrm.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=OSRM (motor-cartera)
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f osrm
+      ExecStart=/bin/sh -c '/usr/bin/docker run --rm --name osrm --user 65534:65534 --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:size=16m -p 5000:5000 -v /mnt/disks/red-vial:/redes:ro ${imagen} osrm-routed --algorithm mld --verbosity WARNING --max-nearest-locations 100 /redes/$(cat /mnt/disks/red-vial/VIGENTE)/red.osrm'
+      ExecStop=/usr/bin/docker stop osrm
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl start osrm.service

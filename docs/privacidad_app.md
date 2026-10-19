@@ -3,10 +3,13 @@
 La app (v0.17) no muestra, no recibe y no guarda un dato personal. No es una promesa de pantalla:
 está en tres capas que se prueban por separado, y una falla en una no la abre en las otras.
 
-**Superficie local/demostrativa sin autenticación; no desplegar con datos reales.** La app no tiene
-usuarios, ni sesiones, ni roles: cualquiera que alcance su puerto ve lo que su proxy deja pasar. Por
-eso el compose la publica solo en `127.0.0.1`, y la autenticación, el control de acceso y el
-endurecimiento para un despliegue son de v0.18.
+**Quién ve qué (v0.18).** En el compose de producción cada persona inicia sesión y ve lo que sus
+permisos dejan leer ([security.md](security.md)); el navegador guarda una cookie de sesión
+`HttpOnly`, `Secure` y `SameSite=Lax`, nunca un token ni una clave, y nada en `localStorage` ni en
+`sessionStorage` (Playwright lo revisa). La app pregunta quién es por `GET /app/v1/sesion`, que
+responde un seudónimo (`usr:` y 16 hexadecimales), nunca un correo ni un nombre. El compose de
+desarrollo no tiene usuarios, y la app lo dice: «Desarrollo local sin usuarios (clave de servicio del
+proxy); no desplegar así ni con datos reales». Por eso ese compose la publica solo en `127.0.0.1`.
 
 ## Lo que ninguna respuesta lleva
 

@@ -1,0 +1,55 @@
+# El proveedor de identidad local (Dex), servido por el mismo origen bajo /dex/. Solo el compose de
+# produccion local monta esta plantilla: en un despliegue real el IdP es externo, con su propio
+# dominio, su TLS y su CSP, y esta location no existe. Las paginas de Dex traen su CSS en linea:
+# llevan su propia CSP, sin unsafe-eval y sin unsafe-inline para scripts. Su formulario de
+# contrasena trae un script en linea (deshabilita el boton al enviar): se permite ese, y solo
+# ese, por su SHA-256. Si una version nueva de Dex lo cambia, la prueba E2E lo detecta.
+location /dex/ {
+    limit_except GET POST {
+        deny all;
+    }
+    limit_req zone=autenticacion burst=60 nodelay;
+    proxy_pass https://${MC_DEX_UPSTREAM};
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /run/secrets/ca_certificado;
+    proxy_ssl_name dex;
+    proxy_ssl_server_name on;
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_set_header Authorization "";
+    proxy_set_header X-API-Key "";
+    proxy_set_header X-MC-Gateway "";
+    proxy_set_header Cookie $http_cookie;
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 15s;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-8L66wXkInDnVEdLxlrsFPaRkqIpBKhVd5kdLxX6AvFk='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header Cache-Control "no-store" always;
+}
+
+# Las contrasenas: un limite propio, por IP, contra quien prueba contrasenas.
+location = /dex/auth/local/login {
+    limit_except GET POST {
+        deny all;
+    }
+    limit_req zone=contrasenas burst=10 nodelay;
+    proxy_pass https://${MC_DEX_UPSTREAM};
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /run/secrets/ca_certificado;
+    proxy_ssl_name dex;
+    proxy_ssl_server_name on;
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_set_header Authorization "";
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 15s;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-8L66wXkInDnVEdLxlrsFPaRkqIpBKhVd5kdLxX6AvFk='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header Cache-Control "no-store" always;
+}

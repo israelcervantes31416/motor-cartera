@@ -460,7 +460,9 @@ def consultar(destino: Path, ruteo_run_id: str) -> dict:
 
     coordenada = re.compile(r"(?<![\d:.])-?\d{1,3}\.\d{5,}")
     clave = "benchmark-ruteo-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     ((ejecucion,),) = _sql(
         "SELECT id FROM ejecucion_ruteo_v2 WHERE ruteo_run_id = :r", {"r": ruteo_run_id}
     )

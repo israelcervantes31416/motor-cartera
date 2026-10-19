@@ -3164,7 +3164,8 @@ def la_web(web: str) -> None:
     esperar(encabezado(encabezados, "x-content-type-options") == "nosniff", "nosniff")
     esperar(encabezado(encabezados, "x-frame-options") == "DENY", "X-Frame-Options DENY")
     esperar(
-        encabezado(encabezados, "referrer-policy") == "no-referrer", "Referrer-Policy no-referrer"
+        encabezado(encabezados, "referrer-policy") == "same-origin",
+        "Referrer-Policy same-origin",
     )
     esperar(
         not re.search(r"\d", encabezado(encabezados, "server") or ""),

@@ -6,20 +6,21 @@ from typing import Annotated
 
 import psycopg
 import pytest
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
 from motor_cartera.api import crear_app, salud
-from motor_cartera.api.seguridad import exigir_api_key
-from motor_cartera.config import Config
+from motor_cartera.api.autorizacion import Clase, clasificar
+from motor_cartera.config import Config, ConfiguracionInvalida
 
 CAMPOS_DE_ERROR = {"codigo", "mensaje", "detalles", "run_id", "pagos_run_id"}
 
 
 @pytest.fixture
 def app(app):
-    """La app real mas rutas de prueba, para ejercitar la infraestructura por si sola."""
+    """La app real mas rutas de prueba, para ejercitar la infraestructura por si sola. Las rutas
+    de prueba se clasifican como lectura en la matriz de autorizacion, como cualquier otra."""
     prueba = APIRouter()
 
     @prueba.get("/protegida")
@@ -34,7 +35,9 @@ def app(app):
     def revienta() -> None:
         raise RuntimeError("detalle interno que el cliente no debe ver")
 
-    app.include_router(prueba, dependencies=[Depends(exigir_api_key)])
+    app.include_router(prueba)
+    for ruta in ("/protegida", "/con-parametro", "/revienta"):
+        clasificar(app, "GET", ruta, Clase.LECTURA)
     return app
 
 
@@ -43,7 +46,7 @@ def app(app):
 
 @pytest.mark.parametrize("clave", [None, ""])
 def test_la_api_no_arranca_sin_clave(clave):
-    with pytest.raises(RuntimeError, match="MC_API_KEY"):
+    with pytest.raises(ConfiguracionInvalida, match="MC_API_KEY"):
         crear_app(Config(api_key=clave))
 
 

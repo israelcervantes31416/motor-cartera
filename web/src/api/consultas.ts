@@ -10,7 +10,7 @@
 import { keepPreviousData, QueryClient, useQuery } from "@tanstack/react-query";
 
 import { claveDeContexto, contextoParaApi, type Contexto } from "../lib/contexto";
-import { leer, reintentable, type ParametrosDeConsulta } from "./cliente";
+import { ErrorDeApi, leer, reintentable, type ParametrosDeConsulta } from "./cliente";
 
 export const LARGO = 10 * 60_000;
 export const EN_PROCESO_MS = 30_000;
@@ -44,6 +44,7 @@ export type FiltrosDeRestricciones =
 export type Pagina = { pagina?: number; por_pagina?: number };
 
 export const claves = {
+  sesion: () => ["app", "sesion"],
   opciones: (consulta: Consulta<"/app/v1/contextos/opciones">) => ["app", "opciones", consulta],
   validar: (c: Contexto) => ["app", "validar", ...claveDeContexto(c)],
   resumen: (c: Contexto) => ["app", "resumen", ...claveDeContexto(c)],
@@ -94,6 +95,20 @@ export const claves = {
 } as const;
 
 const NADA = "";
+
+// --- la sesion ------------------------------------------------------------------------------------
+
+/** Quien ve la app y sus permisos. Un 401 (sin sesion) o un 403 (sin mc.read) no se reintenta: la
+ * app muestra como iniciar sesion o por que no puede leer. */
+export function useSesion() {
+  return useQuery({
+    queryKey: claves.sesion(),
+    queryFn: ({ signal }) => leer("/app/v1/sesion", { signal }),
+    staleTime: 60_000,
+    retry: (conteo, error) =>
+      !(error instanceof ErrorDeApi && error.estado < 500) && reintentable(conteo, error),
+  });
+}
 
 // --- el contexto y app/v1 -------------------------------------------------------------------------
 

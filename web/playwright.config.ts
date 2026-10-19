@@ -1,13 +1,20 @@
 import { defineConfig } from "@playwright/test";
 
-// Contra que corre: la app del compose (nginx en 8080, con la API y su prueba de humo detras) si
-// MC_E2E_URL lo dice; si no, el build de produccion servido por `vite preview`, que pasa por el
-// mismo proxy de solo lectura hacia la API local (MC_URL_API).
-const URL_E2E = process.env["MC_E2E_URL"];
-const BASE = URL_E2E ?? "http://localhost:4173";
+import { archivoDeSesion, BASE, PRODUCCION, prepararNode, spkiDelEdge } from "./e2e/entorno";
+
+// Contra que corre (e2e/entorno.ts):
+// - MC_E2E_PRODUCCION=1: el compose de produccion local, por su edge con TLS, con sesiones de
+//   usuarios de verdad que la preparacion abre en Dex. Cada prueba usa la del auditor (lee y audita)
+//   salvo las de e2e/sesion.spec.ts, que prueban las demas.
+// - MC_E2E_URL: la app del compose de desarrollo (nginx en 8080, con la API y su prueba de humo).
+// - Ninguno: el build de produccion servido por `vite preview`, que pasa por el mismo proxy de solo
+//   lectura hacia la API local (MC_URL_API).
+const URL_E2E = PRODUCCION ? BASE : process.env["MC_E2E_URL"];
 // En el CI, el Chromium de Playwright; en una maquina sin el, el navegador instalado ("chrome" o
 // "msedge").
 const CANAL = process.env["MC_E2E_CANAL"];
+
+if (PRODUCCION) prepararNode();
 
 export default defineConfig({
   testDir: "./e2e",
@@ -28,6 +35,13 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     ...(CANAL !== undefined ? { channel: CANAL } : {}),
+    ...(PRODUCCION
+      ? {
+          storageState: archivoDeSesion("auditor"),
+          // Solo el certificado del edge, por su llave publica: ningun otro error de TLS se ignora.
+          launchOptions: { args: [`--ignore-certificate-errors-spki-list=${spkiDelEdge()}`] },
+        }
+      : {}),
   },
   projects: [
     {

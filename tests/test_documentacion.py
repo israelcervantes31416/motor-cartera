@@ -532,26 +532,25 @@ def test_las_decisiones_estan_todas_y_en_orden():
     numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
     indice = [int(n) for n in re.findall(r"^(\d+)\. \[", texto, re.MULTILINE)]
 
-    assert numeros == list(range(1, 275))
+    assert numeros == list(range(1, 304))
     assert indice == numeros
     introduccion = " ".join(texto[:5000].split())
     assert "las 175 a 196, de Collection Analytics" in introduccion
     assert "las 197 a 222, de Predictive Intelligence" in introduccion
     assert "las 223 a 247, de la Optimización Matemática" in introduccion
     assert "las 248 a 274, de la App + Dashboards" in introduccion
+    assert "las 275 a 303, de Cloud, Observabilidad y Hardening" in introduccion
 
 
-def test_el_readme_marca_v0_17_publicada_y_v0_18_la_que_sigue():
+def test_el_readme_marca_v0_18_publicada_y_v1_0_la_que_sigue():
     texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
 
-    assert (
-        "✅ v0.16.0 — Optimización Matemática: Priorización, Capacidad y Asignación Restringida"
-        in texto
-    )
     assert "✅ v0.17.0 — App + Dashboards: Superficie Operacional y Cuenta 360" in texto
-    assert "➡️ v0.18 — Cloud, Observabilidad y Hardening" in texto
-    assert "➡️ v0.17" not in texto
-    assert "Superficie local/demostrativa sin autenticación; no desplegar con datos reales" in texto
+    assert "✅ v0.18.0 — Cloud, Observabilidad y Hardening: Production Readiness" in texto
+    assert "➡️ v1.0.0 — Collection Intelligence Platform" in texto
+    assert "➡️ v0.18" not in texto
+    # El compose de desarrollo sigue sin usuarios, y el README lo dice tal cual.
+    assert "Desarrollo local sin usuarios (clave de servicio del proxy)" in texto
 
 
 # --- predictive/model-v1 --------------------------------------------------------------------------
@@ -882,3 +881,83 @@ def test_la_lista_blanca_documentada_es_la_del_proxy():
     for prefijo in ("app/v1", "analytics", "predictivo", "optimizacion", "campo-v2", "ruteo-v2"):
         assert f"/api/{prefijo}" in lista, prefijo
     assert "solo GET" in texto and "RUTA_NO_EXPUESTA" in texto and "METODO_NO_PERMITIDO" in texto
+
+
+# --- produccion, seguridad y operacion (v0.18) ----------------------------------------------------
+
+RUNBOOKS = (
+    "service-down",
+    "database-down",
+    "worker-stuck",
+    "queue-backlog",
+    "osrm-down",
+    "identity-down",
+    "backup-restore",
+    "secret-rotation",
+    "disaster-recovery",
+)
+
+
+def test_cada_alerta_tiene_su_umbral_inicial_y_un_runbook_que_existe():
+    reglas = (DOCS.parent / "infra" / "observabilidad" / "alertas.yml").read_text(encoding="utf-8")
+    alertas = re.findall(r"- alert: (\w+)", reglas)
+    runbooks = re.findall(r"runbook: (docs/runbooks/[\w-]+\.md)", reglas)
+
+    assert len(alertas) >= 15
+    assert reglas.count("umbral: inicial") == len(alertas) == len(runbooks)
+    for runbook in runbooks:
+        assert (DOCS.parent / runbook).exists(), runbook
+    observabilidad = (DOCS / "observability.md").read_text(encoding="utf-8")
+    for alerta in alertas:
+        assert f"`{alerta}`" in observabilidad, alerta
+
+
+def test_cada_runbook_existe_y_esta_en_el_indice():
+    indice = (DOCS / "runbooks" / "README.md").read_text(encoding="utf-8")
+    for nombre in RUNBOOKS:
+        assert (DOCS / "runbooks" / f"{nombre}.md").exists(), nombre
+        assert f"({nombre}.md)" in indice, nombre
+
+
+def test_la_seguridad_documenta_cada_codigo_de_autenticacion_y_de_autorizacion():
+    fuentes = "".join(
+        (DOCS.parent / "src" / "motor_cartera" / ruta).read_text(encoding="utf-8")
+        for ruta in ("api/autorizacion.py", "seguridad/tokens.py")
+    )
+    codigos = set(
+        re.findall(
+            r'"((?:TOKEN|API_KEY|CREDENCIAL|CREDENCIALES|GATEWAY|IDENTIDAD|PERMISO|RUTA)_[A-Z_]+)"',
+            fuentes,
+        )
+    )
+    seguridad = (DOCS / "security.md").read_text(encoding="utf-8")
+
+    assert len(codigos) >= 20
+    for codigo in sorted(codigos):
+        assert f"`{codigo}`" in seguridad, codigo
+
+
+def test_los_documentos_de_produccion_existen_y_se_enlazan():
+    for archivo in (
+        "production.md",
+        "security.md",
+        "threat-model.md",
+        "observability.md",
+        "slos.md",
+        "backups.md",
+        "carga.md",
+        "cadena-de-suministro.md",
+        "cloud-gcp.md",
+        "matriz-autorizacion.md",
+        "security-review-v018.md",
+    ):
+        assert (DOCS / archivo).exists(), archivo
+    readme = (DOCS.parent / "README.md").read_text(encoding="utf-8")
+    for archivo in ("production.md", "security.md", "backups.md", "cloud-gcp.md"):
+        assert f"docs/{archivo}" in readme, archivo
+
+
+def test_la_referencia_de_la_nube_se_declara_nunca_aplicada():
+    texto = " ".join((DOCS / "cloud-gcp.md").read_text(encoding="utf-8").split())
+    assert "nunca se aplicó y este repositorio no la aplica" in texto
+    assert "Lo que falta para un despliegue real" in texto

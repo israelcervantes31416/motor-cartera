@@ -5,29 +5,91 @@ on:
     branches: [main]
   pull_request:
 
+# Por omision cada job solo lee el repositorio: ninguno escribe en el ni publica nada. Las acciones
+# van fijadas por el SHA de su commit (con su version en un comentario) y cada checkout deja la
+# credencial fuera del disco (scripts/verificar_cadena_de_suministro.py lo revisa).
+permissions:
+  contents: read
+
 jobs:
-  # Lo que el .gitignore no alcanza a ver: un archivo trackeado aunque sus reglas lo excluyan,
-  # o una hoja de calculo con otro nombre. Revisa el commit que se sube, no una lista aparte. Y la
-  # app web: su lockfile y su Node fijado trackeados, nada externo en lo que carga el navegador y
-  # sus imagenes base fijadas por su digest.
+  # Lo que el .gitignore no alcanza a ver (un archivo trackeado aunque sus reglas lo excluyan, o una
+  # hoja de calculo con otro nombre), la cadena de suministro fijada, ningun secreto en el historial
+  # y la referencia de Google Cloud valida y dentro de su politica, sin credenciales ni red de GCP.
   archivos:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Gitleaks revisa el historial completo, no solo el ultimo commit.
+          fetch-depth: 0
 
       - name: Archivos trackeados
         run: python3 scripts/verificar_archivos_trackeados.py
 
+      - name: Cadena de suministro fijada
+        run: python3 scripts/verificar_cadena_de_suministro.py
+
+      # Las reglas por omision de gitleaks, con las dos excepciones literales y justificadas de
+      # .gitleaks.toml. Como el usuario del runner: git no confia en un repositorio de otro dueno.
+      - name: Secretos en el historial (gitleaks)
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --config /repo/.gitleaks.toml --redact --no-banner
+
+      # Las dependencias exactas de los lockfiles (uv.lock y web/package-lock.json) contra la base de
+      # Trivy: una segunda opinion junto a pip-audit y npm audit. Una alta o critica con correccion
+      # publicada detiene el CI.
+      - name: Vulnerabilidades en los lockfiles (Trivy)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          fs --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /repo
+
+      # NUNCA se aplica: fmt, init sin backend con el lock de solo lectura (un proveedor que no
+      # coincide con su hash falla), validate, el plan de los dos entornos de ejemplo sin
+      # credenciales ni estado (en una copia, con un backend local) y la politica de
+      # scripts/verificar_iac.py.
+      - name: Referencia de Google Cloud (OpenTofu, sin credenciales)
+        run: |
+          set -o pipefail
+          tofu() {
+            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOOGLE_OAUTH_ACCESS_TOKEN \
+              -v "$1:/iac" -w /iac \
+              ghcr.io/opentofu/opentofu:1.13.1@sha256:1df996fca13806a20d5a3d3ad54acdcf76bcb1aa4ac30b5ba169b9e4cecdbcc8 \
+              "${@:2}"
+          }
+          tofu "$PWD/infra/gcp" fmt -check -recursive -diff
+          tofu "$PWD/infra/gcp" init -backend=false -input=false -lockfile=readonly
+          tofu "$PWD/infra/gcp" validate -no-color
+          copia="$RUNNER_TEMP/iac"
+          cp -r infra/gcp "$copia"
+          printf 'terraform {\n  backend "local" {}\n}\n' > "$copia/override.tf"
+          tofu "$copia" init -input=false -lockfile=readonly
+          export GOOGLE_OAUTH_ACCESS_TOKEN=token-falso-sin-permisos
+          for entorno in staging production; do
+            tofu "$copia" plan -refresh=false -lock=false -input=false -no-color \
+              -var-file="entornos/$entorno.tfvars" > "plan-$entorno.txt"
+            echo "$entorno: $(grep "^Plan:" "plan-$entorno.txt")"
+            grep -q "Plan: [0-9]* to add, 0 to change, 0 to destroy." "plan-$entorno.txt"
+          done
+          python3 scripts/verificar_iac.py
+
+  # La suite completa, contra PostgreSQL y con cobertura, tardo 38 min en v0.17 (3,670 pruebas) y
+  # v0.18 suma mas de 200: con 45 min de tope, el job quedaba a minutos de cancelarse.
   pruebas:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     services:
-      # PostgreSQL 16 con PostGIS: la migracion 0012 crea la extension, y las pruebas de la
-      # geografia y de territorial/v2 la usan con referencias sinteticas diminutas. El CI no
-      # descarga nada del INEGI.
+      # PostgreSQL 16 con PostGIS, fijada por su digest: la migracion 0012 crea la extension, y las
+      # pruebas de la geografia y de territorial/v2 la usan con referencias sinteticas diminutas. El
+      # CI no descarga nada del INEGI.
       postgres:
-        image: postgis/postgis:16-3.5
+        image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
         env:
           POSTGRES_USER: motor
           POSTGRES_PASSWORD: motor
@@ -40,11 +102,16 @@ jobs:
           --health-retries 10
 
     env:
+      MC_APP_ENV: test
       MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_test
       MC_DATABASE_URL_PRUEBAS: postgresql+psycopg://motor:motor@localhost:5432/cartera_test
+      # Las pruebas del respaldo con pg_dump y pg_restore son obligatorias aqui: sin ellos fallan.
+      MC_RESPALDO_EXIGIR_PG: "1"
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # El Python del sistema del runner esta marcado como "externally managed" (PEP 668):
       # instalar ahi con --system falla. Un entorno virtual activado evita el problema.
@@ -63,10 +130,16 @@ jobs:
       - name: Dependencias
         run: uv sync --locked --extra dev
 
+      # pg_dump y pg_restore del mismo mayor que el servidor, para las pruebas de scripts/respaldo.py.
+      - name: pg_dump y pg_restore 16
+        run: |
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+
       # La app web (web/), con el Node de web/.node-version y las versiones exactas de su
       # package-lock.json, sin scripts de instalacion.
       - name: Node para la app web
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: web/.node-version
           cache: npm
@@ -75,6 +148,17 @@ jobs:
       - name: Dependencias de la app web
         working-directory: web
         run: npm ci --ignore-scripts
+
+      # Las vulnerabilidades conocidas de las dependencias exactas: las de Python del uv.lock (todas
+      # las extras, con sus hashes) en pip-audit, y las de produccion de la app web en npm audit. Una
+      # alta o critica detiene el CI.
+      - name: Auditoria de dependencias
+        run: |
+          uv export --frozen --format requirements-txt --no-emit-project --all-extras \
+            -o "$RUNNER_TEMP/requisitos.txt"
+          uvx --from pip-audit==2.10.1 pip-audit -r "$RUNNER_TEMP/requisitos.txt" \
+            --require-hashes --disable-pip --progress-spinner off
+          (cd web && npm audit --omit=dev --audit-level=high)
 
       # Los tipos de la app salen del OpenAPI de la API, reducido a lo que su proxy deja pasar: si
       # una respuesta cambia y nadie regenero el contrato ni los tipos, el diff los delata.
@@ -156,12 +240,16 @@ jobs:
   # sintetica que prepara y sirve OSRM v26.9.0 con su imagen fijada. Al final, un escenario
   # predictivo pequeno, en su propia cartera, entrena predictive/model-v1 y lo usa para puntuar,
   # medir el drift y explicar una prediccion; y optimization/v1 arma, en sombra, el plan optimo de
-  # su ultimo corte y uno con CAMPO sobre el corte oficial y su ruteo/v2.
+  # su ultimo corte y uno con CAMPO sobre el corte oficial y su ruteo/v2. Lo que queda se respalda
+  # (la base y el almacen) y pasa al job de produccion, que lo restaura en un entorno nuevo.
   compose:
     runs-on: ubuntu-latest
+    timeout-minutes: 75
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: docker compose up
         run: docker compose up -d --build
@@ -453,7 +541,7 @@ jobs:
           python3 scripts/prueba_de_humo.py --web http://localhost:8080 | tee humo_web.txt
 
       - name: Node para las pruebas E2E
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: web/.node-version
           cache: npm
@@ -467,7 +555,8 @@ jobs:
 
       # Contra la app del compose, con la API real y lo que publico la prueba de humo: los flujos
       # principales, los errores, el movil (390 x 844), la privacidad de cada respuesta y del DOM,
-      # y axe-core en Chromium (contraste incluido) sobre las pantallas principales.
+      # y axe-core en Chromium (contraste incluido) sobre las pantallas principales. Las pruebas de
+      # la sesion (e2e/sesion.spec.ts) necesitan usuarios: corren en el job de produccion.
       - name: Pruebas E2E de la app web
         working-directory: web
         env:
@@ -476,11 +565,21 @@ jobs:
 
       - name: Reporte de Playwright
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: web/playwright-report/
           retention-days: 7
+
+      # El respaldo oficial (scripts/respaldo.py): la base y el almacen de artefactos, juntos, como
+      # el usuario del runner (que es dueno de ./respaldos). El job de produccion lo restaura.
+      - name: Respaldo de la base y del almacen
+        run: |
+          set -o pipefail
+          mkdir -p respaldos
+          MC_RESPALDO_USUARIO="$(id -u):$(id -g)" docker compose --profile respaldo run --rm respaldo \
+            | tee respaldo.json
+          grep -q '"resultado": "RESPALDADO"' respaldo.json
 
       # El almacen de artefactos es evidencia: sobrevive a que se borren los contenedores. Se
       # bajan (sin -v, que borraria los volumenes) y se vuelven a levantar, y cada artefacto que la
@@ -491,6 +590,24 @@ jobs:
           docker compose --profile ruteo down
           docker compose up -d
           docker compose exec -T worker motor-cartera verificar-fuentes --minimo 5
+
+      # Lo que el job de produccion necesita: el respaldo y la red vial preparada (un activo
+      # derivado, que no va en el respaldo), solo por un dia y solo como artefacto de este run.
+      - name: Respaldo y red vial para el job de produccion
+        run: |
+          huella=$(awk '/^huella/ {print $2}' preparar.txt)
+          mkdir -p entrega/red_vial
+          cp -r respaldos entrega/
+          cp -r "datos/red_vial/$huella" entrega/red_vial/
+          echo "$huella" > entrega/red_vial/HUELLA
+
+      - name: Entregar el respaldo
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: respaldo-desarrollo
+          path: entrega/
+          retention-days: 1
+          if-no-files-found: error
 
       # Lo que hizo el worker: cada trabajo que tomo y como lo cerro.
       - name: Bitacora del worker
@@ -504,3 +621,209 @@ jobs:
       - name: Apagar
         if: always()
         run: docker compose --profile ruteo down -v
+
+  # El compose de produccion (docs/production.md) en otra maquina limpia, a partir del respaldo del
+  # job anterior: secretos efimeros recien generados, la restauracion en un entorno nuevo (con los
+  # simulacros de respaldos alterados), el compose completo con TLS, OIDC, la observabilidad y OSRM,
+  # sus tres pruebas de humo, las pruebas E2E con usuarios de verdad, los simulacros de falla, la
+  # carga corta con sus umbrales, un respaldo del entorno y el escaneo de las imagenes con su SBOM.
+  produccion:
+    needs: [compose]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    env:
+      MC_OTEL_ENDPOINT: http://otel-collector:4318
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: El respaldo del job anterior
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: respaldo-desarrollo
+          path: entrega
+
+      - name: El respaldo y la red vial en su lugar
+        run: |
+          mv entrega/respaldos respaldos
+          huella=$(cat entrega/red_vial/HUELLA)
+          mkdir -p datos/red_vial
+          mv "entrega/red_vial/$huella" "datos/red_vial/$huella"
+          echo "MC_RED_VIAL_HUELLA=$huella" >> "$GITHUB_ENV"
+          echo "RESPALDO=$(ls -d respaldos/motor-cartera-*)" >> "$GITHUB_ENV"
+
+      - name: uv y Python 3.12
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.21"
+          python-version: "3.12"
+          activate-environment: true
+
+      - name: Dependencias
+        run: uv sync --locked --extra dev
+
+      # Una CA y certificados de 30 dias, contrasenas al azar, las claves de servicio y los usuarios
+      # de Dex: nada de esto existe fuera de este run. Los servicios los leen por su grupo (10999);
+      # el script no imprime ningun secreto.
+      - name: Secretos efimeros
+        run: |
+          python scripts/generar_secretos_locales.py secretos
+          sudo chgrp -R 10999 secretos
+
+      - name: Imagenes
+        run: docker compose -f docker-compose.production.yml --profile respaldo build
+
+      # PostgreSQL nuevo, sin tablas, y el respaldo del job anterior restaurado en el: antes, cinco
+      # respaldos alterados que se niegan sin tocar ni la base ni el almacen (docs/backups.md).
+      - name: Restauracion en un entorno nuevo
+        run: |
+          docker compose -f docker-compose.production.yml up -d --wait postgres
+          python scripts/simulacro_de_restauracion.py "$RESPALDO" \
+            --informe resultados/restauracion.json
+
+      - name: El compose de produccion completo
+        run: |
+          docker compose -f docker-compose.production.yml --profile observabilidad --profile ruteo \
+            up -d --wait
+          docker compose -f docker-compose.production.yml --profile observabilidad --profile ruteo \
+            ps --all
+
+      # El esquema restaurado es la cabeza de esta version (migraciones no tuvo nada que hacer) y
+      # coincide con los modelos; el almacen restaurado tiene cada artefacto con sus bytes.
+      - name: El esquema y el almacen restaurados
+        run: |
+          set -o pipefail
+          docker compose -f docker-compose.production.yml run --rm --no-deps migraciones \
+            alembic current | tee revision.txt
+          grep -q "(head)" revision.txt
+          docker compose -f docker-compose.production.yml run --rm --no-deps migraciones alembic check
+          docker compose -f docker-compose.production.yml exec -T worker \
+            motor-cartera verificar-fuentes --minimo 5
+
+      - name: Prueba de humo del edge
+        run: >-
+          python scripts/prueba_de_humo_produccion.py --edge https://motor-cartera.localhost:8443
+          --ca secretos/ca_certificado --usuarios secretos/usuarios.json --claves secretos/claves_humo
+
+      - name: Prueba de humo interna
+        run: docker compose -f docker-compose.production.yml --profile herramientas run --rm herramientas
+
+      - name: Contenedores endurecidos
+        run: python scripts/prueba_de_humo_produccion.py --contenedores --proyecto motor-cartera-produccion
+
+      - name: Node para las pruebas E2E
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Playwright con Chromium
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+
+      # Las mismas pruebas, por el edge con TLS y con sesiones que la preparacion abre en Dex, mas
+      # las de la sesion: iniciar y cerrar sesion, los permisos, la sesion que expira y HTTPS.
+      - name: Pruebas E2E contra el compose de produccion
+        working-directory: web
+        env:
+          MC_E2E_PRODUCCION: "1"
+        run: npx playwright test
+
+      - name: Simulacros de falla
+        run: python scripts/simulacros.py --informe resultados/simulacros.json
+
+      # Una version corta de las pruebas de carga registradas (docs/carga.md), con sus umbrales.
+      - name: Carga
+        run: |
+          python scripts/carga.py --escenario api --tasa 10 --duracion 15s
+          python scripts/carga.py --escenario limite
+
+      # El respaldo del entorno de produccion se verifica entero, y restaurarlo sobre la base en uso
+      # se niega: DESTINO_ES_EL_ORIGEN si el rol lee el identificador del cluster (el caso de este
+      # compose), BASE_NO_VACIA si no. Nunca se restaura sobre una base con tablas.
+      - name: Respaldo del entorno de produccion
+        run: |
+          set -o pipefail
+          MC_RESPALDO_USUARIO="$(id -u):$(id -g)" docker compose -f docker-compose.production.yml \
+            --profile respaldo run --rm respaldo | tee respaldo_produccion.json
+          grep -q '"resultado": "RESPALDADO"' respaldo_produccion.json
+          nuevo=$(python -c "import json; print(json.load(open('respaldo_produccion.json'))['respaldo'])")
+          docker compose -f docker-compose.production.yml --profile restauracion run --rm --no-deps \
+            restauracion verificar "$nuevo" | tee verificado.json
+          grep -q '"resultado": "INTEGRO"' verificado.json
+          docker compose -f docker-compose.production.yml --profile restauracion run --rm --no-deps \
+            restauracion restaurar "$nuevo" | tee negado.json || true
+          grep -q '"resultado": "NEGADO"' negado.json
+          grep -qE '"codigo": "(DESTINO_ES_EL_ORIGEN|BASE_NO_VACIA)"' negado.json
+
+      # Las tres imagenes propias: ninguna vulnerabilidad alta o critica con correccion publicada, y
+      # su SBOM (CycloneDX) como artefacto del run.
+      - name: Escaneo de las imagenes propias (Trivy) y su SBOM
+        run: |
+          trivy() {
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v motor-cartera-trivy:/root/.cache/trivy -v "$PWD/resultados:/resultados" \
+              aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+              "$@"
+          }
+          for par in api=motor-cartera:produccion web=motor-cartera-web:produccion \
+            respaldo=motor-cartera-respaldo:local; do
+            nombre=${par%%=*}
+            imagen=${par#*=}
+            trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 "$imagen"
+            trivy image --quiet --format cyclonedx --output "/resultados/sbom-$nombre.cdx.json" "$imagen"
+          done
+
+      # Las imagenes de terceros del camino de una peticion, fijadas por su digest: un informe en el
+      # resumen del run, que no detiene el CI (se atiende actualizando su digest; ver
+      # docs/cadena-de-suministro.md).
+      - name: Imagenes de terceros (informe)
+        run: |
+          {
+            echo "## Imagenes de terceros: vulnerabilidades altas y criticas con correccion"
+            echo
+            for imagen in $(docker compose -f docker-compose.production.yml --profile ruteo config --images \
+              | grep -E "^(postgis|ghcr.io/dexidp|quay.io/oauth2-proxy|valkey|ghcr.io/project-osrm)" | sort -u); do
+              total=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                -v motor-cartera-trivy:/root/.cache/trivy \
+                aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+                image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+                --format json "$imagen" \
+                | python3 -c "import json, sys; d = json.load(sys.stdin); print(sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', [])))")
+              echo "- \`${imagen%%@*}\`: $total"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Evidencia del job de produccion
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: produccion-evidencia
+          path: resultados/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Reporte de Playwright
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-produccion
+          path: web/playwright-report/
+          retention-days: 7
+
+      - name: Bitacora de los contenedores
+        if: failure()
+        run: docker compose -f docker-compose.production.yml --profile observabilidad --profile ruteo logs
+
+      - name: Apagar
+        if: always()
+        run: >-
+          docker compose -f docker-compose.production.yml --profile observabilidad --profile ruteo
+          --profile herramientas --profile respaldo --profile restauracion down -v

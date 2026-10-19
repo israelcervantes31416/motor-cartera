@@ -988,10 +988,17 @@ def test_openapi_documenta_las_cuatro_operaciones_de_decisiones(app):
     }
 
     assert {clave: set(op["responses"]) for clave, op in operaciones.items()} == {
-        ("POST", "/corridas/{run_id}/decisiones"): {"201", "401", "404", "409", "422"},
-        ("GET", "/corridas/{run_id}/decisiones"): {"200", "401", "404", "422"},
-        ("GET", "/decisiones/{decision_run_id}"): {"200", "401", "404", "422"},
-        ("GET", "/decisiones/{decision_run_id}/cuentas"): {"200", "401", "404", "409", "422"},
+        ("POST", "/corridas/{run_id}/decisiones"): {"201", "401", "403", "404", "409", "422"},
+        ("GET", "/corridas/{run_id}/decisiones"): {"200", "401", "403", "404", "422"},
+        ("GET", "/decisiones/{decision_run_id}"): {"200", "401", "403", "404", "422"},
+        ("GET", "/decisiones/{decision_run_id}/cuentas"): {
+            "200",
+            "401",
+            "403",
+            "404",
+            "409",
+            "422",
+        },
     }
     for operacion in operaciones.values():
         assert operacion["tags"] == ["decisiones"]

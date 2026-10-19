@@ -1,4 +1,4 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence, Optimización Matemática y App + Dashboards
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence, Optimización Matemática, App + Dashboards y Cloud, Observabilidad y Hardening
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
@@ -9,8 +9,9 @@ Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red V
 Factibilidad de Jornada (v0.13.0), Collection Analytics: Métricas, Cohortes y Embudos
 Point-in-Time (v0.14.0), Predictive Intelligence: Modelos Temporales, Calibración y Drift
 (v0.15.0), la Optimización Matemática: Priorización, Capacidad y Asignación Restringida
-(v0.16.0) y la App + Dashboards: Superficie Operacional y Cuenta 360 (v0.17.0) están hechos como
-están, y qué haría distinto o cuándo cambiaría cada decisión.
+(v0.16.0), la App + Dashboards: Superficie Operacional y Cuenta 360 (v0.17.0) y Cloud,
+Observabilidad y Hardening: Production Readiness (v0.18.0) están hechos como están, y qué haría
+distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
 en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
@@ -27,7 +28,12 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [modelo_optimizacion.md](modelo_optimizacion.md), en
 [configuracion_optimizacion.md](configuracion_optimizacion.md), en [app.md](app.md), en
 [contexto_operativo.md](contexto_operativo.md), en [dashboards.md](dashboards.md), en
-[frontend.md](frontend.md) y en [privacidad_app.md](privacidad_app.md); aquí va el porqué.
+[frontend.md](frontend.md), en [privacidad_app.md](privacidad_app.md), en
+[production.md](production.md), en [security.md](security.md), en
+[threat-model.md](threat-model.md), en [observability.md](observability.md), en
+[slos.md](slos.md), en [backups.md](backups.md), en [carga.md](carga.md), en
+[cadena-de-suministro.md](cadena-de-suministro.md) y en [cloud-gcp.md](cloud-gcp.md); aquí va el
+porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
@@ -35,8 +41,8 @@ de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del M
 99 a 112, del Lifecycle de Cobranza y la Atribución Operativa; las 113 a 121, del Decision Engine
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
 de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics; las
-197 a 222, de Predictive Intelligence; las 223 a 247, de la Optimización Matemática, y las 248 a
-274, de la App + Dashboards.
+197 a 222, de Predictive Intelligence; las 223 a 247, de la Optimización Matemática; las 248 a
+274, de la App + Dashboards, y las 275 a 303, de Cloud, Observabilidad y Hardening.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
@@ -316,6 +322,35 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 272. [Las llaves primero: el explorador a escala](#272-las-llaves-primero-el-explorador-a-escala)
 273. [Las pantallas se prueban con respuestas de la API real](#273-las-pantallas-se-prueban-con-respuestas-de-la-api-real)
 274. [El benchmark de la superficie, y qué no resuelve v0.17.0](#274-el-benchmark-de-la-superficie-y-qué-no-resuelve-v0170)
+275. [La configuración falla cerrada: producción por omisión](#275-la-configuración-falla-cerrada-producción-por-omisión)
+276. [Los secretos son archivos, nunca variables de entorno](#276-los-secretos-son-archivos-nunca-variables-de-entorno)
+277. [OpenID Connect con PKCE, y la sesión en un BFF](#277-openid-connect-con-pkce-y-la-sesión-en-un-bff)
+278. [La API valida el token ella misma, y la JWKS falla cerrada](#278-la-api-valida-el-token-ella-misma-y-la-jwks-falla-cerrada)
+279. [Cuatro permisos, cuatro roles y grupos mapeados](#279-cuatro-permisos-cuatro-roles-y-grupos-mapeados)
+280. [Una matriz explícita: una ruta sin clase no arranca](#280-una-matriz-explícita-una-ruta-sin-clase-no-arranca)
+281. [El token de una persona solo vale si llega por el edge](#281-el-token-de-una-persona-solo-vale-si-llega-por-el-edge)
+282. [Las claves de servicio, por su SHA-256 y con sus permisos](#282-las-claves-de-servicio-por-su-sha-256-y-con-sus-permisos)
+283. [La sesión vive en el servidor](#283-la-sesión-vive-en-el-servidor)
+284. [Cerrar sesión es un POST del mismo origen, con Referrer-Policy same-origin](#284-cerrar-sesión-es-un-post-del-mismo-origen-con-referrer-policy-same-origin)
+285. [Un evento de auditoría por petición, con un seudónimo](#285-un-evento-de-auditoría-por-petición-con-un-seudónimo)
+286. [Logs JSON con campos fijos, redactados antes de escribir](#286-logs-json-con-campos-fijos-redactados-antes-de-escribir)
+287. [Métricas por plantilla de ruta, en un puerto interno](#287-métricas-por-plantilla-de-ruta-en-un-puerto-interno)
+288. [Trazas propias, sin la telemetría nativa de FastAPI](#288-trazas-propias-sin-la-telemetría-nativa-de-fastapi)
+289. [Vivo y listo son cosas distintas](#289-vivo-y-listo-son-cosas-distintas)
+290. [El compose de producción: un servicio, un rol, una red](#290-el-compose-de-producción-un-servicio-un-rol-una-red)
+291. [Contenedores sin raíz, sin capacidades y de solo lectura](#291-contenedores-sin-raíz-sin-capacidades-y-de-solo-lectura)
+292. [El edge limita por IP y responde 429 con Retry-After](#292-el-edge-limita-por-ip-y-responde-429-con-retry-after)
+293. [Una CSP sin unsafe-inline ni unsafe-eval](#293-una-csp-sin-unsafe-inline-ni-unsafe-eval)
+294. [El respaldo lleva la base y el almacén juntos](#294-el-respaldo-lleva-la-base-y-el-almacén-juntos)
+295. [Se restaura solo en un entorno nuevo, y nada alterado toca nada](#295-se-restaura-solo-en-un-entorno-nuevo-y-nada-alterado-toca-nada)
+296. [Simulacros medidos, no supuestos](#296-simulacros-medidos-no-supuestos)
+297. [La carga, registrada antes de correrla](#297-la-carga-registrada-antes-de-correrla)
+298. [La cadena de suministro, fijada y revisada](#298-la-cadena-de-suministro-fijada-y-revisada)
+299. [Las imágenes propias bloquean el CI; las de terceros informan](#299-las-imágenes-propias-bloquean-el-ci-las-de-terceros-informan)
+300. [Gitleaks sobre todo el historial, con dos excepciones literales](#300-gitleaks-sobre-todo-el-historial-con-dos-excepciones-literales)
+301. [La referencia de Google Cloud: un servicio con tres contenedores, nunca aplicada desde aquí](#301-la-referencia-de-google-cloud-un-servicio-con-tres-contenedores-nunca-aplicada-desde-aquí)
+302. [El despliegue solo a mano, con aprobación y sin llaves](#302-el-despliegue-solo-a-mano-con-aprobación-y-sin-llaves)
+303. [Qué no resuelve v0.18.0](#303-qué-no-resuelve-v0180)
 
 ---
 
@@ -5389,3 +5424,351 @@ disponibilidad, recuperación ante desastres, límites de peticiones ni la polí
 contenido completa. Lo que sigue es v0.18, Cloud, Observabilidad y Hardening: llevar el sistema a un
 despliegue con identidad, permisos, observabilidad y endurecimiento, sin perder la auditabilidad, el
 punto en el tiempo, la privacidad ni el versionado.
+
+## 275. La configuración falla cerrada: producción por omisión
+
+**Decisión.** `MC_APP_ENV` es `production` si falta. En producción la API no arranca sin una base
+explícita (sin contraseña de desarrollo), sin OpenID Connect (emisor y JWKS por https, algoritmos
+asimétricos), sin el secreto del gateway, sin la clave de auditoría o con la clave universal de
+desarrollo (`MC_API_KEY`). Ningún proceso arranca, en ningún entorno, si se define una variable que
+parezca apagar la autenticación (`AUTH_DISABLED` y sus variantes). Los mensajes nombran la variable,
+nunca su valor.
+
+**Por qué.** Una variable olvidada no debe abrir nada: el olvido más común en un despliegue es no
+definir algo, y un valor por omisión permisivo convierte ese olvido en una API abierta. Y un modo
+"sin autenticación" que no existe, pero que alguien cree que existe, es peor que uno que no arranca:
+la variable impide arrancar para que nadie la deje puesta creyendo que funciona.
+
+## 276. Los secretos son archivos, nunca variables de entorno
+
+**Decisión.** Cada secreto se lee de un archivo montado por su variable `*_FILE`
+(`MC_DATABASE_URL_FILE`, `MC_API_KEYS_FILE`, `MC_GATEWAY_SECRETS_FILE`, `MC_AUDITORIA_CLAVE_FILE`);
+definir la variable y su `*_FILE` a la vez no arranca. En el compose son Docker secrets con modo
+0640 y un grupo propio (`MC_SECRETOS_GID`); en la nube, Secret Manager montado como archivos. En
+local son efímeros: los genera `scripts/generar_secretos_locales.py`, que no imprime ninguno.
+
+**Por qué.** Una variable de entorno se ve en `docker inspect`, en `/proc/<pid>/environ`, en un
+volcado de errores y en los procesos hijos; un archivo montado, solo quien lo lee. Y un secreto que
+no existe fuera de una corrida (el CI genera los suyos) no se puede filtrar del repositorio.
+
+## 277. OpenID Connect con PKCE, y la sesión en un BFF
+
+**Decisión.** Las personas entran con Authorization Code y PKCE (S256), `state` y `nonce`, por
+oauth2-proxy como BFF (backend for frontend). La SPA nunca toca el flujo ni un token: solo hay una
+cookie `__Host-mc_sesion` (`HttpOnly`, `Secure`, `SameSite=Lax`). El IdP local es Dex (usuarios
+estáticos, contraseñas efímeras); en un despliegue, el corporativo, del que la API solo necesita su
+emisor, su audiencia y su JWKS.
+
+**Por qué.** Un token en el navegador (en `localStorage` o en memoria del JavaScript) lo lee
+cualquier script que logre correr en la página: el BFF lo deja del lado del servidor. oauth2-proxy
+es un componente probado para esto; escribir el flujo en la API sería más código de seguridad propio
+que mantener.
+
+**Alternativas.** Un SDK de OIDC en la SPA (el token en el navegador) o la API como BFF (más código
+propio).
+
+## 278. La API valida el token ella misma, y la JWKS falla cerrada
+
+**Decisión.** La API valida cada token con PyJWT: la firma con una llave de la JWKS por su `kid`, un
+algoritmo de una lista de asimétricos, `iss` y `aud` exactos, `exp` y `nbf` con 30 s de tolerancia,
+`sub`, y `azp` y `typ` si se configuran. La JWKS se guarda 300 s; un `kid` desconocido la vuelve a
+pedir a lo más cada 30 s; si el IdP no responde, la vieja sirve hasta una hora y después la API
+responde `503 IDENTIDAD_NO_DISPONIBLE`. Cada rechazo tiene un código estable (`TOKEN_EXPIRADO`,
+`TOKEN_FIRMA_INVALIDA`...).
+
+**Por qué.** No confiar en que el edge validó: si alguien llega a la red interna, la API sigue
+exigiendo un token válido. La caché resiste una caída breve del IdP sin martillarlo, y rota llaves
+sin reiniciar; pasada la hora, cerrar es la única respuesta segura: un token no se puede validar con
+llaves que quizá ya se revocaron.
+
+## 279. Cuatro permisos, cuatro roles y grupos mapeados
+
+**Decisión.** Cuatro permisos (`mc.read`, `mc.audit`, `mc.execute`, `mc.configure`) y cuatro roles
+conceptuales (`VIEWER`, `AUDITOR`, `OPERATOR`, `ADMIN`). Los permisos salen del `scope` del token o de
+sus grupos, mapeados a roles por configuración (`MC_OIDC_GRUPOS`); un grupo que no está en el mapa no
+da nada.
+
+**Por qué.** Los permisos siguen lo que una ruta hace (leer, leer evidencia, pedir trabajo, publicar
+configuración), no quién la usa: así una ruta nueva se clasifica sin inventar un rol. Los grupos son
+del IdP y cambian de nombre entre organizaciones: se mapean, no se confían.
+
+## 280. Una matriz explícita: una ruta sin clase no arranca
+
+**Decisión.** Cada operación de la API tiene su clase (`PUBLIC`, `READ`, `AUDIT`, `EXECUTE`,
+`CONFIGURE`) en una matriz explícita, y la API no arranca si una operación no está en ella o si la
+matriz nombra una que ya no existe. La autorización es una dependencia global; una ruta sin clase,
+si llegara a pedirse, sería un `500`. La matriz se publica generada desde el código
+(`docs/matriz-autorizacion.md`), y una prueba exige que coincida.
+
+**Por qué.** Un decorador por ruta se olvida en la ruta nueva, y esa queda abierta. Una matriz que el
+arranque verifica convierte el olvido en un error al desplegar, no en una brecha en producción.
+
+## 281. El token de una persona solo vale si llega por el edge
+
+**Decisión.** El edge borra toda identidad que traiga el cliente (`Authorization`, `X-API-Key`,
+`X-Forwarded-*`, `X-Auth-Request-*`, `traceparent`...) y pone el token de acceso de la sesión y el
+secreto del gateway (`X-MC-Gateway`). La API acepta un token de persona solo con ese secreto
+(`GATEWAY_REQUERIDO` si no); el secreto admite varios valores para rotarlo sin cortar.
+
+**Por qué.** Sin esa atadura, un token robado se podría usar directo contra la API desde la red
+interna, saltándose los límites, la lista blanca y los registros del edge. Y las cabeceras de
+identidad que un proxy pone son, si un cliente las manda, una suplantación: se borran siempre.
+
+## 282. Las claves de servicio, por su SHA-256 y con sus permisos
+
+**Decisión.** Un servicio entra con una clave en `X-API-Key`. La API guarda solo su SHA-256, con su
+nombre y sus permisos (`MC_API_KEYS`), y la compara en tiempo constante contra todas. Una petición con
+un token y una clave a la vez se niega (`CREDENCIALES_AMBIGUAS`).
+
+**Por qué.** Una lista de claves en claro es un secreto más que proteger; sus hashes no sirven para
+entrar. Permisos por clave: la prueba de humo de solo lectura no puede ejecutar. Y con dos
+credenciales nadie debe elegir cuál vale: esa elección es donde se esconden los errores.
+
+## 283. La sesión vive en el servidor
+
+**Decisión.** oauth2-proxy guarda las sesiones en Valkey (en la nube, Memorystore), con usuario y
+contraseña, sin persistencia; la cookie solo las referencia. Cerrar sesión las borra de ahí.
+
+**Por qué.** Con la sesión cifrada en la cookie, cerrar sesión solo la borra del navegador: una cookie
+copiada antes sigue valiendo hasta vencer. Con la sesión en el servidor, deja de valer en el momento
+(la prueba de humo del edge y Playwright lo prueban). Sin persistencia: perder las sesiones es pedir
+que se inicie sesión otra vez, no perder datos.
+
+## 284. Cerrar sesión es un POST del mismo origen, con Referrer-Policy same-origin
+
+**Decisión.** Cerrar sesión es un `POST` a `/oauth2/sign_out` desde la app: `GET` es `405` y un
+`Origin` que no sea el de la app, incluido `Origin: null`, es `403 ORIGEN_NO_PERMITIDO`. La cookie es
+`SameSite=Lax`. La app pide `Referrer-Policy: same-origin` (cabecera y `<meta>`), no `no-referrer`.
+
+**Por qué.** Cerrar sesión cambia estado: no puede ser un enlace que otro sitio dispare. Con
+`no-referrer` el navegador manda `Origin: null` en un `POST` del mismo origen (Fetch, "serializing a
+request origin"), y el edge lo rechazaba: cerrar sesión no funcionaba en un navegador de verdad. La
+prueba de humo no lo veía porque ponía el `Origin` a mano; lo encontró Playwright. `same-origin`
+manda el origen solo al propio sitio y nada a otros.
+
+## 285. Un evento de auditoría por petición, con un seudónimo
+
+**Decisión.** Cada petición a la API, salvo las sondas, deja un evento `security-audit/v1`: quién
+(`usr:` y 16 hexadecimales de un HMAC del emisor y el `sub`, o `svc:<nombre>`), qué plantilla de
+ruta, su clase, el permiso que pedía, la decisión y su motivo, el estado y la latencia, con el
+`request_id` y el `trace_id`. Sin la query, el cuerpo, las cabeceras, la IP ni el token.
+
+**Por qué.** Responder "quién hizo qué" sin guardar un dato personal: el seudónimo es estable para la
+misma persona (con la misma clave) y no dice quién es. La integridad del registro es de la plataforma
+de logs; una cadena de hashes es un riesgo residual declarado.
+
+## 286. Logs JSON con campos fijos, redactados antes de escribir
+
+**Decisión.** En producción, una línea JSON por evento con campos fijos, el `request_id`, el
+`trace_id` y el `span_id`. Un filtro redacta antes de escribir los JWT, los `Bearer`, los pares de
+credencial, las contraseñas en URLs y cada secreto configurado; SQLAlchemy nunca pone los parámetros
+en un error; los loggers ruidosos (SQLAlchemy, httpx, urllib3) quedan en `WARNING`.
+
+**Por qué.** Un log se copia, se exporta y se lee por gente que no debe ver un secreto ni un dato
+personal: lo que no se escribe no se filtra. La prueba que recorre una corrida completa con datos
+personales encontró una URL con un `CLIENTE_UNICO` en el registro de un cliente HTTP: por eso los
+ruidosos callan.
+
+## 287. Métricas por plantilla de ruta, en un puerto interno
+
+**Decisión.** Prometheus, con etiquetas solo de listas cerradas (la plantilla de la ruta, el
+método, la clase del estado, el tipo de trabajo, los códigos de autorización), en un puerto interno
+que no pasa por el edge. La cola se mide en PostgreSQL con su índice parcial, a lo más cada 10 s y con
+un tope de 2 s. Las series que vigila una alerta con `increase()` nacen en cero.
+
+**Por qué.** Una etiqueta con un UUID o una ruta literal hace crecer la cardinalidad con los datos y
+filtra identificadores a quien lee métricas. Las métricas mismas encontraron un error: la lectura de
+la cola fallaba en producción por un `FILTER` mal puesto (`mc_cola_lectura_ok` en 0); una prueba
+contra PostgreSQL lo cubre.
+
+## 288. Trazas propias, sin la telemetría nativa de FastAPI
+
+**Decisión.** Spans propios: uno de servidor por petición con la plantilla, uno por sentencia SQL
+sin su texto (hasta 200 por traza) y uno por trabajo del worker. La telemetría nativa de FastAPI se
+apaga entera. Muestreo por cola en el colector (errores y lentas siempre); el exportador corre en
+segundo plano y falla abierto. El colector borra además los atributos sensibles conocidos.
+
+**Por qué.** FastAPI 0.142 crea por su cuenta, en cuanto existe un proveedor de trazas, un segundo
+span de servidor con la ruta real y la query (con un identificador de cliente adentro), y registraría
+los valores de entrada de una validación fallida: se encontró en Jaeger al escribir v0.18 y una
+prueba exige un solo span de servidor sin la ruta real. Fallar abierto: medir no puede tumbar lo que
+se mide (sin colector, la API respondió igual).
+
+**Medido.** Exportar trazas al 100 % sube el p95 de 103.6 a 121.3 ms a 25 lecturas por segundo, con la
+mediana igual ([carga.md](carga.md)).
+
+## 289. Vivo y listo son cosas distintas
+
+**Decisión.** `/health/live` dice que el proceso responde (en el worker, que su ciclo late);
+`/health/ready`, que la base contesta con el esquema de esta versión. Una base caída deja a la API y
+al worker vivos y no listos: Docker no los reinicia, y se recuperan solos al volver.
+
+**Por qué.** Si la liveness dependiera de la base, una caída de la base reiniciaría en bucle a la API
+y al worker, y la recuperación sería más lenta y más ruidosa. Medido: no listos en 0.6 s, de vuelta
+en 1.1 s, sin reinicios.
+
+## 290. El compose de producción: un servicio, un rol, una red
+
+**Decisión.** `docker-compose.production.yml`: cada servicio con su rol de base (`mc_migraciones`
+dueño del esquema; `mc_api` y `mc_worker`, solo filas; `mc_respaldo`, solo lectura), en sus redes
+internas (frontal, identidad, sesiones, datos, ruteo, observabilidad), y solo el edge en la red
+pública, solo en `127.0.0.1`. Las migraciones corren antes, con un candado de PostgreSQL contra dos a
+la vez.
+
+**Por qué.** Un servicio comprometido no debe poder hacer lo que hacen los demás: la API no puede
+alterar el esquema, el respaldo no puede escribir, y Valkey no ve la base. Y un puerto que no se
+publica no se puede atacar desde afuera.
+
+## 291. Contenedores sin raíz, sin capacidades y de solo lectura
+
+**Decisión.** Cada contenedor con su usuario numérico, `cap_drop: ALL`, `no-new-privileges`, el
+sistema de archivos de solo lectura (tmpfs donde escribe), límites de CPU, memoria y procesos, y logs
+rotados. La imagen de la API no tiene compilador ni `uv`. La prueba de humo lo revisa contenedor por
+contenedor.
+
+**Por qué.** Lo que un atacante logre ejecutar dentro de un contenedor queda sin privilegios, sin
+poder persistir nada en la imagen y sin poder agotar la máquina.
+
+## 292. El edge limita por IP y responde 429 con Retry-After
+
+**Decisión.** Límites por IP del cliente (lecturas, lecturas caras, inicio de sesión, envíos de
+contraseña, conexiones), de cuerpo, de cabeceras y de tiempo, con respuestas JSON propias: `429` con
+`Retry-After`, `413`, `405`. El edge es el primer salto: no cree ningún `X-Forwarded-For`.
+
+**Por qué.** Una ráfaga de un cliente no debe tumbar a los demás, y el formulario de contraseñas no
+debe permitir probar contraseñas sin límite (Dex no bloquea cuentas). Medido: a 80 lecturas por
+segundo desde una IP, el 46 % fue `429`, cada una con `Retry-After`, y ninguna un 5xx.
+
+## 293. Una CSP sin unsafe-inline ni unsafe-eval
+
+**Decisión.** La app: todo del mismo origen, sin `unsafe-inline` ni `unsafe-eval`, con
+`frame-ancestors`, `object-src` y `base-uri` en `'none'`. HSTS solo con TLS. Las páginas de Dex (solo
+en el compose local) llevan su propia CSP: su CSS en línea y su único script en línea, permitido por
+su SHA-256.
+
+**Por qué.** La CSP es la segunda barrera contra una inyección: un script que logre entrar no corre.
+React y las gráficas ponen estilos por el CSSOM, que la CSP no bloquea, así que la app no necesita
+`unsafe-inline`. El script de Dex se encontró en Playwright (un error de CSP en la consola); un hash lo
+permite a él y a nada más, y si una versión nueva de Dex lo cambia, la prueba lo detecta.
+
+## 294. El respaldo lleva la base y el almacén juntos
+
+**Decisión.** `scripts/respaldo.py` respalda PostgreSQL (`pg_dump` de una foto exportada, con los
+conteos y la lista de artefactos de esa misma foto) y copia del almacén los artefactos de esa lista,
+firmando cada uno. Un artefacto que falte niega el respaldo entero y no deja nada. El manifiesto no
+lleva ningún dato.
+
+**Por qué.** El estado vive en los dos: una base sin su almacén tiene corridas cuyo archivo no existe.
+La foto exportada da los conteos exactos del volcado, y el orden de escritura de la aplicación
+(primero el objeto, después la fila) garantiza que todo lo que la foto registra ya está en el
+almacén.
+
+## 295. Se restaura solo en un entorno nuevo, y nada alterado toca nada
+
+**Decisión.** Restaurar verifica primero el respaldo entero (el volcado, la lista y cada objeto) y
+después exige un destino vacío, que no sea el origen, con un PostgreSQL de igual o mayor versión, con
+las extensiones y con la revisión esperada. Copia el almacén y restaura la base en una sola
+transacción, sin el `CREATE SCHEMA public` ni los datos de `spatial_ref_sys` (los pone la plataforma),
+y valida filas, restricciones y artefactos. Dos servicios separados: el que respalda lee; el que
+restaura escribe con el rol dueño del esquema y monta los respaldos de solo lectura.
+
+**Por qué.** Restaurar sobre la base en uso mezcla lo viejo con lo nuevo, y un respaldo alterado que
+se restaura a medias es peor que ninguno. Las dos exclusiones se encontraron restaurando de verdad:
+`pg_dump --schema=public` declara el esquema (que ya existe) y trae los datos de una tabla de PostGIS
+que no es del rol que restaura.
+
+## 296. Simulacros medidos, no supuestos
+
+**Decisión.** `scripts/simulacros.py` rompe una cosa a la vez en el compose de producción (la base,
+la API, el worker, OSRM, el colector), mide desde adentro de las redes internas y la repone;
+`scripts/simulacro_de_restauracion.py` ensaya la restauración con cinco respaldos alterados. Los dos
+corren en el CI.
+
+**Por qué.** "Se recupera solo" es una hipótesis hasta que se mide. Los simulacros también prueban
+los runbooks: lo que dicen que se espera es lo que pasó.
+
+## 297. La carga, registrada antes de correrla
+
+**Decisión.** Los escenarios, las tasas y los umbrales de k6 se escribieron en `docs/carga.md` antes
+de la corrida, y no se movieron después. Un ensayo de 10 s cruzó un umbral (arranque en frío) y se
+reporta junto con la corrida registrada de 60 s, que los cumplió. El orden caro (por saldo) se mide
+aparte.
+
+**Por qué.** Un umbral que se ajusta después de ver el resultado no prueba nada. Reportar el ensayo es
+parte de no hacerlo.
+
+## 298. La cadena de suministro, fijada y revisada
+
+**Decisión.** Las imágenes por digest, las acciones de GitHub por el SHA de su commit, las
+dependencias y el proveedor de OpenTofu con sus hashes en los lockfiles; los workflows con permisos
+mínimos y checkouts sin la credencial en el disco. `scripts/verificar_cadena_de_suministro.py` lo
+revisa en el CI. Dependabot propone las actualizaciones con 7 días de espera.
+
+**Por qué.** Una etiqueta (`v7`, `latest`, `16-alpine`) se puede mover a otro contenido; un digest o
+un SHA, no. Lo que no se fija no se puede auditar, y lo que se audita una vez se desfija solo si un
+script no lo exige.
+
+## 299. Las imágenes propias bloquean el CI; las de terceros informan
+
+**Decisión.** Trivy detiene el CI con una vulnerabilidad alta o crítica con corrección en las tres
+imágenes propias, y genera su SBOM (CycloneDX). Las de terceros del camino de una petición se
+escanean como informe. pip-audit y npm audit detienen el CI. Las imágenes de Alpine aplican al
+construir las correcciones de seguridad publicadas después de su base; la de respaldo no lleva
+`gosu`.
+
+**Por qué.** Lo que construimos lo podemos corregir hoy; una imagen de terceros se corrige cuando su
+proyecto publica, y bloquear por ella detendría todo sin poder hacer nada. Al cerrar v0.18 la base de
+nginx y la de PostGIS (en su última versión publicada) traían altas ya corregidas en Alpine, y el
+`gosu` de PostgreSQL un Go viejo: con la actualización al construir y sin `gosu`, quedaron en 0.
+
+## 300. Gitleaks sobre todo el historial, con dos excepciones literales
+
+**Decisión.** Gitleaks revisa el historial completo en cada run, con las reglas por omisión y dos
+excepciones literales y justificadas: la clave de desarrollo documentada (pública a propósito) y los
+JWT falsos de una prueba de redacción, solo en su archivo.
+
+**Por qué.** Un secreto que entró al historial sigue ahí aunque se borre del árbol. Las excepciones
+son literales, no patrones amplios, para que un secreto real con otra forma no pase por ellas.
+
+## 301. La referencia de Google Cloud: un servicio con tres contenedores, nunca aplicada desde aquí
+
+**Decisión.** `infra/gcp` describe en OpenTofu un entorno de Google Cloud: el edge, oauth2-proxy y la
+API como un servicio de Cloud Run con tres contenedores detrás de un balanceador con Cloud Armor; el
+worker en Cloud Run con CPU siempre asignada; Cloud SQL privada con PITR; Filestore para el almacén;
+OSRM en una VM sin IP pública; los respaldos nocturnos en un bucket; una cuenta de servicio por
+función, sin `editor` ni `owner`; Secret Manager sin valores en el estado. Se valida en cada run
+(fmt, init, validate, el plan sin credenciales, 36 reglas de política) y nunca se aplica.
+
+**Por qué.** Con los tres contenedores en la misma instancia, la API no tiene ninguna entrada propia
+y el edge no necesita llegar a ella por HTTPS entre servicios. Aplicar crea recursos con costo en un
+proyecto real: es una decisión humana. Lo que falta para un despliegue real (la plantilla del edge
+detrás del balanceador, entre otras) está escrito en `docs/cloud-gcp.md`.
+
+## 302. El despliegue solo a mano, con aprobación y sin llaves
+
+**Decisión.** `.github/workflows/deploy.yml` corre solo por `workflow_dispatch`, desde `main` o una
+etiqueta, con una confirmación escrita, con el environment de GitHub del entorno (que exige
+aprobación) y solo si ese environment declara su proyecto y su identidad. Entra por Workload Identity
+Federation, sin llaves; construye, corre las migraciones y despliega por digest; no aplica la
+infraestructura. Las entradas llegan al script por el entorno, nunca interpoladas.
+
+**Por qué.** Un despliegue que se dispara solo, o con una llave guardada en el repositorio, es un
+despliegue que alguien puede disparar sin querer o sin permiso. Interpolar una entrada en un script es
+una inyección.
+
+## 303. Qué no resuelve v0.18.0
+
+**Qué deja v0.18.0.** motor-cartera se despliega con identidad (OIDC con PKCE y un BFF), permisos por
+ruta en una matriz que el arranque verifica, secretos montados, contenedores endurecidos, un edge con
+TLS, límites y CSP, logs, métricas, trazas y auditoría sin datos personales, alertas con runbooks,
+respaldos de la base y del almacén con su restauración ensayada, simulacros de falla, pruebas de
+carga registradas, una cadena de suministro fijada y escaneada, y una referencia de Google Cloud
+validada.
+
+**Qué no resuelve.** No despliega en la nube (la referencia nunca se aplicó, y le falta la plantilla
+del edge detrás del balanceador); el tráfico interno no va cifrado; Dex es solo para desarrollo y no
+bloquea cuentas; la auditoría no es a prueba de manipulación; las imágenes de terceros se escanean sin
+bloquear; las imágenes no son reproducibles bit por bit; no hubo pentest externo; y sigue sin ejecutar
+ninguna acción de cobranza. Lo que sigue es v1.0, Collection Intelligence Platform: integrar lo que
+cada versión construyó en una plataforma completa de inteligencia de cobranza, sin perder la
+auditabilidad, el punto en el tiempo, la privacidad ni la seguridad.

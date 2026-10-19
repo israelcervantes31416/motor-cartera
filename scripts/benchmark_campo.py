@@ -237,7 +237,9 @@ def consultar(destino: Path, campo_run_id: str) -> dict:
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-campo-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     ((ejecucion,),) = _sql(
         "SELECT id FROM ejecucion_campo_v2 WHERE campo_run_id = :c", {"c": campo_run_id}
     )

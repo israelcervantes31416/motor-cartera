@@ -1391,13 +1391,21 @@ def test_openapi_documenta_las_cinco_operaciones_de_ruteo(app):
     }
 
     assert {clave: set(op["responses"]) for clave, op in operaciones.items()} == {
-        ("POST", "/territoriales/{territorial_run_id}/ruteos"): {"201", "401", "404", "409", "422"},
-        ("GET", "/territoriales/{territorial_run_id}/ruteos"): {"200", "401", "404", "422"},
-        ("GET", "/ruteos/{ruteo_run_id}"): {"200", "401", "404", "422"},
-        ("GET", "/ruteos/{ruteo_run_id}/rutas"): {"200", "401", "404", "409", "422"},
+        ("POST", "/territoriales/{territorial_run_id}/ruteos"): {
+            "201",
+            "401",
+            "403",
+            "404",
+            "409",
+            "422",
+        },
+        ("GET", "/territoriales/{territorial_run_id}/ruteos"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteos/{ruteo_run_id}"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteos/{ruteo_run_id}/rutas"): {"200", "401", "403", "404", "409", "422"},
         ("GET", "/ruteos/{ruteo_run_id}/rutas/{clave_territorio}/paradas"): {
             "200",
             "401",
+            "403",
             "404",
             "409",
             "422",

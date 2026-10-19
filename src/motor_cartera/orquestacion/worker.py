@@ -23,13 +23,16 @@ import os
 import signal
 import socket
 import threading
+import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from opentelemetry.trace import SpanKind, Status, StatusCode
 from sqlmodel import Session, select
 
 from motor_cartera.analytics import ejecuciones as analytics
@@ -84,10 +87,12 @@ from motor_cartera.motor_pagos.ejecuciones import (
     MotorPagosYaInterpretado,
     ejecutar_motor_pagos,
 )
+from motor_cartera.observabilidad import metricas, trazas
 from motor_cartera.optimizacion import ejecuciones as optimizacion
 from motor_cartera.optimizacion.ejecuciones import OptimizacionYaPublicada, ejecutar_optimizacion
 from motor_cartera.orquestacion import cola, flujo, objetivos
 from motor_cartera.orquestacion.cola import Reclamo
+from motor_cartera.orquestacion.salud import SaludDelWorker
 from motor_cartera.predictivo import entrenamiento as entrenamiento_predictivo
 from motor_cartera.predictivo import scoring as scoring_predictivo
 from motor_cartera.predictivo.entrenamiento import EntrenamientoYaPublicado, ejecutar_entrenamiento
@@ -104,6 +109,10 @@ from motor_cartera.territorial_v2.ejecuciones import (
 )
 
 log = logging.getLogger(__name__)
+
+_salud_del_worker: ContextVar[SaludDelWorker | None] = ContextVar("salud_del_worker", default=None)
+"""La salud del worker que corre en este hilo: su ciclo y el latido de su trabajo la mantienen al
+dia. Fuera de `ejecutar_worker` (una prueba, el CLI en primer plano) no hay ninguna."""
 
 PERDIO_LA_CARRERA = (
     DecisionYaGenerada,
@@ -226,12 +235,18 @@ class _Latido:
     """
 
     def __init__(
-        self, trabajo_id: int, worker_id: str, lease_segundos: float, intervalo_segundos: float
+        self,
+        trabajo_id: int,
+        worker_id: str,
+        lease_segundos: float,
+        intervalo_segundos: float,
+        al_latir: Callable[[], None] | None = None,
     ) -> None:
         self._trabajo_id = trabajo_id
         self._worker_id = worker_id
         self._lease = lease_segundos
         self._intervalo = intervalo_segundos
+        self._al_latir = al_latir
         self._parar = threading.Event()
         self.perdido = threading.Event()
         self._hilo = threading.Thread(target=self._latir, name=f"latido-{trabajo_id}", daemon=True)
@@ -247,6 +262,10 @@ class _Latido:
 
     def _latir(self) -> None:
         while not self._parar.wait(self._intervalo):
+            # La salud del worker: el proceso sigue vivo aunque el motor tarde, y aunque la base no
+            # conteste para renovar.
+            if self._al_latir is not None:
+                self._al_latir()
             try:
                 vigente = cola.renovar(self._trabajo_id, self._worker_id, self._lease)
             except Exception:
@@ -276,10 +295,14 @@ def procesar_un_trabajo(
     la cola, sin gastar intentos, y el worker sigue con los demas."""
     config = config or config_del_entorno
     salud = salud or salud_de_ruteo(config)
-    excluir = frozenset() if salud.disponible() else frozenset({TipoTrabajo.RUTEO_V2})
+    disponible = salud.disponible()
+    if salud.configurado:
+        metricas.RUTEO_DISPONIBLE.set(1 if disponible else 0)
+    excluir = frozenset() if disponible else frozenset({TipoTrabajo.RUTEO_V2})
     reclamo = cola.reclamar(worker_id, config.worker_lease_segundos, excluir=excluir)
     if reclamo is None:
         return None
+    metricas.WORKER_TOMADOS.labels(tipo=reclamo.tipo.value).inc()
     return procesar_reclamo(reclamo, worker_id, config)
 
 
@@ -290,35 +313,85 @@ def procesar_reclamo(
 
     Si su lease vencio en el ultimo intento, ya no se ejecuta: solo se cierra. Un error del motor o
     del worker no se propaga: se deja en la bitacora, con su traza, y el cierre decide que sigue.
+    Cada trabajo es un span de OpenTelemetry y deja sus metricas por tipo: como termino, cuanto
+    tardo y si perdio su lease.
     """
     config = config or config_del_entorno
+    tipo = reclamo.tipo.value
+    salud_del_worker = _salud_del_worker.get()
+    trazas.reiniciar_conteo_db()
+    with trazas.tracer("motor_cartera.worker").start_as_current_span(
+        f"trabajo {tipo}",
+        kind=SpanKind.CONSUMER,
+        attributes={
+            "mc.trabajo.tipo": tipo,
+            "mc.trabajo.intento": reclamo.intentos,
+            "mc.trabajo.id": str(reclamo.trabajo_id),
+        },
+    ) as span:
+        procesado = _ejecutar_y_cerrar(reclamo, worker_id, config, salud_del_worker, span)
+        resultado = procesado.estado.value if procesado.estado is not None else "PERDIDO"
+        span.set_attribute("mc.trabajo.resultado", resultado)
+        if procesado.estado == EstadoTrabajo.FALLIDO:
+            span.set_status(Status(StatusCode.ERROR, "FALLIDO"))
+        metricas.WORKER_CERRADOS.labels(tipo=tipo, resultado=resultado).inc()
+    return procesado
+
+
+def _ejecutar_y_cerrar(
+    reclamo: Reclamo,
+    worker_id: str,
+    config: Config,
+    salud_del_worker: SaludDelWorker | None,
+    span: Any,
+) -> TrabajoProcesado:
+    tipo = reclamo.tipo.value
     error: Exception | None = None
     if reclamo.ejecutar:
         latido = _Latido(
-            reclamo.id, worker_id, config.worker_lease_segundos, config.worker_heartbeat_segundos
+            reclamo.id,
+            worker_id,
+            config.worker_lease_segundos,
+            config.worker_heartbeat_segundos,
+            al_latir=salud_del_worker.latir if salud_del_worker is not None else None,
         )
-        with latido, cola.en_curso(reclamo.id, worker_id):
-            try:
-                MANEJADORES[reclamo.tipo](reclamo.objetivo_id)
-            except PERDIO_LA_CARRERA as exc:
-                log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
-            except cola.TrabajoAjeno as exc:
-                # Su lease vencio y otro worker lo tomo: este no publica, y tampoco lo cierra.
-                log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
-                return _procesado(reclamo, None)
-            except FronteraSinAsentar as exc:
-                # Transitorio y esperado: vuelve a la cola con su espera, sin traza.
-                log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
-                error = exc
-            except Exception as exc:
-                log.exception(
-                    "trabajo %s: error del worker en el intento %s de %s",
-                    reclamo.trabajo_id,
-                    reclamo.intentos,
-                    reclamo.max_intentos,
-                )
-                error = exc
+        inicio = time.perf_counter()
+        metricas.WORKER_EN_CURSO.set(1)
+        if salud_del_worker is not None:
+            salud_del_worker.trabajo_en_curso = True
+        try:
+            with latido, cola.en_curso(reclamo.id, worker_id):
+                try:
+                    MANEJADORES[reclamo.tipo](reclamo.objetivo_id)
+                except PERDIO_LA_CARRERA as exc:
+                    log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+                except cola.TrabajoAjeno as exc:
+                    # Su lease vencio y otro worker lo tomo: este no publica, y tampoco lo cierra.
+                    log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+                    metricas.WORKER_LEASES_PERDIDOS.labels(tipo=tipo).inc()
+                    return _procesado(reclamo, None)
+                except FronteraSinAsentar as exc:
+                    # Transitorio y esperado: vuelve a la cola con su espera, sin traza.
+                    log.warning("trabajo %s: %s", reclamo.trabajo_id, exc)
+                    error = exc
+                except Exception as exc:
+                    log.exception(
+                        "trabajo %s: error del worker en el intento %s de %s",
+                        reclamo.trabajo_id,
+                        reclamo.intentos,
+                        reclamo.max_intentos,
+                    )
+                    metricas.WORKER_ERRORES.labels(tipo=tipo).inc()
+                    # Solo la clase del error: su mensaje podria citar un dato.
+                    span.set_attribute("mc.trabajo.error", type(exc).__name__)
+                    error = exc
+        finally:
+            metricas.WORKER_DURACION.labels(tipo=tipo).observe(time.perf_counter() - inicio)
+            metricas.WORKER_EN_CURSO.set(0)
+            if salud_del_worker is not None:
+                salud_del_worker.trabajo_en_curso = False
         if latido.perdido.is_set():
+            metricas.WORKER_LEASES_PERDIDOS.labels(tipo=tipo).inc()
             return _procesado(reclamo, None)
     return _cerrar(reclamo, worker_id, error, config)
 
@@ -342,6 +415,14 @@ def ejecutar_worker(
     worker_id = identificador_worker()
     previos = _escuchar_senales(detener)
     salud = salud_de_ruteo(config)
+    salud_del_worker = SaludDelWorker(
+        umbral_segundos=max(
+            60.0, 3 * config.worker_heartbeat_segundos, 10 * config.worker_poll_segundos
+        ),
+        ruteo=salud,
+    )
+    salud_del_worker.registrar_rutas()
+    marca = _salud_del_worker.set(salud_del_worker)
     ultimo = None
     log.info(
         "worker %s: arranca (lease %ss, latido %ss, %s intentos, espera base %ss)",
@@ -353,6 +434,7 @@ def ejecutar_worker(
     )
     try:
         while not detener.is_set():
+            salud_del_worker.latir()
             try:
                 procesado = procesar_un_trabajo(worker_id, config, salud)
             except Exception:
@@ -367,6 +449,7 @@ def ejecutar_worker(
             if procesado is None:
                 detener.wait(config.worker_poll_segundos)
     finally:
+        _salud_del_worker.reset(marca)
         _restaurar_senales(previos)
         log.info("worker %s: se detiene", worker_id)
     return ultimo

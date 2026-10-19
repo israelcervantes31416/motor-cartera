@@ -1,4 +1,4 @@
-# La app: superficie operacional y Cuenta 360 (v0.17)
+# La app: superficie operacional y Cuenta 360 (v0.17, con sesión desde v0.18)
 
 v0.17 convierte lo que los motores ya publican (la Cuenta 360, `decision/v2`, la geografía y
 `territorial/v2`, `campo/v2`, `ruteo/v2`, `analytics/v1`, `predictive/model-v1` y
@@ -9,10 +9,14 @@ campo, ruteo y auditoría. Las pantallas, en [dashboards.md](dashboards.md); el 
 [frontend.md](frontend.md); su privacidad, en [privacidad_app.md](privacidad_app.md); el porqué,
 en las [decisiones 248 a 274](decisiones.md#248-una-spa-de-react-con-vite-sin-ssr).
 
-**Superficie local/demostrativa sin autenticación; no desplegar con datos reales.** No ejecuta
-nada: no crea gestiones, no envía mensajes, no llama, no visita, no promete, no decide, no
-optimiza, no entrena, no publica ni cambia una cuenta. Los `POST` de la API siguen siendo de la API
-y de la línea de comandos; el proxy de la app no los deja pasar.
+**Desde v0.18 tiene usuarios.** En el compose de producción
+([production.md](production.md)) cada persona inicia sesión en el proveedor de identidad (OpenID
+Connect con PKCE, por oauth2-proxy) y la app muestra lo que sus permisos dejan leer; el navegador
+solo guarda una cookie de sesión `HttpOnly`, nunca un token. En el compose de desarrollo no hay
+usuarios, y la app lo dice a la vista: «Desarrollo local sin usuarios (clave de servicio del proxy);
+no desplegar así ni con datos reales». Ninguno ejecuta nada: no crea gestiones, no envía mensajes,
+no llama, no visita, no promete, no decide, no optimiza, no entrena, no publica ni cambia una cuenta.
+Los `POST` de la API siguen siendo de la API y de la línea de comandos; el edge no los deja pasar.
 
 ## Cómo está armada
 
@@ -45,9 +49,11 @@ predicciones de un scoring, que ningún motor publica. Lo demás, la app lo lee 
 
 ## Las rutas de `app/v1`
 
-Todas son `GET`, piden la clave de la API (`X-API-Key`; en la app la pone el proxy) y responden los
-errores uniformes de la API (`ErrorRespuesta`). Un contexto se declara con `corte_id` y, de cada
-motor, su `*_run_id` ([contexto_operativo.md](contexto_operativo.md)).
+Todas son `GET`, piden una credencial y el permiso `mc.read` (el linaje, `mc.audit`) y responden
+los errores uniformes de la API (`ErrorRespuesta`): el token de la sesión, que pone el edge, o una
+clave de servicio (`X-API-Key`; en desarrollo la pone el proxy). Sin credencial, `401`; sin el
+permiso, `403 PERMISO_INSUFICIENTE` ([security.md](security.md)). Un contexto se declara con
+`corte_id` y, de cada motor, su `*_run_id` ([contexto_operativo.md](contexto_operativo.md)).
 
 | Ruta | Qué responde |
 | --- | --- |
@@ -63,7 +69,8 @@ motor, su `*_run_id` ([contexto_operativo.md](contexto_operativo.md)).
 | `GET /app/v1/cuentas/{cuenta_id}/pagos` | El resumen de la interpretación de sus pagos y sus movimientos, con su atribución. |
 | `GET /app/v1/cuentas/{cuenta_id}/gestiones` | Su resumen operacional y sus gestiones, sin la observación ni quién las registró. |
 | `GET /app/v1/ruteo/rutas/{ruta_id}/paradas` | Las paradas de una ruta en su orden de visita, sin `CLIENTE_UNICO` ni coordenadas. |
-| `GET /app/v1/linaje` | Cada ejecución del contexto con sus versiones, sus hashes y sus relojes, y cada relación que una declaró al publicarse. |
+| `GET /app/v1/linaje` | Cada ejecución del contexto con sus versiones, sus hashes y sus relojes, y cada relación que una declaró al publicarse. Pide `mc.audit`. |
+| `GET /app/v1/sesion` | Quién pregunta, sin un dato personal: `USUARIO` o `SERVICIO`, su seudónimo (`usr:` y 16 hexadecimales, de la clave de auditoría) y sus permisos. La app la pide al abrir: sin sesión, ofrece iniciarla; con una sesión sin `mc.read`, dice que no puede leer. |
 
 Cada ruta documenta su resumen, su descripción, su modelo de respuesta y sus errores en el OpenAPI
 (`/docs`). Las pruebas revisan que ninguna escriba, que cada una documente su `401`, su `422` y sus
@@ -160,13 +167,29 @@ atraso. Contar las cuentas `ALTA` y `CAMPO` juntas revisa las filas de una de la
 483 ms. v0.17 no agrega índices ni la migración 0018 por un orden y un filtro combinado que no son
 los de omisión: es de v0.18 si el uso lo pide ([decisión 270](decisiones.md#270-sin-índices-nuevos-ni-particionado-sin-evidencia)).
 
-## Lo que v0.17 no hace
+## La sesión (v0.18)
+
+La app pide `GET /app/v1/sesion` antes de mostrar una pantalla:
+
+- **Sin sesión** (`401`): «Inicia sesión», con un enlace a `/oauth2/start?rd=<la pantalla pedida>`;
+  después del inicio de sesión regresa a esa pantalla. Si una sesión vence mientras se usa la app,
+  la siguiente lectura responde `401` y la app dice «Tu sesión expiró».
+- **Con una sesión sin `mc.read`** (`403`): «Sin permiso de lectura».
+- **Con sesión**: la cabecera dice «Sesión iniciada» y sus permisos en palabras (lectura,
+  auditoría...), con un botón «Cerrar sesión», un `POST` del mismo origen a `/oauth2/sign_out` que
+  borra la sesión también del servidor. La sección Auditoría solo aparece con `mc.audit`; una
+  pantalla cuya lectura responde `403` lo dice («Tu sesión no tiene permiso para ver esto»).
+- El pie dice «Sesión autenticada sobre datos sintéticos; la app no guarda ningún token en el
+  navegador».
+
+Las pruebas de Playwright lo recorren contra el compose de producción, con usuarios de Dex
+(`web/e2e/sesion.spec.ts`).
+
+## Lo que la app no hace
 
 - No ejecuta nada ni escribe nada: es de solo lectura.
-- No tiene autenticación, sesiones, usuarios, roles ni SSO, ni guarda preferencias en la base. No
-  se despliega con datos reales.
-- No tiene observabilidad de nube, alta disponibilidad, recuperación ante desastres, límites de
-  peticiones ni la política de seguridad de contenido completa: son de v0.18.
+- No administra usuarios, roles ni grupos (son del proveedor de identidad) ni guarda preferencias en
+  la base. El compose de desarrollo no tiene usuarios: no se despliega así ni con datos reales.
 - No muestra datos personales ni coordenadas, ni dibuja mapas.
 - Analytics es descriptivo, una predicción no es un efecto causal ni una recomendación, y un plan
   es óptimo respecto al modelo declarado, no una estrategia causalmente óptima.

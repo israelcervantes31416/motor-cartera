@@ -1,0 +1,115 @@
+name: Despliegue en Google Cloud (referencia)
+
+# NUNCA corre solo, y en este repositorio no puede correr: solo a mano (workflow_dispatch), solo
+# desde main o una etiqueta v*, con una confirmacion escrita, con el environment de GitHub del
+# entorno (que exige la aprobacion de un revisor) y solo si ese environment declara su proyecto,
+# su region, su proveedor de Workload Identity Federation y su cuenta de despliegue. Sin esas
+# variables se detiene antes de tocar nada. La infraestructura (infra/gcp) la aplica una persona,
+# fuera de este workflow: aqui solo se construyen las imagenes, se corren las migraciones y se
+# despliegan revisiones nuevas. Ver docs/cloud-gcp.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      entorno:
+        description: "staging o production"
+        type: choice
+        options: [staging, production]
+        required: true
+      confirmacion:
+        description: 'Escribe exactamente: desplegar <entorno>'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: despliegue-${{ inputs.entorno }}
+  cancel-in-progress: false
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.entorno }}
+    permissions:
+      contents: read
+      # El token OIDC de GitHub con que Workload Identity Federation entrega una credencial corta.
+      id-token: write
+
+    env:
+      ENTORNO: ${{ inputs.entorno }}
+      CONFIRMACION: ${{ inputs.confirmacion }}
+      PROYECTO: ${{ vars.GCP_PROYECTO }}
+      REGION: ${{ vars.GCP_REGION }}
+      PROVEEDOR_WIF: ${{ vars.GCP_WIF_PROVIDER }}
+      CUENTA: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      DOMINIO: ${{ vars.MC_DOMINIO }}
+
+    steps:
+      # Las entradas llegan por el entorno, nunca interpoladas en el script.
+      - name: Guardas
+        run: |
+          if [ "$CONFIRMACION" != "desplegar $ENTORNO" ]; then
+            echo "La confirmacion no es 'desplegar $ENTORNO'."; exit 1
+          fi
+          for variable in PROYECTO REGION PROVEEDOR_WIF CUENTA DOMINIO; do
+            if [ -z "${!variable}" ]; then
+              echo "El environment $ENTORNO no declara $variable: no se despliega."; exit 1
+            fi
+          done
+          case "$GITHUB_REF" in
+            refs/heads/main | refs/tags/v*) ;;
+            *) echo "Solo desde main o una etiqueta v*."; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Credencial corta por Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Las imagenes se suben con una etiqueta inmutable (el SHA del commit) y se despliegan por su
+      # digest: la que se probo es la que corre.
+      - name: Imagenes
+        run: |
+          registro="$REGION-docker.pkg.dev/$PROYECTO/motor-cartera"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          construir() {
+            docker build ${3:+--target "$3"} -f "$2" -t "$registro/$1:$GITHUB_SHA" "$4"
+            docker push "$registro/$1:$GITHUB_SHA"
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$registro/$1:$GITHUB_SHA")
+            echo "IMAGEN_$(echo "$1" | tr '[:lower:]' '[:upper:]')=$digest" >> "$GITHUB_ENV"
+          }
+          construir api Dockerfile produccion .
+          construir web web/Dockerfile "" web
+          construir respaldo infra/respaldo/Dockerfile "" .
+
+      # Primero las migraciones (un job, con el rol dueno del esquema y el candado de PostgreSQL),
+      # despues las revisiones nuevas del servicio web y del worker con las imagenes por digest.
+      - name: Migraciones
+        run: |
+          gcloud run jobs update "mc-$ENTORNO-migraciones" --region "$REGION" --image "$IMAGEN_API"
+          gcloud run jobs execute "mc-$ENTORNO-migraciones" --region "$REGION" --wait
+
+      - name: Revisiones nuevas
+        run: |
+          gcloud run services update "mc-$ENTORNO-web" --region "$REGION" \
+            --container api --image "$IMAGEN_API" --container edge --image "$IMAGEN_WEB"
+          gcloud run services update "mc-$ENTORNO-worker" --region "$REGION" --image "$IMAGEN_API"
+          gcloud run jobs update "mc-$ENTORNO-respaldo" --region "$REGION" --image "$IMAGEN_RESPALDO"
+
+      - name: La app responde
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS "https://$DOMINIO/salud-web" && exit 0
+            sleep 10
+          done
+          exit 1

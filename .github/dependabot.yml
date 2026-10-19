@@ -1,0 +1,55 @@
+# Las actualizaciones de dependencias: Dependabot abre un PR por grupo, y el CI completo (pruebas,
+# auditorias, la prueba de humo y Trivy) decide. Cada fuente espera 7 dias despues de una version
+# nueva antes de proponerla: una version comprometida suele descubrirse en esos dias.
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      web:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Los digests de las imagenes base (FROM) y de las del compose: se fijan por digest y Dependabot
+  # propone el digest nuevo de la misma etiqueta.
+  - package-ecosystem: docker
+    directories: ["/", "/web", "/infra/respaldo"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: terraform
+    directory: /infra/gcp
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7

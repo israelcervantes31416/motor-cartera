@@ -1,12 +1,22 @@
-# `docker compose up` levanta PostgreSQL, aplica las migraciones y arranca la API, el worker y la
-# app web, en ese orden y sin pasos manuales. La API queda en http://localhost:8000 (documentacion
-# en /docs) y la app en http://localhost:8080. La API guarda cada archivo en el almacen de
-# artefactos y registra el trabajo en la cola durable, en PostgreSQL; el worker lo ejecuta.
+# El compose de DESARROLLO. `docker compose up` levanta PostgreSQL, aplica las migraciones y
+# arranca la API, el worker y la app web, en ese orden y sin pasos manuales. La API queda en
+# http://localhost:8000 (documentacion en /docs) y la app en http://localhost:8080. La API guarda
+# cada archivo en el almacen de artefactos y registra el trabajo en la cola durable, en PostgreSQL;
+# el worker lo ejecuta.
+#
+# Es una conveniencia explicita de una maquina de desarrollo (MC_APP_ENV=development): la clave de
+# desarrollo que vale para todo, la documentacion de la API, la base con su contrasena de siempre y
+# sus puertos en el host. Nada de esto arranca en produccion: el despliegue de produccion local es
+# docker-compose.production.yml (ver docs/production.md).
 
 x-app: &app
-  build: .
+  build:
+    context: .
+    target: desarrollo
   image: motor-cartera:dev
   environment:
+    # Desarrollo, declarado: sin esto la configuracion se comporta como produccion y falla cerrada.
+    MC_APP_ENV: development
     MC_DATABASE_URL: postgresql+psycopg://motor:motor@postgres:5432/cartera_dev
     MC_DATABASE_URL_PRUEBAS: postgresql+psycopg://motor:motor@postgres:5432/cartera_test
     # Clave solo para desarrollo local. En cualquier otro entorno MC_API_KEY se define
@@ -27,7 +37,7 @@ services:
   postgres:
     # PostgreSQL 16 con PostGIS 3.5: la geografia (v0.11) guarda los municipios y los puntos con
     # sus indices GiST. La misma version mayor de PostgreSQL de siempre: el volumen de datos sirve.
-    image: postgis/postgis:16-3.5-alpine
+    image: postgis/postgis:16-3.5-alpine@sha256:47e961a569fd52ff31f0fe205ed91eeab17d9f5fff6722e6d7ea6b588748b293
     container_name: motor-cartera-postgres
     environment:
       POSTGRES_USER: motor
@@ -93,8 +103,8 @@ services:
   # La superficie web (v0.17): el build de la SPA servido por nginx en http://localhost:8080, con un
   # proxy de solo lectura hacia la API en el mismo origen (solo GET, solo las rutas de
   # web/nginx/rutas-api.conf). La clave de la API la pone nginx: el navegador nunca la ve. Publicado
-  # solo en 127.0.0.1: es una superficie local/demostrativa sin autenticacion y no se despliega con
-  # datos reales.
+  # solo en 127.0.0.1: en desarrollo no tiene usuarios. La de produccion, con TLS y sesion OIDC, es
+  # la del compose de produccion.
   web:
     build: ./web
     image: motor-cartera-web:dev
@@ -141,6 +151,28 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+
+  # El respaldo oficial (scripts/respaldo.py): la base y el almacen de artefactos, juntos, en un
+  # directorio nuevo bajo ./respaldos. `docker compose --profile respaldo run --rm respaldo` hace
+  # uno; como restaurarlo en un entorno nuevo lo dice docs/backups.md.
+  respaldo:
+    build:
+      context: .
+      dockerfile: infra/respaldo/Dockerfile
+    image: motor-cartera-respaldo:local
+    profiles: ["respaldo"]
+    command: ["respaldar", "--destino", "/respaldos"]
+    # El dueno de los archivos de respaldo en el host: en Linux, el usuario que corre el compose.
+    user: "${MC_RESPALDO_USUARIO:-70:70}"
+    environment:
+      MC_RESPALDO_DSN: postgresql://motor:motor@postgres:5432/cartera_dev
+      MC_SOURCE_STORE_ROOT: /var/lib/motor-cartera/fuentes
+    volumes:
+      - fuentes:/var/lib/motor-cartera/fuentes:ro
+      - ${MC_RESPALDOS_DIR:-./respaldos}:/respaldos
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

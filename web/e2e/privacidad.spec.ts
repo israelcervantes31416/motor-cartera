@@ -1,6 +1,7 @@
 /** Lo que la app muestra y lo que su proxy deja pasar, recorrido entero: ningun dato personal, ni
  * en el DOM ni en una respuesta de /api (la prueba base revisa cada respuesta). */
 import { abrir, datos, enContexto, expect, PERSONALES, test } from "./datos";
+import { BASE } from "./entorno";
 
 test("ninguna pantalla ni respuesta lleva un dato personal ni una coordenada", async ({
   page,
@@ -32,12 +33,12 @@ test("ninguna pantalla ni respuesta lleva un dato personal ni una coordenada", a
 });
 
 test("nada se carga de fuera: todas las peticiones van al mismo origen", async ({ page }) => {
+  // El origen de la app, sea el de desarrollo o el edge de produccion: ni otro host ni otro puerto.
+  const origen = new URL(BASE).origin;
   const externas: string[] = [];
   page.on("request", (peticion) => {
     const url = new URL(peticion.url());
-    if (!["localhost", "127.0.0.1"].includes(url.hostname) && url.protocol !== "data:") {
-      externas.push(peticion.url());
-    }
+    if (url.origin !== origen && url.protocol !== "data:") externas.push(peticion.url());
   });
   await abrir(page, enContexto("/resumen"), "Resumen");
   await abrir(page, enContexto("/analytics"), "Analytics");

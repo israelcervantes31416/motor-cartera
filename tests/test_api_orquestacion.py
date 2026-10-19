@@ -735,11 +735,11 @@ def test_openapi_documenta_las_cinco_operaciones_de_orquestacion(app):
     }
 
     assert {clave: set(op["responses"]) for clave, op in operaciones.items()} == {
-        ("GET", "/corridas/{run_id}/flujo"): {"200", "401", "404", "422"},
-        ("GET", "/flujos/{flujo_id}"): {"200", "401", "404", "422"},
-        ("GET", "/flujos/{flujo_id}/trabajos"): {"200", "401", "404", "422"},
-        ("GET", "/trabajos/{trabajo_id}"): {"200", "401", "404", "422"},
-        ("POST", "/flujos/{flujo_id}/reanudar"): {"200", "401", "404", "409", "422"},
+        ("GET", "/corridas/{run_id}/flujo"): {"200", "401", "403", "404", "422"},
+        ("GET", "/flujos/{flujo_id}"): {"200", "401", "403", "404", "422"},
+        ("GET", "/flujos/{flujo_id}/trabajos"): {"200", "401", "403", "404", "422"},
+        ("GET", "/trabajos/{trabajo_id}"): {"200", "401", "403", "404", "422"},
+        ("POST", "/flujos/{flujo_id}/reanudar"): {"200", "401", "403", "404", "409", "422"},
     }
     modelos = {}
     for clave, operacion in operaciones.items():

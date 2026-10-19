@@ -1,5 +1,6 @@
-# Lo que no debe viajar al contexto de construccion: pesa, no hace falta, o no es del
-# proyecto. El .venv local, sobre todo, puede pesar cientos de megas.
+# Lo que no debe viajar al contexto de construccion: pesa, no hace falta, no es del proyecto o es
+# secreto. El .venv local, sobre todo, puede pesar cientos de megas, y la app web tiene su propia
+# imagen y su propio contexto (web/).
 .git
 .venv
 .env
@@ -9,3 +10,13 @@ datos/*
 .ruff_cache
 .coverage
 htmlcov
+web
+tests
+docs
+# Los secretos efimeros, los respaldos y los resultados de las pruebas de carga nunca entran a una
+# imagen, ni siquiera al contexto.
+secretos
+respaldos
+resultados
+# La referencia de Google Cloud no va en ninguna imagen, y sus proveedores descargados pesan.
+infra/gcp

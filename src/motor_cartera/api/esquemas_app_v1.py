@@ -148,6 +148,27 @@ ParadaDeCuentaApp = sin_datos_personales(ParadaDeCuentaRespuesta)
 PaginaParadasApp = sin_datos_personales(PaginaParadasV2)
 
 
+# --- la sesion ------------------------------------------------------------------------------------
+
+
+class SesionApp(BaseModel):
+    """Quien ve la app, sin un dato personal: su tipo, su seudonimo y sus permisos. Ni su nombre, ni
+    su correo, ni su `sub`: la app solo necesita saber que mostrar."""
+
+    tipo: Literal["USUARIO", "SERVICIO"] = Field(
+        description="USUARIO: una persona con sesion (OpenID Connect). SERVICIO: una clave de "
+        "servicio, como la de desarrollo que pone el proxy local."
+    )
+    actor: str = Field(
+        description="Un seudonimo estable: `usr:<16 hex>` o `svc:<nombre>`.",
+        examples=["usr:4f9c1e2a7b3d5e6f"],
+    )
+    permisos: list[str] = Field(
+        description="Los permisos de la sesion, ordenados: mc.read, mc.audit, mc.execute, "
+        "mc.configure."
+    )
+
+
 # --- el contexto ----------------------------------------------------------------------------------
 
 

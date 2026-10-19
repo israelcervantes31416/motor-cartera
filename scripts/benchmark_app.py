@@ -71,7 +71,9 @@ def _cliente():
     from motor_cartera.config import Config
 
     clave = "benchmark-app-" + "x" * 24
-    return TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    return TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
 
 
 def _leer(cliente, ruta: str) -> dict:

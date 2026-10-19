@@ -1,13 +1,40 @@
 /**
- * Antes de las pruebas: encuentra, por la misma API que usa la app, un contexto completo (un corte
- * con una sugerencia que declara las seis ejecuciones), una cuenta de campo de ese contexto y una
- * de sus rutas, y los deja en e2e/.contexto.json. Nada se inventa: si la base no los tiene, falla.
+ * Antes de las pruebas: contra el compose de produccion, abre en Dex la sesion de cada usuario que
+ * las pruebas usan y la deja en e2e/.sesiones/. Despues encuentra, por la misma API que usa la app
+ * (con la sesion del auditor, si hay sesiones), un contexto completo (un corte con una sugerencia
+ * que declara las seis ejecuciones), una cuenta de campo de ese contexto y una de sus rutas, y los
+ * deja en e2e/.contexto.json. Nada se inventa: si la base no los tiene, falla.
  */
 import { writeFileSync } from "node:fs";
 
-import { request, type FullConfig } from "@playwright/test";
+import { chromium, request, type FullConfig } from "@playwright/test";
 
 import { ARCHIVO, type DatosDeLaPrueba } from "./datos";
+import { archivoDeSesion, iniciarSesion, type NombreDeUsuario, PRODUCCION } from "./entorno";
+
+/** Las sesiones que las pruebas comparten: ninguna prueba las cierra. */
+const SESIONES: readonly NombreDeUsuario[] = ["auditor", "lector", "sinpermisos"];
+
+async function abrirSesiones(config: FullConfig): Promise<void> {
+  const uso = config.projects[0]?.use ?? {};
+  const navegador = await chromium.launch({
+    ...uso.launchOptions,
+    ...(uso.channel !== undefined ? { channel: uso.channel } : {}),
+  });
+  try {
+    for (const nombre of SESIONES) {
+      const contexto = await navegador.newContext(
+        uso.baseURL !== undefined ? { baseURL: uso.baseURL } : {},
+      );
+      const page = await contexto.newPage();
+      await iniciarSesion(page, nombre);
+      await contexto.storageState({ path: archivoDeSesion(nombre) });
+      await contexto.close();
+    }
+  } finally {
+    await navegador.close();
+  }
+}
 
 interface Sugerencia {
   readonly codigo: string;
@@ -24,8 +51,12 @@ const EJECUCIONES = [
 ] as const;
 
 export default async function preparacion(config: FullConfig): Promise<void> {
+  if (PRODUCCION) await abrirSesiones(config);
   const base = config.projects[0]?.use.baseURL;
-  const api = await request.newContext(base !== undefined ? { baseURL: base } : {});
+  const api = await request.newContext({
+    ...(base !== undefined ? { baseURL: base } : {}),
+    ...(PRODUCCION ? { storageState: archivoDeSesion("auditor") } : {}),
+  });
   try {
     const leer = async <T>(ruta: string): Promise<T> => {
       const respuesta = await api.get(`/api${ruta}`);

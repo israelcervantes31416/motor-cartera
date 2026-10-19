@@ -1151,6 +1151,12 @@ class SaludRuteo:
         self._reloj = reloj or time.monotonic
         self._ultima: tuple[float, bool] | None = None
 
+    @property
+    def configurado(self) -> bool:
+        """Si este proceso tiene un proveedor de ruteo (MC_OSRM_URL). La salud del worker lo
+        informa."""
+        return self._proveedor is not None
+
     def disponible(self) -> bool:
         if self._proveedor is None:
             return False

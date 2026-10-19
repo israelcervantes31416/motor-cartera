@@ -259,7 +259,9 @@ def consultar(destino: Path, decision_run_id: str, corte_id: str) -> dict:
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-decision-v2-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     # Una cuenta con la saturacion activa (la explicacion mas larga) y la de mas eventos.
     ((con_saturacion,),) = _sql(
         "SELECT c.cuenta_id FROM resultado_decision_v2 r "

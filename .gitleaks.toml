@@ -1,0 +1,23 @@
+# Gitleaks (CI: el historial completo y el arbol de cada push). Las reglas por omision, mas una sola
+# excepcion, literal y justificada; un hallazgo nuevo no se silencia aqui sin una razon escrita.
+
+title = "motor-cartera"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """La clave de DESARROLLO documentada (docker-compose.yml, README, docs): publica a \
+proposito para el compose de desarrollo, sin valor en ningun otro entorno, y la configuracion de \
+produccion se niega a arrancar si se define MC_API_KEY (src/motor_cartera/config.py)."""
+regexTarget = "match"
+regexes = ['''X-API-Key: clave-local-de-desarrollo''']
+
+[[allowlists]]
+description = """Los JWT falsos de las pruebas de redaccion (firma literal "firmaDeLaPrueba", no \
+una firma): existen para que el redactor de los logs los quite. Solo en ese archivo y solo ese \
+patron."""
+condition = "AND"
+paths = ['''tests/test_logs_sin_datos_personales\.py$''']
+regexTarget = "match"
+regexes = ['''eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.firmaDeLaPrueba''']

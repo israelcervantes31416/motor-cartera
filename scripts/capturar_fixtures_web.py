@@ -65,7 +65,9 @@ class Captura:
         from motor_cartera.api import crear_app
         from motor_cartera.config import Config
 
-        self.cliente = TestClient(crear_app(Config(api_key=CLAVE)), headers={"X-API-Key": CLAVE})
+        self.cliente = TestClient(
+            crear_app(Config(app_env="development", api_key=CLAVE)), headers={"X-API-Key": CLAVE}
+        )
         self.expresiones = _contrato().rutas_permitidas()
         self.constantes: list[tuple[str, str, Any]] = []
 

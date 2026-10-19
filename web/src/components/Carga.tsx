@@ -27,6 +27,12 @@ export function mensajeDeError(error: unknown): { titulo: string; detalle: strin
       detalle: `${error.message} (${error.ruta})`,
     };
   }
+  if (error instanceof ErrorDeApi && error.estado === 403) {
+    return {
+      titulo: "Tu sesión no tiene permiso para ver esto",
+      detalle: `${error.message} (HTTP 403, ${error.ruta})`,
+    };
+  }
   if (error instanceof ErrorDeApi) {
     return {
       titulo:

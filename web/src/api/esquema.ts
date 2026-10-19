@@ -413,6 +413,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/app/v1/sesion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Quien ve la app: su tipo, su seudonimo y sus permisos
+         * @description Lo que la app necesita para saber que mostrar: si hay una persona con sesion (o la clave de servicio del proxy de desarrollo) y sus permisos, sin su nombre, su correo ni su `sub`. Exige `mc.read`: una persona sin ese permiso recibe 403 y la app le dice por que.
+         */
+        get: operations["sesion_actual_app_v1_sesion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campo-v2/planes/{campo_run_id}": {
         parameters: {
             query?: never;
@@ -5491,6 +5511,30 @@ export interface components {
          */
         Sentido: "ASC" | "DESC";
         /**
+         * SesionApp
+         * @description Quien ve la app, sin un dato personal: su tipo, su seudonimo y sus permisos. Ni su nombre, ni
+         *     su correo, ni su `sub`: la app solo necesita saber que mostrar.
+         */
+        SesionApp: {
+            /**
+             * Actor
+             * @description Un seudonimo estable: `usr:<16 hex>` o `svc:<nombre>`.
+             * @example usr:4f9c1e2a7b3d5e6f
+             */
+            actor: string;
+            /**
+             * Permisos
+             * @description Los permisos de la sesion, ordenados: mc.read, mc.audit, mc.execute, mc.configure.
+             */
+            permisos: string[];
+            /**
+             * Tipo
+             * @description USUARIO: una persona con sesion (OpenID Connect). SERVICIO: una clave de servicio, como la de desarrollo que pone el proxy local.
+             * @enum {string}
+             */
+            tipo: "USUARIO" | "SERVICIO";
+        };
+        /**
          * SignoEconomico
          * @description Lo que hace el movimiento con la recuperacion. Un movimiento de importe cero no existe: su
          *     observacion queda NO_CONCILIADO.
@@ -6027,8 +6071,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6067,8 +6121,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6119,8 +6183,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6196,8 +6270,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6257,8 +6341,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6309,8 +6403,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6370,8 +6474,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6438,8 +6552,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6503,8 +6627,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6577,8 +6711,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6656,8 +6800,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6723,8 +6877,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6793,8 +6957,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6852,8 +7026,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6917,8 +7101,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6974,8 +7168,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7039,8 +7243,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.audit`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7091,8 +7305,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7165,8 +7389,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7231,8 +7465,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7251,6 +7495,48 @@ export interface operations {
             };
             /** @description - `ENTRADA_INVALIDA`: Un identificador, un filtro o la paginacion no son validos. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+        };
+    };
+    sesion_actual_app_v1_sesion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SesionApp"];
+                };
+            };
+            /**
+             * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
+             *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
+             */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7283,8 +7569,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7341,8 +7637,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7397,8 +7703,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7440,8 +7756,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7498,8 +7824,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7553,8 +7889,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7611,8 +7957,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7673,8 +8029,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7738,8 +8104,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7806,8 +8182,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7878,8 +8264,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7940,8 +8336,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7978,8 +8384,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8021,8 +8437,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8071,8 +8497,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8109,8 +8545,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8152,8 +8598,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8210,8 +8666,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8265,8 +8731,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8318,8 +8794,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8386,8 +8872,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8467,8 +8963,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8526,8 +9032,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8560,8 +9076,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8620,8 +9146,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8672,8 +9208,18 @@ export interface operations {
             /**
              * @description - `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.
              *     - `API_KEY_INVALIDA`: La API key no es valida.
+             *     - Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.
              */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorRespuesta"];
+                };
+            };
+            /** @description - `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

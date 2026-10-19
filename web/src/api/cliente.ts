@@ -13,6 +13,10 @@ import type { paths } from "./esquema";
 export const BASE_API = "/api";
 export const TIEMPO_MAXIMO_MS = 30_000;
 
+/** Lo que el cliente avisa cuando la API (o el edge) responde 401: la sesion no existe o vencio. La
+ * app lo escucha para mostrar como volver a iniciarla, sin recargar ni perder la URL. */
+export const EVENTO_SIN_SESION = "motor-cartera:sin-sesion";
+
 export type Ruta = keyof paths;
 type Operacion<R extends Ruta> = paths[R]["get"];
 type Parametros<R extends Ruta> = Operacion<R> extends { parameters: infer P } ? P : never;
@@ -124,6 +128,7 @@ export async function leer<R extends Ruta>(
     throw new ErrorDeRed("SIN_CONEXION", "No se pudo contactar a la API.", camino);
   }
   if (!respuesta.ok) {
+    if (respuesta.status === 401) window.dispatchEvent(new Event(EVENTO_SIN_SESION));
     if (esJson(respuesta)) {
       const cuerpo = (await respuesta.json().catch(() => null)) as {
         codigo?: unknown;

@@ -1,0 +1,168 @@
+# Las reglas de alertamiento de Prometheus. Los umbrales son UMBRALES OPERATIVOS INICIALES: puntos de
+# partida razonables para una carga como la del benchmark, no verdades universales. Se ajustan con
+# el historial de un despliegue real (docs/slos.md, docs/observability.md). Cada alerta nombra su
+# runbook en docs/runbooks/.
+
+groups:
+  - name: motor-cartera-api
+    rules:
+      - alert: MC5xxElevados
+        expr: |
+          sum(rate(mc_http_peticiones_total{clase_estado="5xx"}[5m]))
+            / clamp_min(sum(rate(mc_http_peticiones_total[5m])), 1e-9) > 0.02
+        for: 10m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "Mas del 2 % de las peticiones a la API terminan en 5xx (10 min)."
+          runbook: docs/runbooks/service-down.md
+
+      - alert: MCLatenciaP95Alta
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(mc_http_duracion_segundos_bucket{
+            ruta!~"/health/.*|/salud|/app/v1/resumen|/app/v1/predictivo/scorings/\\{scoring_run_id\\}/distribucion|/app/v1/cuentas"
+          }[5m]))) > 1.5
+        for: 10m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "El p95 de las lecturas basicas pasa de 1.5 s (10 min)."
+          runbook: docs/runbooks/service-down.md
+
+      - alert: MCLatenciaP95RutasCarasAlta
+        expr: |
+          histogram_quantile(0.95, sum by (le, ruta) (rate(mc_http_duracion_segundos_bucket{
+            ruta=~"/app/v1/resumen|/app/v1/predictivo/scorings/\\{scoring_run_id\\}/distribucion|/app/v1/cuentas"
+          }[5m]))) > 5
+        for: 15m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "El p95 de una ruta cara conocida pasa de 5 s (15 min)."
+          runbook: docs/runbooks/service-down.md
+
+      - alert: MCReadinessFallando
+        expr: max(mc_salud_lista{job="api"}) == 0
+        for: 2m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "La API esta viva pero no lista: la base no contesta o su esquema no es el esperado."
+          runbook: docs/runbooks/database-down.md
+
+      - alert: MCApiSinMetricas
+        expr: absent(up{job="api"} == 1)
+        for: 2m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "Ninguna replica de la API responde a Prometheus."
+          runbook: docs/runbooks/service-down.md
+
+      - alert: MCIdentidadNoDisponible
+        expr: sum(increase(mc_autorizacion_total{motivo="IDENTIDAD_NO_DISPONIBLE"}[5m])) > 0
+        for: 1m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "La API no puede validar tokens: el IdP no responde y su JWKS ya es vieja."
+          runbook: docs/runbooks/identity-down.md
+
+      - alert: MCJwksFallando
+        expr: sum(increase(mc_jwks_refrescos_total{resultado="fallido"}[10m])) > 3
+        for: 5m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "La API no logra refrescar la JWKS del IdP (todavia valida con la que tiene)."
+          runbook: docs/runbooks/identity-down.md
+
+      - alert: MCPoolDeConexionesAgotado
+        expr: sum(increase(mc_db_pool_agotado_total[5m])) > 0
+        for: 5m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "Peticiones esperaron una conexion de la base hasta agotar su tiempo."
+          runbook: docs/runbooks/database-down.md
+
+  - name: motor-cartera-cola
+    rules:
+      - alert: MCColaAtrasada
+        expr: max(mc_cola_antiguedad_segundos) > 600
+        for: 5m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "Un trabajo disponible lleva mas de 10 min esperando worker."
+          runbook: docs/runbooks/queue-backlog.md
+
+      - alert: MCTrabajosFallidos
+        expr: sum(increase(mc_worker_trabajos_cerrados_total{resultado="FALLIDO"}[15m])) > 0
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "Un trabajo agoto sus intentos y quedo FALLIDO (15 min)."
+          runbook: docs/runbooks/worker-stuck.md
+
+      - alert: MCLeasesVencidos
+        expr: sum(mc_cola_leases_vencidos) > 0
+        for: 10m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "Hay trabajos EJECUTANDO cuyo worker dejo de latir hace mas de 10 min."
+          runbook: docs/runbooks/worker-stuck.md
+
+      - alert: MCWorkerSinLatido
+        expr: time() - max(mc_worker_latido_timestamp_segundos) > 120
+        for: 2m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "El worker no da senales de vida desde hace mas de 2 min."
+          runbook: docs/runbooks/worker-stuck.md
+
+      - alert: MCWorkerCaido
+        expr: absent(up{job="worker"} == 1)
+        for: 2m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "Ninguna replica del worker responde a Prometheus."
+          runbook: docs/runbooks/worker-stuck.md
+
+      - alert: MCLecturaDeColaFallando
+        expr: max(mc_cola_lectura_ok) == 0
+        for: 2m
+        labels:
+          severidad: pagina
+          umbral: inicial
+        annotations:
+          resumen: "La API no puede leer la cola en la base."
+          runbook: docs/runbooks/database-down.md
+
+  - name: motor-cartera-telemetria
+    rules:
+      - alert: MCColectorDeTelemetriaCaido
+        expr: absent(up{job="otel-collector"} == 1)
+        for: 5m
+        labels:
+          severidad: ticket
+          umbral: inicial
+        annotations:
+          resumen: "El colector de OpenTelemetry no responde: las trazas se descartan (el negocio sigue)."
+          runbook: docs/runbooks/service-down.md

@@ -455,7 +455,7 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
     rutas = app.openapi()["paths"]
 
     post = rutas["/corridas"]["post"]
-    assert set(post["responses"]) == {"201", "401", "409", "413", "415", "422"}
+    assert set(post["responses"]) == {"201", "401", "403", "409", "413", "415", "422"}
     assert "`FORMATO_NO_CORRESPONDE`" in post["responses"]["415"]["description"]
     # El ejemplo del 201 es lo que de verdad responde el POST, no una corrida terminada.
     ejemplo = post["responses"]["201"]["content"]["application/json"]["example"]
@@ -468,12 +468,13 @@ def test_openapi_documenta_cada_respuesta_con_el_esquema_real(app):
     campos = set(CorridaRespuesta.model_json_schema(mode="serialization")["properties"])
     assert set(EJEMPLO_CORRIDA) == set(EJEMPLO_CORRIDA_EN_PROCESO) == campos
     assert "`ARCHIVO_EN_PROCESO`" in post["responses"]["409"]["description"]
-    for codigo in ("401", "409", "413", "415", "422"):
+    for codigo in ("401", "403", "409", "413", "415", "422"):
         esquema = post["responses"][codigo]["content"]["application/json"]["schema"]
         assert esquema["$ref"].endswith("/ErrorRespuesta")
     assert set(rutas["/corridas/{run_id}/rechazos"]["get"]["responses"]) == {
         "200",
         "401",
+        "403",
         "404",
         "409",
         "422",

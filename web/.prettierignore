@@ -9,3 +9,4 @@ src/api/esquema.ts
 src/api/openapi.json
 src/test/capturas.ts
 e2e/.contexto.json
+e2e/.sesiones

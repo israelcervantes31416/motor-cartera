@@ -373,7 +373,9 @@ def consultar(destino: Path, modelo: str, scoring: str, cuenta: str) -> dict:
     from motor_cartera.db.sesion import crear_motor
 
     clave = "benchmark-predictivo-" + "x" * 24
-    cliente = TestClient(crear_app(Config(api_key=clave)), headers={"X-API-Key": clave})
+    cliente = TestClient(
+        crear_app(Config(app_env="development", api_key=clave)), headers={"X-API-Key": clave}
+    )
     run = f"/predictivo/scorings/{scoring}"
     predicciones = f"{run}/predicciones?por_pagina=100"
     rutas = {

@@ -29,6 +29,7 @@ from motor_cartera.api import decisiones_v2 as api_decisiones_v2
 from motor_cartera.api import gestiones as api_gestiones
 from motor_cartera.api import lifecycle as api_lifecycle
 from motor_cartera.api import ruteo_v2 as api_ruteo_v2
+from motor_cartera.api.autorizacion import principal_de
 from motor_cartera.api.dependencias import SesionDeLectura
 from motor_cartera.api.errores import DetalleError, ErrorDeApi, errores
 from motor_cartera.api.esquemas import Paginacion, ParametrosHistoria
@@ -84,6 +85,7 @@ from motor_cartera.api.esquemas_app_v1 import (
     ResumenAppRespuesta,
     RuteoDeCuentaSeccion,
     RuteoDelResumen,
+    SesionApp,
     SugerenciaDeContexto,
     sin_personales,
 )
@@ -244,6 +246,26 @@ def validado_respuesta(resuelto: ContextoResuelto) -> ContextoValidadoRespuesta:
             ProblemaDeContexto(codigo=p.codigo, mensaje=p.mensaje, ejecuciones=list(p.ejecuciones))
             for p in resuelto.problemas
         ],
+    )
+
+
+@router.get(
+    "/sesion",
+    response_model=SesionApp,
+    summary="Quien ve la app: su tipo, su seudonimo y sus permisos",
+    description="Lo que la app necesita para saber que mostrar: si hay una persona con sesion (o "
+    "la clave de servicio del proxy de desarrollo) y sus permisos, sin su nombre, su correo ni su "
+    "`sub`. Exige `mc.read`: una persona sin ese permiso recibe 403 y la app le dice por que.",
+    responses=errores(*SIN_CLAVE),
+)
+def sesion_actual(request: Request) -> SesionApp:
+    principal = principal_de(request)
+    if principal is None:  # pragma: no cover - la ruta exige mc.read: siempre hay principal
+        raise ErrorDeApi(401, "CREDENCIAL_AUSENTE", "La peticion no trae credencial.")
+    return SesionApp(
+        tipo=principal.tipo,
+        actor=principal.actor,
+        permisos=sorted(p.value for p in principal.permisos),
     )
 
 

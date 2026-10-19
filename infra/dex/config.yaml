@@ -1,0 +1,91 @@
+# Dex: el proveedor de identidad OpenID Connect del compose de produccion local y del CI. SOLO para
+# desarrollo y pruebas: usuarios estaticos sinteticos (@motor-cartera.test), sin datos de personas.
+# En produccion el IdP es externo (Google, Entra ID, Okta, Keycloak...): la API y oauth2-proxy solo
+# conocen su emisor, su audiencia y su JWKS. Ver docs/security.md.
+#
+# Ningun secreto vive aqui. El secreto de cada cliente y el bcrypt de cada contrasena llegan por
+# variables de entorno que el entrypoint del servicio exporta desde los secretos montados
+# (scripts/generar_secretos_locales.py los genera, efimeros, para cada maquina o corrida del CI).
+
+issuer: https://motor-cartera.localhost:8443/dex
+
+storage:
+  type: memory
+
+web:
+  # TLS tambien dentro de la red: el edge, oauth2-proxy y la API le hablan por https con la CA
+  # efimera del compose.
+  https: 0.0.0.0:5554
+  tlsCert: /run/secrets/dex_tls_certificado
+  tlsKey: /run/secrets/dex_tls_llave
+
+telemetry:
+  http: 0.0.0.0:5558
+
+logger:
+  level: info
+  format: json
+
+oauth2:
+  responseTypes: [code]
+  skipApprovalScreen: true
+  # Sin passwordConnector: el grant de contrasena (ROPC) queda apagado. Solo Authorization Code,
+  # y oauth2-proxy lo pide con PKCE (S256).
+
+expiry:
+  idTokens: 15m
+  authRequests: 10m
+  signingKeys: 6h
+  refreshTokens:
+    validIfNotUsedFor: 8h
+    absoluteLifetime: 24h
+    reuseInterval: 3s
+
+enablePasswordDB: true
+
+staticClients:
+  # El cliente confidencial de la web: oauth2-proxy, del lado del servidor. El navegador nunca ve su
+  # secreto ni los tokens.
+  - id: motor-cartera-web
+    name: Motor Cartera
+    secretEnv: MC_DEX_CLIENTE_WEB_SECRETO
+    redirectURIs:
+      - https://motor-cartera.localhost:8443/oauth2/callback
+  # La API como audiencia: confia en la web para pedir tokens a su nombre
+  # (audience:server:client_id:motor-cartera-api), y nunca pide uno propio.
+  - id: motor-cartera-api
+    name: Motor Cartera API
+    secretEnv: MC_DEX_CLIENTE_API_SECRETO
+    trustedPeers:
+      - motor-cartera-web
+    redirectURIs:
+      - https://motor-cartera.localhost:8443/sin-uso
+
+# Un usuario por rol, y uno sin ningun grupo (para el 403). Los grupos se traducen a permisos en la
+# API (MC_OIDC_GRUPOS); Dex no sabe de permisos.
+staticPasswords:
+  - email: lector@motor-cartera.test
+    hashFromEnv: MC_DEX_HASH_LECTOR
+    username: lector
+    userID: 6f1d9c58-1a2b-4c3d-8e4f-000000000001
+    groups: [mc-lectores]
+  - email: auditor@motor-cartera.test
+    hashFromEnv: MC_DEX_HASH_AUDITOR
+    username: auditor
+    userID: 6f1d9c58-1a2b-4c3d-8e4f-000000000002
+    groups: [mc-auditores]
+  - email: operador@motor-cartera.test
+    hashFromEnv: MC_DEX_HASH_OPERADOR
+    username: operador
+    userID: 6f1d9c58-1a2b-4c3d-8e4f-000000000003
+    groups: [mc-operadores]
+  - email: administrador@motor-cartera.test
+    hashFromEnv: MC_DEX_HASH_ADMINISTRADOR
+    username: administrador
+    userID: 6f1d9c58-1a2b-4c3d-8e4f-000000000004
+    groups: [mc-administradores]
+  - email: sinpermisos@motor-cartera.test
+    hashFromEnv: MC_DEX_HASH_SINPERMISOS
+    username: sinpermisos
+    userID: 6f1d9c58-1a2b-4c3d-8e4f-000000000005
+    groups: []
