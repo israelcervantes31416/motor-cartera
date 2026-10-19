@@ -29,6 +29,9 @@ if not (make_url(URL_PRUEBAS).database or "").endswith("_test"):
     oculta = make_url(URL_PRUEBAS).render_as_string(hide_password=True)
     raise pytest.UsageError(f"MC_DATABASE_URL_PRUEBAS debe apuntar a una base *_test: {oculta}")
 os.environ["MC_DATABASE_URL"] = URL_PRUEBAS
+# Las pruebas corren en el entorno `test`: sin el, la configuracion se comporta como produccion
+# (falla cerrada) y la API no arrancaria con la clave de las pruebas.
+os.environ["MC_APP_ENV"] = "test"
 
 # Un solo almacen para toda la sesion, fijado antes de que se construya cualquier Config: varios
 # modulos de prueba construyen la suya al importarse, y la API, el flujo y el worker tienen que ver

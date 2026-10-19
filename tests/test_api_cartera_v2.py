@@ -196,6 +196,7 @@ def test_openapi_documenta_el_contrato_declarado_y_la_evidencia(app):
     assert set(rutas["/corridas/{run_id}/fuente"]["get"]["responses"]) == {
         "200",
         "401",
+        "403",
         "404",
         "422",
     }

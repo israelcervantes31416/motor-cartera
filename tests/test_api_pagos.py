@@ -226,13 +226,20 @@ def test_openapi_documenta_la_ingesta_de_pagos(app):
     rutas = esquema["paths"]
 
     post = rutas["/pagos"]["post"]
-    assert set(post["responses"]) == {"201", "401", "409", "413", "415", "422"}
+    assert set(post["responses"]) == {"201", "401", "403", "409", "413", "415", "422"}
     assert "`PAGOS_YA_ACEPTADOS`" in post["responses"]["409"]["description"]
     assert "`PAGOS_EN_PROCESO`" in post["responses"]["409"]["description"]
-    assert set(rutas["/pagos/{pagos_run_id}"]["get"]["responses"]) == {"200", "401", "404", "422"}
+    assert set(rutas["/pagos/{pagos_run_id}"]["get"]["responses"]) == {
+        "200",
+        "401",
+        "403",
+        "404",
+        "422",
+    }
     assert set(rutas["/pagos/{pagos_run_id}/rechazos"]["get"]["responses"]) == {
         "200",
         "401",
+        "403",
         "404",
         "409",
         "422",

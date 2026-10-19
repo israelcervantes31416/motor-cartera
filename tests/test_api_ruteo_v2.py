@@ -538,16 +538,22 @@ def test_openapi_documenta_las_diez_operaciones_de_ruteo_v2(app):
     }
 
     assert {clave: set(op["responses"]) for clave, op in operaciones.items()} == {
-        ("GET", "/ruteo-v2/redes"): {"200", "401", "422"},
-        ("GET", "/ruteo-v2/redes/{red_vial_version_id}"): {"200", "401", "404", "422"},
-        ("POST", "/ruteo-v2/ejecuciones"): {"201", "401", "404", "409", "422"},
-        ("GET", "/ruteo-v2/ejecuciones"): {"200", "401", "404", "422"},
-        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}"): {"200", "401", "404", "422"},
-        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}/rutas"): {"200", "401", "404", "422"},
-        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}/paradas"): {"200", "401", "404", "422"},
-        ("GET", "/ruteo-v2/rutas/{ruta_id}"): {"200", "401", "404", "422"},
-        ("GET", "/ruteo-v2/rutas/{ruta_id}/paradas"): {"200", "401", "404", "422"},
-        ("GET", "/cuentas/{cuenta_id}/ruteo-v2"): {"200", "401", "404", "422"},
+        ("GET", "/ruteo-v2/redes"): {"200", "401", "403", "422"},
+        ("GET", "/ruteo-v2/redes/{red_vial_version_id}"): {"200", "401", "403", "404", "422"},
+        ("POST", "/ruteo-v2/ejecuciones"): {"201", "401", "403", "404", "409", "422"},
+        ("GET", "/ruteo-v2/ejecuciones"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}/rutas"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteo-v2/ejecuciones/{ruteo_run_id}/paradas"): {
+            "200",
+            "401",
+            "403",
+            "404",
+            "422",
+        },
+        ("GET", "/ruteo-v2/rutas/{ruta_id}"): {"200", "401", "403", "404", "422"},
+        ("GET", "/ruteo-v2/rutas/{ruta_id}/paradas"): {"200", "401", "403", "404", "422"},
+        ("GET", "/cuentas/{cuenta_id}/ruteo-v2"): {"200", "401", "403", "404", "422"},
     }
     for operacion in operaciones.values():
         assert operacion["tags"] == ["ruteo-v2"]
