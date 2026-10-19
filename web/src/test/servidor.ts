@@ -32,6 +32,14 @@ export const CONTEXTO: Required<Contexto> = {
   ruteo: c.validado.declaradas["RUTEO_V2"] ?? "",
 };
 
+/** La sesion de las pruebas: una persona con lectura y auditoria, como el auditor de Dex. Una
+ * prueba la reemplaza para ver la app sin sesion (401), sin permiso (403) o en desarrollo. */
+export const SESION: Respuesta<"/app/v1/sesion"> = {
+  tipo: "USUARIO",
+  actor: "usr:0123456789abcdef",
+  permisos: ["mc.audit", "mc.read"],
+};
+
 export const CUENTA = c.cuenta.cuenta_id;
 export const RUTA = c.ruta.ruta_id;
 export const NO_EXISTE = "00000000-0000-4000-8000-00000000dead";
@@ -128,6 +136,8 @@ function deLaCuenta(id: string | readonly string[] | undefined, datos: JsonBodyT
 }
 
 export const manejadores = [
+  // La sesion no se anota en `peticiones`: la pide el marco de la app, no la pantalla que se prueba.
+  http.get("/api/app/v1/sesion", () => responder(SESION)),
   http.get("/api/app/v1/contextos/opciones", ({ request }) => {
     const url = anotar(request);
     return responder(url.searchParams.has("corte_id") ? c.opciones : c.opcionesSinCorte);

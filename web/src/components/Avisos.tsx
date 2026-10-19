@@ -12,7 +12,9 @@ export const AVISO_DRIFT = "Drift no implica automáticamente degradación del m
 export const AVISO_ANALYTICS =
   "Analytics describe lo observado y lo planificado, agregado: no prueba causalidad, no predice y no recomienda.";
 export const AVISO_DEMO =
-  "Superficie local/demostrativa sin autenticación; no desplegar con datos reales.";
+  "Desarrollo local sin usuarios (clave de servicio del proxy); no desplegar así ni con datos reales.";
+export const AVISO_SESION =
+  "Sesión autenticada sobre datos sintéticos; la app no guarda ningún token en el navegador.";
 export const AVISO_SOLO_LECTURA =
   "Solo lectura: esta app no ejecuta gestiones, no envía, no llama, no visita, no optimiza ni reentrena nada.";
 export const AVISO_PARADA = "Una parada programada es un plan, no una visita realizada.";

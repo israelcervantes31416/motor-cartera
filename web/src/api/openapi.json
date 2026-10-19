@@ -10638,6 +10638,43 @@
         "title": "Sentido",
         "type": "string"
       },
+      "SesionApp": {
+        "description": "Quien ve la app, sin un dato personal: su tipo, su seudonimo y sus permisos. Ni su nombre, ni\nsu correo, ni su `sub`: la app solo necesita saber que mostrar.",
+        "properties": {
+          "actor": {
+            "description": "Un seudonimo estable: `usr:<16 hex>` o `svc:<nombre>`.",
+            "examples": [
+              "usr:4f9c1e2a7b3d5e6f"
+            ],
+            "title": "Actor",
+            "type": "string"
+          },
+          "permisos": {
+            "description": "Los permisos de la sesion, ordenados: mc.read, mc.audit, mc.execute, mc.configure.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Permisos",
+            "type": "array"
+          },
+          "tipo": {
+            "description": "USUARIO: una persona con sesion (OpenID Connect). SERVICIO: una clave de servicio, como la de desarrollo que pone el proxy local.",
+            "enum": [
+              "USUARIO",
+              "SERVICIO"
+            ],
+            "title": "Tipo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tipo",
+          "actor",
+          "permisos"
+        ],
+        "title": "SesionApp",
+        "type": "object"
+      },
       "SignoEconomico": {
         "description": "Lo que hace el movimiento con la recuperacion. Un movimiento de importe cero no existe: su\nobservacion queda NO_CONCILIADO.",
         "enum": [
@@ -11859,7 +11896,7 @@
   "info": {
     "description": "Las operaciones GET de la API que el proxy de la superficie web deja pasar (web/nginx/rutas-api.conf), con los esquemas que usan. Generado por scripts/exportar_contrato_web.py: no se edita a mano.",
     "title": "motor-cartera: la superficie web",
-    "version": "0.17.0"
+    "version": "0.18.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11902,7 +11939,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           }
         },
         "summary": "El catalogo versionado de metricas, con su hash, su politica y sus conjuntos",
@@ -12029,7 +12085,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -12127,7 +12202,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -12560,7 +12654,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -12677,7 +12790,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -12775,7 +12907,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -12892,7 +13043,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -13064,7 +13234,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -13278,7 +13467,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -13675,7 +13883,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -13925,7 +14152,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14061,7 +14307,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14304,7 +14569,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14445,7 +14729,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14642,7 +14945,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14767,7 +15089,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -14981,7 +15322,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.audit."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.audit`.\n"
           },
           "404": {
             "content": {
@@ -15079,7 +15439,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -15312,7 +15691,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -15456,7 +15854,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -15498,6 +15915,73 @@
           }
         },
         "summary": "Las paradas de una ruta en su orden de visita, sin datos personales ni coordenadas",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/app/v1/sesion": {
+      "get": {
+        "description": "Lo que la app necesita para saber que mostrar: si hay una persona con sesion (o la clave de servicio del proxy de desarrollo) y sus permisos, sin su nombre, su correo ni su `sub`. Exige `mc.read`: una persona sin ese permiso recibe 403 y la app le dice por que.",
+        "operationId": "sesion_actual_app_v1_sesion_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SesionApp"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "API_KEY_AUSENTE": {
+                    "summary": "API_KEY_AUSENTE",
+                    "value": {
+                      "codigo": "API_KEY_AUSENTE",
+                      "mensaje": "Falta la cabecera X-API-Key."
+                    }
+                  },
+                  "API_KEY_INVALIDA": {
+                    "summary": "API_KEY_INVALIDA",
+                    "value": {
+                      "codigo": "API_KEY_INVALIDA",
+                      "mensaje": "La API key no es valida."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
+          }
+        },
+        "summary": "Quien ve la app: su tipo, su seudonimo y sus permisos",
         "tags": [
           "app"
         ]
@@ -15554,7 +16038,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -15696,7 +16199,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -15827,7 +16349,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "422": {
             "content": {
@@ -15906,7 +16447,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16071,7 +16631,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16176,7 +16755,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16318,7 +16916,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16445,7 +17062,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16576,7 +17212,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16753,7 +17408,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -16999,7 +17673,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -17111,7 +17804,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           }
         },
         "summary": "optimization-public-v1: el objetivo, su semantica, el solver y sus limitaciones",
@@ -17204,7 +17916,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "422": {
             "content": {
@@ -17283,7 +18014,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -17369,7 +18119,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           }
         },
         "summary": "predictive-features/public-v1: cada feature con su fuente, su ventana y su nulo",
@@ -17462,7 +18231,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "422": {
             "content": {
@@ -17541,7 +18329,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -17706,7 +18513,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -17811,7 +18637,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -17919,7 +18764,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -18057,7 +18921,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -18488,7 +19371,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -18593,7 +19495,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           }
         },
         "summary": "predictive-targets/public-v1: que se predice, en que ventana y cuando esta maduro",
@@ -18653,7 +19574,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -18828,7 +19768,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {
@@ -18926,7 +19885,26 @@
                 }
               }
             },
-            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n"
+            "description": "- `API_KEY_AUSENTE`: Falta la cabecera X-API-Key.\n- `API_KEY_INVALIDA`: La API key no es valida.\n- Con un token de acceso: `CREDENCIAL_AUSENTE`, `CREDENCIALES_AMBIGUAS`, `GATEWAY_REQUERIDO`, `TOKEN_MALFORMADO`, `TOKEN_ALGORITMO_NO_PERMITIDO`, `TOKEN_SIN_KID`, `TOKEN_CLAVE_DESCONOCIDA`, `TOKEN_FIRMA_INVALIDA`, `TOKEN_EXPIRADO`, `TOKEN_AUN_NO_VALIDO`, `TOKEN_EMISOR_INVALIDO`, `TOKEN_AUDIENCIA_INVALIDA`.\n"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "PERMISO_INSUFICIENTE": {
+                    "summary": "PERMISO_INSUFICIENTE",
+                    "value": {
+                      "codigo": "PERMISO_INSUFICIENTE",
+                      "mensaje": "La ruta exige el permiso mc.read."
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRespuesta"
+                }
+              }
+            },
+            "description": "- `PERMISO_INSUFICIENTE`: a la credencial le falta `mc.read`.\n"
           },
           "404": {
             "content": {

@@ -27,7 +27,7 @@ const CLAVE = process.env["MC_API_KEY"] ?? "clave-local-de-desarrollo";
 const CABECERAS = {
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-  "Referrer-Policy": "no-referrer",
+  "Referrer-Policy": "same-origin",
 };
 
 export default defineConfig({
