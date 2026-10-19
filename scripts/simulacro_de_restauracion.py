@@ -96,7 +96,9 @@ def objetos_en_el_almacen() -> int:
 
 
 def _escribible(ruta: Path) -> None:
-    os.chmod(ruta, stat.S_IREAD | stat.S_IWRITE)
+    """Escribible por su dueno, sin quitarle la lectura a los demas: la restauracion corre como
+    otro usuario (10001) y tiene que poder leer la copia alterada para negarla."""
+    os.chmod(ruta, stat.S_IMODE(ruta.stat().st_mode) | stat.S_IWUSR | stat.S_IRUSR)
 
 
 def _voltear_un_byte(ruta: Path) -> None:
@@ -187,10 +189,13 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(copia, ignore_errors=True)
         intacta = tablas_en_la_base() == base_antes
         sin_objetos = objetos_en_el_almacen() == almacen_antes
-        esperar(
+        obtenido = salida.get("codigo") or salida.get("resultado")
+        if not esperar(
             salida.get("codigo") == codigo and intacta and sin_objetos,
-            f"{nombre}: {salida.get('codigo')}; la base y el almacen intactos",
-        )
+            f"{nombre}: {obtenido}; la base y el almacen intactos",
+        ):
+            # Lo que dijo la herramienta, para entender la falla (no lleva secretos).
+            print(f"      {salida.get('stderr') or salida.get('mensaje') or salida}"[-400:])
         informe["negados"].append(
             {
                 "caso": nombre,
