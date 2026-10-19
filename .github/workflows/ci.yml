@@ -745,7 +745,8 @@ jobs:
           python scripts/carga.py --escenario limite
 
       # El respaldo del entorno de produccion se verifica entero, y restaurarlo sobre la base en uso
-      # se niega: nunca se restaura sobre una base con tablas.
+      # se niega: DESTINO_ES_EL_ORIGEN si el rol lee el identificador del cluster (el caso de este
+      # compose), BASE_NO_VACIA si no. Nunca se restaura sobre una base con tablas.
       - name: Respaldo del entorno de produccion
         run: |
           set -o pipefail
@@ -758,7 +759,8 @@ jobs:
           grep -q '"resultado": "INTEGRO"' verificado.json
           docker compose -f docker-compose.production.yml --profile restauracion run --rm --no-deps \
             restauracion restaurar "$nuevo" | tee negado.json || true
-          grep -q '"codigo": "BASE_NO_VACIA"' negado.json
+          grep -q '"resultado": "NEGADO"' negado.json
+          grep -qE '"codigo": "(DESTINO_ES_EL_ORIGEN|BASE_NO_VACIA)"' negado.json
 
       # Las tres imagenes propias: ninguna vulnerabilidad alta o critica con correccion publicada, y
       # su SBOM (CycloneDX) como artefacto del run.
