@@ -28,13 +28,14 @@ la credencial fuera del disco (`persist-credentials: false`). Corre en el job `a
 | --- | --- | --- |
 | **pip-audit** 2.10.1 | las dependencias exactas del `uv.lock` (todas las extras, con hashes) | una vulnerabilidad conocida detiene el CI |
 | **npm audit** | las dependencias de producción de la app web | una alta o crítica detiene el CI |
-| **Trivy** 0.75.0 | las tres imágenes propias (`motor-cartera:produccion`, `motor-cartera-web:produccion`, `motor-cartera-respaldo:local`) | una vulnerabilidad alta o crítica **con corrección publicada** detiene el CI; las que no tienen corrección se reportan |
+| **Trivy** 0.75.0 | los lockfiles (`uv.lock` y `web/package-lock.json`), en el job `archivos`: una segunda opinión junto a pip-audit y npm audit | una alta o crítica con corrección publicada detiene el CI |
+| **Trivy** | las tres imágenes propias (`motor-cartera:produccion`, `motor-cartera-web:produccion`, `motor-cartera-respaldo:local`) | una vulnerabilidad alta o crítica **con corrección publicada** detiene el CI; las que no tienen corrección se reportan |
 | **Trivy** | las imágenes de terceros del camino de una petición (PostGIS, Dex, oauth2-proxy, Valkey, OSRM) | informe en el resumen del run; no detiene: se atienden actualizando su digest |
 | **gitleaks** 8.30.1 | el historial completo del repositorio, en cada run | un hallazgo detiene el CI; dos excepciones literales y justificadas en `.gitleaks.toml` |
 
 **Estado al cerrar v0.18 (2026-10-18):** pip-audit sin vulnerabilidades conocidas en 226
-dependencias exactas; npm audit, 0 (de producción y todas); Trivy, 0 altas o críticas con corrección
-en las tres imágenes propias; gitleaks, 158 commits sin hallazgos (con las dos excepciones).
+dependencias exactas; npm audit, 0 (de producción y todas); Trivy, 0 en los lockfiles y 0 altas o
+críticas con corrección en las tres imágenes propias; gitleaks, 158 commits sin hallazgos (con las dos excepciones).
 
 **Las dos excepciones de gitleaks:** la clave de desarrollo documentada (`clave-local-de-desarrollo`,
 pública a propósito para el compose de desarrollo; producción se niega a arrancar con `MC_API_KEY`) y

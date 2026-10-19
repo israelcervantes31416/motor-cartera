@@ -40,6 +40,15 @@ jobs:
           ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
           git /repo --config /repo/.gitleaks.toml --redact --no-banner
 
+      # Las dependencias exactas de los lockfiles (uv.lock y web/package-lock.json) contra la base de
+      # Trivy: una segunda opinion junto a pip-audit y npm audit. Una alta o critica con correccion
+      # publicada detiene el CI.
+      - name: Vulnerabilidades en los lockfiles (Trivy)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          fs --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /repo
+
       # NUNCA se aplica: fmt, init sin backend con el lock de solo lectura (un proveedor que no
       # coincide con su hash falla), validate, el plan de los dos entornos de ejemplo sin
       # credenciales ni estado (en una copia, con un backend local) y la politica de
@@ -55,7 +64,7 @@ jobs:
           }
           tofu "$PWD/infra/gcp" fmt -check -recursive -diff
           tofu "$PWD/infra/gcp" init -backend=false -input=false -lockfile=readonly
-          tofu "$PWD/infra/gcp" validate
+          tofu "$PWD/infra/gcp" validate -no-color
           copia="$RUNNER_TEMP/iac"
           cp -r infra/gcp "$copia"
           printf 'terraform {\n  backend "local" {}\n}\n' > "$copia/override.tf"
@@ -63,7 +72,8 @@ jobs:
           export GOOGLE_OAUTH_ACCESS_TOKEN=token-falso-sin-permisos
           for entorno in staging production; do
             tofu "$copia" plan -refresh=false -lock=false -input=false -no-color \
-              -var-file="entornos/$entorno.tfvars" | tee "plan-$entorno.txt" | tail -3
+              -var-file="entornos/$entorno.tfvars" > "plan-$entorno.txt"
+            echo "$entorno: $(grep "^Plan:" "plan-$entorno.txt")"
             grep -q "Plan: [0-9]* to add, 0 to change, 0 to destroy." "plan-$entorno.txt"
           done
           python3 scripts/verificar_iac.py
