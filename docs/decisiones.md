@@ -5758,12 +5758,12 @@ una inyección.
 
 ## 303. Qué no resuelve v0.18.0
 
-**Qué deja v0.18.0.** motor-cartera se despliega con identidad (OIDC con PKCE y un BFF), permisos por
-ruta en una matriz que el arranque verifica, secretos montados, contenedores endurecidos, un edge con
-TLS, límites y CSP, logs, métricas, trazas y auditoría sin datos personales, alertas con runbooks,
-respaldos de la base y del almacén con su restauración ensayada, simulacros de falla, pruebas de
-carga registradas, una cadena de suministro fijada y escaneada, y una referencia de Google Cloud
-validada.
+**Qué deja v0.18.0.** motor-cartera queda preparado para desplegarse en producción, con identidad
+(OIDC con PKCE y un BFF), permisos por ruta en una matriz que el arranque verifica, secretos montados,
+contenedores endurecidos, un edge con TLS, límites y CSP, logs, métricas, trazas y auditoría sin
+datos personales, alertas con runbooks, respaldos de la base y del almacén con su restauración
+ensayada, simulacros de falla, pruebas de carga registradas, una cadena de suministro fijada y
+escaneada, y una referencia de Google Cloud validada.
 
 **Qué no resuelve.** No despliega en la nube (la referencia nunca se aplicó, y le falta la plantilla
 del edge detrás del balanceador); el tráfico interno no va cifrado; Dex es solo para desarrollo y no
