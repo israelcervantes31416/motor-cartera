@@ -1,0 +1,13 @@
+# Alertmanager del perfil observabilidad: agrupa y deduplica las alertas de Prometheus y las manda a
+# un receptor nulo. Sin correos, webhooks ni servicios externos: en local nadie debe recibir nada.
+# Un despliegue real declara aqui su receptor (y su secreto, fuera de este archivo).
+
+route:
+  receiver: nulo
+  group_by: [alertname, severidad]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: nulo
