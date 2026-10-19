@@ -36,6 +36,7 @@ from motor_cartera.api.autorizacion import (
     PERMISO_DE,
     Clase,
     operaciones_de,
+    operaciones_de_las_rutas,
     verificar_matriz,
 )
 from motor_cartera.config import Config
@@ -377,6 +378,16 @@ def test_la_matriz_clasifica_cada_ruta_y_solo_las_que_existen(cliente):
     assert operaciones_de(cliente.app) == set(MATRIZ)
 
 
+def test_las_rutas_dan_las_mismas_operaciones_que_el_openapi(cliente):
+    assert operaciones_de_las_rutas(cliente.app) == operaciones_de(cliente.app)
+
+
+def test_construir_la_app_no_genera_el_openapi(emisor):
+    """Generarlo tarda mas de un segundo, y las pruebas construyen una app por prueba: verificar la
+    matriz lee las rutas, y el esquema se arma solo cuando alguien lo pide."""
+    assert _app(emisor).openapi_schema is None
+
+
 def test_solo_la_salud_es_publica():
     publicas = {ruta for (metodo, ruta), clase in MATRIZ.items() if clase is Clase.PUBLICA}
 
@@ -413,7 +424,6 @@ def test_una_ruta_sin_clasificar_no_deja_arrancar_ni_se_atiende(emisor):
         return {"ok": True}
 
     app.include_router(nueva)
-    app.openapi_schema = None
     with pytest.raises(RuntimeError, match="sin clasificar: GET /ruta-nueva"):
         verificar_matriz(app)
     with TestClient(app) as cliente:

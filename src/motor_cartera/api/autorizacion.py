@@ -36,6 +36,7 @@ from enum import StrEnum
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from motor_cartera.api.errores import ErrorDeApi
 from motor_cartera.config import Config
@@ -476,10 +477,27 @@ def operaciones_de(app: FastAPI) -> set[tuple[str, str]]:
     }
 
 
+METODOS_DE_OPERACION = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+
+def operaciones_de_las_rutas(app: FastAPI) -> set[tuple[str, str]]:
+    """Las mismas operaciones que el OpenAPI, leidas de las rutas como las recorre FastAPI al
+    armarlo (`iter_route_contexts`: cada APIRoute que entra al esquema, con el prefijo de su
+    router, por metodo y plantilla), sin generar el esquema: generarlo tarda mas de un segundo, y la
+    verificacion corre cada vez que se construye una app."""
+    return {
+        (metodo, contexto.path_format)
+        for contexto in iter_route_contexts(app.routes)
+        if isinstance(contexto.original_route, APIRoute) and contexto.include_in_schema
+        for metodo in contexto.methods or ()
+        if metodo in METODOS_DE_OPERACION
+    }
+
+
 def verificar_matriz(app: FastAPI) -> None:
     """La matriz y la API tienen exactamente las mismas operaciones: una ruta sin clasificar o una
     clasificacion de una ruta que ya no existe impiden arrancar."""
-    operaciones = operaciones_de(app)
+    operaciones = operaciones_de_las_rutas(app)
     sin_clase = sorted(operaciones - set(app.state.matriz))
     sobrantes = sorted(set(app.state.matriz) - operaciones)
     if sin_clase or sobrantes:
