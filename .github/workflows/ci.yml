@@ -78,9 +78,11 @@ jobs:
           done
           python3 scripts/verificar_iac.py
 
+  # La suite completa, contra PostgreSQL y con cobertura, tardo 38 min en v0.17 (3,670 pruebas) y
+  # v0.18 suma mas de 200: con 45 min de tope, el job quedaba a minutos de cancelarse.
   pruebas:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     services:
       # PostgreSQL 16 con PostGIS, fijada por su digest: la migracion 0012 crea la extension, y las
