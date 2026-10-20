@@ -35,28 +35,31 @@ OpenStreetMap son públicas y se descargan, verificadas por su SHA-256, fuera de
 
 ```mermaid
 flowchart TB
-    subgraph motores["Los motores: cada capa lee lo que la anterior ya publicó"]
+    subgraph motores["Los motores"]
         direction LR
-        F["Fuentes sintéticas<br/>cartera/v2 · pagos/v1"] --> I["Ingesta y contratos<br/>fail-closed"]
-        I --> H["Historia · pagos ·<br/>lifecycle"]
+        F["Fuentes sintéticas<br/>cartera/v2 · pagos/v1"] --> I["Ingesta y<br/>contratos fail-closed"]
+        I --> H["Historia · pagos<br/>· lifecycle"]
         H --> D["decision/v2<br/>point-in-time"]
-        D --> G["Geografía INEGI ·<br/>territorial/v2"]
+        D --> G["Geografía INEGI<br/>· territorial/v2"]
         G --> C["campo/v2"]
         C --> R["ruteo/v2"]
-        S["En sombra: analytics · predictivo ·<br/>optimización (MILP exacto)"]
-        H & D & R -.-> S
+    end
+    subgraph sombra["En sombra"]
+        direction LR
+        AN["analytics/v1"] ~~~ PR["predictive/model-v1"] ~~~ OPT["optimization/v1<br/>MILP exacto"]
     end
     subgraph plataforma["La plataforma"]
         direction LR
         WEB["App web<br/>de solo lectura"] --> API["API REST"]
-        API --> PG[("PostgreSQL 16<br/>+ PostGIS")]
-        W["Worker<br/>cola durable"] --> PG
+        API -- "registra el trabajo" --> W["Worker<br/>cola durable"]
+        W --> PG[("PostgreSQL 16<br/>+ PostGIS")]
+        API --> PG
         W --> OSRM["OSRM<br/>autoalojado"]
     end
-    API -- "registra el trabajo" --> W
-    W -- "ejecuta cada motor" --> motores
-    X["Transversal: seguridad (OIDC, permisos, secretos) y observabilidad (logs, métricas, trazas, auditoría)"]
-    plataforma --- X
+    motores --> sombra
+    plataforma -- "ejecuta cada motor como un trabajo durable" --> motores
+    X["Transversal: seguridad (OIDC, permisos, secretos) · observabilidad (logs, métricas, trazas, auditoría)"]
+    X --- plataforma
 ```
 
 Una API REST (FastAPI) registra el trabajo y responde; un **worker** lo ejecuta desde una **cola

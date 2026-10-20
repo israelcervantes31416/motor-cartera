@@ -66,43 +66,43 @@ y contenedores sin raíz ([production.md](production.md)).
 ## El flujo de los datos
 
 ```mermaid
-flowchart TD
-    subgraph fuentes["Fuentes (sintéticas) y referencias públicas"]
-        CAR["cartera/v1 · cartera/v2 + CARRIER"]
-        PAG["pagos/v1"]
-        REF["INEGI MG 2025 · OpenStreetMap"]
+flowchart TB
+    subgraph entrada["Lo que entra"]
+        direction LR
+        CAR["cartera/v1 · cartera/v2<br/>con CARRIER"] ~~~ PAG["pagos/v1"] ~~~ LC["lifecycle/v1: gestiones,<br/>promesas y convenios"] ~~~ REF["INEGI MG 2025 ·<br/>OpenStreetMap"]
     end
-
-    CAR & PAG --> ING["Ingesta y contratos fail-closed<br/>almacén por contenido · Parquet conformado"]
-    ING --> V1["decision/v1 → territorial/v1 → ruteo/v1<br/>(el flujo automático de cada corrida)"]
-    ING --> HIS["historia/v1: cuentas, cortes, snapshots, pagos observados"]
-    HIS --> MP["motor-pagos/v1: movimientos canónicos"]
-    LC["lifecycle/v1: gestiones, promesas, convenios<br/>(registrados por la API)"] --> EA["evaluación de promesas · atribución"]
-    MP --> EA
-    HIS & MP & EA --> D2["decision/v2 (point-in-time)"]
-    REF --> GEO["geografia/v1 → territorial/v2<br/>(bases operativas)"]
-    HIS --> GEO
-    D2 & GEO --> CAMPO["campo/v2: capacidad declarada"]
-    CAMPO --> RUTEO["ruteo/v2: rutas por calle (OSRM)"]
-    REF --> RUTEO
-
-    subgraph sombra["Describe o estima, en sombra"]
-        AN["analytics/v1"]
-        PR["predictive/model-v1"]
-        OPT["optimization/v1 (MILP exacto)"]
+    subgraph v1["El flujo automático (v1)"]
+        direction LR
+        ING["Ingesta y contratos<br/>almacén · Parquet"] --> DV1["decision/v1"] --> TV1["territorial/v1"] --> RV1["ruteo/v1"]
     end
-
-    D2 & CAMPO & RUTEO & EA --> AN
-    HIS & MP & EA --> PR
-    PR & D2 & RUTEO --> OPT
-
-    V1 & D2 & CAMPO & RUTEO & AN & PR & OPT --> APP["app/v1 → app web de solo lectura"]
+    subgraph historia["La historia y los pagos"]
+        direction LR
+        HIS["historia/v1"] --> MP["motor-pagos/v1"] --> EA["evaluación de promesas<br/>· atribución"]
+    end
+    subgraph v2["Los motores v2"]
+        direction LR
+        D2["decision/v2"] --> GEO["geografia/v1 ·<br/>territorial/v2"] --> CAMPO["campo/v2"] --> RUTEO["ruteo/v2"]
+    end
+    subgraph sombra["En sombra"]
+        direction LR
+        AN["analytics/v1"] ~~~ PR["predictive/model-v1"] ~~~ OPT["optimization/v1"]
+    end
+    entrada --> v1
+    v1 -- "el dataset conformado" --> historia
+    historia --> v2
+    v2 --> sombra
+    sombra --> APP["app/v1 y la app web de solo lectura"]
 ```
 
 Debajo de todo corren las mismas piezas: PostgreSQL con PostGIS guarda cada capa y la cola; el
 worker ejecuta cada motor como un trabajo durable; la API registra y consulta; OSRM responde las
 matrices de `ruteo/v2`. A lo largo de todo, la seguridad (identidad, permisos, claves y secretos) y
 la observabilidad (logs, métricas, trazas y auditoría).
+
+El diagrama simplifica las dependencias: la geografía lee un corte y su referencia, no la
+decisión; `campo/v2` junta una `decision/v2` con una `territorial/v2`; analytics lee todo lo
+anterior; el predictivo, la historia, los pagos, el lifecycle y la evaluación; y la
+optimización, un scoring, una `decision/v2` y, con `CAMPO`, su `ruteo/v2`.
 
 Cada capa lee lo que la anterior **ya publicó**, con sus entradas declaradas por su identificador
 (nunca «la última»), y publica todo o nada. Las que deciden con el tiempo (`decision/v2`,
