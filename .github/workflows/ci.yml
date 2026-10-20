@@ -16,7 +16,7 @@ jobs:
   # hoja de calculo con otro nombre), la cadena de suministro fijada, ningun secreto en el historial
   # y la referencia de Google Cloud valida y dentro de su politica, sin credenciales ni red de GCP.
   archivos:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -81,7 +81,7 @@ jobs:
   # La suite completa, contra PostgreSQL y con cobertura, tardo 38 min en v0.17 (3,670 pruebas) y
   # v0.18 suma mas de 200: con 45 min de tope, el job quedaba a minutos de cancelarse.
   pruebas:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     services:
@@ -251,7 +251,7 @@ jobs:
   # su ultimo corte y uno con CAMPO sobre el corte oficial y su ruteo/v2. Lo que queda se respalda
   # (la base y el almacen) y pasa al job de produccion, que lo restaura en un entorno nuevo.
   compose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
 
     steps:
@@ -637,7 +637,7 @@ jobs:
   # carga corta con sus umbrales, un respaldo del entorno y el escaneo de las imagenes con su SBOM.
   produccion:
     needs: [compose]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
 
     env:
