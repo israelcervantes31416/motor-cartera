@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from motor_cartera import __version__
 from motor_cartera.atribucion.reglas import Clasificacion as ClasificacionAtribucion
 from motor_cartera.atribucion.reglas import Motivo as MotivoAtribucion
 from motor_cartera.contratos.cartera_v2 import COLUMNAS_CARRIER, CONTRATO_V2, TELEFONOS_ANCHOS
@@ -542,15 +543,36 @@ def test_las_decisiones_estan_todas_y_en_orden():
     assert "las 275 a 303, de Cloud, Observabilidad y Hardening" in introduccion
 
 
-def test_el_readme_marca_v0_18_publicada_y_v1_0_la_que_sigue():
-    texto = (DOCS.parent / "README.md").read_text(encoding="utf-8")
+def test_el_readme_marca_la_version_estable_y_la_que_sigue():
+    texto = " ".join((DOCS.parent / "README.md").read_text(encoding="utf-8").split())
 
-    assert "✅ v0.17.0 — App + Dashboards: Superficie Operacional y Cuenta 360" in texto
-    assert "✅ v0.18.0 — Cloud, Observabilidad y Hardening: Production Readiness" in texto
+    assert f"**Versión estable: v{__version__}**" in texto
     assert "➡️ v1.0.0 — Collection Intelligence Platform" in texto
-    assert "➡️ v0.18" not in texto
+    assert "[CHANGELOG](CHANGELOG.md)" in texto
     # El compose de desarrollo sigue sin usuarios, y el README lo dice tal cual.
     assert "Desarrollo local sin usuarios (clave de servicio del proxy)" in texto
+
+
+VERSION_DEL_CHANGELOG = re.compile(
+    r"^## \[(v\d+\.\d+\.\d+)\] — .+ — (\d{4}-\d{2}-\d{2})$", re.MULTILINE
+)
+
+
+def test_el_changelog_tiene_cada_version_con_su_release():
+    """De la versión del paquete a v0.1.0, en orden, cada una con su fecha y su enlace a la release:
+    una versión nueva no se publica sin su entrada."""
+    texto = (DOCS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+    versiones = [v for v, _ in VERSION_DEL_CHANGELOG.findall(texto)]
+
+    assert "## [Unreleased]" in texto
+    assert versiones[0] == f"v{__version__}"
+    assert versiones[-1] == "v0.1.0"
+    clave = [tuple(int(n) for n in v[1:].split(".")) for v in versiones]
+    assert clave == sorted(clave, reverse=True)
+    assert len(set(versiones)) == len(versiones)
+    for v in versiones:
+        enlace = f"[{v}]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/{v}"
+        assert enlace in texto, v
 
 
 # --- predictive/model-v1 --------------------------------------------------------------------------
@@ -984,3 +1006,75 @@ def test_los_catalogos_escritos_como_tipos_son_los_de_su_fuente():
     assert tuple(d.value for d in DiaSemana) == DIAS
     for enumeracion in (Producto, Canal, DiaSemana):
         assert {m.name for m in enumeracion} == {m.value for m in enumeracion}
+
+
+# --- los enlaces de la documentación --------------------------------------------------------------
+
+BLOQUE_DE_CODIGO = re.compile(r"^(```|~~~).*?^\1", re.MULTILINE | re.DOTALL)
+CODIGO_EN_LINEA = re.compile(r"`[^`\n]*`")
+ENLACE = re.compile(r"!?\[(?:[^\[\]]|\[[^\]]*\])*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+DEFINICION = re.compile(r"^\[[^\]]+\]:\s+<?(\S+?)>?(?:\s+\"[^\"]*\")?\s*$", re.MULTILINE)
+ENCABEZADO = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
+
+
+def _ancla(titulo: str) -> str:
+    """El identificador que GitHub le da a un encabezado: su texto visible en minúsculas, sin lo
+    que no es letra, número, guion bajo, guion ni espacio, y con guiones por espacios."""
+    texto = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", titulo).lower()
+    return re.sub(r"[^\w\- ]", "", texto).replace(" ", "-")
+
+
+def _anclas(archivo: Path) -> set[str]:
+    """Las anclas de un documento; un encabezado repetido lleva -1, -2... como en GitHub."""
+    vistas: dict[str, int] = {}
+    anclas = set()
+    for titulo in ENCABEZADO.findall(BLOQUE_DE_CODIGO.sub("", archivo.read_text(encoding="utf-8"))):
+        base = _ancla(titulo)
+        repetidas = vistas.get(base, 0)
+        anclas.add(base if repetidas == 0 else f"{base}-{repetidas}")
+        vistas[base] = repetidas + 1
+    return anclas
+
+
+def _documentos() -> list[Path]:
+    raiz = DOCS.parent
+    return [
+        raiz / "README.md",
+        raiz / "CHANGELOG.md",
+        raiz / ".github" / "SECURITY.md",
+        *sorted(DOCS.rglob("*.md")),
+    ]
+
+
+def test_los_enlaces_relativos_de_la_documentacion_resuelven():
+    """Cada enlace relativo del README, del CHANGELOG, de la política de seguridad y de docs/
+    apunta a un archivo o un directorio que existe, y su ancla, si la lleva, a un encabezado de
+    ese documento. Sin red: los enlaces externos no se visitan."""
+    rotos = []
+    for archivo in _documentos():
+        texto = archivo.read_text(encoding="utf-8")
+        texto = CODIGO_EN_LINEA.sub("", BLOQUE_DE_CODIGO.sub("", texto))
+        for destino in ENLACE.findall(texto) + DEFINICION.findall(texto):
+            if re.match(r"^[a-z][a-z0-9+.-]*:", destino):
+                continue
+            ruta, _, ancla = destino.partition("#")
+            objetivo = (archivo.parent / ruta).resolve() if ruta else archivo
+            nombre = archivo.relative_to(DOCS.parent).as_posix()
+            if not objetivo.exists():
+                rotos.append(f"{nombre}: {destino} no existe")
+            elif ancla and objetivo.suffix == ".md" and ancla not in _anclas(objetivo):
+                rotos.append(f"{nombre}: {destino} no es un encabezado de su documento")
+    assert not rotos, "\n".join(rotos)
+
+
+def test_las_anclas_siguen_la_regla_de_github():
+    assert _ancla("2. *Fail-closed* en dos niveles: registro y archivo") == (
+        "2-fail-closed-en-dos-niveles-registro-y-archivo"
+    )
+    assert _ancla("217. Recuperación positiva esperada; el riesgo es 1 − p") == (
+        "217-recuperación-positiva-esperada-el-riesgo-es-1--p"
+    )
+    assert _ancla("La importación: `motor-cartera cargar-lifecycle`") == (
+        "la-importación-motor-cartera-cargar-lifecycle"
+    )
+    assert _ancla("Lo que [el índice](README.md) dice") == "lo-que-el-índice-dice"
