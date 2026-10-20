@@ -608,7 +608,10 @@ def crear_app(config: Config | None = None) -> FastAPI:
 
     def openapi() -> dict:
         if app.openapi_schema is None:
-            agregar_seguridad_al_openapi(original(), app.state.matriz)
+            # El de FastAPI lo genera, lo guarda en app.openapi_schema y lo devuelve.
+            esquema = original()
+            agregar_seguridad_al_openapi(esquema, app.state.matriz)
+            return esquema
         return app.openapi_schema
 
     app.openapi = openapi

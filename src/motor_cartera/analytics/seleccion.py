@@ -22,11 +22,12 @@ declarada por quien pide no se elige: se usa. Sin ambiguedades, el manifiesto se
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.analytics import manifiesto
 from motor_cartera.analytics.catalogo import Fuente
@@ -42,6 +43,7 @@ from motor_cartera.db.modelos import (
     EjecucionMotorPagos,
     EjecucionRuteoV2,
     EjecucionTerritorialV2,
+    id_de,
 )
 from motor_cartera.evaluacion.reglas import VERSION_EVALUACION
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
@@ -98,13 +100,15 @@ class Propuesta:
         return [e for e in self.elecciones if e.regla == AMBIGUA]
 
 
-def _candidata(ejecucion, referencia: UUID, firma: str, detalle: str) -> Candidata:
+def _candidata(ejecucion, referencia: UUID, firma: str | None, detalle: str) -> Candidata:
+    if firma is None:  # pragma: no cover - la base exige la firma de una EXITOSA
+        raise AssertionError(f"La ejecucion EXITOSA {referencia} no tiene su firma.")
     return Candidata(referencia, firma, ejecucion.terminada_en, detalle)
 
 
 def _una(
     tipo: Fuente,
-    filas: list[tuple[object, Candidata]],
+    filas: Sequence[tuple[object, Candidata]],
     declarada: UUID | None,
     ventana: date | None = None,
 ) -> tuple[Eleccion, object | None]:
@@ -149,11 +153,11 @@ def proponer(
                 EjecucionMotorPagos.cartera_id == corte.cartera_id,
                 EjecucionMotorPagos.estado == "EXITOSA",
                 EjecucionMotorPagos.version_motor == VERSION_MOTOR_PAGOS,
-                EjecucionMotorPagos.terminada_en <= known_at,
+                col(EjecucionMotorPagos.terminada_en) <= known_at,
             )
         ).all()
         for mes in manifiesto.meses_del_horizonte(corte.fecha_corte, as_of):
-            de_la_ventana = sorted((e for e in filas if e.periodo_desde == mes), key=lambda e: e.id)
+            de_la_ventana = sorted((e for e in filas if e.periodo_desde == mes), key=id_de)
             candidatas = tuple(
                 _candidata(e, e.motor_pagos_run_id, e.firma_entrada, f"interpretacion {e.id}")
                 for e in de_la_ventana
@@ -179,9 +183,9 @@ def proponer(
                     EjecucionAtribucion.ejecucion_motor_pagos_id == interpretacion.id,
                     EjecucionAtribucion.estado == "EXITOSA",
                     EjecucionAtribucion.version_atribucion == VERSION_ATRIBUCION,
-                    EjecucionAtribucion.terminada_en <= known_at,
+                    col(EjecucionAtribucion.terminada_en) <= known_at,
                 )
-                .order_by(EjecucionAtribucion.id)
+                .order_by(col(EjecucionAtribucion.id))
             ).all()
             pares = [
                 (
@@ -211,9 +215,9 @@ def proponer(
                 EjecucionEvaluacionPromesas.version_evaluacion == VERSION_EVALUACION,
                 EjecucionEvaluacionPromesas.as_of == as_of,
                 EjecucionEvaluacionPromesas.zona_horaria == zona,
-                EjecucionEvaluacionPromesas.terminada_en <= known_at,
+                col(EjecucionEvaluacionPromesas.terminada_en) <= known_at,
             )
-            .order_by(EjecucionEvaluacionPromesas.id)
+            .order_by(col(EjecucionEvaluacionPromesas.id))
         ).all()
         pares = [
             (e, _candidata(e, e.evaluacion_run_id, e.firma_entrada, f"as_of {e.as_of}"))
@@ -278,8 +282,8 @@ def proponer(
             continue
         filas = s.exec(
             select(modelo)
-            .where(modelo.estado == "EXITOSA", modelo.terminada_en <= known_at, *condiciones())
-            .order_by(modelo.id)
+            .where(modelo.estado == "EXITOSA", col(modelo.terminada_en) <= known_at, *condiciones())
+            .order_by(col(modelo.id))
         ).all()
         pares = [
             (
@@ -294,7 +298,7 @@ def proponer(
             for e in filas
         ]
         eleccion, fila = _una(tipo, pares, _fija(declaradas, tipo))
-        if eleccion.regla == DECLARADA and fila is None:
+        if eleccion.regla == DECLARADA and fila is None and eleccion.elegida is not None:
             fila = s.exec(
                 select(modelo).where(getattr(modelo, publico) == eleccion.elegida.referencia)
             ).one_or_none()
@@ -304,8 +308,10 @@ def proponer(
         return p
 
     def ref(tipo: Fuente) -> UUID | None:
-        e = next((x for x in p.elecciones if x.tipo == tipo and x.elegida is not None), None)
-        return None if e is None else e.elegida.referencia
+        e = next(
+            (x.elegida for x in p.elecciones if x.tipo == tipo and x.elegida is not None), None
+        )
+        return None if e is None else e.referencia
 
     p.peticion = manifiesto.Peticion(
         corte_id=corte.corte_id,

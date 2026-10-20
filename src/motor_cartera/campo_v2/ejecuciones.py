@@ -38,7 +38,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.campo_v2.politica import (
     CANAL_CAMPO,
@@ -71,10 +71,12 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionConfiguracionCampo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.geografia.ejecuciones import _traza
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 
 log = logging.getLogger(__name__)
@@ -298,11 +300,11 @@ def abrir(
     if activo is not None:
         raise CampoV2EnProceso(activo)
     ejecucion = EjecucionCampoV2(
-        corte_canonico_id=e.corte.id,
-        ejecucion_decision_v2_id=e.decision.id,
-        ejecucion_territorial_v2_id=e.territorial.id,
+        corte_canonico_id=id_de(e.corte),
+        ejecucion_decision_v2_id=id_de(e.decision),
+        ejecucion_territorial_v2_id=id_de(e.territorial),
         version_bases_operativas_id=e.territorial.version_bases_operativas_id,
-        version_configuracion_campo_id=e.configuracion.id,
+        version_configuracion_campo_id=id_de(e.configuracion),
         fecha_operacion=e.fecha_operacion,
         version_motor=VERSION_MOTOR,
         version_politica=e.politica.version,
@@ -323,7 +325,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.CAMPO_V2,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -434,7 +436,8 @@ def planificar(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> No
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo)
         if resultado == ResultadoEjecucionCampoV2.YA_GENERADO:
-            raise CampoV2YaGenerado(_de_firma(s, firma, EstadoCampoV2.EXITOSA))
+            previo = _de_firma(s, firma, EstadoCampoV2.EXITOSA)
+            raise CampoV2YaGenerado(presente(previo, "la ejecucion EXITOSA con esa firma"))
 
 
 def _planificar(s: Session, ejecucion: EjecucionCampoV2, cronometro: Cronometro) -> None:
@@ -539,7 +542,7 @@ def _planificar(s: Session, ejecucion: EjecucionCampoV2, cronometro: Cronometro)
     _punto_de_falla(DESPUES_DE_CAPACIDAD)
     with cronometro.fase("publicacion"):
         _ejecutar(s, SQL_RESULTADO, parametros)
-        publicadas = s.execute(text(SQL_ASIGNACIONES), parametros).rowcount
+        publicadas = filas_afectadas(s.execute(text(SQL_ASIGNACIONES), parametros))
         _ejecutar(s, SQL_UNIDADES, parametros)
         s.execute(text(SQL_CARGAS), parametros)
     _punto_de_falla(DESPUES_DE_ASIGNACIONES)
@@ -819,7 +822,9 @@ def _contar(s: Session, ejecucion: EjecucionCampoV2) -> tuple[dict[str, int], di
                 "WHERE ejecucion_campo_v2_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     rebalanceadas = s.execute(
         text(
@@ -836,7 +841,9 @@ def _contar(s: Session, ejecucion: EjecucionCampoV2) -> tuple[dict[str, int], di
                 "GROUP BY 1 ORDER BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_nivel = dict(
         s.execute(
@@ -845,7 +852,9 @@ def _contar(s: Session, ejecucion: EjecucionCampoV2) -> tuple[dict[str, int], di
                 "WHERE ejecucion_campo_v2_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     cargas = s.execute(
         text(
@@ -953,7 +962,7 @@ def _coeficiente(valores: list[int]) -> str | None:
     if not valores or sum(valores) == 0:
         return None
     media = Decimal(sum(valores)) / len(valores)
-    varianza = sum((Decimal(v) - media) ** 2 for v in valores) / len(valores)
+    varianza = sum(((Decimal(v) - media) ** 2 for v in valores), Decimal(0)) / len(valores)
     return str((varianza.sqrt() / media).quantize(_CUATRO, rounding=ROUND_HALF_UP))
 
 
@@ -1001,24 +1010,27 @@ def _fallar(
         s.rollback()
         log.warning("campo v2 %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionCampoV2)
-        .where(
-            EjecucionCampoV2.id == ejecucion_id, EjecucionCampoV2.estado == EstadoCampoV2.EN_PROCESO
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionCampoV2)
+            .where(
+                col(EjecucionCampoV2.id) == ejecucion_id,
+                col(EjecucionCampoV2.estado) == EstadoCampoV2.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoCampoV2.FALLIDA,
+                resultado=resultado.value,
+                detalle=motivo,
+                terminada_en=ahora(),
+                candidatas_campo=0,
+                rebalanceadas=0,
+                capacidad_total=0,
+                capacidad_utilizada=0,
+                **dict.fromkeys(CONTEOS_DE_CAMPO_V2, 0),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoCampoV2.FALLIDA,
-            resultado=resultado.value,
-            detalle=motivo,
-            terminada_en=ahora(),
-            candidatas_campo=0,
-            rebalanceadas=0,
-            capacidad_total=0,
-            capacidad_utilizada=0,
-            **dict.fromkeys(CONTEOS_DE_CAMPO_V2, 0),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("campo v2 %s fallido (%s): %s", etiqueta, resultado.value, motivo)

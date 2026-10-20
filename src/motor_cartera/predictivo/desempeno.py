@@ -19,7 +19,7 @@ from uuid import UUID
 import numpy as np
 import pyarrow as pa
 from sqlalchemy import text
-from sqlmodel import select
+from sqlmodel import col, select
 
 from motor_cartera.db.modelos import (
     ComponenteModeloPredictivo,
@@ -27,6 +27,7 @@ from motor_cartera.db.modelos import (
     EjecucionScoringPredictivo,
     EstadoScoringPredictivo,
     VersionModeloPredictivo,
+    id_de,
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, periodos_entre
@@ -115,7 +116,7 @@ def evaluar(
         )
         construccion.preparar_universo(s, relojes)
         construccion.preparar_labels(
-            s, relojes, label_known_at=conocido, interpretaciones=[u.id for u in usadas]
+            s, relojes, label_known_at=conocido, interpretaciones=[id_de(u) for u in usadas]
         )
         csv = construccion.copiar(
             s,
@@ -127,7 +128,7 @@ def evaluar(
             "LEFT JOIN pl_mov lm ON lm.cuenta = u.cuenta "
             "LEFT JOIN pl_contacto lc ON lc.cuenta = u.cuenta "
             "LEFT JOIN pl_promesa lp ON lp.cuenta = u.cuenta "
-            f"WHERE p.ejecucion_scoring_predictivo_id = {int(e.id)} ORDER BY u.cuenta_id",
+            f"WHERE p.ejecucion_scoring_predictivo_id = {int(id_de(e))} ORDER BY u.cuenta_id",
         )
         s.rollback()
         resumen = {
@@ -216,9 +217,9 @@ def _interpretaciones(
                     EjecucionMotorPagos.version_motor == VERSION_MOTOR_PAGOS,
                     EjecucionMotorPagos.periodo_desde == mes,
                     EjecucionMotorPagos.estado == "EXITOSA",
-                    EjecucionMotorPagos.terminada_en <= conocido,
+                    col(EjecucionMotorPagos.terminada_en) <= conocido,
                 )
-                .order_by(EjecucionMotorPagos.id.desc())
+                .order_by(col(EjecucionMotorPagos.id).desc())
                 .limit(1)
             ).first()
             if vigente is None:

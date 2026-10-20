@@ -24,7 +24,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, insert, update
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from motor_cartera.db.modelos import (
@@ -35,14 +35,16 @@ from motor_cartera.db.modelos import (
     EstadoCorrida,
     EstadoDecision,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision.reglas import (
     VERSION_REGLAS_DECISION,
     EntradaDecision,
     ResultadoDecision,
     decidir_cuenta,
 )
+from motor_cartera.invariantes import presente
 
 log = logging.getLogger(__name__)
 
@@ -119,22 +121,25 @@ def abrir_ejecucion(s: Session, corrida: Corrida, *, confirmar: bool = True) -> 
     """
     if corrida.estado != EstadoCorrida.EXITOSA:
         raise CorridaNoDecidible(corrida)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
-        previa = s.exec(_exitosa(corrida.id, VERSION_REGLAS_DECISION)).one_or_none()
+        previa = s.exec(_exitosa(id_de(corrida), VERSION_REGLAS_DECISION)).one_or_none()
         if previa is not None:
             raise DecisionYaGenerada(previa)
-        activa = s.exec(_en_proceso(corrida.id, VERSION_REGLAS_DECISION)).one_or_none()
+        activa = s.exec(_en_proceso(id_de(corrida), VERSION_REGLAS_DECISION)).one_or_none()
         if activa is not None:
             raise DecisionEnProceso(activa)
 
-        ejecucion = EjecucionDecision(corrida_id=corrida.id, version_reglas=VERSION_REGLAS_DECISION)
+        ejecucion = EjecucionDecision(
+            corrida_id=id_de(corrida), version_reglas=VERSION_REGLAS_DECISION
+        )
         error = insertar_en_savepoint(s, ejecucion)
         if error is None:
             break
         if restriccion(error) != INDICE_DECISION_EN_PROCESO:
             raise error
     else:
-        raise error
+        raise presente(error, "el ultimo choque de la apertura")
 
     if confirmar:
         s.commit()
@@ -238,7 +243,7 @@ def decidir_corrida(corrida_id: int, *, tamano_lote: int = TAMANO_LOTE) -> Ejecu
     _validar_tamano_lote(tamano_lote)
     with sesion() as s:
         ejecucion = abrir_ejecucion(s, s.get_one(Corrida, corrida_id))
-    ejecutar_decision(ejecucion.id, tamano_lote=tamano_lote)
+    ejecutar_decision(id_de(ejecucion), tamano_lote=tamano_lote)
     with sesion() as s:
         return s.get_one(EjecucionDecision, ejecucion.id)
 
@@ -273,14 +278,19 @@ def _lotes_cuentas(s: Session, corrida_id: int, tamano_lote: int) -> Iterator[Se
     """
     _validar_tamano_lote(tamano_lote)
     consulta = (
-        select(Cuenta.id, Cuenta.cliente_unico, Cuenta.dias_atraso, Cuenta.saldo_total)
+        select(
+            col(Cuenta.id),
+            col(Cuenta.cliente_unico),
+            col(Cuenta.dias_atraso),
+            col(Cuenta.saldo_total),
+        )
         .where(Cuenta.corrida_id == corrida_id)
         .order_by(Cuenta.cliente_unico)
         .limit(tamano_lote)
     )
     ultimo = None
     while True:
-        lote = s.exec(
+        lote = s.execute(
             consulta if ultimo is None else consulta.where(Cuenta.cliente_unico > ultimo)
         ).all()
         if lote:
@@ -335,21 +345,23 @@ def _fallar(s: Session, ejecucion_id: int, etiqueta: UUID, evaluadas: int, motiv
     queda solo en la bitacora. No borra decisiones: las de este intento ya las quito el rollback, y
     las de una ejecucion EXITOSA son suyas.
     """
-    registrado = s.execute(
-        update(EjecucionDecision)
-        .where(
-            EjecucionDecision.id == ejecucion_id,
-            EjecucionDecision.estado == EstadoDecision.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionDecision)
+            .where(
+                col(EjecucionDecision.id) == ejecucion_id,
+                col(EjecucionDecision.estado) == EstadoDecision.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoDecision.FALLIDA,
+                cuentas_evaluadas=evaluadas,
+                cuentas_decididas=0,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoDecision.FALLIDA,
-            cuentas_evaluadas=evaluadas,
-            cuentas_decididas=0,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("ejecucion %s fallida: %s", etiqueta, motivo)

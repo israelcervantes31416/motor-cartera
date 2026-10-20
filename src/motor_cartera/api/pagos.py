@@ -11,7 +11,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, File, Query, Request, Response, UploadFile
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 
 from motor_cartera.api.dependencias import Sesion
 from motor_cartera.api.errores import ErrorDeApi, errores
@@ -21,6 +21,7 @@ from motor_cartera.api.esquemas import (
     ConformadoRespuesta,
     FuentePagosRespuesta,
     IngestaPagosRespuesta,
+    MotivoRespuesta,
     Paginacion,
     PaginaRechazosPagos,
     RechazoRespuesta,
@@ -156,7 +157,7 @@ def listar_rechazos_pagos(
     rechazos = s.exec(
         select(RechazoPago)
         .where(de_la_ingesta)
-        .order_by(RechazoPago.fila)
+        .order_by(col(RechazoPago.fila))
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -170,7 +171,7 @@ def listar_rechazos_pagos(
             RechazoRespuesta(
                 fila=r.fila,
                 valores=ordenar_valores(r.valores, CONTRATO_PAGOS.nombres),
-                motivos=r.motivos,
+                motivos=[MotivoRespuesta.model_validate(m) for m in r.motivos],
             )
             for r in rechazos
         ],

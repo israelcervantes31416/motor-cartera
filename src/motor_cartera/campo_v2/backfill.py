@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.campo_v2 import ejecuciones
 from motor_cartera.config import Config
@@ -28,6 +28,7 @@ from motor_cartera.db.modelos import (
     EstadoDecisionV2,
     EstadoTerritorialV2,
     VersionConfiguracionCampo,
+    id_de,
 )
 
 
@@ -76,21 +77,21 @@ def revisar(
     if corte is not None:
         condiciones.append(CorteCanonico.fecha_corte == corte)
     cortes = s.exec(
-        select(CorteCanonico).where(*condiciones).order_by(CorteCanonico.fecha_corte)
+        select(CorteCanonico).where(*condiciones).order_by(col(CorteCanonico.fecha_corte))
     ).all()
     decisiones: dict[int, list[EjecucionDecisionV2]] = defaultdict(list)
     territoriales: dict[int, list[EjecucionTerritorialV2]] = defaultdict(list)
     ids = [c.id for c in cortes]
     for d in s.exec(
         select(EjecucionDecisionV2).where(
-            EjecucionDecisionV2.corte_canonico_id.in_(ids),
+            col(EjecucionDecisionV2.corte_canonico_id).in_(ids),
             EjecucionDecisionV2.estado == EstadoDecisionV2.EXITOSA,
         )
     ).all():
         decisiones[d.corte_canonico_id].append(d)
     for t in s.exec(
         select(EjecucionTerritorialV2).where(
-            EjecucionTerritorialV2.corte_canonico_id.in_(ids),
+            col(EjecucionTerritorialV2.corte_canonico_id).in_(ids),
             EjecucionTerritorialV2.estado == EstadoTerritorialV2.EXITOSA,
             EjecucionTerritorialV2.version_bases_operativas_id
             == configuracion.version_bases_operativas_id,
@@ -99,7 +100,7 @@ def revisar(
         territoriales[t.corte_canonico_id].append(t)
     revision = Revision()
     for c in cortes:
-        propias_d, propias_t = decisiones[c.id], territoriales[c.id]
+        propias_d, propias_t = decisiones[id_de(c)], territoriales[id_de(c)]
         if not propias_d or not propias_t:
             revision.sin_entradas += 1
             continue

@@ -33,11 +33,12 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.compute as pc
+import pyarrow.compute as _compute
 import pyarrow.csv as pcsv
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS
@@ -52,6 +53,11 @@ from motor_cartera.contratos.pagos import CONTRATO_PAGOS
 from motor_cartera.fuentes.geografia import catalogo, normalizar_nombre
 from motor_cartera.generador.coordenadas import CATEGORIAS, Coordenadas, asignar
 from motor_cartera.segmentacion import TRAMOS_ATRASO
+
+# pyarrow arma las funciones de pyarrow.compute al importarse, desde su registro de C++
+# (binary_join_element_wise, if_else, utf8_lpad...): un verificador de tipos no las ve. El modulo se
+# usa aqui sin tipo estatico.
+pc: Any = _compute
 
 PERFILES = {
     "XS": 1_000,
@@ -193,9 +199,9 @@ def _geografia() -> _Geografia:
     filas = []
     for cve, peso_entidad in PESO_ENTIDAD.items():
         entidad = cat.entidad(cve)
-        municipios = [m for m in entidad.municipios if m.poblacion]
-        total = sum(m.poblacion for m in municipios)
-        for m in municipios:
+        poblados = [(m, m.poblacion) for m in entidad.municipios if m.poblacion]
+        total = sum(poblacion for _, poblacion in poblados)
+        for m, poblacion in poblados:
             # Un nombre ambiguo no se usa: el generador produce datos que la proyeccion resuelve.
             if cat.por_municipio.get((cve, normalizar_nombre(m.nombre))) != m.cve_municipio:
                 continue
@@ -205,7 +211,7 @@ def _geografia() -> _Geografia:
                     m.cve_municipio,
                     normalizar_nombre(entidad.nombre),
                     normalizar_nombre(m.nombre),
-                    peso_entidad * m.poblacion / total,
+                    peso_entidad * poblacion / total,
                 )
             )
     columnas = list(zip(*filas, strict=True))
@@ -627,7 +633,7 @@ def tabla_carrier(cartera: pa.Table) -> pa.Table:
 
 # --- defectos a proposito -------------------------------------------------------------------------
 
-DEFECTOS_V2: tuple[tuple[str, object], ...] = (
+DEFECTOS_V2: tuple[tuple[str, str], ...] = (
     ("SALDO_TOTAL", "-150.00"),
     ("SALDO_TOTAL", "N/D"),
     ("DIAS_ATRASO", "9999"),
@@ -827,7 +833,7 @@ def _hoja_xlsx(
         for nombre in encabezado:
             valores = bloque[nombre].to_pylist()
             tipo = tipos.get(nombre)
-            if tipo in TIPADAS_EN_XLSX:
+            if tipo is not None and tipo in TIPADAS_EN_XLSX:
                 valores = [_celda(v, tipo) for v in valores]
             columnas.append(valores)
         for fila in zip(*columnas, strict=True):

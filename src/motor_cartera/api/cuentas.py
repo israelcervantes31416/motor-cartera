@@ -56,7 +56,7 @@ from motor_cartera.atribucion.consultas import ResultadoVisto
 from motor_cartera.campo_v2 import consultas as campo_v2
 from motor_cartera.config import Config
 from motor_cartera.contratos.cartera_v2 import CLIENTE
-from motor_cartera.db.modelos import CuentaCanonica
+from motor_cartera.db.modelos import CuentaCanonica, id_de
 from motor_cartera.decision_v2 import consultas as decision_v2
 from motor_cartera.geografia import consultas as geografia
 from motor_cartera.geografia.consultas import GeografiaEnHistoria
@@ -317,7 +317,7 @@ def _geografia(
     if ubicada is None:
         return None
     r = ubicada.resultado
-    asignada = territorial_v2.de_geografia(s, cuenta, ubicada.ejecucion.id)
+    asignada = territorial_v2.de_geografia(s, cuenta, id_de(ubicada.ejecucion))
     return GeografiaResumenRespuesta(
         geografia_run_id=ubicada.ejecucion.geografia_run_id,
         corte_id=ubicada.corte_id,

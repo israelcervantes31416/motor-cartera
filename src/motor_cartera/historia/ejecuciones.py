@@ -37,7 +37,7 @@ from uuid import UUID
 from sqlalchemy import func, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from motor_cartera.config import Config
@@ -59,12 +59,14 @@ from motor_cartera.db.modelos import (
     TipoFuenteHistoria,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.fuentes.almacen import ArtefactoCorrupto, ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de
 from motor_cartera.historia import carga, identidad
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos.ejecuciones import abrir_por_dataset
 from motor_cartera.orquestacion import cola
 
@@ -162,15 +164,16 @@ def abrir_historia(
     tipo = TIPO_DEL_CONTRATO.get(dataset.contrato)
     if tipo is None:
         raise DatasetSinHistoria(dataset)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
-        previa = s.exec(_del_dataset(dataset.id, EstadoHistoria.EXITOSA)).first()
+        previa = s.exec(_del_dataset(id_de(dataset), EstadoHistoria.EXITOSA)).first()
         if previa is not None:
             raise HistoriaYaMaterializada(previa)
-        activa = s.exec(_del_dataset(dataset.id, EstadoHistoria.EN_PROCESO)).first()
+        activa = s.exec(_del_dataset(id_de(dataset), EstadoHistoria.EN_PROCESO)).first()
         if activa is not None:
             raise HistoriaEnProceso(activa)
         ejecucion = EjecucionHistoria(
-            dataset_conformado_id=dataset.id,
+            dataset_conformado_id=id_de(dataset),
             tipo_fuente=tipo,
             version_modelo=VERSION_MODELO_HISTORIA,
         )
@@ -180,8 +183,8 @@ def abrir_historia(
         if restriccion(error) != INDICE_HISTORIA_EN_PROCESO:
             raise error
     else:
-        raise error
-    cola.crear(s, TipoTrabajo.HISTORIA, ejecucion.id, max_intentos=max_intentos)
+        raise presente(error, "el ultimo choque de la apertura")
+    cola.crear(s, TipoTrabajo.HISTORIA, id_de(ejecucion), max_intentos=max_intentos)
     log.info(
         "historia %s abierta para el dataset %s", ejecucion.historia_run_id, dataset.dataset_id
     )
@@ -201,7 +204,8 @@ def ejecutar_historia(ejecucion_id: int, *, config: Config | None = None) -> Non
         sha256 = s.exec(
             select(ArtefactoFuente.sha256)
             .join(
-                DatasetConformado, DatasetConformado.artefacto_conformado_id == ArtefactoFuente.id
+                DatasetConformado,
+                col(DatasetConformado.artefacto_conformado_id) == ArtefactoFuente.id,
             )
             .where(DatasetConformado.id == ejecucion.dataset_conformado_id)
         ).one()
@@ -331,7 +335,11 @@ def _cartera(
     cronometro: Cronometro,
 ) -> None:
     corrida = s.get_one(Corrida, dataset.corrida_id)
-    clave = _Clave(corrida.despacho_id, corrida.cartera_id, corrida.fecha_corte)
+    clave = _Clave(
+        corrida.despacho_id,
+        corrida.cartera_id,
+        presente(corrida.fecha_corte, "la fecha de corte de una cartera/v2"),
+    )
     existente = _corte(s, clave)
     if existente is not None:
         _equivalente_o_conflicto(s, ejecucion, dataset, existente)
@@ -354,12 +362,14 @@ def _cartera(
     if corte is None:
         # Otra ejecucion publico ese corte mientras esta leia su dataset: el INSERT espero a que
         # confirmara, y ahora se juzga contra el.
-        _equivalente_o_conflicto(s, ejecucion, dataset, _corte(s, clave))
+        _equivalente_o_conflicto(
+            s, ejecucion, dataset, presente(_corte(s, clave), "el corte publicado")
+        )
         return
     with cronometro.fase("cuentas"):
         nuevas = _crear_cuentas(s, clave)
     with cronometro.fase("snapshots"):
-        publicados = _insertar_snapshots(s, corte.id, clave)
+        publicados = _insertar_snapshots(s, id_de(corte), clave)
     if publicados != avance.leidos:
         raise _NoSePublica(
             ResultadoHistoria.DATOS_INCONSISTENTES,
@@ -437,7 +447,7 @@ def _insertar_corte(
             creado_en=ahora(),
         )
         .on_conflict_do_nothing(constraint=CORTE_POR_FECHA)
-        .returning(CorteCanonico.id)
+        .returning(col(CorteCanonico.id))
     ).first()
     return None if fila is None else s.get_one(CorteCanonico, fila[0])
 
@@ -447,19 +457,21 @@ def _crear_cuentas(s: Session, clave: _Clave) -> int:
     CLIENTE_UNICO: dos cortes que se materializan a la vez y comparten cuentas nuevas las bloquean
     en el mismo orden, asi que uno espera al otro y nunca se bloquean entre si. Si otra transaccion
     ya creo una, no se crea dos veces. Devuelve cuantas creo."""
-    return s.execute(
-        text(
-            "INSERT INTO cuenta_canonica (cuenta_id, despacho_id, cartera_id, cliente_unico, "
-            "creada_en) "
-            "SELECT st.cuenta_id, CAST(:despacho AS VARCHAR), CAST(:cartera AS VARCHAR), "
-            "st.cliente_unico, now() "
-            f"FROM {carga.STAGING} st "
-            "WHERE NOT EXISTS (SELECT 1 FROM cuenta_canonica c WHERE c.despacho_id = :despacho "
-            "AND c.cartera_id = :cartera AND c.cliente_unico = st.cliente_unico) "
-            f"ORDER BY st.cliente_unico ON CONFLICT ON CONSTRAINT {CUENTA_POR_CLAVE} DO NOTHING"
-        ),
-        {"despacho": clave.despacho_id, "cartera": clave.cartera_id},
-    ).rowcount
+    return filas_afectadas(
+        s.execute(
+            text(
+                "INSERT INTO cuenta_canonica (cuenta_id, despacho_id, cartera_id, cliente_unico, "
+                "creada_en) "
+                "SELECT st.cuenta_id, CAST(:despacho AS VARCHAR), CAST(:cartera AS VARCHAR), "
+                "st.cliente_unico, now() "
+                f"FROM {carga.STAGING} st "
+                "WHERE NOT EXISTS (SELECT 1 FROM cuenta_canonica c WHERE c.despacho_id = :despacho "
+                "AND c.cartera_id = :cartera AND c.cliente_unico = st.cliente_unico) "
+                f"ORDER BY st.cliente_unico ON CONFLICT ON CONSTRAINT {CUENTA_POR_CLAVE} DO NOTHING"
+            ),
+            {"despacho": clave.despacho_id, "cartera": clave.cartera_id},
+        )
+    )
 
 
 def _insertar_snapshots(s: Session, corte_id: int, clave: _Clave) -> int:
@@ -468,21 +480,23 @@ def _insertar_snapshots(s: Session, corte_id: int, clave: _Clave) -> int:
     propias = [
         c.columna for c in carga.CAMPOS_SNAPSHOT if c.columna not in ("cliente_unico", "cuenta_id")
     ]
-    return s.execute(
-        text(
-            "INSERT INTO snapshot_cuenta (corte_canonico_id, cuenta_canonica_id, fecha_corte, "
-            f"{', '.join(propias)}) "
-            f"SELECT :corte, c.id, :fecha, {', '.join('st.' + p for p in propias)} "
-            f"FROM {carga.STAGING} st JOIN cuenta_canonica c ON c.despacho_id = :despacho "
-            "AND c.cartera_id = :cartera AND c.cliente_unico = st.cliente_unico ORDER BY c.id"
-        ),
-        {
-            "corte": corte_id,
-            "fecha": clave.fecha_corte,
-            "despacho": clave.despacho_id,
-            "cartera": clave.cartera_id,
-        },
-    ).rowcount
+    return filas_afectadas(
+        s.execute(
+            text(
+                "INSERT INTO snapshot_cuenta (corte_canonico_id, cuenta_canonica_id, fecha_corte, "
+                f"{', '.join(propias)}) "
+                f"SELECT :corte, c.id, :fecha, {', '.join('st.' + p for p in propias)} "
+                f"FROM {carga.STAGING} st JOIN cuenta_canonica c ON c.despacho_id = :despacho "
+                "AND c.cartera_id = :cartera AND c.cliente_unico = st.cliente_unico ORDER BY c.id"
+            ),
+            {
+                "corte": corte_id,
+                "fecha": clave.fecha_corte,
+                "despacho": clave.despacho_id,
+                "cartera": clave.cartera_id,
+            },
+        )
+    )
 
 
 def _corte(s: Session, clave: _Clave) -> CorteCanonico | None:
@@ -510,9 +524,9 @@ def _pagos(
     with _parquet(s, dataset, CONTRATO_PAGOS, config, cronometro) as archivo:
         bloques = carga.bloques_pagos(
             archivo,
-            dataset_conformado_id=dataset.id,
+            dataset_conformado_id=id_de(dataset),
             dataset_id=dataset.dataset_id,
-            ingesta_pagos_id=ingesta.id,
+            ingesta_pagos_id=id_de(ingesta),
             despacho_id=ingesta.despacho_id,
             cartera_id=ingesta.cartera_id,
             filas_por_lote=config.filas_por_lote,
@@ -630,22 +644,24 @@ def _fallar(
 ) -> None:
     """FALLIDA, solo si sigue EN_PROCESO: un fallo que llega tarde no cambia un estado terminal. No
     borra nada: lo de este intento ya lo quito el rollback."""
-    registrado = s.execute(
-        update(EjecucionHistoria)
-        .where(
-            EjecucionHistoria.id == ejecucion_id,
-            EjecucionHistoria.estado == EstadoHistoria.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionHistoria)
+            .where(
+                col(EjecucionHistoria.id) == ejecucion_id,
+                col(EjecucionHistoria.estado) == EstadoHistoria.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoHistoria.FALLIDA,
+                resultado=resultado.value,
+                registros_leidos=leidos,
+                registros_publicados=0,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoHistoria.FALLIDA,
-            resultado=resultado.value,
-            registros_leidos=leidos,
-            registros_publicados=0,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("historia %s fallida (%s): %s", etiqueta, resultado.value, motivo)

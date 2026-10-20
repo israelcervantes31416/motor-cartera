@@ -14,7 +14,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
 from motor_cartera.api.errores import ErrorDeApi, errores
@@ -34,7 +34,9 @@ from motor_cartera.db.modelos import (
     DecisionCuenta,
     EjecucionDecision,
     EstadoDecision,
+    id_de,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.decision.ejecuciones import (
     CorridaNoDecidible,
     DecisionEnProceso,
@@ -148,7 +150,7 @@ def crear_ejecucion(
     en la decision, 409 `FLUJO_DETENIDO`: se reintenta con `POST /flujos/{flujo_id}/reanudar`.
     """
     corrida = buscar_corrida(s, run_id)
-    corrida_id, corrida_run_id = corrida.id, corrida.run_id
+    corrida_id, corrida_run_id = id_de(corrida), corrida.run_id
     try:
         ejecucion = encolar_decision(s, corrida_id, config=request.app.state.config)
     except FlujoEnProceso as exc:
@@ -225,7 +227,7 @@ def listar_ejecuciones(
         select(EjecucionDecision)
         .where(de_la_corrida)
         # El id solo desempata dos ejecuciones iniciadas en el mismo instante; no sale de la base.
-        .order_by(EjecucionDecision.iniciada_en.desc(), EjecucionDecision.id.desc())
+        .order_by(col(EjecucionDecision.iniciada_en).desc(), col(EjecucionDecision.id).desc())
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -307,15 +309,15 @@ def listar_cuentas_decididas(
     total = s.exec(select(func.count()).select_from(DecisionCuenta).where(de_la_ejecucion)).one()
     # Una sola consulta por pagina: la cuenta llega por JOIN, no una por decision.
     decisiones = s.exec(
-        select(
-            Cuenta.cliente_unico,
-            DecisionCuenta.segmento,
-            DecisionCuenta.prioridad,
-            DecisionCuenta.canal_recomendado,
-            DecisionCuenta.motivos,
+        seleccionar(
+            col(Cuenta.cliente_unico),
+            col(DecisionCuenta.segmento),
+            col(DecisionCuenta.prioridad),
+            col(DecisionCuenta.canal_recomendado),
+            col(DecisionCuenta.motivos),
         )
         .select_from(DecisionCuenta)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(de_la_ejecucion)
         .order_by(Cuenta.cliente_unico)
         .offset(paginacion.desplazamiento)
@@ -339,7 +341,7 @@ def _buscar_ejecucion(s: Session, decision_run_id: UUID) -> tuple[EjecucionDecis
     fila = s.exec(
         select(EjecucionDecision, Corrida.run_id)
         .select_from(EjecucionDecision)
-        .join(Corrida, EjecucionDecision.corrida_id == Corrida.id)
+        .join(Corrida, col(EjecucionDecision.corrida_id) == Corrida.id)
         .where(EjecucionDecision.decision_run_id == decision_run_id)
     ).first()
     if fila is None:

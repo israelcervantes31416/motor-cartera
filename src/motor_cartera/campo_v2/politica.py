@@ -540,6 +540,7 @@ def asignar(
     resultados: dict[UUID, ResultadoCuenta] = {}
     por_bloque: dict[tuple[str, Bloque], list[Candidata]] = defaultdict(list)
     particiones: dict[UUID, Particion] = {}
+    bases: dict[UUID, str] = {}
     conteo: dict[tuple[str, str, UUID], int] = defaultdict(int)
     for c in candidatas:
         if c.estado_territorial != "ASIGNADA":
@@ -559,14 +560,17 @@ def asignar(
                 ],
             )
             continue
+        if c.base is None or c.cvegeo is None or c.ix is None or c.iy is None:
+            raise ValueError(f"La candidata ASIGNADA {c.cuenta_id} trae su base y su celda.")
         p = particion(c.base, c.cvegeo, c.ix, c.iy, politica)
         particiones[c.cuenta_id] = p
+        bases[c.cuenta_id] = c.base
         conteo[(c.base, c.prioridad, p.microtramo_id)] += 1
     for c in candidatas:
         if c.cuenta_id in particiones:
-            m = particiones[c.cuenta_id].microtramo_id
-            bloque = Bloque(c.prioridad, m, conteo[(c.base, c.prioridad, m)])
-            por_bloque[(c.base, bloque)].append(c)
+            de_la_base, m = bases[c.cuenta_id], particiones[c.cuenta_id].microtramo_id
+            bloque = Bloque(c.prioridad, m, conteo[(de_la_base, c.prioridad, m)])
+            por_bloque[(de_la_base, bloque)].append(c)
     for base in sorted({b for b, _ in por_bloque}):
         bloques = [bloque for (b, bloque) in por_bloque if b == base]
         reparto = repartir(

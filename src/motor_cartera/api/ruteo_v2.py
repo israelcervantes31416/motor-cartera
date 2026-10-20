@@ -51,6 +51,7 @@ from motor_cartera.api.gestiones import cuenta_de
 from motor_cartera.api.operacional import SIN_CLAVE
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import EjecucionCampoV2, VersionRedVial
+from motor_cartera.invariantes import presente
 from motor_cartera.ruteo_v2 import consultas
 from motor_cartera.ruteo_v2 import ejecuciones as motor
 from motor_cartera.ruteo_v2.consultas import (
@@ -59,7 +60,7 @@ from motor_cartera.ruteo_v2.consultas import (
     ParadaVista,
     RutaVista,
 )
-from motor_cartera.ruteo_v2.politica import ALGORITMO, POLITICAS
+from motor_cartera.ruteo_v2.politica import ALGORITMO, POLITICAS, EstadoParada, EstadoRuta
 
 router = APIRouter(tags=["ruteo-v2"])
 
@@ -451,7 +452,7 @@ def _ruta(v: RutaVista, vista: EjecucionVista) -> RutaRespuesta:
         zona_horaria=vista.zona_horaria,
         gestor=GestorDeLaRuta(gestor_id=v.gestor_id, codigo=v.codigo_gestor),
         base=BaseDeLaRuta(base_id=v.base_id, codigo=v.codigo_base),
-        estado_ruta=r.estado_ruta,
+        estado_ruta=EstadoRuta(r.estado_ruta),
         motivo_base=r.motivo_base,
         conteos=ConteosDeLaRuta(
             paradas_campo=r.paradas_campo,
@@ -467,11 +468,11 @@ def _ruta(v: RutaVista, vista: EjecucionVista) -> RutaRespuesta:
         regreso=None
         if r.regreso_base_at is None
         else RegresoDeLaRuta(
-            salida=_en(r.salida_regreso_at, zona),
-            llegada=_en(r.regreso_base_at, zona),
-            distancia_m=r.distancia_regreso_m,
-            duracion_s=r.duracion_regreso_s,
-            espera_s=r.espera_regreso_s,
+            salida=presente(_en(r.salida_regreso_at, zona), "la salida del regreso"),
+            llegada=r.regreso_base_at.astimezone(zona),
+            distancia_m=presente(r.distancia_regreso_m, "la distancia del regreso"),
+            duracion_s=presente(r.duracion_regreso_s, "la duracion del regreso"),
+            espera_s=presente(r.espera_regreso_s, "la espera del regreso"),
         ),
         distancia_total_m=r.distancia_total_m,
         duracion_traslado_s=r.duracion_traslado_s,
@@ -492,7 +493,7 @@ def parada_respuesta(v: ParadaVista, zona: ZoneInfo) -> ParadaRespuesta:
         ruta_id=v.ruta_id,
         gestor=v.codigo_gestor,
         prioridad=p.prioridad,
-        estado=p.estado,
+        estado=EstadoParada(p.estado),
         motivo=p.motivo,
         orden_visita=p.orden_visita,
         snap_distancia_m=p.snap_distancia_m,

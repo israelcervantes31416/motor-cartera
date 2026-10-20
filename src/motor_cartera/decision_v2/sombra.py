@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     CorteCanonico,
@@ -66,17 +66,19 @@ def decision_v1_del_corte(s: Session, corte: CorteCanonico) -> EjecucionDecision
     fuente equivalente."""
     corridas = (
         select(DatasetConformado.corrida_id)
-        .join(EjecucionHistoria, EjecucionHistoria.dataset_conformado_id == DatasetConformado.id)
+        .join(
+            EjecucionHistoria, col(EjecucionHistoria.dataset_conformado_id) == DatasetConformado.id
+        )
         .where(EjecucionHistoria.corte_canonico_id == corte.id)
     )
     return s.exec(
         select(EjecucionDecision)
         .where(
-            EjecucionDecision.corrida_id.in_(corridas),
+            col(EjecucionDecision.corrida_id).in_(corridas),
             EjecucionDecision.version_reglas == VERSION_REGLAS_DECISION,
             EjecucionDecision.estado == EstadoDecision.EXITOSA,
         )
-        .order_by(EjecucionDecision.id.desc())
+        .order_by(col(EjecucionDecision.id).desc())
     ).first()
 
 

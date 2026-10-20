@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from motor_cartera.api.esquemas import Pagina, Paginacion
 from motor_cartera.api.esquemas_geografia import CorteRespuesta
-from motor_cartera.campo_v2.configuracion import DIAS, TipoExcepcion
+from motor_cartera.campo_v2.configuracion import TipoExcepcion
 from motor_cartera.campo_v2.politica import EstadoCampo, EstadoJornada, NivelUnidad
 from motor_cartera.db.modelos import PATRON_CODIGO_BASE, EstadoCampoV2
 
@@ -31,7 +31,18 @@ AVISO_CAMPO_V2 = (
 
 HORA = r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$"
 
-DiaSemana = StrEnum("DiaSemana", {d: d for d in DIAS})
+
+# Los dias de DIAS (campo_v2/configuracion.py), como clase para el verificador de tipos;
+# tests/test_documentacion.py exige que sean los mismos, en su orden. Sin docstring: pydantic
+# la llevaria al OpenAPI.
+class DiaSemana(StrEnum):
+    LUNES = "LUNES"
+    MARTES = "MARTES"
+    MIERCOLES = "MIERCOLES"
+    JUEVES = "JUEVES"
+    VIERNES = "VIERNES"
+    SABADO = "SABADO"
+    DOMINGO = "DOMINGO"
 
 
 # --- la configuracion -----------------------------------------------------------------------------

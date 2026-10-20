@@ -40,8 +40,9 @@ from motor_cartera.db.modelos import (
     GestionCobranza,
     PromesaPago,
     VisitaCampo,
+    id_de,
 )
-from motor_cartera.db.sesion import restriccion, sesion
+from motor_cartera.db.sesion import reloj_de_la_base, restriccion, sesion
 from motor_cartera.lifecycle.reglas import (
     TOLERANCIA_DEL_RELOJ,
     VERSION_LIFECYCLE,
@@ -219,8 +220,8 @@ def registrar_gestion(cuenta_id: UUID, llave: str, datos: DatosGestion) -> Regis
                     )
                     gestion = GestionCobranza(
                         ocurrido_en=datos.ocurrido_en,
-                        evento_lifecycle_id=evento.id,
-                        cuenta_canonica_id=cuenta.id,
+                        evento_lifecycle_id=id_de(evento),
+                        cuenta_canonica_id=id_de(cuenta),
                         canal=datos.canal,
                         medio=datos.medio,
                         nivel_contacto=datos.nivel_contacto,
@@ -233,7 +234,7 @@ def registrar_gestion(cuenta_id: UUID, llave: str, datos: DatosGestion) -> Regis
                     if visita is not None:
                         s.add(
                             VisitaCampo(
-                                gestion_cobranza_id=gestion.id,
+                                gestion_cobranza_id=id_de(gestion),
                                 resultado=visita.resultado,
                                 inicio=visita.inicio,
                                 fin=visita.fin,
@@ -263,7 +264,7 @@ def anular_gestion(gestion_id: UUID, llave: str, datos: DatosCierre) -> Registro
             previo = _previo(s, del_registro.despacho_id, del_registro.cartera_id, llave, firma)
             if previo is not None:
                 return previo
-            if _cierre(s, del_registro.id, TipoEvento.GESTION_ANULADA) is not None:
+            if _cierre(s, id_de(del_registro), TipoEvento.GESTION_ANULADA) is not None:
                 raise Conflicto("GESTION_YA_ANULADA", f"La gestion {gestion_id} ya esta anulada.")
             _no_antes_de(datos.ocurrido_en, del_registro, "La anulacion")
             hecho = _cerrar(s, del_registro, TipoEvento.GESTION_ANULADA, llave, firma, datos)
@@ -310,7 +311,7 @@ def crear_promesa(gestion_id: UUID, llave: str, datos: DatosPromesa, *, zona: st
                         relacionado=de_la_gestion.id,
                     )
                     promesa = PromesaPago(
-                        evento_lifecycle_id=evento.id,
+                        evento_lifecycle_id=id_de(evento),
                         gestion_cobranza_id=gestion.id,
                         cuenta_canonica_id=gestion.cuenta_canonica_id,
                         monto_prometido=datos.monto_prometido,
@@ -347,7 +348,7 @@ def cancelar_promesa(promesa_id: UUID, llave: str, datos: DatosCierre) -> Regist
                     "PROMESA_ANULADA",
                     f"La promesa {promesa_id} esta anulada con su gestion: no se cancela.",
                 )
-            if _cierre(s, creada.id, TipoEvento.PROMESA_CANCELADA) is not None:
+            if _cierre(s, id_de(creada), TipoEvento.PROMESA_CANCELADA) is not None:
                 raise Conflicto(
                     "PROMESA_YA_CANCELADA", f"La promesa {promesa_id} ya esta cancelada."
                 )
@@ -400,7 +401,7 @@ def crear_convenio(gestion_id: UUID, llave: str, datos: DatosConvenio) -> Regist
                         relacionado=de_la_gestion.id,
                     )
                     convenio = ConvenioCobranza(
-                        evento_lifecycle_id=evento.id,
+                        evento_lifecycle_id=id_de(evento),
                         gestion_cobranza_id=gestion.id,
                         cuenta_canonica_id=gestion.cuenta_canonica_id,
                         monto_total_acordado=datos.monto_total_acordado,
@@ -413,7 +414,7 @@ def crear_convenio(gestion_id: UUID, llave: str, datos: DatosConvenio) -> Regist
                     s.flush()
                     s.add_all(
                         CuotaConvenio(
-                            convenio_cobranza_id=convenio.id,
+                            convenio_cobranza_id=id_de(convenio),
                             numero=numero,
                             fecha_vencimiento=cuota.fecha_vencimiento,
                             monto=cuota.monto,
@@ -452,7 +453,7 @@ def cancelar_convenio(convenio_id: UUID, llave: str, datos: DatosCierre) -> Regi
                     "CONVENIO_ANULADO",
                     f"El convenio {convenio_id} esta anulado con su gestion: no se cancela.",
                 )
-            if _cierre(s, creado.id, TipoEvento.CONVENIO_CANCELADO) is not None:
+            if _cierre(s, id_de(creado), TipoEvento.CONVENIO_CANCELADO) is not None:
                 raise Conflicto(
                     "CONVENIO_YA_CANCELADO", f"El convenio {convenio_id} ya esta cancelado."
                 )
@@ -542,10 +543,10 @@ def _evento(
 ) -> EventoLifecycle:
     """El evento, sobre la cuenta (o sobre la del evento al que se refiere), con registrado_en del
     reloj de la base."""
-    cuenta_id = duenio.id if isinstance(duenio, CuentaCanonica) else duenio.cuenta_canonica_id
+    cuenta_id = id_de(duenio) if isinstance(duenio, CuentaCanonica) else duenio.cuenta_canonica_id
     evento = EventoLifecycle(
         ocurrido_en=ocurrido_en,
-        registrado_en=func.now(),
+        registrado_en=reloj_de_la_base(),
         evento_relacionado_id=relacionado,
         cuenta_canonica_id=cuenta_id,
         tipo_evento=tipo,
@@ -627,7 +628,7 @@ def _detallable(
     """Una gestion recibe su promesa o su convenio solo si sigue vigente, si termino en ese
     resultado y si todavia no lo tiene."""
     resultado, sin_resultado, ya_registrado, que = DETALLES[detalle]
-    if _cierre(s, evento.id, TipoEvento.GESTION_ANULADA) is not None:
+    if _cierre(s, id_de(evento), TipoEvento.GESTION_ANULADA) is not None:
         raise Conflicto("GESTION_ANULADA", f"La gestion {gestion.gestion_id} esta anulada.")
     if gestion.resultado != resultado:
         raise Conflicto(
@@ -635,7 +636,7 @@ def _detallable(
             f"La gestion {gestion.gestion_id} termino en {gestion.resultado}, no en {resultado}: "
             f"no tiene {que}.",
         )
-    if _cierre(s, evento.id, detalle) is not None:
+    if _cierre(s, id_de(evento), detalle) is not None:
         raise Conflicto(ya_registrado, f"La gestion {gestion.gestion_id} ya tiene {que}.")
 
 

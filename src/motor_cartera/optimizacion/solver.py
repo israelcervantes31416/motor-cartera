@@ -25,12 +25,15 @@ SciPy. Lo que SciPy no expone (las iteraciones del simplex dentro de milp) no se
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 import platform
 import re
 import time
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import scipy
@@ -38,6 +41,7 @@ import scipy.sparse as sp
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from motor_cartera.analytics.catalogo import canonico
+from motor_cartera.invariantes import presente
 from motor_cartera.optimizacion.politica import (
     ALGORITMO,
     PUBLIC_V1,
@@ -74,7 +78,8 @@ BRANCH_AND_BOUND = "BRANCH_AND_BOUND"
 def version_highs() -> str | None:
     """La version del HiGHS que trae SciPy, de su modulo compilado; None si no se puede leer."""
     try:
-        from scipy.optimize._highspy import _core
+        # Un modulo compilado y privado: ni SciPy ni sus stubs lo declaran.
+        _core = importlib.import_module("scipy.optimize._highspy._core")
     except ImportError:  # pragma: no cover - otra distribucion de SciPy
         return None
     partes = [getattr(_core, f"HIGHS_VERSION_{p}", None) for p in ("MAJOR", "MINOR", "PATCH")]
@@ -268,7 +273,9 @@ def resolver(
             b_ub=b_ub,
             A_eq=A_eq,
             b_eq=b_eq,
-            bounds=np.column_stack([np.zeros(n), superior]),
+            # SciPy acepta las cotas como una matriz (n, 2), que lee con np.array; sus stubs solo
+            # declaran la secuencia de pares, que costaria una lista de n tuplas.
+            bounds=cast("Sequence[Sequence[float]]", np.column_stack([np.zeros(n), superior])),
             method="highs-ipm",
             options={
                 "presolve": politica.presolve,
@@ -299,7 +306,7 @@ def resolver(
         x = np.asarray(relajada.x, dtype=np.float64)
         dual = duales(relajada, c, A_ub, b_ub, A_eq, b_eq, superior)
         if np.all(np.abs(x - np.rint(x)) <= TOLERANCIA_ENTERA_LP):
-            objetivo = float(relajada.fun)
+            objetivo = float(presente(relajada.fun, "el objetivo de una relajacion optima"))
             return ResultadoSolver(
                 EstadoSolver.OPTIMAL,
                 codigo,
@@ -331,15 +338,16 @@ def resolver(
         )
     segundos = time.perf_counter() - inicio
     estado, codigo = estado_de(int(res.status), str(res.message))
+    cota, gap, nodos = res.get("mip_dual_bound"), res.get("mip_gap"), res.get("mip_node_count")
     return ResultadoSolver(
         estado=estado,
         codigo_highs=codigo,
         mensaje=str(res.message),
         x=None if res.x is None else np.asarray(res.x, dtype=np.float64),
         objetivo=None if res.fun is None else float(res.fun),
-        cota=None if res.get("mip_dual_bound") is None else float(res.mip_dual_bound),
-        gap=None if res.get("mip_gap") is None else float(res.mip_gap),
-        nodos=None if res.get("mip_node_count") is None else int(res.mip_node_count),
+        cota=None if cota is None else float(cota),
+        gap=None if gap is None else float(gap),
+        nodos=None if nodos is None else int(nodos),
         segundos=segundos,
         metodo=BRANCH_AND_BOUND,
         iteraciones=iteraciones,

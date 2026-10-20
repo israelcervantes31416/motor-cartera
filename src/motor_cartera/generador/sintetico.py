@@ -12,6 +12,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -125,7 +126,8 @@ def generar_cartera(
 
 
 # Cada defecto es invalido siempre, no por casualidad: la prueba del contrato depende de eso.
-DEFECTOS: tuple[tuple[str, Callable[[object], object]], ...] = (
+# Cada uno recibe la celda tal como es (un numero, una fecha o un texto) y devuelve la defectuosa.
+DEFECTOS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
     ("saldo_total", lambda saldo: -saldo - 1),
     ("saldo_total", lambda _: "N/D"),
     ("dias_atraso", lambda _: 9_999),

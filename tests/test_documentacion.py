@@ -961,3 +961,26 @@ def test_la_referencia_de_la_nube_se_declara_nunca_aplicada():
     texto = " ".join((DOCS / "cloud-gcp.md").read_text(encoding="utf-8").split())
     assert "nunca se aplicó y este repositorio no la aplica" in texto
     assert "Lo que falta para un despliegue real" in texto
+
+
+# --- tipos escritos para el verificador de tipos --------------------------------------------------
+
+
+def test_los_catalogos_escritos_como_tipos_son_los_de_su_fuente():
+    """La API escribe como clases y literales los catalogos que el verificador de tipos no puede
+    leer de una tupla; siguen siendo los de su unica fuente, en su orden."""
+    from typing import get_args
+
+    from motor_cartera.api.esquemas import Canal, Producto
+    from motor_cartera.api.esquemas_app_v1 import TramoAtraso
+    from motor_cartera.api.esquemas_campo import DiaSemana
+    from motor_cartera.atraso import TRAMOS_ATRASO
+    from motor_cartera.campo_v2.configuracion import DIAS
+    from motor_cartera.contratos.cartera import CANALES, PRODUCTOS
+
+    assert tuple(p.value for p in Producto) == PRODUCTOS
+    assert tuple(c.value for c in Canal) == CANALES
+    assert get_args(TramoAtraso) == tuple(etiqueta for etiqueta, _, _ in TRAMOS_ATRASO)
+    assert tuple(d.value for d in DiaSemana) == DIAS
+    for enumeracion in (Producto, Canal, DiaSemana):
+        assert {m.name for m in enumeracion} == {m.value for m in enumeracion}

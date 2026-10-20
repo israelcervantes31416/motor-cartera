@@ -38,11 +38,12 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.compute as pc
+import pyarrow.compute as _compute
 
 from motor_cartera.contratos.cartera import CANALES, PRODUCTOS
 from motor_cartera.contratos.cartera_v2 import CONTRATO_V2
@@ -72,6 +73,11 @@ from motor_cartera.generador.oficial import (
     evolucionar,
 )
 from motor_cartera.segmentacion import TRAMOS_ATRASO
+
+# pyarrow arma las funciones de pyarrow.compute al importarse, desde su registro de C++
+# (binary_join_element_wise, if_else, utf8_lpad...): un verificador de tipos no las ve. El modulo se
+# usa aqui sin tipo estatico.
+pc: Any = _compute
 
 VERSION_ESCENARIO = "escenario-predictivo/v1"
 SEMILLA = 2026

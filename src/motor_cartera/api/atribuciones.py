@@ -15,7 +15,7 @@ antes de un pago, nunca que una gestion lo haya producido.
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -26,6 +26,7 @@ from motor_cartera.api.esquemas import Paginacion
 from motor_cartera.api.esquemas_lifecycle import (
     AtribucionEntrada,
     CandidataRespuesta,
+    Clasificacion,
     ConteosAtribucionRespuesta,
     EjecucionAtribucionRespuesta,
     MontosAtribucionRespuesta,
@@ -53,6 +54,7 @@ from motor_cartera.atribucion.ejecuciones import (
     interpretacion_vigente,
 )
 from motor_cartera.config import Config
+from motor_cartera.db.modelos import EstadoAtribucion
 from motor_cartera.motor_pagos import consultas as pagos
 from motor_cartera.motor_pagos.consultas import MovimientoNoEncontrado
 from motor_cartera.motor_pagos.ejecuciones import Ventana
@@ -158,7 +160,7 @@ def listar_atribuciones(
         cartera_id=config.cartera_id,
         version=parametros.version,
         periodo=periodo,
-        estado=parametros.estado,
+        estado=None if parametros.estado is None else EstadoAtribucion(parametros.estado),
         desplazamiento=parametros.desplazamiento,
         limite=parametros.por_pagina,
     )
@@ -373,7 +375,8 @@ def resultado_respuesta(visto: ResultadoVisto) -> ResultadoAtribucionRespuesta:
         fecha_recepcion=r.fecha_recepcion,
         monto=r.monto,
         anulado_por_reverso=r.anulado_por_reverso,
-        clasificacion=r.clasificacion,
+        # La base guarda el texto; pydantic lo valida contra el literal al construir.
+        clasificacion=cast(Clasificacion, r.clasificacion),
         gestion_id=visto.gestion_id,
         candidatas=[
             CandidataRespuesta(

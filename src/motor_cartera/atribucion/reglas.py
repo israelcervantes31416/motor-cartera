@@ -30,7 +30,7 @@ Este modulo no sabe de la base.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -97,7 +97,7 @@ class Atribucion:
     clasificacion: Clasificacion
     candidatas: tuple[Candidata, ...]
     """En orden de gestion_id: un orden que no significa nada, a proposito."""
-    motivos: tuple[dict, ...]
+    motivos: tuple[Mapping[str, object], ...]
 
     @property
     def gestion_id(self) -> UUID | None:
@@ -133,7 +133,7 @@ def atribuir(
     por_cuenta: dict[int, list[GestionLeida]] = defaultdict(list)
     for gestion in gestiones:
         por_cuenta[gestion.cuenta].append(gestion)
-    resultado = []
+    resultado: list[Atribucion] = []
     for movimiento in movimientos:
         resultado.append(_atribuir_uno(movimiento, por_cuenta, ventana_dias))
     return resultado

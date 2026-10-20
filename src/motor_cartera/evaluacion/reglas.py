@@ -29,7 +29,7 @@ los convierte a instantes. Este modulo no sabe de la base.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -105,7 +105,7 @@ class Evaluacion:
     movimientos_compatibles: int
     primer_movimiento_en: datetime | None
     ultimo_movimiento_en: datetime | None
-    motivos: tuple[dict, ...]
+    motivos: tuple[Mapping[str, object], ...]
 
 
 def fin_del_intervalo(promesa: PromesaEvaluable, corte: Corte) -> datetime:
@@ -137,7 +137,7 @@ def evaluar(
     posibles = [m for m in en_el_intervalo if m.tipo == "POSIBLE_REVERSO"]
     observado = sum((m.monto for m in compatibles), Decimal("0.00"))
 
-    def concluir(estado: EstadoEvaluacion, *motivos: dict) -> Evaluacion:
+    def concluir(estado: EstadoEvaluacion, *motivos: Mapping[str, object]) -> Evaluacion:
         informativos = (
             ()
             if not posibles or estado == EstadoEvaluacion.CANCELADA

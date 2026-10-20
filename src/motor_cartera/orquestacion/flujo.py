@@ -27,7 +27,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import ColumnElement
-from sqlmodel import Session, SQLModel, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.contratos import VERSION_CONTRATO
@@ -43,6 +43,7 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     TrabajoOrquestacion,
     ahora,
+    id_de,
 )
 from motor_cartera.decision import ejecuciones as decision
 from motor_cartera.fuentes.artefactos import ArtefactoGuardado
@@ -165,13 +166,13 @@ def crear_flujo_ingesta(
         confirmar=False,
         config=config,
     )
-    flujo = FlujoOrquestacion(corrida_id=corrida.id, detalle=EN_COLA[EtapaFlujo.INGESTA])
+    flujo = FlujoOrquestacion(corrida_id=id_de(corrida), detalle=EN_COLA[EtapaFlujo.INGESTA])
     s.add(flujo)
     s.flush()
     cola.crear(
         s,
         TipoTrabajo.INGESTA,
-        corrida.id,
+        id_de(corrida),
         max_intentos=config.worker_max_intentos,
         flujo_id=flujo.id,
     )
@@ -211,7 +212,7 @@ def encolar_ingesta(
     trabajo = cola.crear(
         s,
         TipoTrabajo.INGESTA,
-        corrida.id,
+        id_de(corrida),
         max_intentos=config.worker_max_intentos,
         tomado_por=tomado_por,
         lease_segundos=config.worker_lease_segundos,
@@ -247,7 +248,7 @@ def encolar_ingesta_pagos(
     trabajo = cola.crear(
         s,
         TipoTrabajo.INGESTA_PAGOS,
-        ingesta.id,
+        id_de(ingesta),
         max_intentos=config.worker_max_intentos,
         tomado_por=tomado_por,
         lease_segundos=config.worker_lease_segundos,
@@ -266,7 +267,9 @@ def encolar_decision(s: Session, corrida_id: int, *, config: Config) -> Ejecucio
     y FlujoEnProceso o FlujoDetenido si la corrida es de un flujo que corre o corrio esa etapa.
     """
     corrida = s.get_one(Corrida, corrida_id)
-    _no_compite_con_su_flujo(s, FlujoOrquestacion.corrida_id == corrida_id, EtapaFlujo.DECISION)
+    _no_compite_con_su_flujo(
+        s, col(FlujoOrquestacion.corrida_id) == corrida_id, EtapaFlujo.DECISION
+    )
     ejecucion = decision.abrir_ejecucion(s, corrida, confirmar=False)
     return _encolar(s, TipoTrabajo.DECISION, ejecucion, config)
 
@@ -280,7 +283,7 @@ def encolar_territorial(
     fuente = s.get_one(EjecucionDecision, ejecucion_decision_id)
     _no_compite_con_su_flujo(
         s,
-        FlujoOrquestacion.ejecucion_decision_id == ejecucion_decision_id,
+        col(FlujoOrquestacion.ejecucion_decision_id) == ejecucion_decision_id,
         EtapaFlujo.TERRITORIAL,
     )
     ejecucion = territorial.abrir_ejecucion(s, fuente, confirmar=False)
@@ -294,7 +297,7 @@ def encolar_ruteo(s: Session, ejecucion_territorial_id: int, *, config: Config) 
     fuente = s.get_one(EjecucionTerritorial, ejecucion_territorial_id)
     _no_compite_con_su_flujo(
         s,
-        FlujoOrquestacion.ejecucion_territorial_id == ejecucion_territorial_id,
+        col(FlujoOrquestacion.ejecucion_territorial_id) == ejecucion_territorial_id,
         EtapaFlujo.RUTEO,
     )
     ejecucion = ruteo.abrir_ejecucion(s, fuente, confirmar=False)
@@ -312,7 +315,7 @@ def avanzar(
     COMPLETADO. Si termino de otra forma, el flujo se DETIENE en la etapa. Un trabajo que no es el
     de la etapa vigente del flujo no lo mueve.
     """
-    flujo = _bloqueado(s, FlujoOrquestacion.id == flujo_id)
+    flujo = _bloqueado(s, col(FlujoOrquestacion.id) == flujo_id)
     if flujo.estado != EstadoFlujo.EN_PROCESO or not _es_su_etapa(flujo, tipo, objetivo_id):
         log.warning(
             "flujo %s: el trabajo de %s %s no es el de su etapa vigente (%s %s); no se avanza",
@@ -341,7 +344,7 @@ def avanzar(
                 f"pudo abrir: {exc}",
             )
         else:
-            _apuntar(s, flujo, siguiente, ejecucion.id, max_intentos)
+            _apuntar(s, flujo, siguiente, id_de(ejecucion), max_intentos)
     s.add(flujo)
     s.flush()
     log.info("flujo %s: %s en %s", flujo.flujo_id, flujo.estado, flujo.etapa)
@@ -349,7 +352,7 @@ def avanzar(
 
 def detener(s: Session, flujo_id: int, detalle: str) -> None:
     """DETIENE el flujo en su etapa, en la transaccion de quien llama, si sigue EN_PROCESO."""
-    flujo = _bloqueado(s, FlujoOrquestacion.id == flujo_id)
+    flujo = _bloqueado(s, col(FlujoOrquestacion.id) == flujo_id)
     if flujo.estado != EstadoFlujo.EN_PROCESO:
         return
     _detener(flujo, detalle)
@@ -398,7 +401,7 @@ def reanudar_flujo(s: Session, flujo_id: UUID, *, config: Config) -> FlujoOrques
         ejecucion = _abrir(s, flujo, etapa)
     except NO_SE_ABRE as exc:
         raise FlujoNoReanudable(flujo, str(exc)) from exc
-    _apuntar(s, flujo, etapa, ejecucion.id, config.worker_max_intentos)
+    _apuntar(s, flujo, etapa, id_de(ejecucion), config.worker_max_intentos)
     flujo.estado, flujo.terminado_en = EstadoFlujo.EN_PROCESO, None
     flujo.detalle = (
         f"Se reanudo en la etapa {etapa} con otra ejecucion; la que fallo queda en el historial."
@@ -415,9 +418,9 @@ def objetivo_de(trabajo: TrabajoOrquestacion) -> int:
     return getattr(trabajo, objetivos.OBJETIVOS[trabajo.tipo].columna)
 
 
-def _encolar(s: Session, tipo: TipoTrabajo, ejecucion: SQLModel, config: Config) -> Any:
+def _encolar(s: Session, tipo: TipoTrabajo, ejecucion: _Ejecucion, config: Config) -> Any:
     """El trabajo de una ejecucion pedida a mano, sin flujo, y el commit de las dos."""
-    cola.crear(s, tipo, ejecucion.id, max_intentos=config.worker_max_intentos)
+    cola.crear(s, tipo, id_de(ejecucion), max_intentos=config.worker_max_intentos)
     s.commit()
     s.refresh(ejecucion)
     return ejecucion
@@ -467,7 +470,11 @@ def _objetivo_de_la_etapa(flujo: FlujoOrquestacion) -> int:
     return getattr(flujo, PUNTERO[flujo.etapa])
 
 
-def _abrir(s: Session, flujo: FlujoOrquestacion, etapa: EtapaFlujo) -> SQLModel:
+_Ejecucion = EjecucionDecision | EjecucionTerritorial | EjecucionRuteo
+"""Lo que abre una etapa del flujo despues de la ingesta."""
+
+
+def _abrir(s: Session, flujo: FlujoOrquestacion, etapa: EtapaFlujo) -> _Ejecucion:
     """Abre, sin confirmar, la ejecucion de `etapa` sobre lo que el flujo ya publico."""
     if etapa == EtapaFlujo.DECISION:
         corrida = s.get_one(Corrida, flujo.corrida_id)

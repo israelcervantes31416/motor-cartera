@@ -29,7 +29,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION, Clasificacion, Motivo
 from motor_cartera.db.modelos import (
@@ -40,9 +40,11 @@ from motor_cartera.db.modelos import (
     ResultadoAtribucion,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.lifecycle.reglas import CONTACTOS
 from motor_cartera.motor_pagos.ejecuciones import Ventana
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
@@ -94,7 +96,7 @@ def interpretacion_vigente(s: Session, ventana: Ventana) -> EjecucionMotorPagos 
             EjecucionMotorPagos.periodo_desde == ventana.desde,
             EjecucionMotorPagos.estado == EstadoMotorPagos.EXITOSA,
         )
-        .order_by(EjecucionMotorPagos.id.desc())
+        .order_by(col(EjecucionMotorPagos.id).desc())
     ).first()
 
 
@@ -131,8 +133,10 @@ def abrir(
         activa = _activa(s, ventana)
         if reusar and activa is not None:
             return activa, False
-        raise AtribucionEnProceso(activa) from error
-    cola.crear(s, TipoTrabajo.ATRIBUCION, ejecucion.id, max_intentos=max_intentos)
+        raise AtribucionEnProceso(
+            presente(activa, "la atribucion EN_PROCESO de la ventana")
+        ) from error
+    cola.crear(s, TipoTrabajo.ATRIBUCION, id_de(ejecucion), max_intentos=max_intentos)
     log.info(
         "atribucion %s abierta para %s/%s %s, ventana de %s dias",
         ejecucion.atribucion_run_id,
@@ -295,7 +299,7 @@ def _atribuir(
         s.execute(text(SQL_RESULTADOS), parametros)
         s.execute(text(SQL_CANDIDATAS), parametros)
     with cronometro.fase("conteos"):
-        conteos = _contar(s, ejecucion.id, motor.id)
+        conteos = _contar(s, id_de(ejecucion), id_de(motor))
     _cerrar(s, ejecucion, motor, firma, avance, conteos)
 
 
@@ -564,23 +568,25 @@ def _fallar(
         s.rollback()
         log.warning("atribucion %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionAtribucion)
-        .where(
-            EjecucionAtribucion.id == ejecucion_id,
-            EjecucionAtribucion.estado == EstadoAtribucion.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionAtribucion)
+            .where(
+                col(EjecucionAtribucion.id) == ejecucion_id,
+                col(EjecucionAtribucion.estado) == EstadoAtribucion.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoAtribucion.FALLIDA,
+                resultado=resultado.value,
+                firma_entrada=avance.firma,
+                gestiones_leidas=avance.gestiones,
+                gestiones_anuladas=avance.anuladas,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoAtribucion.FALLIDA,
-            resultado=resultado.value,
-            firma_entrada=avance.firma,
-            gestiones_leidas=avance.gestiones,
-            gestiones_anuladas=avance.anuladas,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("atribucion %s fallida (%s): %s", etiqueta, resultado.value, motivo)

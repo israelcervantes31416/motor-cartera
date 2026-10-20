@@ -34,12 +34,13 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
 
+from motor_cartera.invariantes import presente
 from motor_cartera.optimizacion import solver as solver_
 from motor_cartera.optimizacion.politica import (
     BPS,
@@ -181,7 +182,9 @@ class CuentaEntrada:
 
 
 def pertenencias(
-    dimensiones: dict[Dimension, Sequence], coberturas: Sequence[Cobertura], n: int
+    dimensiones: Mapping[Dimension, Sequence[str | None] | np.ndarray],
+    coberturas: Sequence[Cobertura],
+    n: int,
 ) -> np.ndarray:
     """bool (n, k): la cuenta i es del grupo de la cobertura k si su valor en la dimension es el
     declarado. Un valor ausente no es de ningun grupo."""
@@ -314,10 +317,9 @@ def _alcanzables(p: Problema, cuentas: np.ndarray) -> np.ndarray:
     return alcanzables
 
 
-def _tope(*cotas: int | None) -> int | None:
-    """El minimo de las cotas declaradas; None si ninguna lo es."""
-    declaradas = [c for c in cotas if c is not None]
-    return min(declaradas) if declaradas else None
+def _tope(cota: int, *otras: int | None) -> int:
+    """El minimo de `cota` y de las otras cotas declaradas (una None no acota)."""
+    return min([cota, *(c for c in otras if c is not None)])
 
 
 def maximo_atendible(p: Problema) -> int:
@@ -927,7 +929,7 @@ def resolver(
             resolucion.estado = nivel_resuelto.estado
             resolucion.resultado = RESULTADO_DEL_ESTADO.get(nivel_resuelto.estado, ERROR_DEL_SOLVER)
             return resolucion
-        fijos.append((nivel, nivel_resuelto.objetivo))
+        fijos.append((nivel, presente(nivel_resuelto.objetivo, "el objetivo de un nivel optimo")))
     asignacion = np.full(p.cuentas, SIN_POOL, dtype=np.int64)
     elegidas = x == 1
     asignacion[modelo.cuenta[elegidas]] = modelo.pool[elegidas]
@@ -1017,7 +1019,7 @@ def _resolver_nivel(
         # Con el optimo anterior fijo, la solucion anterior es factible: una infactibilidad aqui
         # es numerica, no de la configuracion.
         estado = EstadoSolver.NUMERICAL_ERROR
-    if entera is not None and nivel < 4 and res.duales is not None:
+    if entera is not None and objetivo is not None and nivel < 4 and res.duales is not None:
         cero, uno = res.duales.fijables(signo * (objetivo - constante))
         valores = entera[indices]
         if np.any(valores[cero] != 0) or np.any(valores[uno] != 1):
@@ -1325,7 +1327,9 @@ def diagnosticar_relajacion(
 
 
 def estados(
-    p: Problema, asignacion: np.ndarray, motivos_no_elegible: Sequence[str | None] | None = None
+    p: Problema,
+    asignacion: np.ndarray,
+    motivos_no_elegible: Sequence[str | None] | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """El estado y el motivo de cada cuenta: ASIGNADA en la solucion, NO_SELECCIONADA si era
     elegible y no quedo, NO_ELEGIBLE con su motivo factual (el que dice quien armo el universo; sin
@@ -1355,8 +1359,8 @@ def lineas_del_plan(
     cuenta_ids: Sequence[str],
     p: Problema,
     asignacion: np.ndarray,
-    estado: Sequence[str],
-    motivo: Sequence[str],
+    estado: Sequence[str] | np.ndarray,
+    motivo: Sequence[str] | np.ndarray,
     retenida: np.ndarray,
     evaluacion: Evaluacion,
     *,

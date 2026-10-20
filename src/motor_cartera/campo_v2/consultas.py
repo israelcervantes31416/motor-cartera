@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.campo_v2.politica import CONTEO_DE_ESTADO, EstadoCampo, NivelUnidad
@@ -36,6 +36,8 @@ from motor_cartera.db.modelos import (
     VersionBasesOperativas,
     VersionConfiguracionCampo,
 )
+from motor_cartera.db.sesion import con_columnas, seleccionar
+from motor_cartera.invariantes import presente
 
 
 class PlanNoEncontrado(Exception):
@@ -73,13 +75,13 @@ def configuraciones(
         select(VersionConfiguracionCampo, VersionBasesOperativas)
         .join(
             VersionBasesOperativas,
-            VersionBasesOperativas.id == VersionConfiguracionCampo.version_bases_operativas_id,
+            col(VersionBasesOperativas.id) == VersionConfiguracionCampo.version_bases_operativas_id,
         )
-        .order_by(VersionConfiguracionCampo.id.desc())
+        .order_by(col(VersionConfiguracionCampo.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
-    return total, [tuple(f) for f in filas]
+    return total, [(f[0], f[1]) for f in filas]
 
 
 # --- los planes -----------------------------------------------------------------------------------
@@ -99,35 +101,36 @@ class PlanVista:
 
 def _planes() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             EjecucionCampoV2,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
-            EjecucionDecisionV2.decision_run_id,
-            EjecucionTerritorialV2.territorial_run_id,
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
+            col(EjecucionDecisionV2.decision_run_id),
+            col(EjecucionTerritorialV2.territorial_run_id),
             VersionConfiguracionCampo,
-            VersionBasesOperativas.bases_version_id,
-            TrabajoOrquestacion.trabajo_id,
+            col(VersionBasesOperativas.bases_version_id),
+            col(TrabajoOrquestacion.trabajo_id),
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionCampoV2.corte_canonico_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionCampoV2.corte_canonico_id)
         .join(
             EjecucionDecisionV2,
-            EjecucionDecisionV2.id == EjecucionCampoV2.ejecucion_decision_v2_id,
+            col(EjecucionDecisionV2.id) == EjecucionCampoV2.ejecucion_decision_v2_id,
         )
         .join(
             EjecucionTerritorialV2,
-            EjecucionTerritorialV2.id == EjecucionCampoV2.ejecucion_territorial_v2_id,
+            col(EjecucionTerritorialV2.id) == EjecucionCampoV2.ejecucion_territorial_v2_id,
         )
         .join(
             VersionConfiguracionCampo,
-            VersionConfiguracionCampo.id == EjecucionCampoV2.version_configuracion_campo_id,
+            col(VersionConfiguracionCampo.id) == EjecucionCampoV2.version_configuracion_campo_id,
         )
         .join(
             VersionBasesOperativas,
-            VersionBasesOperativas.id == EjecucionCampoV2.version_bases_operativas_id,
+            col(VersionBasesOperativas.id) == EjecucionCampoV2.version_bases_operativas_id,
         )
         .outerjoin(
-            TrabajoOrquestacion, TrabajoOrquestacion.ejecucion_campo_v2_id == EjecucionCampoV2.id
+            TrabajoOrquestacion,
+            col(TrabajoOrquestacion.ejecucion_campo_v2_id) == EjecucionCampoV2.id,
         )
     )
 
@@ -156,7 +159,7 @@ def listar(
     filas = s.exec(
         _planes()
         .where(*condiciones)
-        .order_by(EjecucionCampoV2.id.desc())
+        .order_by(col(EjecucionCampoV2.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -180,26 +183,26 @@ class AsignacionVista:
 
 def _asignaciones() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             AsignacionCampoCuenta,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
-            BaseOperativa.base_id,
-            BaseOperativa.codigo,
-            GestorCampo.gestor_id,
-            GestorCampo.codigo,
-            UnidadTerritorialCampo.cvegeo,
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
+            col(BaseOperativa.base_id),
+            col(BaseOperativa.codigo),
+            col(GestorCampo.gestor_id),
+            col(GestorCampo.codigo),
+            col(UnidadTerritorialCampo.cvegeo),
         )
-        .join(CuentaCanonica, CuentaCanonica.id == AsignacionCampoCuenta.cuenta_canonica_id)
-        .outerjoin(BaseOperativa, BaseOperativa.id == AsignacionCampoCuenta.base_operativa_id)
-        .outerjoin(GestorCampo, GestorCampo.id == AsignacionCampoCuenta.gestor_campo_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == AsignacionCampoCuenta.cuenta_canonica_id)
+        .outerjoin(BaseOperativa, col(BaseOperativa.id) == AsignacionCampoCuenta.base_operativa_id)
+        .outerjoin(GestorCampo, col(GestorCampo.id) == AsignacionCampoCuenta.gestor_campo_id)
         .outerjoin(
             UnidadTerritorialCampo,
             (
-                UnidadTerritorialCampo.ejecucion_campo_v2_id
+                col(UnidadTerritorialCampo.ejecucion_campo_v2_id)
                 == AsignacionCampoCuenta.ejecucion_campo_v2_id
             )
-            & (UnidadTerritorialCampo.unidad_id == AsignacionCampoCuenta.subzona_id),
+            & (col(UnidadTerritorialCampo.unidad_id) == AsignacionCampoCuenta.subzona_id),
         )
     )
 
@@ -294,7 +297,7 @@ def asignaciones(
     filas = s.exec(
         _asignaciones()
         .where(*condiciones)
-        .order_by(AsignacionCampoCuenta.cuenta_canonica_id)
+        .order_by(col(AsignacionCampoCuenta.cuenta_canonica_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -323,7 +326,7 @@ def _total_publicado(
     if filtros.gestor is not None:
         fila = s.exec(
             select(CargaGestorCampo.asignadas)
-            .join(GestorCampo, GestorCampo.id == CargaGestorCampo.gestor_campo_id)
+            .join(GestorCampo, col(GestorCampo.id) == CargaGestorCampo.gestor_campo_id)
             .where(
                 CargaGestorCampo.ejecucion_campo_v2_id == ejecucion.id,
                 GestorCampo.codigo == filtros.gestor,
@@ -332,7 +335,7 @@ def _total_publicado(
         return fila or 0
     if unidades:
         nivel, valor = unidades[0]
-        return unidad(s, ejecucion, valor).candidatas
+        return presente(unidad(s, ejecucion, valor), "la unidad del filtro").candidatas
     return None
 
 
@@ -356,21 +359,21 @@ def cargas(
     if base is not None:
         condiciones.append(BaseOperativa.codigo == base)
     consulta = (
-        select(
+        seleccionar(
             CargaGestorCampo,
-            GestorCampo.gestor_id,
-            GestorCampo.codigo,
-            BaseOperativa.base_id,
-            BaseOperativa.codigo,
+            col(GestorCampo.gestor_id),
+            col(GestorCampo.codigo),
+            col(BaseOperativa.base_id),
+            col(BaseOperativa.codigo),
         )
-        .join(GestorCampo, GestorCampo.id == CargaGestorCampo.gestor_campo_id)
-        .join(BaseOperativa, BaseOperativa.id == CargaGestorCampo.base_operativa_id)
+        .join(GestorCampo, col(GestorCampo.id) == CargaGestorCampo.gestor_campo_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == CargaGestorCampo.base_operativa_id)
         .where(*condiciones)
     )
     total = s.exec(
         select(func.count())
         .select_from(CargaGestorCampo)
-        .join(BaseOperativa, BaseOperativa.id == CargaGestorCampo.base_operativa_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == CargaGestorCampo.base_operativa_id)
         .where(*condiciones)
     ).one()
     filas = s.exec(consulta.order_by(GestorCampo.codigo).offset(desplazamiento).limit(limite)).all()
@@ -407,19 +410,19 @@ def unidades(
     total = s.exec(
         select(func.count())
         .select_from(UnidadTerritorialCampo)
-        .join(BaseOperativa, BaseOperativa.id == UnidadTerritorialCampo.base_operativa_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == UnidadTerritorialCampo.base_operativa_id)
         .where(*condiciones)
     ).one()
     filas = s.exec(
         select(
             UnidadTerritorialCampo, BaseOperativa.base_id, BaseOperativa.codigo, GestorCampo.codigo
         )
-        .join(BaseOperativa, BaseOperativa.id == UnidadTerritorialCampo.base_operativa_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == UnidadTerritorialCampo.base_operativa_id)
         .outerjoin(
-            GestorCampo, GestorCampo.id == UnidadTerritorialCampo.propietario_gestor_campo_id
+            GestorCampo, col(GestorCampo.id) == UnidadTerritorialCampo.propietario_gestor_campo_id
         )
         .where(*condiciones)
-        .order_by(UnidadTerritorialCampo.unidad_id)
+        .order_by(col(UnidadTerritorialCampo.unidad_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -440,22 +443,25 @@ class AsignacionEnHistoria:
 
 def _de_la_cuenta(cuenta: CuentaCanonica) -> Select[Any]:
     return (
-        _asignaciones()
-        .add_columns(
+        con_columnas(
+            _asignaciones(),
             EjecucionCampoV2,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
-            VersionConfiguracionCampo.configuracion_campo_version_id,
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
+            col(VersionConfiguracionCampo.configuracion_campo_version_id),
         )
-        .join(EjecucionCampoV2, EjecucionCampoV2.id == AsignacionCampoCuenta.ejecucion_campo_v2_id)
-        .join(CorteCanonico, CorteCanonico.id == EjecucionCampoV2.corte_canonico_id)
+        .join(
+            EjecucionCampoV2,
+            col(EjecucionCampoV2.id) == AsignacionCampoCuenta.ejecucion_campo_v2_id,
+        )
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionCampoV2.corte_canonico_id)
         .join(
             VersionConfiguracionCampo,
-            VersionConfiguracionCampo.id == EjecucionCampoV2.version_configuracion_campo_id,
+            col(VersionConfiguracionCampo.id) == EjecucionCampoV2.version_configuracion_campo_id,
         )
         .where(
-            AsignacionCampoCuenta.cuenta_canonica_id == cuenta.id,
-            EjecucionCampoV2.estado == EstadoCampoV2.EXITOSA,
+            col(AsignacionCampoCuenta.cuenta_canonica_id) == cuenta.id,
+            col(EjecucionCampoV2.estado) == EstadoCampoV2.EXITOSA,
         )
     )
 
@@ -473,7 +479,10 @@ def historial(
     total = s.exec(
         select(func.count())
         .select_from(AsignacionCampoCuenta)
-        .join(EjecucionCampoV2, EjecucionCampoV2.id == AsignacionCampoCuenta.ejecucion_campo_v2_id)
+        .join(
+            EjecucionCampoV2,
+            col(EjecucionCampoV2.id) == AsignacionCampoCuenta.ejecucion_campo_v2_id,
+        )
         .where(
             AsignacionCampoCuenta.cuenta_canonica_id == cuenta.id,
             EjecucionCampoV2.estado == EstadoCampoV2.EXITOSA,
@@ -481,7 +490,7 @@ def historial(
     ).one()
     filas = s.exec(
         _de_la_cuenta(cuenta)
-        .order_by(EjecucionCampoV2.fecha_operacion.desc(), EjecucionCampoV2.id.desc())
+        .order_by(col(EjecucionCampoV2.fecha_operacion).desc(), col(EjecucionCampoV2.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -507,7 +516,7 @@ def ultima(
         consulta = consulta.where(EjecucionCampoV2.fecha_operacion <= al)
     fila = s.exec(
         consulta.order_by(
-            EjecucionCampoV2.fecha_operacion.desc(), EjecucionCampoV2.id.desc()
+            col(EjecucionCampoV2.fecha_operacion).desc(), col(EjecucionCampoV2.id).desc()
         ).limit(1)
     ).one_or_none()
     return None if fila is None else _en_historia(fila)

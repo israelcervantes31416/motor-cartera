@@ -53,7 +53,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.atraso import TRAMOS_ATRASO
 from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION
@@ -65,8 +65,9 @@ from motor_cartera.db.modelos import (
     ResultadoEjecucionDecisionV2,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision.reglas import CANAL_POR_PRIORIDAD, PRIORIDAD_BASE, SEGMENTO_POR_TRAMO
 from motor_cartera.decision_v2.features import FEATURES, NULO, VERSION_FEATURES, Feature, Tipo
 from motor_cartera.decision_v2.politica import (
@@ -85,6 +86,7 @@ from motor_cartera.decision_v2.politica import (
 from motor_cartera.evaluacion.ejecuciones import sql_conclusiones
 from motor_cartera.evaluacion.reglas import EstadoEvaluacion
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, periodo_de, siguiente_periodo
 from motor_cartera.orquestacion import cola
 
@@ -261,7 +263,7 @@ def abrir(
             "as_of seria informacion del futuro, y uno anterior mezclaria su foto con dias que no "
             "observa."
         )
-    reloj = s.execute(text("SELECT now()")).scalar_one()
+    reloj: datetime = s.execute(text("SELECT now()")).scalar_one()
     if known_at is None:
         if modo == ModoDecisionV2.BACKTEST:
             raise KnownAtRequerido(
@@ -293,7 +295,7 @@ def abrir(
                 CorteCanonico.fecha_corte > corte.fecha_corte,
                 CorteCanonico.creado_en <= known_at,
             )
-            .order_by(CorteCanonico.fecha_corte.desc())
+            .order_by(col(CorteCanonico.fecha_corte).desc())
         ).first()
         if posterior is not None:
             raise CorteNoVigente(
@@ -313,11 +315,11 @@ def abrir(
     previa = _exitosa(s, firma)
     if previa is not None:
         raise DecisionV2YaGenerada(previa)
-    activa = _activa(s, corte.id, politica)
+    activa = _activa(s, id_de(corte), politica)
     if activa is not None:
         raise DecisionV2EnProceso(activa)
     ejecucion = EjecucionDecisionV2(
-        corte_canonico_id=corte.id,
+        corte_canonico_id=id_de(corte),
         despacho_id=corte.despacho_id,
         cartera_id=corte.cartera_id,
         as_of=as_of,
@@ -335,7 +337,7 @@ def abrir(
     if error is not None:
         if restriccion(error) != INDICE_EN_PROCESO:
             raise error
-        activa = _activa(s, corte.id, politica)
+        activa = _activa(s, id_de(corte), politica)
         if (
             activa is None
         ):  # pragma: no cover - la que gano ya termino entre el rechazo y la revision
@@ -344,7 +346,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.DECISION_V2,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -556,7 +558,9 @@ def decidir(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> None:
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo, avance)
         if resultado == ResultadoEjecucionDecisionV2.YA_DECIDIDA:
-            raise DecisionV2YaGenerada(_exitosa(s, firma))
+            raise DecisionV2YaGenerada(
+                presente(_exitosa(s, firma), "la decision EXITOSA con esa firma")
+            )
 
 
 def _decidir(
@@ -968,7 +972,7 @@ def _disponibilidad(
         ).all()
     }
     interpretaciones = dict(
-        s.execute(text("SELECT periodo_desde, id FROM dv2_interpretacion")).all()
+        s.execute(text("SELECT periodo_desde, id FROM dv2_interpretacion")).tuples().all()
     )
     atribuciones = {
         fila.periodo_desde: fila
@@ -982,7 +986,7 @@ def _disponibilidad(
         visto = por_mes.get(mes)
         cuantos = 0 if visto is None else visto.observados
         en_rango = primero is not None and periodo_de(primero) <= mes <= periodo_de(horizonte)
-        pagos = en_rango and (cuantos == 0 or bool(visto.interpretado))
+        pagos = en_rango and (visto is None or cuantos == 0 or bool(visto.interpretado))
         atribucion = atribuciones.get(mes)
         atribuido = pagos and (
             cuantos == 0
@@ -1388,23 +1392,25 @@ def _fallar(
         s.rollback()
         log.warning("decision v2 %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionDecisionV2)
-        .where(
-            EjecucionDecisionV2.id == ejecucion_id,
-            EjecucionDecisionV2.estado == EstadoDecisionV2.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionDecisionV2)
+            .where(
+                col(EjecucionDecisionV2.id) == ejecucion_id,
+                col(EjecucionDecisionV2.estado) == EstadoDecisionV2.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoDecisionV2.FALLIDA,
+                resultado=resultado.value,
+                cuentas_decididas=0,
+                cuentas_fallidas=avance.fallidas,
+                disponibilidad=avance.disponibilidad,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoDecisionV2.FALLIDA,
-            resultado=resultado.value,
-            cuentas_decididas=0,
-            cuentas_fallidas=avance.fallidas,
-            disponibilidad=avance.disponibilidad,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("decision v2 %s fallida (%s): %s", etiqueta, resultado.value, motivo)

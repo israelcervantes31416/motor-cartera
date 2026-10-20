@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.analytics.catalogo import (
     CONJUNTOS,
@@ -32,6 +32,7 @@ from motor_cartera.db.modelos import (
     EjecucionAnalytics,
     EntradaAnalytics,
     TrabajoOrquestacion,
+    id_de,
 )
 
 LLAVES_DE_DIMENSION = tuple(sorted({c for d in CONJUNTOS.values() for c in d.claves}))
@@ -104,11 +105,11 @@ def _vistas(s: Session, ejecuciones: list[EjecucionAnalytics]) -> list[Ejecucion
     no tres por ejecucion."""
     if not ejecuciones:
         return []
-    ids = [e.id for e in ejecuciones]
+    ids = [id_de(e) for e in ejecuciones]
     cortes = dict(
         s.exec(
             select(CorteCanonico.id, CorteCanonico.corte_id).where(
-                CorteCanonico.id.in_({e.corte_canonico_id for e in ejecuciones})
+                col(CorteCanonico.id).in_({e.corte_canonico_id for e in ejecuciones})
             )
         ).all()
     )
@@ -116,23 +117,23 @@ def _vistas(s: Session, ejecuciones: list[EjecucionAnalytics]) -> list[Ejecucion
     trabajos = dict(
         s.exec(
             select(trabajo.ejecucion_analytics_id, trabajo.trabajo_id).where(
-                trabajo.ejecucion_analytics_id.in_(ids)
+                col(trabajo.ejecucion_analytics_id).in_(ids)
             )
         ).all()
     )
     entradas: dict[int, list[EntradaAnalytics]] = {i: [] for i in ids}
     for entrada in s.exec(
         select(EntradaAnalytics)
-        .where(EntradaAnalytics.ejecucion_analytics_id.in_(ids))
+        .where(col(EntradaAnalytics.ejecucion_analytics_id).in_(ids))
         .order_by(
-            EntradaAnalytics.ejecucion_analytics_id,
+            col(EntradaAnalytics.ejecucion_analytics_id),
             EntradaAnalytics.tipo_entrada,
-            EntradaAnalytics.periodo_desde,
+            col(EntradaAnalytics.periodo_desde),
         )
     ).all():
         entradas[entrada.ejecucion_analytics_id].append(entrada)
     return [
-        EjecucionVista(e, cortes[e.corte_canonico_id], trabajos.get(e.id), entradas[e.id])
+        EjecucionVista(e, cortes[e.corte_canonico_id], trabajos.get(e.id), entradas[id_de(e)])
         for e in ejecuciones
     ]
 
@@ -167,7 +168,7 @@ def listar(
     filas = s.exec(
         select(EjecucionAnalytics)
         .where(*condiciones)
-        .order_by(EjecucionAnalytics.id.desc())
+        .order_by(col(EjecucionAnalytics.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -244,7 +245,7 @@ def agregados(
     limite: int,
 ) -> tuple[int, list[AgregadoVista]]:
     """Una pagina de lo publicado, filtrada en la base y en el orden de su llave."""
-    donde, parametros = _donde(ejecucion.id, filtros)
+    donde, parametros = _donde(id_de(ejecucion), filtros)
     total = s.execute(
         text(f"SELECT count(*) FROM agregado_analytics WHERE {donde}"), parametros
     ).scalar_one()
@@ -265,7 +266,7 @@ def todos_los_agregados(
     s: Session, ejecucion: EjecucionAnalytics, filtros: FiltrosAgregados
 ) -> list[AgregadoVista]:
     """Todo lo publicado que cumple los filtros, en el orden de su llave: lo que se exporta."""
-    donde, parametros = _donde(ejecucion.id, filtros)
+    donde, parametros = _donde(id_de(ejecucion), filtros)
     filas = s.execute(
         text(
             "SELECT metrica_codigo, vista, dimension_set, periodo_desde, periodo_hasta, "

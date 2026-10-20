@@ -15,7 +15,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     CorteCanonico,
@@ -29,7 +29,10 @@ from motor_cartera.db.modelos import (
     TrabajoOrquestacion,
     VersionConfiguracionOptimizacion,
     VersionModeloPredictivo,
+    id_de,
 )
+from motor_cartera.db.sesion import seleccionar
+from motor_cartera.invariantes import presente
 from motor_cartera.optimizacion import configuracion as configuracion_
 from motor_cartera.optimizacion.politica import (
     AVISO,
@@ -74,7 +77,7 @@ def listar_configuraciones(
     filas = s.exec(
         select(VersionConfiguracionOptimizacion)
         .where(*filtros)
-        .order_by(VersionConfiguracionOptimizacion.id.desc())
+        .order_by(col(VersionConfiguracionOptimizacion.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -104,47 +107,51 @@ def _vistas(s: Session, ejecuciones: list[EjecucionOptimizacion]) -> list[Ejecuc
     if not ejecuciones:
         return []
     filas = s.exec(
-        select(
-            EjecucionOptimizacion.id,
-            EjecucionScoringPredictivo.scoring_run_id,
-            VersionModeloPredictivo.modelo_version_id,
-            EjecucionDecisionV2.decision_run_id,
-            EjecucionRuteoV2.ruteo_run_id,
-            EjecucionCampoV2.campo_run_id,
-            VersionConfiguracionOptimizacion.configuracion_id,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
-            TrabajoOrquestacion.trabajo_id,
+        seleccionar(
+            col(EjecucionOptimizacion.id),
+            col(EjecucionScoringPredictivo.scoring_run_id),
+            col(VersionModeloPredictivo.modelo_version_id),
+            col(EjecucionDecisionV2.decision_run_id),
+            col(EjecucionRuteoV2.ruteo_run_id),
+            col(EjecucionCampoV2.campo_run_id),
+            col(VersionConfiguracionOptimizacion.configuracion_id),
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
+            col(TrabajoOrquestacion.trabajo_id),
         )
         .join(
             EjecucionScoringPredictivo,
-            EjecucionScoringPredictivo.id == EjecucionOptimizacion.ejecucion_scoring_predictivo_id,
+            col(EjecucionScoringPredictivo.id)
+            == EjecucionOptimizacion.ejecucion_scoring_predictivo_id,
         )
         .join(
             VersionModeloPredictivo,
-            VersionModeloPredictivo.id == EjecucionScoringPredictivo.version_modelo_predictivo_id,
+            col(VersionModeloPredictivo.id)
+            == EjecucionScoringPredictivo.version_modelo_predictivo_id,
         )
         .join(
             EjecucionDecisionV2,
-            EjecucionDecisionV2.id == EjecucionOptimizacion.ejecucion_decision_v2_id,
+            col(EjecucionDecisionV2.id) == EjecucionOptimizacion.ejecucion_decision_v2_id,
         )
         .outerjoin(
-            EjecucionRuteoV2, EjecucionRuteoV2.id == EjecucionOptimizacion.ejecucion_ruteo_v2_id
+            EjecucionRuteoV2,
+            col(EjecucionRuteoV2.id) == EjecucionOptimizacion.ejecucion_ruteo_v2_id,
         )
         .outerjoin(
-            EjecucionCampoV2, EjecucionCampoV2.id == EjecucionOptimizacion.ejecucion_campo_v2_id
+            EjecucionCampoV2,
+            col(EjecucionCampoV2.id) == EjecucionOptimizacion.ejecucion_campo_v2_id,
         )
         .join(
             VersionConfiguracionOptimizacion,
-            VersionConfiguracionOptimizacion.id
+            col(VersionConfiguracionOptimizacion.id)
             == EjecucionOptimizacion.version_configuracion_optimizacion_id,
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionOptimizacion.corte_canonico_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionOptimizacion.corte_canonico_id)
         .outerjoin(
             TrabajoOrquestacion,
-            TrabajoOrquestacion.ejecucion_optimizacion_id == EjecucionOptimizacion.id,
+            col(TrabajoOrquestacion.ejecucion_optimizacion_id) == EjecucionOptimizacion.id,
         )
-        .where(EjecucionOptimizacion.id.in_([e.id for e in ejecuciones]))
+        .where(col(EjecucionOptimizacion.id).in_([e.id for e in ejecuciones]))
     ).all()
     por_id = {f[0]: f[1:] for f in filas}
     return [EjecucionVista(e, *por_id[e.id]) for e in ejecuciones]
@@ -183,7 +190,7 @@ def listar_ejecuciones(
     filas = s.exec(
         select(EjecucionOptimizacion)
         .where(*filtros)
-        .order_by(EjecucionOptimizacion.id.desc())
+        .order_by(col(EjecucionOptimizacion.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -496,7 +503,7 @@ def copiar_resultados(s: Session, ejecucion: EjecucionOptimizacion, salida) -> N
     """Escribe en `salida` (binaria) los resultados por cuenta de un plan, en CSV con encabezado,
     con COPY y en el orden de la cuenta: sin un objeto por fila. Solo codigos y el cuenta_id
     publico; ningun dato personal ni coordenada. Un booleano sale como true o false."""
-    conexion = s.connection().connection.driver_connection
+    conexion = presente(s.connection().connection.driver_connection, "la conexion de la sesion")
     consulta = (
         "COPY (SELECT c.cuenta_id, r.estado, r.motivo, r.canal_decision, r.canal_asignado, "
         "k.codigo AS pool, r.prioridad, r.producto, r.atraso_bucket, b.codigo AS base, "
@@ -504,8 +511,8 @@ def copiar_resultados(s: Session, ejecucion: EjecucionOptimizacion, salida) -> N
         "r.p_contacto_14d, r.unidades_recurso, r.retenida::text AS retenida "
         "FROM resultado_optimizacion_cuenta r "
         + UNIONES_DEL_RESULTADO
-        + f"WHERE r.ejecucion_optimizacion_id = {int(ejecucion.id)} ORDER BY r.cuenta_canonica_id) "
-        "TO STDOUT WITH (FORMAT csv, HEADER true)"
+        + f"WHERE r.ejecucion_optimizacion_id = {int(id_de(ejecucion))} "
+        "ORDER BY r.cuenta_canonica_id) TO STDOUT WITH (FORMAT csv, HEADER true)"
     )
     with conexion.cursor() as cursor, cursor.copy(consulta) as copia:
         for bloque in copia:

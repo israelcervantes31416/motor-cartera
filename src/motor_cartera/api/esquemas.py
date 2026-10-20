@@ -14,7 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from motor_cartera.contratos.cartera import CANALES, PRODUCTOS, VERSION_CONTRATO
+from motor_cartera.contratos.cartera import VERSION_CONTRATO
 from motor_cartera.contratos.cartera_v2 import VERSION_CONTRATO_V2
 from motor_cartera.db.modelos import (
     EstadoCorrida,
@@ -44,10 +44,22 @@ from motor_cartera.ruteo.reglas import VERSION_REGLAS_RUTEO
 from motor_cartera.segmentacion import Dimension
 from motor_cartera.territorial.reglas import VERSION_REGLAS_TERRITORIAL
 
-# Los catalogos del contrato, como tipos de la API: un filtro con un producto que el
-# contrato no conoce es un 422, sin que la lista se haya escrito dos veces.
-Producto = StrEnum("Producto", {p: p for p in PRODUCTOS})
-Canal = StrEnum("Canal", {c: c for c in CANALES})
+
+# Los catalogos del contrato (PRODUCTOS y CANALES de contratos/cartera.py), como tipos de la API:
+# un filtro con un producto que el contrato no conoce es un 422. Se escriben como clases para que
+# el verificador de tipos los vea; tests/test_documentacion.py exige que sean los del contrato, en
+# su orden. Sin docstring: pydantic la llevaria al OpenAPI.
+class Producto(StrEnum):
+    CONSUMO = "CONSUMO"
+    TARJETA = "TARJETA"
+    NOMINA = "NOMINA"
+    AUTOMOTRIZ = "AUTOMOTRIZ"
+
+
+class Canal(StrEnum):
+    CAMPO = "CAMPO"
+    TELEFONICA = "TELEFONICA"
+    DIGITAL = "DIGITAL"
 
 
 class Paginacion(BaseModel):

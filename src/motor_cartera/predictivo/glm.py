@@ -185,7 +185,12 @@ def _newton(
 
 
 def _ajuste(
-    theta: np.ndarray, indices: np.ndarray, columnas: int, iteraciones: int, convergio: bool, valor
+    theta: np.ndarray,
+    indices: np.ndarray,
+    columnas: int,
+    iteraciones: int,
+    convergio: bool,
+    valor: float,
 ) -> Ajuste:
     coeficientes = np.zeros(columnas, dtype=np.float64)
     coeficientes[indices] = theta[:-1]

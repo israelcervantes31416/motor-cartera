@@ -30,6 +30,8 @@ from decimal import Decimal
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from motor_cartera.invariantes import presente
+
 log = logging.getLogger(__name__)
 
 PREFIJO_DATA_VERSION = "motor-cartera/red-vial/v1:"
@@ -116,22 +118,27 @@ class SesionRuteo(Protocol):
     def verificar(self) -> None:
         """Comprueba, sin enviar ningun punto de una cuenta ni de una base, que el backend sirve
         la red de la sesion. Levanta BackendIncompatible si sirve otra."""
+        ...
 
     def snaps(self, coordenadas: Sequence[Coordenada]) -> list[Decimal | None]:
         """La distancia en metros de cada coordenada a su segmento de la red, en el mismo orden;
         None si el proveedor dice que no tiene uno."""
+        ...
 
     def matriz(self, coordenadas: Sequence[Coordenada], *, bloque: int) -> MatrizVial:
         """Duraciones y distancias entre todas las coordenadas, en bloques de a lo mas `bloque` por
         `bloque`."""
+        ...
 
 
 class ProveedorRuteo(Protocol):
     def sesion(self, huella: str) -> SesionRuteo:
         """Una sesion atada a la red de esa huella. Su primera respuesta la verifica."""
+        ...
 
     def salud(self) -> bool:
         """Si el backend responde. No dice que red sirve."""
+        ...
 
 
 # --- OSRM -----------------------------------------------------------------------------------------
@@ -201,7 +208,8 @@ class ClienteOsrm:
         self.configuracion = configuracion
         partes = urlsplit(configuracion.url)
         self._https = partes.scheme == "https"
-        self._host = partes.hostname
+        # ConfiguracionOsrm ya exige una URL http(s) con su host.
+        self._host = presente(partes.hostname, "el host de MC_OSRM_URL")
         self._puerto = partes.port or (443 if self._https else 80)
         self._prefijo = partes.path.rstrip("/")
         self._local = threading.local()
@@ -487,7 +495,7 @@ def _tabla(filas, origenes: int, destinos: int) -> list[list[Decimal | None]]:
     return tabla
 
 
-def proveedor_configurado(configuracion) -> ProveedorRuteo | None:
+def proveedor_configurado(configuracion) -> ClienteOsrm | None:
     """El proveedor que declara la configuracion (MC_OSRM_URL), o None si no hay uno: sin el, este
     proceso no rutea."""
     if not configuracion.osrm_url:

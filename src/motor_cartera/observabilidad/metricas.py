@@ -367,7 +367,7 @@ class _Manejador(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(cuerpo)
 
-    def log_message(self, formato: str, *argumentos: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         # Prometheus consulta cada pocos segundos: no se registra cada consulta.
         return
 

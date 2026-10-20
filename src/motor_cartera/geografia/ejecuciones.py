@@ -46,7 +46,7 @@ import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.config import config as config_del_entorno
@@ -64,8 +64,9 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionGeografia,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.fuentes.almacen import ArtefactoCorrupto, ArtefactoFaltante
 from motor_cartera.fuentes.artefactos import almacen_de
 from motor_cartera.fuentes.conformado import COLUMNA_FILA, COLUMNA_HOJA
@@ -84,6 +85,7 @@ from motor_cartera.geografia.reglas import (
 )
 from motor_cartera.historia import carga
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 
 log = logging.getLogger(__name__)
@@ -214,9 +216,9 @@ def abrir(
     if activa is not None:
         raise GeografiaEnProceso(activa)
     ejecucion = EjecucionGeografia(
-        corte_canonico_id=e.corte.id,
-        dataset_conformado_id=e.dataset.id,
-        version_geografia_id=e.version.id,
+        corte_canonico_id=id_de(e.corte),
+        dataset_conformado_id=id_de(e.dataset),
+        version_geografia_id=id_de(e.version),
         version_motor=VERSION_MOTOR,
         firma_inputs=e.firma,
         cuentas_objetivo=e.corte.cuentas,
@@ -234,7 +236,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.GEOGRAFIA,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -303,7 +305,9 @@ def ejecutar_geografia(ejecucion_id: int, *, config: Config | None = None) -> No
 def _artefacto(s: Session, dataset_id: int) -> ArtefactoFuente:
     return s.exec(
         select(ArtefactoFuente)
-        .join(DatasetConformado, DatasetConformado.artefacto_conformado_id == ArtefactoFuente.id)
+        .join(
+            DatasetConformado, col(DatasetConformado.artefacto_conformado_id) == ArtefactoFuente.id
+        )
         .where(DatasetConformado.id == dataset_id)
     ).one()
 
@@ -372,7 +376,8 @@ def geolocalizar(
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo)
         if resultado == ResultadoEjecucionGeografia.YA_GENERADA:
-            raise GeografiaYaGenerada(_de_firma(s, firma, EstadoGeografia.EXITOSA))
+            previa = _de_firma(s, firma, EstadoGeografia.EXITOSA)
+            raise GeografiaYaGenerada(presente(previa, "la ejecucion EXITOSA con esa firma"))
 
 
 def _traza(exc: BaseException) -> str:
@@ -466,7 +471,7 @@ def _geolocalizar(
         _ejecutar(s, SQL_INVERTIDOS, parametros)
     _punto_de_falla(ANTES_DE_PUBLICAR)
     with cronometro.fase("publicacion"):
-        publicados = s.execute(text(SQL_RESULTADOS), parametros).rowcount
+        publicados = filas_afectadas(s.execute(text(SQL_RESULTADOS), parametros))
     _punto_de_falla(DESPUES_DE_LOS_RESULTADOS)
     with cronometro.fase("conteos"):
         conteos, distribucion = _contar(s, ejecucion)
@@ -671,7 +676,9 @@ def _contar(s: Session, ejecucion: EjecucionGeografia) -> tuple[dict[str, int], 
                 "WHERE ejecucion_geografia_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_motivo = dict(
         s.execute(
@@ -681,7 +688,9 @@ def _contar(s: Session, ejecucion: EjecucionGeografia) -> tuple[dict[str, int], 
                 "GROUP BY 1 ORDER BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_comparacion = dict(
         s.execute(
@@ -691,7 +700,9 @@ def _contar(s: Session, ejecucion: EjecucionGeografia) -> tuple[dict[str, int], 
                 "WHERE ejecucion_geografia_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     conteos = {columna: por_estado.get(estado.value, 0) for estado, columna in _COLUMNAS.items()}
     distribucion = {
@@ -753,21 +764,23 @@ def _fallar(
         s.rollback()
         log.warning("geografia %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionGeografia)
-        .where(
-            EjecucionGeografia.id == ejecucion_id,
-            EjecucionGeografia.estado == EstadoGeografia.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionGeografia)
+            .where(
+                col(EjecucionGeografia.id) == ejecucion_id,
+                col(EjecucionGeografia.estado) == EstadoGeografia.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoGeografia.FALLIDA,
+                resultado=resultado.value,
+                detalle=motivo,
+                terminada_en=ahora(),
+                **dict.fromkeys(CONTEOS_DE_GEOGRAFIA, 0),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoGeografia.FALLIDA,
-            resultado=resultado.value,
-            detalle=motivo,
-            terminada_en=ahora(),
-            **dict.fromkeys(CONTEOS_DE_GEOGRAFIA, 0),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("geografia %s fallida (%s): %s", etiqueta, resultado.value, motivo)

@@ -40,6 +40,7 @@ from motor_cartera.api.gestiones import cuenta_de
 from motor_cartera.api.operacional import SIN_CLAVE
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import CorteCanonico, EjecucionDecisionV2, ModoDecisionV2
+from motor_cartera.decision.reglas import Prioridad
 from motor_cartera.decision_v2 import consultas
 from motor_cartera.decision_v2 import ejecuciones as motor
 from motor_cartera.decision_v2.consultas import (
@@ -181,11 +182,11 @@ def resultados(
             ResultadoDecisionV2Respuesta(
                 cuenta_id=v.cuenta_id,
                 cliente_unico=v.cliente_unico,
-                prioridad_base=v.resultado.prioridad_base,
+                prioridad_base=Prioridad(v.resultado.prioridad_base),
                 score_nivel_base=v.resultado.score_nivel_base,
                 ajuste_total=v.resultado.ajuste_total,
                 score_nivel_final=v.resultado.score_nivel_final,
-                prioridad_final=v.resultado.prioridad_final,
+                prioridad_final=Prioridad(v.resultado.prioridad_final),
                 canal_recomendado=v.resultado.canal_recomendado,
                 motivos=v.resultado.motivos,
                 decision_hash=v.resultado.decision_hash.hex(),
@@ -240,7 +241,7 @@ def decision_de_cuenta(
         cliente_unico=cuenta.cliente_unico,
         features=FeaturesRespuesta(**valores),
         feature_hash=decidida.features.feature_hash.hex(),
-        prioridad_base=r.prioridad_base,
+        prioridad_base=Prioridad(r.prioridad_base),
         score_nivel_base=r.score_nivel_base,
         reglas=[
             ReglaRespuesta(
@@ -262,7 +263,7 @@ def decision_de_cuenta(
         ],
         ajuste_total=r.ajuste_total,
         score_nivel_final=r.score_nivel_final,
-        prioridad_final=r.prioridad_final,
+        prioridad_final=Prioridad(r.prioridad_final),
         canal_recomendado=r.canal_recomendado,
         motivos=r.motivos,
         decision_hash=r.decision_hash.hex(),
@@ -313,9 +314,9 @@ def decisiones_de_cuenta(
                 as_of=d.ejecucion.as_of,
                 known_at=d.ejecucion.known_at,
                 modo=d.ejecucion.modo,
-                prioridad_base=d.resultado.prioridad_base,
+                prioridad_base=Prioridad(d.resultado.prioridad_base),
                 ajuste_total=d.resultado.ajuste_total,
-                prioridad_final=d.resultado.prioridad_final,
+                prioridad_final=Prioridad(d.resultado.prioridad_final),
                 canal_recomendado=d.resultado.canal_recomendado,
                 motivos=[m["codigo"] for m in d.resultado.motivos],
                 decision_hash=d.resultado.decision_hash.hex(),

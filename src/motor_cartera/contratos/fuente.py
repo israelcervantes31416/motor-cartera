@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -213,7 +214,10 @@ def _texto(columna: Columna, crudo: pd.Series, presente: pd.Series):
 
 
 def _codigo(columna: Columna, crudo: pd.Series, presente: pd.Series):
-    cumple = _cumple(crudo.str.fullmatch(columna.patron))
+    patron = columna.patron
+    if patron is None:
+        raise ValueError(f"La columna de codigo {columna.nombre} no declara su patron.")
+    cumple = _cumple(crudo.str.fullmatch(patron))
     return crudo.where(cumple), [(presente & ~cumple, f"forma({columna.patron})")]
 
 
@@ -334,7 +338,7 @@ def _rango(columna: Columna) -> str:
 # --- la firma del contenido ----------------------------------------------------------------------
 
 
-def linea_canonica(valores: list[str | None]) -> str:
+def linea_canonica(valores: Sequence[str | None]) -> str:
     """Un registro en su linea canonica: cada valor como `largo:texto`, separados por comas, y un
     vacio como `-`. El largo (en caracteres) hace la linea inequivoca sin escapar nada, aunque un
     texto traiga comas, dos puntos o guiones."""

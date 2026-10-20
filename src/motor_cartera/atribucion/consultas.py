@@ -18,7 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, text, tuple_
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION, Clasificacion
@@ -33,6 +33,8 @@ from motor_cartera.db.modelos import (
     MovimientoEconomicoCanonico,
     TrabajoOrquestacion,
 )
+from motor_cartera.db.sesion import seleccionar
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos import consultas as pagos
 from motor_cartera.motor_pagos.consultas import MovimientoVisto
 
@@ -44,20 +46,19 @@ class AtribucionNoEncontrada(Exception):
 def vigentes(s: Session, version: str = VERSION_ATRIBUCION) -> list[int]:
     """Los id de las atribuciones vigentes de la version: una por ventana, su EXITOSA mas
     reciente. Son pocas (una por mes de cada cartera)."""
-    return list(
-        s.exec(
-            select(func.max(EjecucionAtribucion.id))
-            .where(
-                EjecucionAtribucion.version_atribucion == version,
-                EjecucionAtribucion.estado == EstadoAtribucion.EXITOSA,
-            )
-            .group_by(
-                EjecucionAtribucion.despacho_id,
-                EjecucionAtribucion.cartera_id,
-                EjecucionAtribucion.periodo_desde,
-            )
-        ).all()
-    )
+    vigentes_ = s.exec(
+        select(func.max(EjecucionAtribucion.id))
+        .where(
+            EjecucionAtribucion.version_atribucion == version,
+            EjecucionAtribucion.estado == EstadoAtribucion.EXITOSA,
+        )
+        .group_by(
+            EjecucionAtribucion.despacho_id,
+            EjecucionAtribucion.cartera_id,
+            col(EjecucionAtribucion.periodo_desde),
+        )
+    ).all()
+    return [presente(i, "el id de una atribucion vigente") for i in vigentes_]
 
 
 # --- las ejecuciones ------------------------------------------------------------------------------
@@ -84,11 +85,11 @@ def _ejecuciones() -> Select[Any]:
         )
         .outerjoin(
             TrabajoOrquestacion,
-            TrabajoOrquestacion.ejecucion_atribucion_id == EjecucionAtribucion.id,
+            col(TrabajoOrquestacion.ejecucion_atribucion_id) == EjecucionAtribucion.id,
         )
         .outerjoin(
             EjecucionMotorPagos,
-            EjecucionMotorPagos.id == EjecucionAtribucion.ejecucion_motor_pagos_id,
+            col(EjecucionMotorPagos.id) == EjecucionAtribucion.ejecucion_motor_pagos_id,
         )
     )
 
@@ -147,7 +148,7 @@ def listar(
     filas = s.exec(
         _ejecuciones()
         .where(*condiciones)
-        .order_by(EjecucionAtribucion.periodo_desde.desc(), EjecucionAtribucion.id.desc())
+        .order_by(col(EjecucionAtribucion.periodo_desde).desc(), col(EjecucionAtribucion.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -186,23 +187,25 @@ class ResultadoVisto:
 def _resultados() -> Select[Any]:
     asociada = GestionCobranza.__table__.alias("asociada")
     return (
-        select(
+        seleccionar(
             AtribucionMovimiento,
             EjecucionAtribucion,
-            EjecucionMotorPagos.motor_pagos_run_id,
-            EjecucionMotorPagos.version_motor,
-            CuentaCanonica.cuenta_id,
+            col(EjecucionMotorPagos.motor_pagos_run_id),
+            col(EjecucionMotorPagos.version_motor),
+            col(CuentaCanonica.cuenta_id),
             asociada.c.gestion_id,
         )
         .join(
             EjecucionAtribucion,
-            EjecucionAtribucion.id == AtribucionMovimiento.ejecucion_atribucion_id,
+            col(EjecucionAtribucion.id) == AtribucionMovimiento.ejecucion_atribucion_id,
         )
         .join(
             EjecucionMotorPagos,
-            EjecucionMotorPagos.id == EjecucionAtribucion.ejecucion_motor_pagos_id,
+            col(EjecucionMotorPagos.id) == EjecucionAtribucion.ejecucion_motor_pagos_id,
         )
-        .outerjoin(CuentaCanonica, CuentaCanonica.id == AtribucionMovimiento.cuenta_canonica_id)
+        .outerjoin(
+            CuentaCanonica, col(CuentaCanonica.id) == AtribucionMovimiento.cuenta_canonica_id
+        )
         .outerjoin(asociada, asociada.c.id == AtribucionMovimiento.gestion_cobranza_id)
     )
 
@@ -215,14 +218,16 @@ def _con_candidatas(s: Session, filas) -> list[ResultadoVisto]:
     if pares:
         for candidato, gestion in s.exec(
             select(CandidatoAtribucion, GestionCobranza)
-            .join(GestionCobranza, GestionCobranza.id == CandidatoAtribucion.gestion_cobranza_id)
+            .join(
+                GestionCobranza, col(GestionCobranza.id) == CandidatoAtribucion.gestion_cobranza_id
+            )
             .where(
                 tuple_(
-                    CandidatoAtribucion.ejecucion_atribucion_id,
-                    CandidatoAtribucion.movimiento_economico_canonico_id,
+                    col(CandidatoAtribucion.ejecucion_atribucion_id),
+                    col(CandidatoAtribucion.movimiento_economico_canonico_id),
                 ).in_(pares)
             )
-            .order_by(CandidatoAtribucion.antelacion_segundos, GestionCobranza.gestion_id)
+            .order_by(col(CandidatoAtribucion.antelacion_segundos), col(GestionCobranza.gestion_id))
         ).all():
             llave = (candidato.ejecucion_atribucion_id, candidato.movimiento_economico_canonico_id)
             por_par[llave].append(
@@ -273,7 +278,7 @@ def resultados_de(
         # Las de un cliente: sus movimientos en la interpretacion que se leyo, por el indice de
         # los movimientos de una cuenta, y cada resultado por su llave.
         condiciones.append(
-            AtribucionMovimiento.movimiento_economico_canonico_id.in_(
+            col(AtribucionMovimiento.movimiento_economico_canonico_id).in_(
                 select(MovimientoEconomicoCanonico.id).where(
                     MovimientoEconomicoCanonico.despacho_id == ejecucion.despacho_id,
                     MovimientoEconomicoCanonico.cartera_id == ejecucion.cartera_id,
@@ -300,8 +305,8 @@ def resultados_de(
         _resultados()
         .where(*condiciones)
         .order_by(
-            AtribucionMovimiento.fecha_recepcion,
-            AtribucionMovimiento.movimiento_economico_canonico_id,
+            col(AtribucionMovimiento.fecha_recepcion),
+            col(AtribucionMovimiento.movimiento_economico_canonico_id),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -320,7 +325,7 @@ def de_movimiento(
     filas = s.exec(
         _resultados()
         .where(condicion)
-        .order_by(AtribucionMovimiento.ejecucion_atribucion_id.desc())
+        .order_by(col(AtribucionMovimiento.ejecucion_atribucion_id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -360,8 +365,8 @@ def de_cuenta(
     filas = (
         s.exec(
             _resultados().where(
-                AtribucionMovimiento.movimiento_id.in_(ids),
-                AtribucionMovimiento.ejecucion_atribucion_id.in_(actuales),
+                col(AtribucionMovimiento.movimiento_id).in_(ids),
+                col(AtribucionMovimiento.ejecucion_atribucion_id).in_(actuales),
             )
         ).all()
         if ids and actuales

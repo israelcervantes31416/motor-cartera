@@ -39,6 +39,7 @@ from motor_cartera.api.geografia import corte_de
 from motor_cartera.api.gestiones import cuenta_de
 from motor_cartera.api.operacional import SIN_CLAVE
 from motor_cartera.config import Config
+from motor_cartera.geografia.reglas import EstadoGeografia as EstadoDeLaCuenta
 from motor_cartera.territorial_v2 import consultas
 from motor_cartera.territorial_v2 import ejecuciones as motor
 from motor_cartera.territorial_v2.consultas import (
@@ -46,7 +47,7 @@ from motor_cartera.territorial_v2.consultas import (
     EjecucionVista,
     TerritorialV2NoEncontrado,
 )
-from motor_cartera.territorial_v2.politica import POLITICAS
+from motor_cartera.territorial_v2.politica import POLITICAS, EstadoAsignacion
 
 router = APIRouter(tags=["territorial-v2"])
 
@@ -257,13 +258,13 @@ def _asignacion(v: AsignacionVista) -> AsignacionV2Respuesta:
     return AsignacionV2Respuesta(
         cuenta_id=v.cuenta_id,
         cliente_unico=v.cliente_unico,
-        estado_asignacion=a.estado_asignacion,
-        estado_geografia=v.estado_geografia,
+        estado_asignacion=EstadoAsignacion(a.estado_asignacion),
+        estado_geografia=EstadoDeLaCuenta(v.estado_geografia),
         municipio=None
-        if v.cvegeo is None
+        if v.cvegeo is None or v.nombre_oficial is None
         else MunicipioRespuesta(cvegeo=v.cvegeo, nombre_oficial=v.nombre_oficial),
         base=None
-        if v.base_id is None
+        if v.base_id is None or v.codigo_base is None or v.nombre_base is None
         else BaseAsignadaRespuesta(base_id=v.base_id, codigo=v.codigo_base, nombre=v.nombre_base),
         distancia_base_m=a.distancia_base_m,
         motivos=a.motivos,

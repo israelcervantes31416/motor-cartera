@@ -39,6 +39,12 @@ from motor_cartera.motor_pagos.consultas import (
     ResultadoVisto,
 )
 from motor_cartera.motor_pagos.contexto import ContextoTemporal
+from motor_cartera.motor_pagos.reglas import (
+    Clasificacion,
+    EstadoConciliacion,
+    SignoEconomico,
+    TipoMovimiento,
+)
 
 router = APIRouter(tags=["motor-pagos"])
 
@@ -229,8 +235,8 @@ def resultado_respuesta(visto: ResultadoVisto) -> ResultadoPagoRespuesta:
         cliente_unico=p.cliente_unico,
         fecha_recepcion=p.fecha_recepcion,
         recuperacion_por_gestion=p.recuperacion_por_gestion,
-        clasificacion=r.clasificacion,
-        estado_conciliacion=r.estado_conciliacion,
+        clasificacion=Clasificacion(r.clasificacion),
+        estado_conciliacion=EstadoConciliacion(r.estado_conciliacion),
         movimiento_id=visto.movimiento_id,
         movimiento_relacionado_id=r.movimiento_relacionado_id,
         firma_exacta=r.firma_exacta.hex(),
@@ -251,13 +257,13 @@ def movimiento_respuesta(visto: MovimientoVisto) -> MovimientoRespuesta:
         motor_pagos_run_id=visto.motor_pagos_run_id,
         periodo=f"{visto.periodo_desde:%Y-%m}",
         vigente=visto.vigente,
-        tipo_movimiento=m.tipo_movimiento,
-        signo_economico=m.signo_economico,
+        tipo_movimiento=TipoMovimiento(m.tipo_movimiento),
+        signo_economico=SignoEconomico(m.signo_economico),
         monto_reportado=m.monto_reportado,
         fecha_recepcion=m.fecha_recepcion,
         cliente_unico=m.cliente_unico,
         cuenta_id=visto.cuenta_id,
-        estado_conciliacion=m.estado_conciliacion,
+        estado_conciliacion=EstadoConciliacion(m.estado_conciliacion),
         observaciones=m.observaciones,
         movimiento_original_id=m.movimiento_original_id,
         anulado_por_movimiento_id=m.anulado_por_movimiento_id,

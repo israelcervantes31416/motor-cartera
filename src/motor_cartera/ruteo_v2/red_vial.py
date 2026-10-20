@@ -34,7 +34,7 @@ from datetime import date
 from pathlib import Path
 
 from sqlalchemy import update
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import EstadoVersionRedVial, VersionRedVial, ahora
 from motor_cartera.ruteo_v2.politica import canonico
@@ -493,8 +493,8 @@ def registrar(s: Session, directorio: Path) -> Registro:
     s.execute(
         update(VersionRedVial)
         .where(
-            VersionRedVial.id == version.id,
-            VersionRedVial.estado == EstadoVersionRedVial.EN_PROCESO,
+            col(VersionRedVial.id) == version.id,
+            col(VersionRedVial.estado) == EstadoVersionRedVial.EN_PROCESO,
         )
         .values(
             estado=EstadoVersionRedVial.PUBLICADA,
@@ -520,8 +520,8 @@ def fallar(s: Session, version: VersionRedVial, motivo: str) -> None:
     s.execute(
         update(VersionRedVial)
         .where(
-            VersionRedVial.id == version.id,
-            VersionRedVial.estado == EstadoVersionRedVial.EN_PROCESO,
+            col(VersionRedVial.id) == version.id,
+            col(VersionRedVial.estado) == EstadoVersionRedVial.EN_PROCESO,
         )
         .values(estado=EstadoVersionRedVial.FALLIDA, detalle=motivo[:500])
         .execution_options(synchronize_session=False)

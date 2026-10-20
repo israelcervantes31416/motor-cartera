@@ -18,6 +18,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -118,6 +119,7 @@ from motor_cartera.db.modelos import (
     EjecucionDecisionV2,
     EjecucionOptimizacion,
     EjecucionScoringPredictivo,
+    id_de,
 )
 from motor_cartera.geografia import consultas as geografia
 from motor_cartera.geografia.reglas import comparacion
@@ -423,7 +425,7 @@ def resumen(
     resuelto = _compatible(s, _contexto(entrada))
     a = resuelto.ejecucion(Tipo.ANALYTICS)
     bloque_analytics = _fuente(a)
-    if bloque_analytics["estado_fuente"] == EstadoFuente.DISPONIBLE:
+    if a is not None and bloque_analytics["estado_fuente"] == EstadoFuente.DISPONIBLE:
         ejecucion = s.get_one(EjecucionAnalytics, a.id)
         bloque_analytics.update(
             as_of=ejecucion.as_of,
@@ -445,7 +447,7 @@ def resumen(
         )
     d = resuelto.ejecucion(Tipo.DECISION_V2)
     bloque_decision = _fuente(d)
-    if bloque_decision["estado_fuente"] == EstadoFuente.DISPONIBLE:
+    if d is not None and bloque_decision["estado_fuente"] == EstadoFuente.DISPONIBLE:
         ejecucion = s.get_one(EjecucionDecisionV2, d.id)
         bloque_decision.update(
             as_of=ejecucion.as_of,
@@ -459,7 +461,7 @@ def resumen(
     bloque_predictivo = _fuente(p)
     if p is not None:
         bloque_predictivo.update(modelo_version_id=p.lee["MODELO"], version_modelo=p.version_motor)
-    if bloque_predictivo["estado_fuente"] == EstadoFuente.DISPONIBLE:
+    if p is not None and bloque_predictivo["estado_fuente"] == EstadoFuente.DISPONIBLE:
         ejecucion = s.get_one(EjecucionScoringPredictivo, p.id)
         bloque_predictivo.update(
             as_of=ejecucion.as_of,
@@ -487,14 +489,14 @@ def resumen(
             )
     c = resuelto.ejecucion(Tipo.CAMPO_V2)
     bloque_campo = _fuente(c)
-    if bloque_campo["estado_fuente"] == EstadoFuente.DISPONIBLE:
+    if c is not None and bloque_campo["estado_fuente"] == EstadoFuente.DISPONIBLE:
         plan = api_campo_v2.plan_respuesta(campo_v2.obtener(s, c.run_id))
         bloque_campo.update(
             fecha_operacion=plan.fecha_operacion, conteos=plan.conteos, capacidad=plan.capacidad
         )
     r = resuelto.ejecucion(Tipo.RUTEO_V2)
     bloque_ruteo = _fuente(r)
-    if bloque_ruteo["estado_fuente"] == EstadoFuente.DISPONIBLE:
+    if r is not None and bloque_ruteo["estado_fuente"] == EstadoFuente.DISPONIBLE:
         ruteado = api_ruteo_v2.ejecucion_respuesta(ruteo_v2.obtener(s, r.run_id))
         bloque_ruteo.update(
             fecha_operacion=ruteado.fecha_operacion,
@@ -690,7 +692,7 @@ def cuenta(
 def _decision_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
     e = resuelto.ejecucion(Tipo.DECISION_V2)
     estado, run_id = _seccion(e)
-    if estado != EstadoSeccion.DISPONIBLE:
+    if e is None or estado != EstadoSeccion.DISPONIBLE:
         return DecisionDeCuentaSeccion(estado=estado, run_id=run_id)
     fila = s.execute(
         text(
@@ -729,7 +731,9 @@ def _geografia_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica
     territorial_id = _interno(
         s, "ejecucion_territorial_v2", "territorial_run_id", territorial_run_id
     )
-    asignada = territorial_v2.de_ejecucion(s, cuenta, territorial_id)
+    asignada = (
+        None if territorial_id is None else territorial_v2.de_ejecucion(s, cuenta, territorial_id)
+    )
     if asignada is None:
         return GeografiaDeCuentaSeccion(
             estado=EstadoSeccion.SIN_RESULTADO,
@@ -760,7 +764,7 @@ def _geografia_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica
 def _campo_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
     e = resuelto.ejecucion(Tipo.CAMPO_V2)
     estado, run_id = _seccion(e)
-    if estado != EstadoSeccion.DISPONIBLE:
+    if e is None or estado != EstadoSeccion.DISPONIBLE:
         return CampoDeCuentaSeccion(estado=estado, run_id=run_id)
     h = campo_v2.de_plan(s, cuenta, e.id)
     if h is None:
@@ -809,7 +813,7 @@ def _campo_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
 def _ruteo_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
     e = resuelto.ejecucion(Tipo.RUTEO_V2)
     estado, run_id = _seccion(e)
-    if estado != EstadoSeccion.DISPONIBLE:
+    if e is None or estado != EstadoSeccion.DISPONIBLE:
         return RuteoDeCuentaSeccion(estado=estado, run_id=run_id)
     h = ruteo_v2.de_ejecucion(s, cuenta, e.id)
     if h is None:
@@ -831,9 +835,9 @@ def _ruteo_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
 def _prediccion_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
     e = resuelto.ejecucion(Tipo.SCORING)
     estado, run_id = _seccion(e)
-    if estado != EstadoSeccion.DISPONIBLE:
+    if e is None or estado != EstadoSeccion.DISPONIBLE:
         return PredictivoDeCuentaSeccion(estado=estado, run_id=run_id)
-    vista = predictivo.de_scoring(s, s.get_one(EjecucionScoringPredictivo, e.id), cuenta.id)
+    vista = predictivo.de_scoring(s, s.get_one(EjecucionScoringPredictivo, e.id), id_de(cuenta))
     if vista is None:
         return PredictivoDeCuentaSeccion(estado=EstadoSeccion.SIN_RESULTADO, run_id=run_id)
     return PredictivoDeCuentaSeccion(
@@ -844,11 +848,13 @@ def _prediccion_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonic
 def _optimizacion_de(s: Session, resuelto: ContextoResuelto, cuenta: CuentaCanonica):
     e = resuelto.ejecucion(Tipo.OPTIMIZACION)
     estado, run_id = _seccion(e)
-    if estado != EstadoSeccion.DISPONIBLE:
+    if e is None or estado != EstadoSeccion.DISPONIBLE:
         return OptimizacionDeCuentaSeccion(
             estado=estado, run_id=run_id, fecha_operacion=None if e is None else e.fecha_operacion
         )
-    vista = optimizacion.resultado_de_cuenta(s, s.get_one(EjecucionOptimizacion, e.id), cuenta.id)
+    vista = optimizacion.resultado_de_cuenta(
+        s, s.get_one(EjecucionOptimizacion, e.id), id_de(cuenta)
+    )
     if vista is None:
         return OptimizacionDeCuentaSeccion(
             estado=EstadoSeccion.SIN_RESULTADO, run_id=run_id, fecha_operacion=e.fecha_operacion
@@ -881,7 +887,7 @@ def decision_de_cuenta(
     cuenta_id: UUID,
     decision_run_id: Annotated[UUID, Query(description="La decision/v2 del contexto.")],
     s: SesionDeLectura,
-) -> DecisionV2DeCuentaApp:
+) -> BaseModel:
     respuesta = api_decisiones_v2.decision_de_cuenta(decision_run_id, cuenta_id, s)
     return sin_personales(DecisionV2DeCuentaApp, respuesta)
 
@@ -897,7 +903,7 @@ def decision_de_cuenta(
 )
 def historia_de_cuenta(
     cuenta_id: UUID, parametros: Annotated[ParametrosHistoria, Query()], s: SesionDeLectura
-) -> PaginaHistoriaApp:
+) -> BaseModel:
     return sin_personales(PaginaHistoriaApp, api_cuentas.historia(cuenta_id, parametros, s))
 
 
@@ -916,7 +922,7 @@ def linea_de_tiempo(
     request: Request,
     parametros: Annotated[ParametrosLifecycle, Query()],
     s: SesionDeLectura,
-) -> PaginaLifecycleApp:
+) -> BaseModel:
     pagina = api_lifecycle.linea_de_tiempo(cuenta_id, request, parametros, s)
     return sin_personales(PaginaLifecycleApp, pagina)
 
@@ -989,7 +995,7 @@ def gestiones_de_cuenta(
 )
 def paradas_de_ruta(
     ruta_id: UUID, parametros: Annotated[Paginacion, Query()], s: SesionDeLectura
-) -> PaginaParadasApp:
+) -> BaseModel:
     return sin_personales(PaginaParadasApp, api_ruteo_v2.paradas_de_ruta(ruta_id, parametros, s))
 
 

@@ -15,7 +15,7 @@ convenio o una cancelacion):
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import Header, Response
 
@@ -23,6 +23,7 @@ from motor_cartera.api.errores import DetalleError, ErrorDeApi
 from motor_cartera.api.esquemas_lifecycle import (
     ConvenioRespuesta,
     CuotaRespuesta,
+    EstadoDeEvaluacion,
     EvaluacionDePromesaRespuesta,
     EventoLifecycleRespuesta,
     GestionRespuesta,
@@ -176,7 +177,8 @@ def evaluacion_respuesta(vista: EvaluacionVista) -> EvaluacionDePromesaRespuesta
         evaluacion_run_id=ejecucion.evaluacion_run_id,
         version_evaluacion=ejecucion.version_evaluacion,
         as_of=ejecucion.as_of,
-        estado=e.estado,
+        # La base guarda el texto; pydantic lo valida contra el literal al construir.
+        estado=cast(EstadoDeEvaluacion, e.estado),
         monto_observado=e.monto_observado,
         movimientos_compatibles=e.movimientos_compatibles,
         primer_movimiento_en=e.primer_movimiento_en,

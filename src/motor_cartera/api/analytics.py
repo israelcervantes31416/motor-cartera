@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from motor_cartera.analytics import consultas, manifiesto
 from motor_cartera.analytics import ejecuciones as motor
+from motor_cartera.analytics.catalogo import Conjunto, Vista
 from motor_cartera.analytics.consultas import EjecucionVista, FiltrosAgregados
 from motor_cartera.api.dependencias import Sesion, SesionDeLectura
 from motor_cartera.api.errores import ErrorDeApi, errores
@@ -31,6 +32,7 @@ from motor_cartera.api.esquemas_analytics import (
     EntradaDeAnalyticsRespuesta,
     EtapaEmbudoAnalytics,
     IndicadorAnalyticsRespuesta,
+    MetricaAnalyticsRespuesta,
     PaginaAgregadosAnalytics,
     PaginaEjecucionesAnalytics,
     ParametrosAgregadosAnalytics,
@@ -106,10 +108,16 @@ def catalogo() -> CatalogoAnalyticsRespuesta:
         politicas=datos["politicas"],
         conjuntos=datos["conjuntos"],
         metricas=[
-            {
-                **{k: v for k, v in m.items() if k not in ("fuentes", "conjuntos", "componentes")},
-                "fuentes_requeridas": m["fuentes"],
-            }
+            MetricaAnalyticsRespuesta.model_validate(
+                {
+                    **{
+                        k: v
+                        for k, v in m.items()
+                        if k not in ("fuentes", "conjuntos", "componentes")
+                    },
+                    "fuentes_requeridas": m["fuentes"],
+                }
+            )
             for m in datos["metricas"]
         ],
     )
@@ -270,8 +278,8 @@ def agregados(
         elementos=[
             AgregadoAnalyticsRespuesta(
                 metrica=a.metrica_codigo,
-                vista=a.vista,
-                dimension_set=a.dimension_set,
+                vista=Vista(a.vista),
+                dimension_set=Conjunto(a.dimension_set),
                 periodo_desde=a.periodo_desde,
                 periodo_hasta=a.periodo_hasta,
                 periodo_parcial=a.periodo_parcial,

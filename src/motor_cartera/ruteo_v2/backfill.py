@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
@@ -40,7 +40,9 @@ def revisar(s: Session, red: VersionRedVial, fecha_operacion: date | None = None
     if fecha_operacion is not None:
         consulta = consulta.where(EjecucionCampoV2.fecha_operacion == fecha_operacion)
     revision = Revision()
-    for plan in s.exec(consulta.order_by(EjecucionCampoV2.fecha_operacion, EjecucionCampoV2.id)):
+    for plan in s.exec(
+        consulta.order_by(col(EjecucionCampoV2.fecha_operacion), col(EjecucionCampoV2.id))
+    ):
         e = ejecuciones.entradas(s, plan.campo_run_id, red.red_vial_version_id)
         estados = set(
             s.exec(

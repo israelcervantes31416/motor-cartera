@@ -42,7 +42,7 @@ import tempfile
 import unicodedata
 import zipfile
 from array import array
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import cache
@@ -53,7 +53,7 @@ from uuid import UUID
 import shapefile
 from sqlalchemy import create_engine, text, update
 from sqlalchemy.pool import NullPool
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.copia import copiar
 from motor_cartera.db.modelos import (
@@ -61,9 +61,11 @@ from motor_cartera.db.modelos import (
     NivelGeografia,
     VersionGeografia,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import crear_motor
+from motor_cartera.db.sesion import crear_motor, filas_afectadas
 from motor_cartera.geografia import crs as sistemas
+from motor_cartera.invariantes import presente
 
 log = logging.getLogger(__name__)
 
@@ -322,7 +324,7 @@ def validar_estructura(lector: shapefile.Reader, nombre: str) -> dict[str, str]:
 # --- WKB ------------------------------------------------------------------------------------------
 
 
-def wkb_multipoligono(geometria: dict) -> bytes:
+def wkb_multipoligono(geometria: Mapping[str, Any]) -> bytes:
     """El WKB (little endian) de un Polygon o un MultiPolygon de GeoJSON, como MultiPolygon. Los
     anillos van tal como los organizo pyshp: exterior primero y sus huecos despues."""
     if geometria["type"] == "Polygon":
@@ -443,7 +445,7 @@ def _importar(
             _cerrar_interrumpida(s, sha256, capa.nombre)
             version = _registrar(s, ruta, sha256, tamano, capa, conocida, metadatos)
             s.commit()
-            version_id, publico = version.id, version.geografia_version_id
+            version_id, publico = id_de(version), version.geografia_version_id
             try:
                 _publicar(s, version_id, capa, lector, campos, conocida)
                 s.commit()
@@ -486,9 +488,9 @@ def _cerrar_interrumpida(s: Session, sha256: str, capa: str) -> None:
     s.execute(
         update(VersionGeografia)
         .where(
-            VersionGeografia.sha256 == sha256,
-            VersionGeografia.capa == capa,
-            VersionGeografia.estado == EstadoVersionGeografia.EN_PROCESO,
+            col(VersionGeografia.sha256) == sha256,
+            col(VersionGeografia.capa) == capa,
+            col(VersionGeografia.estado) == EstadoVersionGeografia.EN_PROCESO,
         )
         .values(
             estado=EstadoVersionGeografia.FALLIDA,
@@ -536,9 +538,10 @@ def _registrar(
         nivel = NivelGeografia(datos["nivel"])
         adicionales = {"referencia": conocida.clave, **datos}
     else:
-        proveedor, producto, edicion = metadatos.proveedor, metadatos.producto, metadatos.edicion
-        nivel = metadatos.nivel
-        adicionales = dict(metadatos.adicionales)
+        declarados = presente(metadatos, "los metadatos de una referencia que no es del manifiesto")
+        proveedor, producto, edicion = declarados.proveedor, declarados.producto, declarados.edicion
+        nivel = declarados.nivel
+        adicionales = dict(declarados.adicionales)
     versiones = versiones_espaciales(s)
     version = VersionGeografia(
         proveedor=proveedor,
@@ -604,15 +607,17 @@ def _publicar(
     reparaciones = _reparar(s, capa.nombre)
     envolvente = _comprobar_envolvente(s, capa.nombre, conocida)
     _punto_de_falla(ANTES_DE_PUBLICAR)
-    municipios = s.execute(
-        text(
-            "INSERT INTO municipio_geografico (version_geografia_id, registro_origen, cve_ent, "
-            "cve_mun, cvegeo, nombre_oficial, reparada, geometria) SELECT :version, registro, "
-            "cve_ent, cve_mun, cvegeo, nombre, reparada, ST_Multi(geometria) FROM geo_normalizada "
-            "ORDER BY cvegeo"
-        ),
-        {"version": version_id},
-    ).rowcount
+    municipios = filas_afectadas(
+        s.execute(
+            text(
+                "INSERT INTO municipio_geografico (version_geografia_id, registro_origen, "
+                "cve_ent, cve_mun, cvegeo, nombre_oficial, reparada, geometria) SELECT :version, "
+                "registro, cve_ent, cve_mun, cvegeo, nombre, reparada, ST_Multi(geometria) "
+                "FROM geo_normalizada ORDER BY cvegeo"
+            ),
+            {"version": version_id},
+        )
+    )
     _punto_de_falla(DESPUES_DE_LOS_MUNICIPIOS)
     version.estado = EstadoVersionGeografia.PUBLICADA
     version.municipios = municipios
@@ -645,8 +650,9 @@ def _publicar(
 
 def _filas(lector: shapefile.Reader, campos: dict[str, str], nombre: str) -> Iterator[tuple]:
     for numero, par in enumerate(lector.iterShapeRecords(), start=1):
-        forma, registro = par.shape, par.record
-        if forma.shapeType == shapefile.NULL or not forma.points:
+        forma = par.shape
+        registro = presente(par.record, f"el registro {numero} de la capa {nombre}")
+        if forma is None or forma.shapeType == shapefile.NULL or not forma.points:
             raise ImportacionRechazada(
                 f"El registro {numero} de la capa {nombre} no trae geometria."
             )
@@ -774,8 +780,8 @@ def _fallar(s: Session, version_id: int, motivo: str) -> None:
     s.execute(
         update(VersionGeografia)
         .where(
-            VersionGeografia.id == version_id,
-            VersionGeografia.estado == EstadoVersionGeografia.EN_PROCESO,
+            col(VersionGeografia.id) == version_id,
+            col(VersionGeografia.estado) == EstadoVersionGeografia.EN_PROCESO,
         )
         .values(estado=EstadoVersionGeografia.FALLIDA, terminada_en=ahora(), detalle=motivo[:2000])
         .execution_options(synchronize_session=False)

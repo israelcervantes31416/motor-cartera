@@ -18,7 +18,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, Request, Response
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 
 from motor_cartera.api.dependencias import Sesion
 from motor_cartera.api.errores import ErrorDeApi, errores
@@ -46,6 +46,8 @@ from motor_cartera.db.modelos import (
     ResultadoTerritorial,
     RutaTerritorial,
 )
+from motor_cartera.db.sesion import seleccionar
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion.flujo import FlujoDetenido, FlujoEnProceso, encolar_ruteo
 from motor_cartera.ruteo.ejecuciones import (
     VERSION_DECISION_COMPATIBLE,
@@ -275,7 +277,7 @@ def listar_ejecuciones_ruteo(
         select(EjecucionRuteo)
         .where(de_la_territorial)
         # El id solo desempata dos ejecuciones iniciadas en el mismo instante; no sale de la base.
-        .order_by(EjecucionRuteo.iniciada_en.desc(), EjecucionRuteo.id.desc())
+        .order_by(col(EjecucionRuteo.iniciada_en).desc(), col(EjecucionRuteo.id).desc())
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -351,26 +353,26 @@ def listar_rutas(
     # Una sola consulta por pagina, con la clave y el lugar del municipio por JOIN. Una ejecucion
     # EXITOSA ya no cambia, asi que OFFSET no salta ni repite rutas entre una pagina y otra.
     rutas = s.exec(
-        select(
-            ResultadoTerritorial.cve_entidad,
-            ResultadoTerritorial.cve_municipio,
-            ResultadoTerritorial.posicion_campo,
-            ResultadoTerritorial.cuentas_campo,
-            RutaTerritorial.paradas,
-            RutaTerritorial.distancia_inicial_m,
-            RutaTerritorial.distancia_total_m,
-            RutaTerritorial.distancia_regreso_deposito_m,
-            RutaTerritorial.mejora_2opt_m,
+        seleccionar(
+            col(ResultadoTerritorial.cve_entidad),
+            col(ResultadoTerritorial.cve_municipio),
+            col(ResultadoTerritorial.posicion_campo),
+            col(ResultadoTerritorial.cuentas_campo),
+            col(RutaTerritorial.paradas),
+            col(RutaTerritorial.distancia_inicial_m),
+            col(RutaTerritorial.distancia_total_m),
+            col(RutaTerritorial.distancia_regreso_deposito_m),
+            col(RutaTerritorial.mejora_2opt_m),
         )
         .select_from(RutaTerritorial)
         .join(
             ResultadoTerritorial,
-            RutaTerritorial.resultado_territorial_id == ResultadoTerritorial.id,
+            col(RutaTerritorial.resultado_territorial_id) == ResultadoTerritorial.id,
         )
         .where(de_la_ejecucion)
         # El lugar es unico en la ejecucion territorial; la clave solo hace el orden total.
         .order_by(
-            ResultadoTerritorial.posicion_campo,
+            col(ResultadoTerritorial.posicion_campo),
             ResultadoTerritorial.cve_entidad,
             ResultadoTerritorial.cve_municipio,
         )
@@ -445,7 +447,7 @@ def listar_paradas(
         .select_from(RutaTerritorial)
         .join(
             ResultadoTerritorial,
-            RutaTerritorial.resultado_territorial_id == ResultadoTerritorial.id,
+            col(RutaTerritorial.resultado_territorial_id) == ResultadoTerritorial.id,
         )
         .where(
             RutaTerritorial.ejecucion_ruteo_id == ejecucion.id,
@@ -467,18 +469,18 @@ def listar_paradas(
     total = s.exec(select(func.count()).select_from(ParadaRuta).where(de_la_ruta)).one()
     # Una sola consulta por pagina, con el cliente por JOIN: ni la parada ni la ruta lo copian.
     paradas = s.exec(
-        select(
-            ParadaRuta.secuencia,
-            Cuenta.cliente_unico,
-            ParadaRuta.x_m,
-            ParadaRuta.y_m,
-            ParadaRuta.distancia_desde_anterior_m,
+        seleccionar(
+            col(ParadaRuta.secuencia),
+            col(Cuenta.cliente_unico),
+            col(ParadaRuta.x_m),
+            col(ParadaRuta.y_m),
+            col(ParadaRuta.distancia_desde_anterior_m),
         )
         .select_from(ParadaRuta)
-        .join(DecisionCuenta, ParadaRuta.decision_cuenta_id == DecisionCuenta.id)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(DecisionCuenta, col(ParadaRuta.decision_cuenta_id) == DecisionCuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(de_la_ruta)
-        .order_by(ParadaRuta.secuencia)
+        .order_by(col(ParadaRuta.secuencia))
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -502,8 +504,11 @@ def _buscar_territorial(s: Session, territorial_run_id: UUID) -> tuple[int, UUID
     fila = s.exec(
         select(EjecucionTerritorial.id, EjecucionDecision.decision_run_id, Corrida.run_id)
         .select_from(EjecucionTerritorial)
-        .join(EjecucionDecision, EjecucionTerritorial.ejecucion_decision_id == EjecucionDecision.id)
-        .join(Corrida, EjecucionDecision.corrida_id == Corrida.id)
+        .join(
+            EjecucionDecision,
+            col(EjecucionTerritorial.ejecucion_decision_id) == EjecucionDecision.id,
+        )
+        .join(Corrida, col(EjecucionDecision.corrida_id) == Corrida.id)
         .where(EjecucionTerritorial.territorial_run_id == territorial_run_id)
     ).first()
     if fila is None:
@@ -513,7 +518,7 @@ def _buscar_territorial(s: Session, territorial_run_id: UUID) -> tuple[int, UUID
             f"No existe una ejecucion territorial con territorial_run_id {territorial_run_id}.",
         )
     ejecucion_territorial_id, decision_run_id, run_id = fila
-    return ejecucion_territorial_id, decision_run_id, run_id
+    return presente(ejecucion_territorial_id, "su id"), decision_run_id, run_id
 
 
 def _buscar_ruteo(s: Session, ruteo_run_id: UUID) -> tuple[EjecucionRuteo, UUID, UUID, UUID]:
@@ -529,10 +534,14 @@ def _buscar_ruteo(s: Session, ruteo_run_id: UUID) -> tuple[EjecucionRuteo, UUID,
         )
         .select_from(EjecucionRuteo)
         .join(
-            EjecucionTerritorial, EjecucionRuteo.ejecucion_territorial_id == EjecucionTerritorial.id
+            EjecucionTerritorial,
+            col(EjecucionRuteo.ejecucion_territorial_id) == EjecucionTerritorial.id,
         )
-        .join(EjecucionDecision, EjecucionTerritorial.ejecucion_decision_id == EjecucionDecision.id)
-        .join(Corrida, EjecucionDecision.corrida_id == Corrida.id)
+        .join(
+            EjecucionDecision,
+            col(EjecucionTerritorial.ejecucion_decision_id) == EjecucionDecision.id,
+        )
+        .join(Corrida, col(EjecucionDecision.corrida_id) == Corrida.id)
         .where(EjecucionRuteo.ruteo_run_id == ruteo_run_id)
     ).first()
     if fila is None:

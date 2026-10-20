@@ -15,7 +15,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import func, text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     ComponenteModeloPredictivo,
@@ -83,7 +83,7 @@ def listar_entrenamientos(
     filas = s.exec(
         select(EjecucionEntrenamientoPredictivo)
         .where(*filtros)
-        .order_by(EjecucionEntrenamientoPredictivo.id.desc())
+        .order_by(col(EjecucionEntrenamientoPredictivo.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -138,7 +138,9 @@ def listar_modelos(
     filas = s.exec(
         select(VersionModeloPredictivo)
         .where(*filtros)
-        .order_by(VersionModeloPredictivo.creada_en.desc(), VersionModeloPredictivo.id.desc())
+        .order_by(
+            col(VersionModeloPredictivo.creada_en).desc(), col(VersionModeloPredictivo.id).desc()
+        )
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -200,7 +202,7 @@ def listar_scorings(
     filas = s.exec(
         select(EjecucionScoringPredictivo)
         .where(*filtros)
-        .order_by(EjecucionScoringPredictivo.id.desc())
+        .order_by(col(EjecucionScoringPredictivo.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -431,6 +433,6 @@ def drift(s: Session, ejecucion: EjecucionScoringPredictivo) -> list[DriftPredic
         s.exec(
             select(DriftPredictivo)
             .where(DriftPredictivo.ejecucion_scoring_predictivo_id == ejecucion.id)
-            .order_by(DriftPredictivo.tipo, DriftPredictivo.psi.desc(), DriftPredictivo.nombre)
+            .order_by(DriftPredictivo.tipo, col(DriftPredictivo.psi).desc(), DriftPredictivo.nombre)
         ).all()
     )

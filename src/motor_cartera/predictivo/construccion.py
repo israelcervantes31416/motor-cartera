@@ -19,8 +19,10 @@ Python por cuenta.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +35,7 @@ from sqlmodel import Session
 
 from motor_cartera.analytics import cobertura
 from motor_cartera.evaluacion.reglas import VERSION_EVALUACION
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
 from motor_cartera.predictivo import sql
 from motor_cartera.predictivo.features import CATEGORICAS, FEATURES, NUMERICAS, Tipo
@@ -98,7 +101,9 @@ class Disponibilidad:
                 if self.evaluacion_id is None
                 else {
                     "evaluacion_run_id": str(self.evaluacion_run_id),
-                    "as_of": self.evaluacion_as_of.isoformat(),
+                    "as_of": presente(
+                        self.evaluacion_as_of, "el as_of de la evaluacion de promesas"
+                    ).isoformat(),
                 }
             ),
         }
@@ -272,7 +277,7 @@ def copiar(s: Session, consulta: str) -> bytes:
     """El resultado de una consulta sin parametros, por COPY ... TO STDOUT en CSV con encabezado y
     NULO_COPY: ningun valor pasa por un objeto de Python por fila. Los bytes son deterministas para
     los mismos valores en el mismo orden: el hash del dataset los lee tal cual."""
-    conexion = s.connection().connection.driver_connection
+    conexion = presente(s.connection().connection.driver_connection, "la conexion de la sesion")
     partes: list[bytes] = []
     with conexion.cursor() as cursor:
         with cursor.copy(
@@ -312,7 +317,7 @@ def numericas(t: pa.Table) -> np.ndarray:
 
 def diccionario(columna: pa.ChunkedArray) -> tuple[np.ndarray, list[str]]:
     """Una columna de texto como (indices, valores): -1 es NULL."""
-    codificada = pc.dictionary_encode(columna.combine_chunks())
+    codificada = columna.combine_chunks().dictionary_encode()
     indices = pc.fill_null(codificada.indices, -1).to_numpy(zero_copy_only=False)
     return np.asarray(indices, dtype=np.int32), codificada.dictionary.to_pylist()
 
@@ -369,12 +374,14 @@ def filas(csv: bytes) -> Filas:
     )
 
 
-def arreglos_de_python(valores: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
+def arreglos_de_python(
+    valores: Mapping[str, Decimal | int | str | None],
+) -> tuple[np.ndarray, np.ndarray]:
     """Las features de una cuenta leidas como valores de Python (Decimal, int, str o None) como la
     entrada del runtime (1 x p y 1 x q): cada Decimal a float64 con el mismo redondeo correcto que
     el CSV de un scoring."""
     numericas_ = np.array(
-        [[np.nan if valores[f.nombre] is None else float(valores[f.nombre]) for f in NUMERICAS]],
+        [[np.nan if (v := valores[f.nombre]) is None else float(v) for f in NUMERICAS]],
         dtype=np.float64,
     )
     categoricas_ = np.empty((1, len(CATEGORICAS)), dtype=object)

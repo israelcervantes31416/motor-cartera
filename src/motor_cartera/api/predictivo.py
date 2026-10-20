@@ -48,8 +48,10 @@ from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     CorteCanonico,
     CuentaCanonica,
+    EstadoModeloPredictivo,
     EstadoScoringPredictivo,
     VersionModeloPredictivo,
+    id_de,
 )
 from motor_cartera.predictivo import consultas, entrenamiento, explicacion, manifiesto, scoring
 from motor_cartera.predictivo import features as features_
@@ -494,7 +496,7 @@ def predicciones_de_cuenta(
     if cuenta is None:
         raise ErrorDeApi(404, "CUENTA_NO_ENCONTRADA", f"No existe la cuenta {cuenta_id}.")
     total, filas = consultas.predicciones_de_cuenta(
-        s, cuenta.id, desplazamiento=parametros.desplazamiento, limite=parametros.por_pagina
+        s, id_de(cuenta), desplazamiento=parametros.desplazamiento, limite=parametros.por_pagina
     )
     return PaginaPrediccionesDeCuenta(
         cuenta_id=cuenta_id,
@@ -565,7 +567,7 @@ def entrenamiento_respuesta(v: consultas.EntrenamientoVista) -> EntrenamientoPre
         tiempos=e.tiempos,
         manifiesto=e.manifiesto,
         modelo_version_id=v.modelo_version_id,
-        estado_modelo=v.estado_modelo,
+        estado_modelo=None if v.estado_modelo is None else EstadoModeloPredictivo(v.estado_modelo),
         trabajo_id=v.trabajo_id,
         iniciada_en=e.iniciada_en,
         terminada_en=e.terminada_en,

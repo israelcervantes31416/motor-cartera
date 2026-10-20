@@ -8,6 +8,7 @@ estable, y nunca tiene que distinguir entre formatos de error.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
@@ -151,7 +152,7 @@ def registrar_manejadores(app: FastAPI) -> None:
 
 
 def _responder(
-    estado: int, respuesta: ErrorRespuesta, encabezados: dict[str, str] | None = None
+    estado: int, respuesta: ErrorRespuesta, encabezados: Mapping[str, str] | None = None
 ) -> JSONResponse:
     return JSONResponse(
         status_code=estado, content=respuesta.model_dump(mode="json"), headers=encabezados

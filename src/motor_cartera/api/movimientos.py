@@ -37,7 +37,7 @@ from motor_cartera.historia import cuenta360
 from motor_cartera.historia.cuenta360 import CuentaNoEncontrada, PagoVisto
 from motor_cartera.motor_pagos import consultas
 from motor_cartera.motor_pagos.consultas import MovimientoNoEncontrado, MovimientoVisto
-from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
+from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, Clasificacion
 
 router = APIRouter(prefix="/movimientos", tags=["movimientos"])
 
@@ -133,7 +133,7 @@ def obtener(
     r = detalle.representante
     return MovimientoDetalleRespuesta(
         **movimiento_respuesta(visto).model_dump(),
-        clasificacion=r.resultado.clasificacion,
+        clasificacion=Clasificacion(r.resultado.clasificacion),
         motivos=motivos_respuesta(r.resultado.motivos),
         representante=_observacion(r, detalle.original),
         contexto_temporal=(

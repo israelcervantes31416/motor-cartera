@@ -46,7 +46,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import config as config_del_entorno
 from motor_cartera.db.copia import copiar
@@ -62,10 +62,12 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionRedVial,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.geografia.ejecuciones import _traza
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 from motor_cartera.ruteo_v2 import politica as p
 from motor_cartera.ruteo_v2.politica import (
@@ -256,8 +258,8 @@ def abrir(
     if activa is not None:
         raise RuteoV2EnProceso(activa)
     ejecucion = EjecucionRuteoV2(
-        ejecucion_campo_v2_id=e.campo.id,
-        version_red_vial_id=e.red.id,
+        ejecucion_campo_v2_id=id_de(e.campo),
+        version_red_vial_id=id_de(e.red),
         fecha_operacion=e.campo.fecha_operacion,
         version_motor=VERSION_MOTOR,
         version_politica=e.politica.version,
@@ -277,7 +279,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.RUTEO_V2,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -422,7 +424,9 @@ def rutear(
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo)
         if resultado == ResultadoEjecucionRuteoV2.YA_GENERADO:
-            raise RuteoV2YaGenerado(_de_firma(s, firma, EstadoRuteoV2.EXITOSA))
+            raise RuteoV2YaGenerado(
+                presente(_de_firma(s, firma, EstadoRuteoV2.EXITOSA), "el ruteo que genero primero")
+            )
 
 
 @dataclass(frozen=True)
@@ -544,8 +548,8 @@ def _rutear(
     _vaciar(s, rutas_de_paso, paradas_de_paso, cronometro)
     _punto_de_falla(DESPUES_DEL_STAGING)
     with cronometro.fase("publicacion"):
-        rutas = s.execute(text(SQL_RUTAS), parametros).rowcount
-        publicadas = s.execute(text(SQL_PARADAS), parametros).rowcount
+        rutas = filas_afectadas(s.execute(text(SQL_RUTAS), parametros))
+        publicadas = filas_afectadas(s.execute(text(SQL_PARADAS), parametros))
     _punto_de_falla(DESPUES_DE_PARADAS)
     with cronometro.fase("conteos"):
         ajenas = s.execute(text(SQL_PARADAS_AJENAS), parametros).scalar_one()
@@ -967,7 +971,9 @@ def _contar(s: Session, ejecucion: EjecucionRuteoV2) -> tuple[dict[str, int], di
                 "WHERE ejecucion_ruteo_v2_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_parada = dict(
         s.execute(
@@ -976,7 +982,9 @@ def _contar(s: Session, ejecucion: EjecucionRuteoV2) -> tuple[dict[str, int], di
                 "WHERE ejecucion_ruteo_v2_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_motivo = dict(
         s.execute(
@@ -985,7 +993,9 @@ def _contar(s: Session, ejecucion: EjecucionRuteoV2) -> tuple[dict[str, int], di
                 ":ejecucion AND motivo IS NOT NULL GROUP BY 1 ORDER BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_prioridad = {
         prioridad: {"paradas": paradas_, "programadas": programadas, "sin_tiempo": sin_tiempo}
@@ -1108,26 +1118,29 @@ def _fallar(
         s.rollback()
         log.warning("ruteo v2 %s: su trabajo ya no es de este worker: %s", etiqueta, resultado)
         raise
-    registrado = s.execute(
-        update(EjecucionRuteoV2)
-        .where(
-            EjecucionRuteoV2.id == ejecucion_id, EjecucionRuteoV2.estado == EstadoRuteoV2.EN_PROCESO
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionRuteoV2)
+            .where(
+                col(EjecucionRuteoV2.id) == ejecucion_id,
+                col(EjecucionRuteoV2.estado) == EstadoRuteoV2.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoRuteoV2.FALLIDA,
+                resultado=resultado.value,
+                detalle=motivo,
+                terminada_en=ahora(),
+                gestores_objetivo=0,
+                paradas_objetivo=0,
+                distancia_total_m=0,
+                duracion_vial_total_s=0,
+                duracion_servicio_total_s=0,
+                duracion_espera_total_s=0,
+                **dict.fromkeys((*CONTEOS_DE_RUTAS, *CONTEOS_DE_PARADAS), 0),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoRuteoV2.FALLIDA,
-            resultado=resultado.value,
-            detalle=motivo,
-            terminada_en=ahora(),
-            gestores_objetivo=0,
-            paradas_objetivo=0,
-            distancia_total_m=0,
-            duracion_vial_total_s=0,
-            duracion_servicio_total_s=0,
-            duracion_espera_total_s=0,
-            **dict.fromkeys((*CONTEOS_DE_RUTAS, *CONTEOS_DE_PARADAS), 0),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("ruteo v2 %s fallido (%s): %s", etiqueta, resultado.value, motivo)

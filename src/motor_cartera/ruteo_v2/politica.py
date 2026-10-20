@@ -40,6 +40,7 @@ from enum import StrEnum
 from uuid import UUID, uuid5
 
 from motor_cartera.campo_v2.politica import PRIORIDADES as PRIORIDADES_CAMPO
+from motor_cartera.invariantes import presente
 
 VERSION_MOTOR = "ruteo/v2"
 ALGORITMO = "PRIORITY_NEAREST_NEIGHBOR_2OPT/v1"
@@ -436,6 +437,16 @@ class RutaPlaneada:
 _INFINITO = float("inf")
 
 
+def _nodo(p: ParadaEntrada) -> int:
+    """El punto de una parada enrutable en la matriz: _con_base ya verifico que lo tiene."""
+    return presente(p.nodo, "el punto de una parada enrutable")
+
+
+def _programado(valor: int | None) -> int:
+    """Una medida de una parada PROGRAMADA: la simulacion se las da todas."""
+    return presente(valor, "una medida de una parada PROGRAMADA")
+
+
 @dataclass(frozen=True)
 class _Paso:
     """Una parada en la simulacion: cuando sale hacia ella, cuando llega y su servicio."""
@@ -549,13 +560,13 @@ def _construir(
         while pendientes:
 
             def cercania(p: ParadaEntrada, desde: int = actual) -> tuple[float, UUID]:
-                d = duracion[desde][p.nodo]
+                d = duracion[desde][_nodo(p)]
                 return (_INFINITO if d is None else d, p.clave)
 
             pendientes.sort(key=cercania)
             elegido = None
             for candidata in pendientes:
-                resultado = _anexar(actual, libre, candidata.nodo, duracion, ventanas, servicio)
+                resultado = _anexar(actual, libre, _nodo(candidata), duracion, ventanas, servicio)
                 if resultado is not None:
                     elegido = candidata, resultado[0]
                     break
@@ -564,7 +575,7 @@ def _construir(
             candidata, paso = elegido
             secuencia.append(candidata)
             pendientes.remove(candidata)
-            libre, actual = paso.fin, candidata.nodo
+            libre, actual = paso.fin, _nodo(candidata)
         if pendientes:
             fuera.update({p.clave: MotivoParada.JORNADA_AGOTADA for p in pendientes})
             bloqueado = True
@@ -598,7 +609,7 @@ def _dos_opt(
     for desde, hasta in _segmentos(secuencia):
         mejoras = 0
         while mejoras < max_mejoras and hasta - desde >= 1:
-            nodos = [0, *(p.nodo for p in secuencia), 0]
+            nodos = [0, *(_nodo(p) for p in secuencia), 0]
             adelante = [0.0]
             atras = [0.0]
             for u in range(len(nodos) - 1):
@@ -614,11 +625,9 @@ def _dos_opt(
                     sale = duracion[nodos[i]][nodos[j + 1]]
                     if entra is None or sale is None:
                         continue
-                    antes = (
-                        duracion[nodos[i - 1]][nodos[i]]
-                        + (adelante[j] - adelante[i])
-                        + duracion[nodos[j]][nodos[j + 1]]
-                    )
+                    # El traslado de hoy de i - 1 a j + 1, por la secuencia: sus tramos tienen
+                    # camino, porque la secuencia ya cabe.
+                    antes = adelante[j + 1] - adelante[i - 1]
                     despues = entra + (atras[j] - atras[i]) + sale
                     delta = despues - antes
                     if delta < 0:
@@ -627,7 +636,10 @@ def _dos_opt(
             aceptado = False
             for _delta, i, j in candidatos:
                 propuesta = [*secuencia[: i - 1], *reversed(secuencia[i - 1 : j]), *secuencia[j:]]
-                if _simular([p.nodo for p in propuesta], duracion, ventanas, servicio) is not None:
+                if (
+                    _simular([_nodo(p) for p in propuesta], duracion, ventanas, servicio)
+                    is not None
+                ):
                     secuencia = propuesta
                     aceptado = True
                     break
@@ -690,7 +702,8 @@ def planear(
             jornada,
             con_snap=True,
         )
-    return _con_base(ordenadas, jornada, base_snap_cm, matriz, politica, _fases(medidor))
+    base = presente(base_snap_cm, "el snap de una base enrutable")
+    return _con_base(ordenadas, jornada, base, matriz, politica, _fases(medidor))
 
 
 def _sin_ruta(
@@ -744,21 +757,22 @@ def _con_base(
         valido = motivo_de_snap(p.snap_cm, politica) is None
         if valido != (p.nodo is not None):
             raise ValueError("Una parada con snap valido tiene su punto en la matriz, y solo ella.")
-        if valido and not (0 < p.nodo < matriz.puntos):
+        # Con snap valido hay matriz (si no, ya se rechazo) y su punto (la linea anterior).
+        if matriz is not None and p.nodo is not None and not (0 < p.nodo < matriz.puntos):
             raise ValueError(f"El punto {p.nodo} no esta en la matriz.")
-    duracion = matriz.duracion if matriz is not None else ()
+    duracion: Sequence[Sequence[int | None]] = matriz.duracion if matriz is not None else []
     motivos: dict[UUID, MotivoParada] = {}
     enrutables: list[ParadaEntrada] = []
     for p in ordenadas:
         motivo = motivo_de_snap(p.snap_cm, politica)
-        if motivo is None and (duracion[0][p.nodo] is None or duracion[p.nodo][0] is None):
+        if motivo is None and (duracion[0][_nodo(p)] is None or duracion[_nodo(p)][0] is None):
             motivo = MotivoParada.RED_DESCONECTADA
         if motivo is not None:
             motivos[p.clave] = motivo
             continue
         enrutables.append(p)
     with fase("secuenciacion"):
-        cabe_sola = [p for p in enrutables if _simular([p.nodo], duracion, jornada, servicio)]
+        cabe_sola = [p for p in enrutables if _simular([_nodo(p)], duracion, jornada, servicio)]
         motivos.update(
             {p.clave: MotivoParada.EXCEDE_JORNADA for p in enrutables if p not in cabe_sola}
         )
@@ -776,13 +790,15 @@ def _con_base(
     distancia_regreso = duracion_regreso = espera_regreso = None
     if secuencia:
         with fase("simulacion_temporal"):
-            simulacion = _simular([p.nodo for p in secuencia], duracion, jornada, servicio)
+            simulacion = _simular([_nodo(p) for p in secuencia], duracion, jornada, servicio)
         if (
             simulacion is None
         ):  # pragma: no cover - la construccion y el 2-opt solo dejan lo que cabe
             raise AssertionError("La secuencia construida no cabe en su jornada.")
+        distancias = presente(matriz, "la matriz de una ruta con paradas").distancia
         previo = 0
         for orden, (p, paso) in enumerate(zip(secuencia, simulacion.pasos, strict=True), start=1):
+            nodo = _nodo(p)
             planeadas.append(
                 ParadaPlaneada(
                     p.clave,
@@ -795,15 +811,15 @@ def _con_base(
                     paso.llegada,
                     paso.inicio,
                     paso.fin,
-                    matriz.distancia[previo][p.nodo],
-                    duracion[previo][p.nodo],
+                    distancias[previo][nodo],
+                    duracion[previo][nodo],
                     paso.espera,
                 )
             )
-            previo = p.nodo
+            previo = nodo
         salida_base = simulacion.pasos[0].salida
         salida_regreso, regreso = simulacion.salida_regreso, simulacion.regreso
-        distancia_regreso = matriz.distancia[previo][0]
+        distancia_regreso = distancias[previo][0]
         duracion_regreso = duracion[previo][0]
         espera_regreso = simulacion.espera_regreso
     no_enrutables = MOTIVOS_DEL_ESTADO[EstadoParada.NO_ENRUTABLE]
@@ -847,11 +863,21 @@ def _ruta(
     salida_base, salida_regreso, regreso_base = instantes or (None, None, None)
     distancia_regreso, duracion_regreso, espera_regreso = regreso or (None, None, None)
     programadas = [p for p in paradas if p.estado == EstadoParada.PROGRAMADA]
-    distancia = sum(p.distancia_desde_anterior_m for p in programadas) + (distancia_regreso or 0)
-    traslado = sum(p.duracion_desde_anterior_s for p in programadas) + (duracion_regreso or 0)
-    espera = sum(p.espera_s for p in programadas) + (espera_regreso or 0)
-    servicio = sum(p.fin_servicio - p.inicio_servicio for p in programadas)
-    total = 0 if salida_base is None else regreso_base - salida_base
+    distancia = sum(_programado(p.distancia_desde_anterior_m) for p in programadas) + (
+        distancia_regreso or 0
+    )
+    traslado = sum(_programado(p.duracion_desde_anterior_s) for p in programadas) + (
+        duracion_regreso or 0
+    )
+    espera = sum(_programado(p.espera_s) for p in programadas) + (espera_regreso or 0)
+    servicio = sum(
+        _programado(p.fin_servicio) - _programado(p.inicio_servicio) for p in programadas
+    )
+    total = (
+        0
+        if salida_base is None
+        else presente(regreso_base, "el regreso de una ruta que salio") - salida_base
+    )
     if total != traslado + servicio + espera:  # pragma: no cover - una invariante de la simulacion
         raise AssertionError("La jornada no cuadra: total, traslado, servicio y espera.")
     sin_hash = RutaPlaneada(

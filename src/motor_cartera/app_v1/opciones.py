@@ -9,6 +9,8 @@ valida con las mismas reglas que un contexto declarado a mano.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+from typing import Final, Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -27,7 +29,7 @@ SUGERENCIAS = 6
 class Cartera:
     cartera_id: str
     cortes: int
-    ultimo_corte: object
+    ultimo_corte: date
 
 
 def carteras(s: Session, despacho_id: str) -> list[Cartera]:
@@ -62,7 +64,9 @@ def del_corte(s: Session, corte: Corte) -> dict[Tipo, tuple[int, list[Ejecucion]
                 "WHERE c.corte_canonico_id = :k"
             ),
             {"k": corte.id},
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     return {
         tipo: (totales[tipo.value], leer(s, tipo, corte_id=corte.id, limite=EJECUCIONES_POR_TIPO))
@@ -70,14 +74,15 @@ def del_corte(s: Session, corte: Corte) -> dict[Tipo, tuple[int, list[Ejecucion]
     }
 
 
-DESDE_OPTIMIZACION = "DESDE_OPTIMIZACION"
-DESDE_ANALYTICS = "DESDE_ANALYTICS"
+CodigoSugerencia = Literal["DESDE_OPTIMIZACION", "DESDE_ANALYTICS"]
+DESDE_OPTIMIZACION: Final = "DESDE_OPTIMIZACION"
+DESDE_ANALYTICS: Final = "DESDE_ANALYTICS"
 
 
 @dataclass(frozen=True)
 class Sugerencia:
     contexto: Contexto
-    codigo: str
+    codigo: CodigoSugerencia
     motivo: str
 
 
@@ -107,11 +112,12 @@ def sugerencias(corte: Corte, ejecuciones: dict[Tipo, list[Ejecucion]]) -> list[
     def compatible(base: dict[Tipo, UUID]) -> bool:
         contexto = contexto_de(base)
         presentes = {t: _por_id(ejecuciones, t, r) for t, r in contexto.declaradas().items()}
-        if any(e is None for e in presentes.values()):
+        encontradas = {t: e for t, e in presentes.items() if e is not None}
+        if len(encontradas) != len(presentes):
             return False
-        return not problemas(contexto, corte, presentes)
+        return not problemas(contexto, corte, encontradas)
 
-    candidatas: list[tuple[dict[Tipo, UUID], str, str]] = []
+    candidatas: list[tuple[dict[Tipo, UUID], CodigoSugerencia, str]] = []
     for optimizacion in exitosas(Tipo.OPTIMIZACION):
         base = cadena(optimizacion)
         for analytics in exitosas(Tipo.ANALYTICS):

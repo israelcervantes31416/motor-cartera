@@ -10,7 +10,7 @@ from fastapi import APIRouter, Query
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
 from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas import ParametrosResumen, ResumenCartera, SegmentoRespuesta
-from motor_cartera.db.modelos import EstadoCorrida
+from motor_cartera.db.modelos import EstadoCorrida, id_de
 from motor_cartera.ingesta.corridas import corrida_vigente
 from motor_cartera.segmentacion import resumir
 
@@ -64,13 +64,15 @@ def resumen(parametros: Annotated[ParametrosResumen, Query()], s: Sesion) -> Res
 
     resultado = resumir(
         s,
-        corrida.id,
+        id_de(corrida),
         parametros.por,
         producto=parametros.producto,
         canal=parametros.canal,
         desplazamiento=parametros.desplazamiento,
         limite=parametros.por_pagina,
     )
+    if corrida.fecha_corte is None:  # pragma: no cover - una corrida EXITOSA tiene su corte
+        raise AssertionError(f"La corrida EXITOSA {corrida.run_id} no tiene fecha de corte.")
     return ResumenCartera(
         run_id=corrida.run_id,
         fecha_corte=corrida.fecha_corte,

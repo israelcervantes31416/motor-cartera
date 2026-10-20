@@ -13,6 +13,8 @@ from collections.abc import Iterable, Sequence
 from psycopg.types.json import Jsonb
 from sqlmodel import Session
 
+from motor_cartera.invariantes import presente
+
 __all__ = ["Jsonb", "copiar", "copiar_csv"]
 
 
@@ -20,7 +22,7 @@ def copiar(s: Session, tabla: str, columnas: tuple[str, ...], filas: Iterable[tu
     """Copia `filas` a `tabla`, en la transaccion de `s`, y dice cuantas copio. Los textos se
     mandan como texto y PostgreSQL los convierte: un importe "1500.50" llega como NUMERIC, una
     fecha "2026-09-30" como DATE. Un valor JSONB va envuelto en Jsonb."""
-    conexion = s.connection().connection.driver_connection
+    conexion = presente(s.connection().connection.driver_connection, "la conexion de la sesion")
     copiadas = 0
     with conexion.cursor() as cursor:
         instruccion = f"COPY {tabla} ({', '.join(columnas)}) FROM STDIN"
@@ -35,7 +37,7 @@ def copiar_csv(s: Session, tabla: str, columnas: Sequence[str], bloques: Iterabl
     """Copia a `tabla`, en la transaccion de `s`, bloques de CSV ya escritos: cada fila con las
     `columnas` en su orden, un texto entre comillas y un vacio sin comillas como NULL. Es el COPY de
     la historia, cuyo CSV escribe Arrow por lotes, sin pasar fila por fila por Python."""
-    conexion = s.connection().connection.driver_connection
+    conexion = presente(s.connection().connection.driver_connection, "la conexion de la sesion")
     with conexion.cursor() as cursor:
         instruccion = f"COPY {tabla} ({', '.join(columnas)}) FROM STDIN (FORMAT csv)"
         with cursor.copy(instruccion) as copia:
