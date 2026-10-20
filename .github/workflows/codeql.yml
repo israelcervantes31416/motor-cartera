@@ -20,7 +20,7 @@ permissions:
 jobs:
   analisis:
     name: CodeQL (${{ matrix.lenguaje }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Subir los resultados a Code scanning es lo unico que escribe.
     permissions:
