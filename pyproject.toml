@@ -1,7 +1,7 @@
 [project]
 name = "motor-cartera"
-version = "0.18.0"
-description = "Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético determinista de cartera de crédito al consumo, con orquestación durable sobre PostgreSQL, un modelo histórico con Cuenta 360, un motor de pagos canónico con conciliación, el lifecycle de cobranza con atribución operativa y un Decision Engine v2 point-in-time y explicable, sobre datos sintéticos"
+version = "0.18.1"
+description = "Plataforma de inteligencia de cobranza (collection intelligence) sobre una cartera sintética: ingeniería de datos point-in-time, decisión explicable, analytics, modelos predictivos, optimización de capacidad y ruteo vial."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -43,6 +43,11 @@ dev = [
     "pandas-stubs>=3.0.5.260914",
     "scipy-stubs>=1.18.1.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/israelcervantes31416/motor-cartera"
+Documentation = "https://github.com/israelcervantes31416/motor-cartera/tree/main/docs"
+Changelog = "https://github.com/israelcervantes31416/motor-cartera/blob/main/CHANGELOG.md"
 
 [project.scripts]
 motor-cartera = "motor_cartera.cli:app"
