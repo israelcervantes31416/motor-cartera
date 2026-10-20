@@ -1,0 +1,49 @@
+name: CodeQL
+
+# El analisis estatico de CodeQL sobre el codigo de Python (src/, scripts/, tests/ y migraciones/) y
+# el de la app web (JavaScript y TypeScript), con las consultas de seguridad por omision. Corre en
+# cada pull request a main, en cada push a main y cada lunes; sus hallazgos quedan en Security >
+# Code scanning. Las acciones van fijadas por el SHA de su commit, con su version en un comentario
+# (una version de al menos 7 dias, como pide la politica de Dependabot), y el checkout deja la
+# credencial fuera del disco (scripts/verificar_cadena_de_suministro.py lo revisa).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analisis:
+    name: CodeQL (${{ matrix.lenguaje }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Subir los resultados a Code scanning es lo unico que escribe.
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        lenguaje: [python, javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dos lenguajes interpretados: build-mode none, sin compilar ni instalar dependencias.
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.lenguaje }}
+          build-mode: none
+
+      - name: Analizar
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: "/language:${{ matrix.lenguaje }}"

@@ -1,9 +1,10 @@
 # Dependencias antes de v1.0
 
-El triage de los PRs abiertos de Dependabot al cerrar v0.18.0 (2026-10-19, `main` en `6e6a3a5`).
-v0.18.0 es la base validada para empezar v1.0: **ninguno se fusionó en el housekeeping previo a
-v1.0**, ni con el CI verde. Cada decisión se toma después, en su propio PR y con el CI completo. La
-política de Dependabot está en [cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
+El triage de los PRs de Dependabot abiertos al cerrar v0.18.0 (2026-10-19, `main` en `6e6a3a5`),
+al día con v0.18.1: **#21, el de seguridad, se fusionó** (el merge `87615a1`, con el CI verde en sus
+cuatro trabajos), y los demás siguen abiertos con su decisión. Cada uno se decide en su propio PR y
+con el CI completo; v0.18.1 es la base para empezar v1.0. La política de Dependabot está en
+[cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
 
 Clases: **A**, candidata para evaluar antes de v1.0; **B**, diferir hasta después de v1.0; **C**,
 redundante o superpuesta; **D**, requiere una investigación específica; **E**, de seguridad.
@@ -11,7 +12,7 @@ redundante o superpuesta; **D**, requiere una investigación específica; **E**,
 | PR | Componente | Actual → propuesta | Tipo | Ámbito | CI | Clase | Decisión |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | #20 | Jaeger | 2.21.0 → 2.22.0 | minor | observabilidad (perfil) | verde | A | EVALUAR_ANTES_V1 |
-| #21 | oauth2-proxy | v7.15.4 → v7.15.5 | patch | runtime: identidad (BFF) | verde | E | SECURITY_REVIEW |
+| #21 | oauth2-proxy | v7.15.4 → v7.15.5 | patch | runtime: identidad (BFF) | verde | E | **FUSIONADO** en v0.18.1 (`87615a1`) |
 | #22 | OTel Collector | 0.161.0 → 0.162.0-386 | minor | observabilidad | verde | D | EVALUAR_ANTES_V1, con `0.162.0` |
 | #23 | astral-sh/setup-uv | 10.2.0 → 10.3.0 | minor | CI | verde | A | EVALUAR_ANTES_V1 |
 | #24 | OSRM | v26.9.0 → 26.10.0 | minor | runtime: ruteo | rojo | D | DIFERIR_POST_V1 |
@@ -26,14 +27,19 @@ redundante o superpuesta; **D**, requiere una investigación específica; **E**,
 
 ## Por qué
 
-- **#21, de seguridad.** v7.15.5 corrige dos avisos críticos (GHSA-63jm-59jj-478j, bypass por la
-  interpretación de las rutas de `skip-auth`; GHSA-wr5q-7wxw-x568, bypass por cabeceras de IP del
-  cliente falsificadas), uno moderado (GHSA-hhqp-vx7f-5c6m, credenciales en el log de errores del
-  callback) y cuatro CVE de Go. En esta configuración los dos críticos no aplican: no hay reglas
-  `skip-auth`, el edge reescribe `X-Real-IP` y `X-Forwarded-For` con la IP del socket y oauth2-proxy
-  solo confía en ellas desde la red de identidad (`--trusted-proxy-ip`); el moderado lo reduce
-  `--auth-logging=false`. Sigue siendo el componente de identidad: se decide explícitamente, antes
-  de la aceptación de v1.0.
+- **#21, de seguridad, fusionado.** v7.15.5 corrige dos avisos críticos (GHSA-63jm-59jj-478j,
+  bypass por la interpretación de las rutas de `skip-auth`; GHSA-wr5q-7wxw-x568, bypass por
+  cabeceras de IP del cliente falsificadas), uno moderado (GHSA-hhqp-vx7f-5c6m, credenciales en el
+  log de errores del callback) y cuatro CVE de Go. En esta configuración los dos críticos no
+  aplicaban: no hay reglas `skip-auth` ni `--trusted-ip`, el edge reescribe `X-Real-IP` y
+  `X-Forwarded-For` con la IP del socket en las rutas de inicio y cierre de sesión, y oauth2-proxy
+  solo confía en ellas desde la red de identidad (`--trusted-proxy-ip`). El moderado **sí
+  aplicaba**: el aviso dice que apagar el log de autenticación o el de peticiones no suprime esas
+  llamadas, así que `--auth-logging=false` no lo mitigaba; v7.15.5 lo corrige. Antes de fusionarlo,
+  el CI del compose de producción repitió con la versión nueva el inicio de sesión con PKCE, la
+  cookie `__Host-`, la repetición del callback, las cabeceras falsificadas que no elevan, el cierre
+  de sesión con su revocación y Playwright con los usuarios de Dex. La imagen va fijada por el
+  digest de su manifiesto multiplataforma.
 - **#22.** `0.162.0-386` es la imagen de un solo sistema, linux/386; la multiarquitectura es
   `0.162.0`. El CI pasa porque un runner amd64 ejecuta binarios i386. No se fusiona así.
 - **#24.** La imagen de OSRM está fijada en tres lugares: los dos compose, `red_vial.IMAGEN_OSRM` (la
@@ -69,11 +75,12 @@ redundante o superpuesta; **D**, requiere una investigación específica; **E**,
 
 ## Seguridad
 
-Las alertas de Dependabot y sus actualizaciones de seguridad están **desactivadas** en la
-configuración del repositorio: los 13 PRs son actualizaciones de versión, y ninguno es una
-actualización de seguridad. La red de seguridad es el CI (pip-audit, npm audit, Trivy sobre los
-lockfiles y las imágenes, y gitleaks), en 0 sobre `main`. Activar las alertas es una decisión del
-dueño del repositorio. El único PR con correcciones de seguridad es #21.
+Desde v0.18.1, las **alertas de Dependabot y sus actualizaciones de seguridad están activadas** (y
+el reporte privado de vulnerabilidades, en la [política de seguridad](../.github/SECURITY.md)), con
+0 alertas abiertas al publicarla. Los 12 PRs que siguen abiertos son actualizaciones de versión, y
+ninguno es una actualización de seguridad. Además está el CI: pip-audit, npm audit, Trivy sobre los
+lockfiles y las imágenes, gitleaks y CodeQL, en 0 sobre `main`. El único PR con correcciones de
+seguridad era #21.
 
 ## Reglas
 

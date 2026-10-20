@@ -39,7 +39,7 @@ del compose de desarrollo, un respaldo y su restauración aquí
 | Servicio | Imagen | Redes | Qué hace |
 | --- | --- | --- | --- |
 | `edge` | `motor-cartera-web:produccion` (nginx sin privilegios) | pública, frontal, identidad | TLS, la SPA, el proxy de solo lectura, los límites; el único con puertos (`127.0.0.1:8443` y `127.0.0.1:8081`) |
-| `oauth2-proxy` | v7.15.4 | identidad, sesiones | el inicio de sesión (PKCE) y la sesión |
+| `oauth2-proxy` | v7.15.5 | identidad, sesiones | el inicio de sesión (PKCE) y la sesión |
 | `valkey` | 8.1.10 | sesiones | el almacén de sesiones, con usuario y contraseña (ACL) |
 | `dex` | v2.45.1 | identidad | el IdP de desarrollo y pruebas, por TLS |
 | `api` | `motor-cartera:produccion` | frontal, identidad, datos, observabilidad | la API (uvicorn, un proceso) |
