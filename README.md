@@ -151,7 +151,7 @@ features y verifica que da exactamente lo mismo ([docs/decision_v2.md](docs/deci
 
 | Evidencia | Resultado |
 |---|---|
-| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,908 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
+| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,912 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
 | Pruebas de la app (Vitest) | 134 pruebas en 18 archivos; 90.8 % de cobertura de sentencias |
 | Playwright con axe-core | 51 pruebas contra el compose de desarrollo y 58 contra el de producción, con usuarios de Dex |
 | Núcleos puros contra su SQL | Cada motor tiene un núcleo puro y su ejecución por conjuntos en PostgreSQL; una prueba compara los dos cuenta por cuenta, y los goldens se calculan a mano |
