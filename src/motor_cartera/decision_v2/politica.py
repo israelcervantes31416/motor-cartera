@@ -337,10 +337,17 @@ def cumple(condicion: Condicion, valor: object) -> bool:
     if valor is None:
         return False
     if condicion.operador == Operador.MAYOR:
-        return valor > condicion.umbral
+        return _numero(condicion, valor) > condicion.umbral
     if condicion.operador == Operador.MAYOR_O_IGUAL:
-        return valor >= condicion.umbral
+        return _numero(condicion, valor) >= condicion.umbral
     return valor == condicion.umbral
+
+
+def _numero(condicion: Condicion, valor: object) -> int | Decimal:
+    """El valor de una feature que se compara por orden: un numero (un entero o un decimal)."""
+    if not isinstance(valor, int | Decimal):
+        raise TypeError(f"{condicion.feature} se compara con {condicion.operador}: {valor!r}.")
+    return valor
 
 
 def prioridad_base(dias_atraso: int) -> tuple[str, SegmentoMora, Prioridad]:
@@ -356,6 +363,8 @@ def decidir(features: Mapping[str, object], politica: Politica = PUBLIC_V1) -> D
     """La decision de una cuenta con decision-policy/public-v1. Cada regla se evalua aparte; la suma
     de sus efectos se acota a la escala; el canal sale de la prioridad final."""
     dias = features["dias_atraso"]
+    if isinstance(dias, bool) or not isinstance(dias, int):
+        raise CuentaNoDecidible(f"dias_atraso debe ser un entero no negativo: {dias!r}.")
     tramo, segmento, base = prioridad_base(dias)
     reglas = tuple(
         ReglaEvaluada(

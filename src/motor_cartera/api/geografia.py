@@ -46,6 +46,7 @@ from motor_cartera.geografia.consultas import (
     GeografiaNoEncontrada,
     VersionNoEncontrada,
 )
+from motor_cartera.geografia.reglas import EstadoGeografia as EstadoDeLaCuenta
 from motor_cartera.geografia.reglas import comparacion
 
 router = APIRouter(tags=["geografia"])
@@ -239,7 +240,7 @@ def resultados(
                 cliente_unico=v.cliente_unico,
                 source_row=v.resultado.source_row,
                 source_sheet=v.resultado.source_sheet,
-                estado_geografia=v.resultado.estado_geografia,
+                estado_geografia=EstadoDeLaCuenta(v.resultado.estado_geografia),
                 municipio=_municipio(v.cvegeo, v.nombre_oficial),
                 municipio_fuente=v.resultado.municipio_fuente_resuelto,
                 comparacion_municipio=comparacion(v.resultado.coincide_municipio).value,
@@ -280,7 +281,7 @@ def geografia_de_cuenta(
                 geografia_run_id=g.ejecucion.geografia_run_id,
                 corte=CorteRespuesta(corte_id=g.corte_id, fecha_corte=g.fecha_corte),
                 referencia=_referencia(g.version),
-                estado_geografia=g.resultado.estado_geografia,
+                estado_geografia=EstadoDeLaCuenta(g.resultado.estado_geografia),
                 municipio=_municipio(g.cvegeo, g.nombre_oficial),
                 municipio_fuente=g.resultado.municipio_fuente_resuelto,
                 comparacion_municipio=comparacion(g.resultado.coincide_municipio).value,
@@ -325,7 +326,7 @@ def _version(s: Session, geografia_version_id: UUID) -> VersionGeografia:
 
 
 def _municipio(cvegeo: str | None, nombre: str | None) -> MunicipioRespuesta | None:
-    if cvegeo is None:
+    if cvegeo is None or nombre is None:
         return None
     return MunicipioRespuesta(cvegeo=cvegeo, nombre_oficial=nombre)
 

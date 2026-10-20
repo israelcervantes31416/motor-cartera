@@ -36,7 +36,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from motor_cartera.db.modelos import (
@@ -47,9 +47,11 @@ from motor_cartera.db.modelos import (
     ResultadoMotorPagos,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos.firmas import (
     CAMPOS_FIRMADOS,
     sql_digest_movimiento,
@@ -164,6 +166,7 @@ def abrir_ventana(
     despues del commit de quien llama; en el segundo, al terminar ya no esta EN_PROCESO y se abre
     otra. Asi ningun pago que se publique queda sin una interpretacion pendiente que lo vea.
     """
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
         activa = s.exec(
             _de_la_ventana(ventana, EstadoMotorPagos.EN_PROCESO).with_for_update()
@@ -183,8 +186,8 @@ def abrir_ventana(
         if restriccion(error) != INDICE_EN_PROCESO:
             raise error
     else:
-        raise error
-    cola.crear(s, TipoTrabajo.MOTOR_PAGOS, ejecucion.id, max_intentos=max_intentos)
+        raise presente(error, "el ultimo choque de la apertura")
+    cola.crear(s, TipoTrabajo.MOTOR_PAGOS, id_de(ejecucion), max_intentos=max_intentos)
     log.info(
         "motor de pagos %s abierto para %s/%s %s",
         ejecucion.motor_pagos_run_id,
@@ -427,11 +430,11 @@ def _interpretar(
     with cronometro.fase("clasificacion"):
         _clasificar(s)
     with cronometro.fase("movimientos"):
-        _crear_movimientos(s, ejecucion.id, ventana)
+        _crear_movimientos(s, id_de(ejecucion), ventana)
     with cronometro.fase("resultados"):
-        _insertar_resultados(s, ejecucion.id)
+        _insertar_resultados(s, id_de(ejecucion))
     with cronometro.fase("conteos"):
-        conteos = _contar(s, ejecucion.id)
+        conteos = _contar(s, id_de(ejecucion))
     _cerrar(s, ejecucion, ventana, firma, avance, conteos)
 
 
@@ -879,23 +882,25 @@ def _fallar(
         s.rollback()
         log.warning("motor de pagos %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionMotorPagos)
-        .where(
-            EjecucionMotorPagos.id == ejecucion_id,
-            EjecucionMotorPagos.estado == EstadoMotorPagos.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionMotorPagos)
+            .where(
+                col(EjecucionMotorPagos.id) == ejecucion_id,
+                col(EjecucionMotorPagos.estado) == EstadoMotorPagos.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoMotorPagos.FALLIDA,
+                resultado=resultado.value,
+                observaciones_leidas=avance.leidas,
+                observaciones_contexto=avance.contexto,
+                firma_entrada=avance.firma,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoMotorPagos.FALLIDA,
-            resultado=resultado.value,
-            observaciones_leidas=avance.leidas,
-            observaciones_contexto=avance.contexto,
-            firma_entrada=avance.firma,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("motor de pagos %s fallido (%s): %s", etiqueta, resultado.value, motivo)

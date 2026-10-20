@@ -61,7 +61,7 @@ def por_dia(
     atribuidos: set[date],
 ) -> dict[date, Dia]:
     """La cobertura de cada dia del horizonte, para los pagos y para la atribucion."""
-    alcances = [(a.date(), b.date()) for a, b in alcances]
+    dias_alcanzados = [(a.date(), b.date()) for a, b in alcances]
     por_mes = {m.mes: m for m in meses}
     resultado = {}
     dia = fecha_corte
@@ -70,7 +70,7 @@ def por_dia(
         visto = por_mes.get(mes)
         if not pagos_declarados:
             pagos = ENTRADA_NO_DECLARADA
-        elif not any(desde <= dia <= hasta for desde, hasta in alcances):
+        elif not any(desde <= dia <= hasta for desde, hasta in dias_alcanzados):
             pagos = PAGOS_SIN_COBERTURA
         elif (
             visto is not None

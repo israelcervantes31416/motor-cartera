@@ -29,7 +29,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, insert, update
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import Select, SelectOfScalar
 
 from motor_cartera.db.modelos import (
@@ -45,8 +45,16 @@ from motor_cartera.db.modelos import (
     ResultadoTerritorial,
     RutaTerritorial,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import (
+    filas_afectadas,
+    insertar_en_savepoint,
+    restriccion,
+    seleccionar,
+    sesion,
+)
+from motor_cartera.invariantes import presente
 from motor_cartera.ruteo.reglas import (
     VERSION_REGLAS_RUTEO,
     ParadaCalculada,
@@ -168,7 +176,8 @@ def abrir_ejecucion(
     razon = _por_que_no_se_rutea(ejecucion_territorial, decision)
     if razon is not None:
         raise TerritorialNoRuteable(ejecucion_territorial, razon)
-    fuente_id = ejecucion_territorial.id
+    fuente_id = id_de(ejecucion_territorial)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
         previa = s.exec(_exitosa(fuente_id, VERSION_REGLAS_RUTEO)).one_or_none()
         if previa is not None:
@@ -186,7 +195,7 @@ def abrir_ejecucion(
         if restriccion(error) != INDICE_RUTEO_EN_PROCESO:
             raise error
     else:
-        raise error
+        raise presente(error, "el ultimo choque de la apertura")
 
     if confirmar:
         s.commit()
@@ -307,7 +316,7 @@ def rutear_territorial(ejecucion_territorial_id: int) -> EjecucionRuteo:
     """
     with sesion() as s:
         ejecucion = abrir_ejecucion(s, s.get_one(EjecucionTerritorial, ejecucion_territorial_id))
-    ejecutar_ruteo(ejecucion.id)
+    ejecutar_ruteo(id_de(ejecucion))
     with sesion() as s:
         return s.get_one(EjecucionRuteo, ejecucion.id)
 
@@ -372,7 +381,7 @@ def _comprobar_fuente(
     if razon is not None:
         raise _NoSePublica(f"{razon} No se publico ninguna ruta.")
 
-    municipios = s.exec(_municipios(territorial.id)).all()
+    municipios = s.exec(_municipios(id_de(territorial))).all()
     if not (
         territorial.territorios_evaluados
         == territorial.territorios_publicados
@@ -392,14 +401,16 @@ def _comprobar_fuente(
             "ruteo vacio."
         )
     suma = sum(territorio.cuentas_campo for territorio in con_ruta)
-    campo, de_la_corrida = s.exec(_conteo_de_campo(decision.id, decision.corrida_id)).one()
+    campo, de_la_corrida = s.exec(_conteo_de_campo(id_de(decision), decision.corrida_id)).one()
     if not suma == campo == de_la_corrida:
         raise _NoSePublica(
             f"Los municipios suman {suma:,} cuentas de campo y la ejecucion de decision tiene "
             f"{campo:,} decisiones de campo, {de_la_corrida:,} de cuentas de su corrida; no se "
             "publico ninguna ruta."
         )
-    cuentas = _repartir(con_ruta, s.exec(_cuentas_de_campo(decision.id, decision.corrida_id)).all())
+    cuentas = _repartir(
+        con_ruta, s.exec(_cuentas_de_campo(id_de(decision), decision.corrida_id)).all()
+    )
     return _Fuente(con_ruta, campo), cuentas
 
 
@@ -529,7 +540,7 @@ def _insertar_rutas(
     """
     filas = s.execute(
         insert(RutaTerritorial).returning(
-            RutaTerritorial.resultado_territorial_id, RutaTerritorial.id
+            col(RutaTerritorial.resultado_territorial_id), col(RutaTerritorial.id)
         ),
         [
             _fila_ruta(ejecucion_id, territorio, ruta)
@@ -550,7 +561,7 @@ def _cerrar(
     estado pero no confirma, para que una carrera con otra ejecucion EXITOSA se descubra todavia
     dentro de la transaccion; el commit es de quien llama.
     """
-    rutas_guardadas, paradas_guardadas = s.exec(_conteo_publicado(ejecucion.id)).one()
+    rutas_guardadas, paradas_guardadas = s.exec(_conteo_publicado(id_de(ejecucion))).one()
     calculadas = sum(len(ruta.paradas) for ruta in rutas)
     if not (len(fuente.municipios) == len(rutas) == rutas_guardadas > 0):
         raise _NoSePublica(
@@ -593,23 +604,25 @@ def _fallar(
     queda solo en la bitacora. No borra rutas ni paradas: las de este intento ya las quito el
     rollback, y las de una ejecucion EXITOSA son suyas.
     """
-    registrado = s.execute(
-        update(EjecucionRuteo)
-        .where(
-            EjecucionRuteo.id == ejecucion_id,
-            EjecucionRuteo.estado == EstadoRuteo.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionRuteo)
+            .where(
+                col(EjecucionRuteo.id) == ejecucion_id,
+                col(EjecucionRuteo.estado) == EstadoRuteo.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoRuteo.FALLIDA,
+                rutas_evaluadas=rutas_evaluadas,
+                rutas_publicadas=0,
+                paradas_evaluadas=paradas_evaluadas,
+                paradas_publicadas=0,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoRuteo.FALLIDA,
-            rutas_evaluadas=rutas_evaluadas,
-            rutas_publicadas=0,
-            paradas_evaluadas=paradas_evaluadas,
-            paradas_publicadas=0,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("ejecucion de ruteo %s fallida: %s", etiqueta, motivo)
@@ -625,16 +638,16 @@ def _municipios(ejecucion_territorial_id: int) -> Select[Any]:
     uno, en el orden de territorial/v1: primero por lugar de campo, y los que no tienen, al
     final."""
     return (
-        select(
-            ResultadoTerritorial.id,
-            ResultadoTerritorial.cve_entidad,
-            ResultadoTerritorial.cve_municipio,
-            ResultadoTerritorial.cuentas_campo,
-            ResultadoTerritorial.posicion_campo,
+        seleccionar(
+            col(ResultadoTerritorial.id),
+            col(ResultadoTerritorial.cve_entidad),
+            col(ResultadoTerritorial.cve_municipio),
+            col(ResultadoTerritorial.cuentas_campo),
+            col(ResultadoTerritorial.posicion_campo),
         )
         .where(ResultadoTerritorial.ejecucion_territorial_id == ejecucion_territorial_id)
         .order_by(
-            ResultadoTerritorial.posicion_campo.asc().nulls_last(),
+            col(ResultadoTerritorial.posicion_campo).asc().nulls_last(),
             ResultadoTerritorial.cve_entidad,
             ResultadoTerritorial.cve_municipio,
         )
@@ -645,9 +658,9 @@ def _conteo_de_campo(ejecucion_decision_id: int, corrida_id: int) -> Select[Any]
     """Cuantas decisiones de campo tiene la ejecucion de decision, y cuantas de ellas son de cuentas
     de su corrida. Lo que cuenta como campo es la decision, y nunca Cuenta.canal."""
     return (
-        select(func.count(), func.count().filter(Cuenta.corrida_id == corrida_id))
+        select(func.count(), func.count().filter(col(Cuenta.corrida_id) == corrida_id))
         .select_from(DecisionCuenta)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(
             DecisionCuenta.ejecucion_decision_id == ejecucion_decision_id,
             DecisionCuenta.canal_recomendado == CANAL_CAMPO,
@@ -661,13 +674,13 @@ def _cuentas_de_campo(ejecucion_decision_id: int, corrida_id: int) -> Select[Any
     orden solo hace la lectura repetible: el de visita lo decide ruteo/v1."""
     return (
         select(
-            DecisionCuenta.id.label("decision_cuenta_id"),
+            col(DecisionCuenta.id).label("decision_cuenta_id"),
             Cuenta.cliente_unico,
             Cuenta.cve_entidad,
             Cuenta.cve_municipio,
         )
         .select_from(DecisionCuenta)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(
             DecisionCuenta.ejecucion_decision_id == ejecucion_decision_id,
             Cuenta.corrida_id == corrida_id,

@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -31,6 +31,7 @@ from motor_cartera.db.modelos import (
     VersionConfiguracionCampo,
     VersionRedVial,
 )
+from motor_cartera.db.sesion import con_columnas, seleccionar
 from motor_cartera.ruteo_v2.ejecuciones import COLUMNA_DEL_ESTADO_PARADA, COLUMNA_DEL_ESTADO_RUTA
 from motor_cartera.ruteo_v2.politica import EstadoParada, EstadoRuta
 
@@ -54,7 +55,7 @@ def redes(s: Session, *, desplazamiento: int, limite: int) -> tuple[int, list[Ve
     total = s.exec(select(func.count()).select_from(VersionRedVial)).one()
     filas = s.exec(
         select(VersionRedVial)
-        .order_by(VersionRedVial.id.desc())
+        .order_by(col(VersionRedVial.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -85,21 +86,22 @@ class EjecucionVista:
 
 def _ejecuciones() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             EjecucionRuteoV2,
-            EjecucionCampoV2.campo_run_id,
+            col(EjecucionCampoV2.campo_run_id),
             VersionRedVial,
-            VersionConfiguracionCampo.zona_horaria,
-            TrabajoOrquestacion.trabajo_id,
+            col(VersionConfiguracionCampo.zona_horaria),
+            col(TrabajoOrquestacion.trabajo_id),
         )
-        .join(EjecucionCampoV2, EjecucionCampoV2.id == EjecucionRuteoV2.ejecucion_campo_v2_id)
-        .join(VersionRedVial, VersionRedVial.id == EjecucionRuteoV2.version_red_vial_id)
+        .join(EjecucionCampoV2, col(EjecucionCampoV2.id) == EjecucionRuteoV2.ejecucion_campo_v2_id)
+        .join(VersionRedVial, col(VersionRedVial.id) == EjecucionRuteoV2.version_red_vial_id)
         .join(
             VersionConfiguracionCampo,
-            VersionConfiguracionCampo.id == EjecucionCampoV2.version_configuracion_campo_id,
+            col(VersionConfiguracionCampo.id) == EjecucionCampoV2.version_configuracion_campo_id,
         )
         .outerjoin(
-            TrabajoOrquestacion, TrabajoOrquestacion.ejecucion_ruteo_v2_id == EjecucionRuteoV2.id
+            TrabajoOrquestacion,
+            col(TrabajoOrquestacion.ejecucion_ruteo_v2_id) == EjecucionRuteoV2.id,
         )
     )
 
@@ -131,7 +133,7 @@ def listar(
     filas = s.exec(
         _ejecuciones()
         .where(*condiciones)
-        .order_by(EjecucionRuteoV2.id.desc())
+        .order_by(col(EjecucionRuteoV2.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -152,15 +154,15 @@ class RutaVista:
 
 def _rutas() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             RutaGestorV2,
-            GestorCampo.gestor_id,
-            GestorCampo.codigo,
-            BaseOperativa.base_id,
-            BaseOperativa.codigo,
+            col(GestorCampo.gestor_id),
+            col(GestorCampo.codigo),
+            col(BaseOperativa.base_id),
+            col(BaseOperativa.codigo),
         )
-        .join(GestorCampo, GestorCampo.id == RutaGestorV2.gestor_campo_id)
-        .join(BaseOperativa, BaseOperativa.id == RutaGestorV2.base_operativa_id)
+        .join(GestorCampo, col(GestorCampo.id) == RutaGestorV2.gestor_campo_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == RutaGestorV2.base_operativa_id)
     )
 
 
@@ -197,14 +199,14 @@ def rutas(
         total = s.exec(
             select(func.count())
             .select_from(RutaGestorV2)
-            .join(GestorCampo, GestorCampo.id == RutaGestorV2.gestor_campo_id)
-            .join(BaseOperativa, BaseOperativa.id == RutaGestorV2.base_operativa_id)
+            .join(GestorCampo, col(GestorCampo.id) == RutaGestorV2.gestor_campo_id)
+            .join(BaseOperativa, col(BaseOperativa.id) == RutaGestorV2.base_operativa_id)
             .where(*condiciones)
         ).one()
     pagina = (
         select(RutaGestorV2.gestor_campo_id)
-        .join(GestorCampo, GestorCampo.id == RutaGestorV2.gestor_campo_id)
-        .join(BaseOperativa, BaseOperativa.id == RutaGestorV2.base_operativa_id)
+        .join(GestorCampo, col(GestorCampo.id) == RutaGestorV2.gestor_campo_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == RutaGestorV2.base_operativa_id)
         .where(*condiciones)
         .order_by(GestorCampo.codigo)
         .offset(desplazamiento)
@@ -245,19 +247,19 @@ class ParadaVista:
 
 def _paradas() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             ParadaRutaV2,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
-            GestorCampo.codigo,
-            RutaGestorV2.ruta_id,
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
+            col(GestorCampo.codigo),
+            col(RutaGestorV2.ruta_id),
         )
-        .join(CuentaCanonica, CuentaCanonica.id == ParadaRutaV2.cuenta_canonica_id)
-        .join(GestorCampo, GestorCampo.id == ParadaRutaV2.gestor_campo_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == ParadaRutaV2.cuenta_canonica_id)
+        .join(GestorCampo, col(GestorCampo.id) == ParadaRutaV2.gestor_campo_id)
         .join(
             RutaGestorV2,
-            (RutaGestorV2.ejecucion_ruteo_v2_id == ParadaRutaV2.ejecucion_ruteo_v2_id)
-            & (RutaGestorV2.gestor_campo_id == ParadaRutaV2.gestor_campo_id),
+            (col(RutaGestorV2.ejecucion_ruteo_v2_id) == ParadaRutaV2.ejecucion_ruteo_v2_id)
+            & (col(RutaGestorV2.gestor_campo_id) == ParadaRutaV2.gestor_campo_id),
         )
     )
 
@@ -275,7 +277,7 @@ def paradas_de_ruta(
     filas = s.exec(
         _paradas()
         .where(*condiciones)
-        .order_by(ParadaRutaV2.orden_visita.asc().nulls_last(), CuentaCanonica.cuenta_id)
+        .order_by(col(ParadaRutaV2.orden_visita).asc().nulls_last(), col(CuentaCanonica.cuenta_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -309,7 +311,7 @@ def paradas(
     if filtros.gestor is not None:
         gestor = s.exec(
             select(RutaGestorV2.gestor_campo_id)
-            .join(GestorCampo, GestorCampo.id == RutaGestorV2.gestor_campo_id)
+            .join(GestorCampo, col(GestorCampo.id) == RutaGestorV2.gestor_campo_id)
             .where(RutaGestorV2.ejecucion_ruteo_v2_id == e.id, GestorCampo.codigo == filtros.gestor)
         ).one_or_none()
         if gestor is None:
@@ -318,11 +320,11 @@ def paradas(
     if filtros.base is not None:
         gestores = select(RutaGestorV2.gestor_campo_id).where(
             RutaGestorV2.ejecucion_ruteo_v2_id == e.id,
-            RutaGestorV2.base_operativa_id.in_(
+            col(RutaGestorV2.base_operativa_id).in_(
                 select(BaseOperativa.id).where(BaseOperativa.codigo == filtros.base)
             ),
         )
-        condiciones.append(ParadaRutaV2.gestor_campo_id.in_(gestores))
+        condiciones.append(col(ParadaRutaV2.gestor_campo_id).in_(gestores))
     total = None
     if e.estado == EstadoRuteoV2.EXITOSA and not (
         filtros.gestor or filtros.base or filtros.prioridad
@@ -337,7 +339,7 @@ def paradas(
     pagina = (
         select(ParadaRutaV2.cuenta_canonica_id)
         .where(*condiciones)
-        .order_by(ParadaRutaV2.cuenta_canonica_id)
+        .order_by(col(ParadaRutaV2.cuenta_canonica_id))
         .offset(desplazamiento)
         .limit(limite)
         .subquery()
@@ -346,7 +348,7 @@ def paradas(
         _paradas()
         .join(pagina, pagina.c.cuenta_canonica_id == ParadaRutaV2.cuenta_canonica_id)
         .where(ParadaRutaV2.ejecucion_ruteo_v2_id == e.id)
-        .order_by(ParadaRutaV2.cuenta_canonica_id)
+        .order_by(col(ParadaRutaV2.cuenta_canonica_id))
     ).all()
     return total, [ParadaVista(*fila) for fila in filas]
 
@@ -365,23 +367,23 @@ class ParadaEnHistoria:
 
 def _de_la_cuenta(cuenta: CuentaCanonica) -> Select[Any]:
     return (
-        _paradas()
-        .add_columns(
+        con_columnas(
+            _paradas(),
             EjecucionRuteoV2,
-            BaseOperativa.codigo,
-            RutaGestorV2.estado_ruta,
-            VersionConfiguracionCampo.zona_horaria,
+            col(BaseOperativa.codigo),
+            col(RutaGestorV2.estado_ruta),
+            col(VersionConfiguracionCampo.zona_horaria),
         )
-        .join(EjecucionRuteoV2, EjecucionRuteoV2.id == ParadaRutaV2.ejecucion_ruteo_v2_id)
-        .join(BaseOperativa, BaseOperativa.id == RutaGestorV2.base_operativa_id)
-        .join(EjecucionCampoV2, EjecucionCampoV2.id == EjecucionRuteoV2.ejecucion_campo_v2_id)
+        .join(EjecucionRuteoV2, col(EjecucionRuteoV2.id) == ParadaRutaV2.ejecucion_ruteo_v2_id)
+        .join(BaseOperativa, col(BaseOperativa.id) == RutaGestorV2.base_operativa_id)
+        .join(EjecucionCampoV2, col(EjecucionCampoV2.id) == EjecucionRuteoV2.ejecucion_campo_v2_id)
         .join(
             VersionConfiguracionCampo,
-            VersionConfiguracionCampo.id == EjecucionCampoV2.version_configuracion_campo_id,
+            col(VersionConfiguracionCampo.id) == EjecucionCampoV2.version_configuracion_campo_id,
         )
         .where(
-            ParadaRutaV2.cuenta_canonica_id == cuenta.id,
-            EjecucionRuteoV2.estado == EstadoRuteoV2.EXITOSA,
+            col(ParadaRutaV2.cuenta_canonica_id) == cuenta.id,
+            col(EjecucionRuteoV2.estado) == EstadoRuteoV2.EXITOSA,
         )
     )
 
@@ -399,7 +401,7 @@ def historial(
     total = s.exec(
         select(func.count())
         .select_from(ParadaRutaV2)
-        .join(EjecucionRuteoV2, EjecucionRuteoV2.id == ParadaRutaV2.ejecucion_ruteo_v2_id)
+        .join(EjecucionRuteoV2, col(EjecucionRuteoV2.id) == ParadaRutaV2.ejecucion_ruteo_v2_id)
         .where(
             ParadaRutaV2.cuenta_canonica_id == cuenta.id,
             EjecucionRuteoV2.estado == EstadoRuteoV2.EXITOSA,
@@ -407,7 +409,7 @@ def historial(
     ).one()
     filas = s.exec(
         _de_la_cuenta(cuenta)
-        .order_by(EjecucionRuteoV2.fecha_operacion.desc(), EjecucionRuteoV2.id.desc())
+        .order_by(col(EjecucionRuteoV2.fecha_operacion).desc(), col(EjecucionRuteoV2.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -431,7 +433,7 @@ def ultima(s: Session, cuenta: CuentaCanonica, al: date | None = None) -> Parada
         consulta = consulta.where(EjecucionRuteoV2.fecha_operacion <= al)
     fila = s.exec(
         consulta.order_by(
-            EjecucionRuteoV2.fecha_operacion.desc(), EjecucionRuteoV2.id.desc()
+            col(EjecucionRuteoV2.fecha_operacion).desc(), col(EjecucionRuteoV2.id).desc()
         ).limit(1)
     ).one_or_none()
     return None if fila is None else _en_historia(fila)

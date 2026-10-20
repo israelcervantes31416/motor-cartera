@@ -51,6 +51,7 @@ from sqlmodel import Session
 from motor_cartera.db.copia import copiar
 from motor_cartera.db.modelos import PATRON_ACTOR, PATRON_LLAVE
 from motor_cartera.db.sesion import restriccion, sesion
+from motor_cartera.invariantes import presente
 from motor_cartera.lifecycle.reglas import (
     TOLERANCIA_DEL_RELOJ,
     VERSION_LIFECYCLE,
@@ -357,6 +358,7 @@ def _lotes(
                 if not texto.strip():
                     continue
                 reporte.lineas += 1
+                linea = None
                 try:
                     linea = LECTOR.validate_json(texto)
                     _revisar(linea)
@@ -364,7 +366,8 @@ def _lotes(
                     _anotar(reporte, problemas, numero, _llave(texto), "ENTRADA_INVALIDA", exc)
                     continue
                 except _Incoherente as exc:
-                    _anotar(reporte, problemas, numero, linea.idempotency_key, exc.codigo, exc)
+                    leida = presente(linea, "la linea que se reviso")
+                    _anotar(reporte, problemas, numero, leida.idempotency_key, exc.codigo, exc)
                     continue
                 filas.append(_fila(numero, linea))
                 if isinstance(linea, ConvenioImportado):
@@ -755,5 +758,7 @@ def _registrar(s: Session, reporte: Importacion, parametros: dict) -> None:
                 "SELECT n.tipo, count(*) FROM imp_registrado r JOIN imp_nueva n "
                 "ON n.llave = r.llave GROUP BY n.tipo ORDER BY n.tipo"
             )
-        ).all()
+        )
+        .tuples()
+        .all()
     )

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import ColumnElement
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.api.dependencias import SesionDeLectura, buscar_corrida
@@ -40,9 +40,12 @@ from motor_cartera.db.modelos import (
     EstadoIngestaPagos,
     IngestaPagos,
     TrabajoOrquestacion,
+    id_de,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.historia import cuenta360
 from motor_cartera.historia.cuenta360 import CorteNoEncontrado, CorteVisto
+from motor_cartera.invariantes import presente
 
 router = APIRouter(tags=["historia"])
 
@@ -127,7 +130,9 @@ def obtener_corte(corte_id: UUID, s: SesionDeLectura) -> CorteDetalleRespuesta:
         fuentes=[
             FuenteDelCorteRespuesta(
                 historia_run_id=f.ejecucion.historia_run_id,
-                resultado=f.ejecucion.resultado,
+                resultado=presente(
+                    f.ejecucion.resultado, "el resultado de una ejecucion terminada"
+                ),
                 dataset_id=f.dataset.dataset_id,
                 run_id=f.corrida.run_id,
                 artefacto_original=ArtefactoRespuesta.model_validate(f.original),
@@ -153,7 +158,7 @@ def obtener_historia(historia_run_id: UUID, s: SesionDeLectura) -> EjecucionHist
     misma firma: no se duplico nada), `PAGOS_PUBLICADOS`, o, si fallo,
     `CORTE_CANONICO_CONFLICTIVO` (ya hay un corte de esa fecha con otra firma, y no se toco) y los
     demas codigos de su detalle."""
-    fila = s.exec(_ejecuciones(EjecucionHistoria.historia_run_id == historia_run_id)).first()
+    fila = s.exec(_ejecuciones(col(EjecucionHistoria.historia_run_id) == historia_run_id)).first()
     if fila is None:
         raise ErrorDeApi(
             404,
@@ -256,7 +261,7 @@ def historia_de_pagos(
     ).one()
     relacion = None
     if publicada:
-        r = cuenta360.relacion_de_pagos(s, dataset.id)
+        r = cuenta360.relacion_de_pagos(s, id_de(dataset))
         relacion = RelacionPagosRespuesta(
             pagos_con_cuenta_observada=r.con_cuenta_observada,
             pagos_sin_cuenta_observada=r.sin_cuenta_observada,
@@ -276,11 +281,11 @@ def historia_de_pagos(
 def _pagina(
     s: Session, dataset: DatasetConformado, paginacion: Paginacion
 ) -> tuple[int, list[EjecucionHistoriaRespuesta]]:
-    del_dataset = EjecucionHistoria.dataset_conformado_id == dataset.id
+    del_dataset = col(EjecucionHistoria.dataset_conformado_id) == dataset.id
     total = s.exec(select(func.count()).select_from(EjecucionHistoria).where(del_dataset)).one()
     filas = s.exec(
         _ejecuciones(del_dataset)
-        .order_by(EjecucionHistoria.iniciada_en.desc(), EjecucionHistoria.id.desc())
+        .order_by(col(EjecucionHistoria.iniciada_en).desc(), col(EjecucionHistoria.id).desc())
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -291,23 +296,25 @@ def _ejecuciones(condicion: ColumnElement) -> Select[Any]:
     """Las ejecuciones historicas que cumplen `condicion`, con los identificadores publicos de su
     dataset, de su fuente (corrida o ingesta de pagos), de su corte y de su trabajo."""
     return (
-        select(
+        seleccionar(
             EjecucionHistoria,
-            DatasetConformado.dataset_id,
-            Corrida.run_id,
-            Corrida.fecha_corte,
-            IngestaPagos.pagos_run_id,
-            CorteCanonico.corte_id,
-            TrabajoOrquestacion.trabajo_id,
+            col(DatasetConformado.dataset_id),
+            col(Corrida.run_id),
+            col(Corrida.fecha_corte),
+            col(IngestaPagos.pagos_run_id),
+            col(CorteCanonico.corte_id),
+            col(TrabajoOrquestacion.trabajo_id),
         )
         .select_from(EjecucionHistoria)
-        .join(DatasetConformado, DatasetConformado.id == EjecucionHistoria.dataset_conformado_id)
-        .outerjoin(Corrida, Corrida.id == DatasetConformado.corrida_id)
-        .outerjoin(IngestaPagos, IngestaPagos.id == DatasetConformado.ingesta_pagos_id)
-        .outerjoin(CorteCanonico, CorteCanonico.id == EjecucionHistoria.corte_canonico_id)
+        .join(
+            DatasetConformado, col(DatasetConformado.id) == EjecucionHistoria.dataset_conformado_id
+        )
+        .outerjoin(Corrida, col(Corrida.id) == DatasetConformado.corrida_id)
+        .outerjoin(IngestaPagos, col(IngestaPagos.id) == DatasetConformado.ingesta_pagos_id)
+        .outerjoin(CorteCanonico, col(CorteCanonico.id) == EjecucionHistoria.corte_canonico_id)
         .outerjoin(
             TrabajoOrquestacion,
-            TrabajoOrquestacion.ejecucion_historia_id == EjecucionHistoria.id,
+            col(TrabajoOrquestacion.ejecucion_historia_id) == EjecucionHistoria.id,
         )
         .where(condicion)
     )

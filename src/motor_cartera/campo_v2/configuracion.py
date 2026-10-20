@@ -53,8 +53,10 @@ from motor_cartera.db.modelos import (
     VersionBasesOperativas,
     VersionConfiguracionCampo,
     ahora,
+    id_de,
 )
 from motor_cartera.db.sesion import insertar_en_savepoint, restriccion
+from motor_cartera.invariantes import presente
 
 VERSION_CONFIGURACION = "campo-configuracion/v1"
 """Cambia si cambia la forma canonica con que se calcula el hash."""
@@ -295,7 +297,7 @@ def _ventanas(valor: Any, donde: str, problemas: list[str]) -> tuple[Ventana, ..
             if not isinstance(hora, str) or not PATRON_HORA.fullmatch(hora):
                 problemas.append(f"{aqui}: {campo} es una hora HH:MM entre 00:00 y 24:00")
                 horas_validas = False
-        if not horas_validas:
+        if not horas_validas or not isinstance(inicio, str) or not isinstance(fin, str):
             continue
         if inicio == "24:00":
             problemas.append(f"{aqui}: una ventana no empieza a las 24:00")
@@ -419,7 +421,13 @@ def _gestor(valor: Any, i: int, problemas: list[str]) -> GestorConfigurado | Non
     activo = valor["activo"]
     if not isinstance(activo, bool):
         problemas.append(f"{donde}: activo es true o false")
-    if None in (codigo, base, calendario, capacidad) or not isinstance(activo, bool):
+    if (
+        codigo is None
+        or base is None
+        or calendario is None
+        or capacidad is None
+        or not isinstance(activo, bool)
+    ):
         return None
     return GestorConfigurado(codigo, base, calendario, capacidad, activo)
 
@@ -473,14 +481,16 @@ def leer(documento: Any) -> ConfiguracionCampo:
     for g in leidos_g:
         if g is not None and g.calendario not in declarados:
             problemas.append(f"el gestor {g.codigo}: el calendario {g.calendario} no existe")
-    if problemas:
+    if problemas or nombre is None or bases_version_id is None or not isinstance(zona, str):
         raise ConfiguracionInvalida(problemas)
+    validos_c = [presente(c, "un calendario sin problemas") for c in leidos_c]
+    validos_g = [presente(g, "un gestor sin problemas") for g in leidos_g]
     return ConfiguracionCampo(
         nombre,
         bases_version_id,
         zona,
-        tuple(sorted(leidos_c, key=lambda c: c.codigo)),
-        tuple(sorted(leidos_g, key=lambda g: g.codigo)),
+        tuple(sorted(validos_c, key=lambda c: c.codigo)),
+        tuple(sorted(validos_g, key=lambda g: g.codigo)),
     )
 
 
@@ -523,7 +533,7 @@ def leer_jsonl(texto: str) -> ConfiguracionCampo:
             problemas.append(f"la linea {numero}: registro es uno de {', '.join(REGISTROS)}")
     if cabecera is None:
         problemas.append("falta la linea con el registro configuracion")
-    if problemas:
+    if problemas or cabecera is None:
         raise ConfiguracionInvalida(problemas)
     return leer({**cabecera, "calendarios": calendarios, "gestores": gestores})
 
@@ -561,7 +571,9 @@ def publicar(s: Session, configuracion: ConfiguracionCampo) -> Publicada:
                 "SELECT codigo, activa FROM base_operativa WHERE version_bases_operativas_id = :v"
             ),
             {"v": bases.id},
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     problemas = []
     for g in configuracion.gestores:
@@ -590,7 +602,7 @@ def publicar(s: Session, configuracion: ConfiguracionCampo) -> Publicada:
         creada_en=instante,
         publicada_en=instante,
         nombre=configuracion.nombre,
-        version_bases_operativas_id=bases.id,
+        version_bases_operativas_id=id_de(bases),
         version_configuracion=VERSION_CONFIGURACION,
         hash_configuracion=huella,
         zona_horaria=configuracion.zona_horaria,
@@ -611,7 +623,7 @@ def publicar(s: Session, configuracion: ConfiguracionCampo) -> Publicada:
     if error is not None:
         if restriccion(error) != RESTRICCION_HASH:
             raise error
-        return Publicada(_por_hash(s, huella), creada=False)
+        return Publicada(presente(_por_hash(s, huella), "la version con ese hash"), creada=False)
     _escribir(s, version, configuracion)
     return Publicada(version, creada=True)
 
@@ -681,7 +693,9 @@ def _escribir(
         s.execute(
             text("SELECT codigo, id FROM base_operativa WHERE version_bases_operativas_id = :v"),
             {"v": version.version_bases_operativas_id},
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     copiar(
         s,

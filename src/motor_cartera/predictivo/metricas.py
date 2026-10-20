@@ -11,6 +11,7 @@ docs/modelos_predictivos.md. Este modulo no sabe de la base.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -210,7 +211,7 @@ class Intervalo:
 
 def bootstrap(
     cuentas: np.ndarray,
-    estadisticos: dict[str, callable],
+    estadisticos: Mapping[str, Callable[[np.ndarray | None], float | None]],
     *,
     repeticiones: int,
     semilla: int,

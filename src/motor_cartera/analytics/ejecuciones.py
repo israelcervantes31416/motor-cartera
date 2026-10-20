@@ -32,7 +32,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.analytics import cobertura, controles, manifiesto, sql
 from motor_cartera.analytics.catalogo import (
@@ -68,11 +68,13 @@ from motor_cartera.db.modelos import (
     ResultadoEjecucionAnalytics,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision_v2.ejecuciones import esperar_frontera
 from motor_cartera.geografia.ejecuciones import _traza
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 
 log = logging.getLogger(__name__)
@@ -142,7 +144,7 @@ def abrir(
     if activa is not None:
         raise AnalyticsEnProceso(activa)
     ejecucion = EjecucionAnalytics(
-        corte_canonico_id=r.corte.id,
+        corte_canonico_id=id_de(r.corte),
         despacho_id=r.corte.despacho_id,
         cartera_id=r.corte.cartera_id,
         fecha_corte=r.corte.fecha_corte,
@@ -175,7 +177,7 @@ def abrir(
     for e in r.entradas:
         s.add(
             EntradaAnalytics(
-                ejecucion_analytics_id=ejecucion.id,
+                ejecucion_analytics_id=id_de(ejecucion),
                 tipo_entrada=e.tipo.value,
                 referencia_publica=e.referencia_publica,
                 version=e.version,
@@ -191,7 +193,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.ANALYTICS,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -314,7 +316,8 @@ def analizar(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> None
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo, fallidos)
         if resultado == ResultadoEjecucionAnalytics.YA_GENERADA:
-            raise AnalyticsYaGenerada(_de_firma(s, firma, EstadoAnalytics.EXITOSA))
+            previa = _de_firma(s, firma, EstadoAnalytics.EXITOSA)
+            raise AnalyticsYaGenerada(presente(previa, "la ejecucion EXITOSA con esa firma"))
 
 
 @dataclass
@@ -409,19 +412,23 @@ def _analizar(s: Session, ejecucion: EjecucionAnalytics, cronometro: Cronometro)
         aplica = _aplica(s, corrida, dias)
     _punto_de_falla(ANTES_DE_PUBLICAR)
     with cronometro.fase("publicacion"):
-        publicados = s.execute(
-            text(
-                sql.sql_publicacion(
-                    politica.escala_razon, politica.min_group_size, politica.conjuntos_en_periodo
-                )
-            ),
-            p,
-        ).rowcount
+        publicados = filas_afectadas(
+            s.execute(
+                text(
+                    sql.sql_publicacion(
+                        politica.escala_razon,
+                        politica.min_group_size,
+                        politica.conjuntos_en_periodo,
+                    )
+                ),
+                p,
+            )
+        )
         sin_periodo = [m.codigo for m in METRICAS if Vista.PERIODO not in m.vistas]
         if corrida.periodos:
-            publicados += s.execute(
-                text(sql.SQL_NO_APLICA), {**p, "sin_periodo": sin_periodo}
-            ).rowcount
+            publicados += filas_afectadas(
+                s.execute(text(sql.SQL_NO_APLICA), {**p, "sin_periodo": sin_periodo})
+            )
         esperados = _esperados(s, aplica, len(corrida.periodos), len(sin_periodo))
         calculados += [
             controles.Control(
@@ -451,7 +458,7 @@ def _analizar(s: Session, ejecucion: EjecucionAnalytics, cronometro: Cronometro)
                 "diferencia",
                 "detalle",
             ),
-            _filas_de_control(ejecucion.id, calculados),
+            _filas_de_control(id_de(ejecucion), calculados),
         )
         firma = s.execute(text(sql.SQL_HASH_AGREGADOS), p).scalar_one()
     _punto_de_falla(ANTES_DE_CERRAR)
@@ -1054,23 +1061,25 @@ def _fallar(
         s.rollback()
         log.warning("analytics %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionAnalytics)
-        .where(
-            EjecucionAnalytics.id == ejecucion_id,
-            EjecucionAnalytics.estado == EstadoAnalytics.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionAnalytics)
+            .where(
+                col(EjecucionAnalytics.id) == ejecucion_id,
+                col(EjecucionAnalytics.estado) == EstadoAnalytics.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoAnalytics.FALLIDA,
+                resultado=resultado.value,
+                agregados_publicados=0,
+                controles_totales=len(calculados),
+                controles_fallidos=sum(1 for c in calculados if not c.ok),
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoAnalytics.FALLIDA,
-            resultado=resultado.value,
-            agregados_publicados=0,
-            controles_totales=len(calculados),
-            controles_fallidos=sum(1 for c in calculados if not c.ok),
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     if registrado and calculados:
         s.add_all(
             ControlAnalytics(

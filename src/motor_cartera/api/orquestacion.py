@@ -13,7 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import ColumnElement, func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.api.dependencias import Sesion, buscar_corrida
@@ -35,13 +35,14 @@ from motor_cartera.db.modelos import (
     FlujoOrquestacion,
     TrabajoOrquestacion,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.orquestacion.flujo import (
     FlujoEnProceso,
     FlujoNoReanudable,
     FlujoYaCompletado,
     reanudar_flujo,
 )
-from motor_cartera.orquestacion.objetivos import OBJETIVOS
+from motor_cartera.orquestacion.objetivos import OBJETIVOS, columna
 
 router = APIRouter(tags=["orquestacion"])
 
@@ -95,7 +96,7 @@ def obtener_flujo_de_corrida(run_id: UUID, s: Sesion) -> FlujoRespuesta:
     CLI, que no encadena etapas.
     """
     corrida = buscar_corrida(s, run_id)
-    encontrado = _buscar_flujo(s, FlujoOrquestacion.corrida_id == corrida.id)
+    encontrado = _buscar_flujo(s, col(FlujoOrquestacion.corrida_id) == corrida.id)
     if encontrado is None:
         raise ErrorDeApi(
             404,
@@ -149,11 +150,11 @@ def listar_trabajos(
     `intentos` dice cuantas veces lo tomo un worker: mas de una, si un worker murio o fallo.
     """
     interno, flujo = _flujo_o_404(s, flujo_id)
-    del_flujo = TrabajoOrquestacion.flujo_id == interno
+    del_flujo = col(TrabajoOrquestacion.flujo_id) == interno
     total = s.exec(select(func.count()).select_from(TrabajoOrquestacion).where(del_flujo)).one()
     filas = s.exec(
         _trabajos(del_flujo)
-        .order_by(TrabajoOrquestacion.creado_en, TrabajoOrquestacion.id)
+        .order_by(col(TrabajoOrquestacion.creado_en), col(TrabajoOrquestacion.id))
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -184,7 +185,7 @@ def obtener_trabajo(trabajo_id: UUID, s: Sesion) -> TrabajoRespuesta:
     Mientras esta `EJECUTANDO`, `lease_hasta` dice hasta cuando es de su worker: el latido lo
     renueva, y si vence, otro worker lo toma. El worker que lo tiene no se publica.
     """
-    fila = s.exec(_trabajos(TrabajoOrquestacion.trabajo_id == trabajo_id)).first()
+    fila = s.exec(_trabajos(col(TrabajoOrquestacion.trabajo_id) == trabajo_id)).first()
     if fila is None:
         raise ErrorDeApi(
             404,
@@ -252,7 +253,7 @@ def reanudar(flujo_id: UUID, request: Request, s: Sesion) -> FlujoRespuesta:
 
 
 def _flujo_o_404(s: Session, flujo_id: UUID) -> tuple[int, FlujoRespuesta]:
-    encontrado = _buscar_flujo(s, FlujoOrquestacion.flujo_id == flujo_id)
+    encontrado = _buscar_flujo(s, col(FlujoOrquestacion.flujo_id) == flujo_id)
     if encontrado is None:
         raise ErrorDeApi(404, "FLUJO_NO_ENCONTRADO", f"No existe un flujo con flujo_id {flujo_id}.")
     return encontrado
@@ -263,23 +264,23 @@ def _buscar_flujo(s: Session, condicion: ColumnElement) -> tuple[int, FlujoRespu
     identificadores publicos de su corrida y de sus ejecuciones, en una sola consulta. El id interno
     solo sirve para buscar sus trabajos; no sale en ninguna respuesta."""
     fila = s.exec(
-        select(
+        seleccionar(
             FlujoOrquestacion,
-            Corrida.run_id,
-            EjecucionDecision.decision_run_id,
-            EjecucionTerritorial.territorial_run_id,
-            EjecucionRuteo.ruteo_run_id,
+            col(Corrida.run_id),
+            col(EjecucionDecision.decision_run_id),
+            col(EjecucionTerritorial.territorial_run_id),
+            col(EjecucionRuteo.ruteo_run_id),
         )
         .select_from(FlujoOrquestacion)
-        .join(Corrida, FlujoOrquestacion.corrida_id == Corrida.id)
+        .join(Corrida, col(FlujoOrquestacion.corrida_id) == Corrida.id)
         .outerjoin(
-            EjecucionDecision, FlujoOrquestacion.ejecucion_decision_id == EjecucionDecision.id
+            EjecucionDecision, col(FlujoOrquestacion.ejecucion_decision_id) == EjecucionDecision.id
         )
         .outerjoin(
             EjecucionTerritorial,
-            FlujoOrquestacion.ejecucion_territorial_id == EjecucionTerritorial.id,
+            col(FlujoOrquestacion.ejecucion_territorial_id) == EjecucionTerritorial.id,
         )
-        .outerjoin(EjecucionRuteo, FlujoOrquestacion.ejecucion_ruteo_id == EjecucionRuteo.id)
+        .outerjoin(EjecucionRuteo, col(FlujoOrquestacion.ejecucion_ruteo_id) == EjecucionRuteo.id)
         .where(condicion)
     ).first()
     if fila is None:
@@ -313,11 +314,12 @@ def _trabajos(condicion: ColumnElement) -> Select[Any]:
             func.coalesce(*(getattr(objetivo.modelo, objetivo.publico) for objetivo in tablas)),
         )
         .select_from(TrabajoOrquestacion)
-        .outerjoin(FlujoOrquestacion, TrabajoOrquestacion.flujo_id == FlujoOrquestacion.id)
+        .outerjoin(FlujoOrquestacion, col(TrabajoOrquestacion.flujo_id) == FlujoOrquestacion.id)
     )
     for objetivo in tablas:
         consulta = consulta.outerjoin(
-            objetivo.modelo, getattr(TrabajoOrquestacion, objetivo.columna) == objetivo.modelo.id
+            objetivo.modelo,
+            getattr(TrabajoOrquestacion, objetivo.columna) == columna(objetivo.modelo, "id"),
         )
     return consulta.where(condicion)
 

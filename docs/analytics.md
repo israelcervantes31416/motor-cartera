@@ -10,7 +10,9 @@ C prometieron, y el plan de campo tenía D candidatas y E paradas programadas».
 **Describe; no prueba causalidad, no predice y no recomienda.** Una asociación de la atribución es
 operacional, no causal: que un pago llegue después de una gestión no dice que la gestión lo haya
 producido. Una parada programada es un plan, no una visita realizada, y un gestor de campo no es el
-`actor_ref` de una gestión. No hay dashboards, gráficas, probabilidades, modelos ni optimización.
+`actor_ref` de una gestión. `analytics/v1` no calcula probabilidades, modelos ni planes (son de
+`predictive/model-v1` y `optimization/v1`), y no dibuja: la app muestra sus agregados tal como se
+publicaron.
 
 Las métricas, con su fórmula, su numerador y su denominador, están en
 [metricas_analytics.md](metricas_analytics.md); la cohorte, los conjuntos de dimensiones, los

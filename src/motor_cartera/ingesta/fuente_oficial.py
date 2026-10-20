@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pyarrow as pa
@@ -203,8 +204,10 @@ class JuicioDeFuente:
 
 
 def _contar(valores: pd.Series, conteo: dict[str, int]) -> None:
+    # La llave unica de un contrato es una columna de texto.
     for valor, veces in valores.dropna().value_counts().items():
-        conteo[valor] = conteo.get(valor, 0) + int(veces)
+        llave = cast(str, valor)
+        conteo[llave] = conteo.get(llave, 0) + int(veces)
 
 
 def _rechazados(
@@ -215,6 +218,6 @@ def _rechazados(
     crudos = datos.loc[filas]
     crudos = crudos.astype(object).where(crudos.notna(), None)
     return [
-        Rechazado(int(fila), registro, motivos[int(fila)])
+        Rechazado(int(fila), cast(dict[str, str | None], registro), motivos[int(fila)])
         for fila, registro in zip(filas, crudos.to_dict("records"), strict=True)
     ]

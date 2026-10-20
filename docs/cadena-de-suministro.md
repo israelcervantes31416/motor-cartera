@@ -32,6 +32,7 @@ la credencial fuera del disco (`persist-credentials: false`). Corre en el job `a
 | **Trivy** | las tres imágenes propias (`motor-cartera:produccion`, `motor-cartera-web:produccion`, `motor-cartera-respaldo:local`) | una vulnerabilidad alta o crítica **con corrección publicada** detiene el CI; las que no tienen corrección se reportan |
 | **Trivy** | las imágenes de terceros del camino de una petición (PostGIS, Dex, oauth2-proxy, Valkey, OSRM) | informe en el resumen del run; no detiene: se atienden actualizando su digest |
 | **gitleaks** 8.30.1 | el historial completo del repositorio, en cada run | un hallazgo detiene el CI; dos excepciones literales y justificadas en `.gitleaks.toml` |
+| **CodeQL** (desde v0.18.1) | el código de Python y el de la app web (JavaScript y TypeScript), con las consultas de seguridad por omisión, en su propio workflow (`.github/workflows/codeql.yml`): cada pull request a `main`, cada push a `main` y cada semana | sus hallazgos quedan en Code scanning y se clasifican uno por uno |
 
 **Estado al cerrar v0.18 (2026-10-18):** pip-audit sin vulnerabilidades conocidas en 226
 dependencias exactas; npm audit, 0 (de producción y todas); Trivy, 0 en los lockfiles y 0 altas o
@@ -63,7 +64,8 @@ v0.18), `sbom-web.cdx.json` (71) y `sbom-respaldo.cdx.json` (127).
 de las acciones, de los digests de las imágenes (`docker` y `docker-compose`) y, mensuales, del
 proveedor de OpenTofu. Cada fuente espera **7 días** después de una versión nueva antes de
 proponerla (`cooldown`): una versión comprometida suele descubrirse en esos días. Cada PR pasa por el
-CI completo. La cola abierta al cerrar v0.18, con la decisión sobre cada PR, está en
+CI completo. Desde v0.18.1 también están activadas las alertas de Dependabot y sus actualizaciones
+de seguridad. La cola abierta, con la decisión sobre cada PR, está en
 [dependencias-v1.md](dependencias-v1.md).
 
 ## Qué es reproducible

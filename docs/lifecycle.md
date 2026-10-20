@@ -51,7 +51,8 @@ intentó (`canal` y `medio`), con quién se habló (`nivel_contacto`) y qué sal
 el `ocurrido_en` de su evento para el índice de la historia de la cuenta.
 
 **`VisitaCampo`**. El detalle de una gestión de `CAMPO`: qué encontró (`resultado`), y su inicio y
-su fin si se saben. Sin GPS, rutas, zonas ni geocercas: eso es de v0.11–v0.13. Una visita no es otro
+su fin si se saben. Sin GPS ni geocercas, y sin ligarse a una zona de `campo/v2` ni a una parada de
+`ruteo/v2`. Una visita no es otro
 dominio: es una gestión de campo con su detalle, y se registra con la misma ruta que cualquier
 gestión (`POST /cuentas/{id}/gestiones` con `canal=CAMPO` y un bloque `visita`).
 

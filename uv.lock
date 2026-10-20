@@ -664,7 +664,7 @@ wheels = [
 
 [[package]]
 name = "motor-cartera"
-version = "0.18.0"
+version = "0.18.1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -693,10 +693,13 @@ dependencies = [
 dev = [
     { name = "bcrypt" },
     { name = "httpx2" },
+    { name = "pandas-stubs" },
+    { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "scikit-learn" },
+    { name = "scipy-stubs" },
 ]
 
 [package.metadata]
@@ -711,12 +714,14 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.30" },
     { name = "opentelemetry-sdk", specifier = ">=1.30" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "pandas-stubs", marker = "extra == 'dev'", specifier = ">=3.0.5.260914" },
     { name = "pandera", specifier = ">=0.24" },
     { name = "prometheus-client", specifier = ">=0.21" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=21" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.414" },
     { name = "pyshp", specifier = ">=3.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
@@ -724,6 +729,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "scikit-learn", marker = "extra == 'dev'", specifier = ">=1.6" },
     { name = "scipy", specifier = ">=1.15" },
+    { name = "scipy-stubs", marker = "extra == 'dev'", specifier = ">=1.18.1.1" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.30" },
@@ -746,6 +752,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/21/f64d6b2dbea7bf3f8c38cdc786dcc6ef012ca3d173ad208c782c9a7bedf6/narwhals-2.27.1.tar.gz", hash = "sha256:aed93076a3ea42d9c32c88e4eb5ea422a21937011cbe1f480f9572a523c82094", size = 735013, upload-time = "2026-10-10T06:52:18.113Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/89/5d4c86da1130d9059681e5b6cd7645df5c10279a6a079c5c37dcb2cc6f3f/narwhals-2.27.1-py3-none-any.whl", hash = "sha256:d057df13f5852b8e157596e82eb5e955fad267425df5e420e0ee9863da483b31", size = 483211, upload-time = "2026-10-10T06:52:16.32Z" },
+]
+
+[[package]]
+name = "nodeenv"
+version = "1.11.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/105de02c1322cfada6d9710d9146ef8026419d433c9d08359a2d35805811/nodeenv-1.11.0.tar.gz", hash = "sha256:3ce8fe5b71d16e8af7039ca65257354100bc772965d6bc549070649e53b1b146", size = 99301, upload-time = "2026-09-26T11:29:21.367Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/c8/12811c9b48fde162bb72b6f2e78fada9a247a09d7bb5be2050a5d099c77b/nodeenv-1.11.0-py2.py3-none-any.whl", hash = "sha256:edaa16e6c14d7cf395d75d4bbd5a26390f4dc06501a33b4e76282b02cc688a25", size = 34277, upload-time = "2026-09-26T11:29:19.933Z" },
 ]
 
 [[package]]
@@ -819,6 +834,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a1/d2/4e1014173aa3c55e6a756e0e567290743a6ab33a288460374d7ef6bcd239/numpy-2.5.3-cp315-cp315t-win32.whl", hash = "sha256:f54660b0eb6b0b9f36e7fe1cdfdff472028dd0d14acd9b9b65098efbad059469", size = 6330292, upload-time = "2026-09-06T16:27:38.149Z" },
     { url = "https://files.pythonhosted.org/packages/6c/b0/ff5658a58199b7bcaad87bf260eef6713d9d42cca4e028f935b4fc5fbac6/numpy-2.5.3-cp315-cp315t-win_amd64.whl", hash = "sha256:1aad64d99730d013cfc6debafed22783b4fc5a7f4b8bc744d2d8cf7dcc880551", size = 12884918, upload-time = "2026-09-06T16:27:40.965Z" },
     { url = "https://files.pythonhosted.org/packages/fb/0b/b12a2df5d1b774bd9007a6fdff9381145b6223d37f11afc9c37ab0efd9a1/numpy-2.5.3-cp315-cp315t-win_arm64.whl", hash = "sha256:befa1ae5bd6030b3f512b43ff3fa5290bbed6b84411a44244b14adf835f5b89d", size = 10850807, upload-time = "2026-09-06T16:27:43.868Z" },
+]
+
+[[package]]
+name = "numpy-typing-compat"
+version = "20260602.2.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/db/5cd1d99caea4bf39fd477686ded4b9b70dff3c7673b5d84ef2d96a4f5aab/numpy_typing_compat-20260602.2.5.tar.gz", hash = "sha256:1885a678e9a24564839ed5d1711c0031735fb7de7f0b5ed88d550e5d45a8d4f9", size = 4593, upload-time = "2026-06-02T15:52:39.331Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/a4/9376b38b7387a0296b1f626b966e5503578625c9673777db1b45bf70acb0/numpy_typing_compat-20260602.2.5-py3-none-any.whl", hash = "sha256:21ba7757c8924d359a9ed3ab2163c282a70983ae64498fdba6d1892a6641c8b1", size = 5881, upload-time = "2026-06-02T15:52:34.167Z" },
 ]
 
 [[package]]
@@ -945,6 +972,24 @@ wheels = [
 ]
 
 [[package]]
+name = "optype"
+version = "0.19.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/cc/ab0d908a4fd70493628cde3ce0f809c2b0d69b645af52202da4f1b0aeea3/optype-0.19.0.tar.gz", hash = "sha256:50ce4c0ca419026eeae4130dc90c6a0b9a0b54ffe1d940fc26e8d0058903de4c", size = 116633, upload-time = "2026-10-02T23:14:27.141Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/2c/8de9d2c9a328419b28feb53081460d901e950b8b676914959a6e1beecc83/optype-0.19.0-py3-none-any.whl", hash = "sha256:31bff7d2e51e88916a11affed80dbe306ca9e74c76b93b143f1355bb127a7a8c", size = 141516, upload-time = "2026-10-02T23:14:25.686Z" },
+]
+
+[package.optional-dependencies]
+numpy = [
+    { name = "numpy" },
+    { name = "numpy-typing-compat" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1013,6 +1058,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9d/8a/1c5bd2642b450e374b6191189f47c49538fe41f82348a66de6f647e6ab59/pandas-3.0.6-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:8fe77b408d82e2615674dfed62533b95e18a03610573877422aada4f625d4947", size = 11709148, upload-time = "2026-09-17T23:23:09.082Z" },
     { url = "https://files.pythonhosted.org/packages/73/3d/1b142bd0d0f1326a5d98c91c955b923cd1e06b5eecb428cd9d8817fa01c0/pandas-3.0.6-cp315-cp315t-win_amd64.whl", hash = "sha256:83e91d15738d7783c050197cef2f2cf82fc6353dae9865aa87ed1fa16aa4d55a", size = 10161518, upload-time = "2026-09-17T23:23:12.365Z" },
     { url = "https://files.pythonhosted.org/packages/0b/a3/6419c14da2adc1f09a6a183b8f91d7494d325b287f4ca984ac04f663638a/pandas-3.0.6-cp315-cp315t-win_arm64.whl", hash = "sha256:963ca21199097a84c7827c4678b04e30833084fbf8ef44fde3fa7180a29f8fa0", size = 9364529, upload-time = "2026-09-17T23:23:15.274Z" },
+]
+
+[[package]]
+name = "pandas-stubs"
+version = "3.0.5.260914"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/93/8948ae6c1e1e3d6833596fd266f7be2d27c1451b8be094975ad42c5e842e/pandas_stubs-3.0.5.260914.tar.gz", hash = "sha256:3f6fc1f147f68fd89c007105e7c94a948acb4ecd7eb20dc1c02e153c4ed5c250", size = 117622, upload-time = "2026-09-14T16:42:35.065Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/cb/5ad79e02a556cc23fed5816de0109fa8af660c66cfa5f4af74c3e8d4cd26/pandas_stubs-3.0.5.260914-py3-none-any.whl", hash = "sha256:39a1300c5c5c55fdf609e3476805decce5d5015539a4dcb683449f8feaeee2fb", size = 177344, upload-time = "2026-09-14T16:42:33.771Z" },
 ]
 
 [[package]]
@@ -1306,6 +1363,19 @@ crypto = [
 ]
 
 [[package]]
+name = "pyright"
+version = "1.1.414"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nodeenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/1b/244c7b710031ada80f27e579ec20d28a2285dfc318fed0339866b1047f12/pyright-1.1.414.tar.gz", hash = "sha256:523c0a97c60da6333234955c277730c9cf4f5bd6d5399e7b7d2b0fc5d3599524", size = 4154638, upload-time = "2026-09-10T12:26:53.181Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/ba/18b6e682ead424ad24bcc134339ae5d1b931cd9ae260540592a058a91279/pyright-1.1.414-py3-none-any.whl", hash = "sha256:2a6b4b3298c9eec174c5ed83bd338de6eee82df2992f3e1930e6199d381be36f", size = 6225049, upload-time = "2026-09-10T12:26:51.427Z" },
+]
+
+[[package]]
 name = "pyshp"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1532,6 +1602,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cf/d9/135be205d9de8783193aff9cc3bf483a03a38e4b29432c954e8cb66ac14e/scipy-1.18.1-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:179ce34a8d0fe273d8883ba59e17e052247d08973dfcb743ca52bb1cce2d60b0", size = 37521946, upload-time = "2026-08-21T23:28:35.245Z" },
     { url = "https://files.pythonhosted.org/packages/5c/a2/5b7d5270621ab7cfa3f7766067bf95dc360b5efb6394694e8143b4156e2b/scipy-1.18.1-cp315-cp315t-win_amd64.whl", hash = "sha256:5632e3ae3d09197c446310cd5187de63e28448ce22f0f67b2b93d97503c0c230", size = 37408295, upload-time = "2026-08-21T23:28:40.724Z" },
     { url = "https://files.pythonhosted.org/packages/63/ad/741c19fcb66755ff953daf9243af8480e4bf3d7fbe57583c178c7d2b6b51/scipy-1.18.1-cp315-cp315t-win_arm64.whl", hash = "sha256:eda632a7981f69730d6281f451db9c1c370993a2c0d7ddb43e2a809a2862b83a", size = 25319710, upload-time = "2026-08-21T23:28:45.713Z" },
+]
+
+[[package]]
+name = "scipy-stubs"
+version = "1.18.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "optype", extra = ["numpy"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dc/76/13f1b922b32ec866389b6f359cf6c29bdb74726df130f0a23a95c72486c1/scipy_stubs-1.18.1.1.tar.gz", hash = "sha256:87995ba945f04a3c3fb9cdb5c06d093cf3637ca1271ae6799eb8030b63fb2263", size = 460131, upload-time = "2026-09-20T22:37:38.617Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/53/9b6dff8225ef3dbc203b1c2329d9efb2b66dfd51d5c2bf048c0676f47731/scipy_stubs-1.18.1.1-py3-none-any.whl", hash = "sha256:1a48be1702cad1ae9aa850c62ed157c988d990305880511d0e38994d502664f4", size = 665244, upload-time = "2026-09-20T22:37:37.029Z" },
 ]
 
 [[package]]

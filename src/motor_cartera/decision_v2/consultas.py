@@ -19,7 +19,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import and_, func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -31,6 +31,7 @@ from motor_cartera.db.modelos import (
     ResultadoDecisionV2,
     TrabajoOrquestacion,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.decision_v2.features import FEATURES
 
 
@@ -54,20 +55,20 @@ class EjecucionVista:
 
 def _ejecuciones() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             EjecucionDecisionV2,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
-            TrabajoOrquestacion.trabajo_id,
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
+            col(TrabajoOrquestacion.trabajo_id),
             func.timezone(
                 EjecucionDecisionV2.zona_horaria,
-                sa.cast(EjecucionDecisionV2.as_of + 1, sa.DateTime),
+                sa.cast(col(EjecucionDecisionV2.as_of) + 1, sa.DateTime),
             ),
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionDecisionV2.corte_canonico_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionDecisionV2.corte_canonico_id)
         .outerjoin(
             TrabajoOrquestacion,
-            TrabajoOrquestacion.ejecucion_decision_v2_id == EjecucionDecisionV2.id,
+            col(TrabajoOrquestacion.ejecucion_decision_v2_id) == EjecucionDecisionV2.id,
         )
     )
 
@@ -94,7 +95,7 @@ def del_corte(
     filas = s.exec(
         _ejecuciones()
         .where(EjecucionDecisionV2.corte_canonico_id == corte.id)
-        .order_by(EjecucionDecisionV2.id.desc())
+        .order_by(col(EjecucionDecisionV2.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -138,9 +139,9 @@ def resultados(
         ).one()
     filas = s.exec(
         select(ResultadoDecisionV2, CuentaCanonica.cuenta_id, CuentaCanonica.cliente_unico)
-        .join(CuentaCanonica, CuentaCanonica.id == ResultadoDecisionV2.cuenta_canonica_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == ResultadoDecisionV2.cuenta_canonica_id)
         .where(*condiciones)
-        .order_by(ResultadoDecisionV2.cuenta_canonica_id)
+        .order_by(col(ResultadoDecisionV2.cuenta_canonica_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -163,9 +164,10 @@ def de_cuenta(
         .join(
             FeatureDecisionCuenta,
             and_(
-                FeatureDecisionCuenta.ejecucion_decision_v2_id
+                col(FeatureDecisionCuenta.ejecucion_decision_v2_id)
                 == ResultadoDecisionV2.ejecucion_decision_v2_id,
-                FeatureDecisionCuenta.cuenta_canonica_id == ResultadoDecisionV2.cuenta_canonica_id,
+                col(FeatureDecisionCuenta.cuenta_canonica_id)
+                == ResultadoDecisionV2.cuenta_canonica_id,
             ),
         )
         .where(
@@ -195,9 +197,9 @@ def _de_la_cuenta(cuenta: CuentaCanonica) -> Select[Any]:
         select(EjecucionDecisionV2, ResultadoDecisionV2, CorteCanonico.corte_id)
         .join(
             ResultadoDecisionV2,
-            ResultadoDecisionV2.ejecucion_decision_v2_id == EjecucionDecisionV2.id,
+            col(ResultadoDecisionV2.ejecucion_decision_v2_id) == EjecucionDecisionV2.id,
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionDecisionV2.corte_canonico_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionDecisionV2.corte_canonico_id)
         .where(
             ResultadoDecisionV2.cuenta_canonica_id == cuenta.id,
             EjecucionDecisionV2.estado == EstadoDecisionV2.EXITOSA,
@@ -216,7 +218,7 @@ def historial(
         .select_from(ResultadoDecisionV2)
         .join(
             EjecucionDecisionV2,
-            EjecucionDecisionV2.id == ResultadoDecisionV2.ejecucion_decision_v2_id,
+            col(EjecucionDecisionV2.id) == ResultadoDecisionV2.ejecucion_decision_v2_id,
         )
         .where(
             ResultadoDecisionV2.cuenta_canonica_id == cuenta.id,
@@ -226,9 +228,9 @@ def historial(
     filas = s.exec(
         _de_la_cuenta(cuenta)
         .order_by(
-            EjecucionDecisionV2.as_of.desc(),
-            EjecucionDecisionV2.known_at.desc(),
-            EjecucionDecisionV2.id.desc(),
+            col(EjecucionDecisionV2.as_of).desc(),
+            col(EjecucionDecisionV2.known_at).desc(),
+            col(EjecucionDecisionV2.id).desc(),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -243,9 +245,9 @@ def ultima(s: Session, cuenta: CuentaCanonica, al: date | None = None) -> Decisi
         consulta = consulta.where(EjecucionDecisionV2.as_of <= al)
     fila = s.exec(
         consulta.order_by(
-            EjecucionDecisionV2.as_of.desc(),
-            EjecucionDecisionV2.known_at.desc(),
-            EjecucionDecisionV2.id.desc(),
+            col(EjecucionDecisionV2.as_of).desc(),
+            col(EjecucionDecisionV2.known_at).desc(),
+            col(EjecucionDecisionV2.id).desc(),
         ).limit(1)
     ).first()
     return None if fila is None else DecisionEnHistoria(*fila)

@@ -161,7 +161,7 @@ def instrumentar_motor(motor: Any) -> None:
         DB_ERRORES.labels(tipo=tipo).inc()
         contexto = contexto_de_excepcion.execution_context
         span = getattr(contexto, "_mc_span", None) if contexto is not None else None
-        if span is not None:
+        if contexto is not None and span is not None:
             span.set_status(Status(StatusCode.ERROR, tipo))
             span.end()
             contexto._mc_span = None

@@ -52,6 +52,11 @@ def memoria_pico_mb() -> float | None:
 
 
 def _pico_windows() -> float | None:  # pragma: no cover - solo en Windows
+    # El verificador de tipos analiza este cuerpo para la plataforma en que corre; fuera de
+    # Windows, ctypes no tiene WinDLL. Solo se llama en Windows (memoria_pico_mb).
+    if sys.platform != "win32":
+        return None
+
     class Contadores(ctypes.Structure):
         _fields_ = [
             ("cb", ctypes.c_ulong),

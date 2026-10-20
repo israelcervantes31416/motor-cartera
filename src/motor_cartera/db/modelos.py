@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import ClassVar, Protocol
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -45,7 +46,38 @@ CLAVE_DEL_CONTENIDO = "storage_key = 'sha256/' || substr(sha256, 1, 2) || '/' ||
 """La identidad fisica de un artefacto sale de su SHA-256, nunca de su nombre."""
 
 
-class ArtefactoFuente(SQLModel, table=True):
+class Tabla(SQLModel):
+    """La base de cada tabla: no agrega columnas ni se mapea (no es `table=True`), solo declara los
+    tipos de `__tablename__` y `__table__` para el verificador de tipos.
+
+    SQLModel declara `__tablename__` como un `declared_attr` (el nombre de la clase en
+    minusculas), y Pyright rechaza que una tabla lo reemplace por su nombre literal; `__table__` lo
+    agrega SQLAlchemy al mapear, sin declararlo. Ninguna de las dos anotaciones cambia lo que se
+    mapea.
+    """
+
+    __tablename__: ClassVar[str]  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table__: ClassVar[sa.Table]
+
+
+class _ConId(Protocol):
+    @property
+    def id(self) -> int | None: ...
+
+
+def id_de(fila: _ConId) -> int:
+    """El id que PostgreSQL le dio a una fila ya escrita (despues de su flush) o leida.
+
+    SQLModel declara `id: int | None` porque una fila nueva no lo tiene hasta escribirse. Donde el
+    codigo necesita el de una fila que ya existe, este es el entero; si la fila no se escribio, es
+    un error del codigo, no de los datos, y se dice en lugar de pasar un None.
+    """
+    if fila.id is None:
+        raise RuntimeError(f"{type(fila).__name__} todavia no tiene id: no se ha escrito.")
+    return fila.id
+
+
+class ArtefactoFuente(Tabla, table=True):
     """Un archivo recibido, tal como llego: la evidencia original de una ingesta.
 
     Los bytes viven en el almacen de artefactos (MC_SOURCE_STORE_ROOT), no en PostgreSQL; esta fila
@@ -100,7 +132,7 @@ class EstadoCorrida(StrEnum):
     FALLIDA = "FALLIDA"  # no se pudo juzgar: archivo ilegible o error; no publico nada
 
 
-class Corrida(SQLModel, table=True):
+class Corrida(Tabla, table=True):
     """Una ejecucion del pipeline. Todo lo que se escribe cuelga de una corrida.
 
     Sin esto no hay trazabilidad: si manana alguien pregunta de donde salio un numero,
@@ -212,7 +244,7 @@ class Corrida(SQLModel, table=True):
     )
 
 
-class Cuenta(SQLModel, table=True):
+class Cuenta(Tabla, table=True):
     """Una cuenta de la cartera, tal como quedo despues de validarse."""
 
     __tablename__ = "cuenta"
@@ -236,7 +268,7 @@ class Cuenta(SQLModel, table=True):
     fecha_corte: date = Field(index=True)
 
 
-class Rechazo(SQLModel, table=True):
+class Rechazo(Tabla, table=True):
     """Un registro que no cumplio el contrato: lo que traia y por que no paso.
 
     Se guarda aunque la corrida no publique nada, porque es la evidencia de que el diseno
@@ -255,7 +287,7 @@ class Rechazo(SQLModel, table=True):
     """Las reglas que no cumplio: [{"campo": ..., "regla": ...}]."""
 
 
-class DatasetConformado(SQLModel, table=True):
+class DatasetConformado(Tabla, table=True):
     """El dataset conformado (source-conformed) que publico una ingesta de una fuente oficial.
 
     Es el linaje de punta a punta: de que artefacto original salio, en que artefacto (un Parquet en
@@ -307,7 +339,7 @@ class DatasetConformado(SQLModel, table=True):
     creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
-class HojaCompanera(SQLModel, table=True):
+class HojaCompanera(Tabla, table=True):
     """Una hoja companera que traia el archivo de una corrida, como CARRIER junto a CARTERA.
 
     Se reconoce y se audita, pero no se juzga ni se publica, y no decide si la corrida publica: sus
@@ -347,7 +379,7 @@ class EstadoDecision(StrEnum):
     FALLIDA = "FALLIDA"  # no termino; no publica ninguna decision
 
 
-class EjecucionDecision(SQLModel, table=True):
+class EjecucionDecision(Tabla, table=True):
     """Una ejecucion del motor de decision sobre una corrida publicada.
 
     Es una entidad, como la corrida, porque tiene que existir aunque no deje decisiones: una
@@ -410,7 +442,7 @@ class EjecucionDecision(SQLModel, table=True):
     """Que paso, para una persona. No es la explicacion de cada cuenta: esa son sus motivos."""
 
 
-class DecisionCuenta(SQLModel, table=True):
+class DecisionCuenta(Tabla, table=True):
     """Lo que el motor decidio de una cuenta en una ejecucion, y por que.
 
     No copia nada de la cuenta (cliente, saldo, atraso, producto, canal): eso vive en `cuenta` y se
@@ -446,7 +478,7 @@ class EstadoTerritorial(StrEnum):
     FALLIDA = "FALLIDA"  # no termino; no publica ningun resultado
 
 
-class EjecucionTerritorial(SQLModel, table=True):
+class EjecucionTerritorial(Tabla, table=True):
     """Una ejecucion del motor territorial sobre una ejecucion de decision.
 
     Cuelga de la ejecucion de decision y no de la corrida: una corrida se puede decidir con varias
@@ -523,7 +555,7 @@ class EjecucionTerritorial(SQLModel, table=True):
     """Que paso, para una persona. No es la explicacion de cada municipio: esa son sus motivos."""
 
 
-class ResultadoTerritorial(SQLModel, table=True):
+class ResultadoTerritorial(Tabla, table=True):
     """Lo que una ejecucion territorial publico de un municipio, y por que.
 
     Guarda los agregados de los que salio, ademas de la carga, el lugar y los motivos, para que cada
@@ -601,7 +633,7 @@ class EstadoRuteo(StrEnum):
     FALLIDA = "FALLIDA"  # no termino; no publica ninguna ruta ni ninguna parada
 
 
-class EjecucionRuteo(SQLModel, table=True):
+class EjecucionRuteo(Tabla, table=True):
     """Una ejecucion del motor de ruteo sobre una ejecucion territorial.
 
     Cuelga de la ejecucion territorial y no de la de decision ni de la corrida: unas decisiones se
@@ -684,7 +716,7 @@ class EjecucionRuteo(SQLModel, table=True):
     """Que paso, para una persona. No es la explicacion de cada ruta: esa son sus distancias."""
 
 
-class RutaTerritorial(SQLModel, table=True):
+class RutaTerritorial(Tabla, table=True):
     """La ruta que una ejecucion de ruteo publico para un municipio con trabajo de campo.
 
     Apunta al ResultadoTerritorial del municipio y no copia su clave ni su lugar: cve_entidad,
@@ -728,7 +760,7 @@ class RutaTerritorial(SQLModel, table=True):
     mejora_2opt_m: int = Field(sa_type=sa.BigInteger)
 
 
-class ParadaRuta(SQLModel, table=True):
+class ParadaRuta(Tabla, table=True):
     """Una cuenta en una ruta: que decision de campo se visita, en que lugar, en que punto
     sintetico y a que distancia de la parada anterior.
 
@@ -775,7 +807,7 @@ class EstadoIngestaPagos(StrEnum):
     FALLIDA = "FALLIDA"  # no se pudo juzgar: archivo ilegible, estructura distinta o error
 
 
-class IngestaPagos(SQLModel, table=True):
+class IngestaPagos(Tabla, table=True):
     """Una ingesta de pagos/v1: un archivo de movimientos economicos, juzgado y, si pasa, aceptado.
 
     No es una corrida: una corrida publica cuentas, que son un corte; una ingesta de pagos acepta
@@ -843,7 +875,7 @@ class IngestaPagos(SQLModel, table=True):
     detalle: str | None = None
 
 
-class RechazoPago(SQLModel, table=True):
+class RechazoPago(Tabla, table=True):
     """Un movimiento que no cumplio pagos/v1: su fila, lo que traia y por que. Ninguno se oculta."""
 
     __tablename__ = "rechazo_pago"
@@ -915,7 +947,7 @@ class ResultadoHistoria(StrEnum):
     """FALLIDA: su trabajo agoto los intentos de la cola sin que terminara."""
 
 
-class CuentaCanonica(SQLModel, table=True):
+class CuentaCanonica(Tabla, table=True):
     """La identidad longitudinal de una cuenta: un CLIENTE_UNICO de una cartera, a traves de todos
     sus cortes.
 
@@ -945,7 +977,7 @@ class CuentaCanonica(SQLModel, table=True):
     corte, ni su originacion, que ninguna fuente dice."""
 
 
-class CorteCanonico(SQLModel, table=True):
+class CorteCanonico(Tabla, table=True):
     """La fotografia canonica de una cartera en una fecha: una sola por despacho, cartera y fecha de
     corte.
 
@@ -990,7 +1022,7 @@ class CorteCanonico(SQLModel, table=True):
     creado_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
-class EjecucionHistoria(SQLModel, table=True):
+class EjecucionHistoria(Tabla, table=True):
     """Una materializacion versionada de un dataset conformado en el modelo historico.
 
     Es una entidad, como las ejecuciones de los motores, porque tiene que existir aunque no publique
@@ -1083,7 +1115,7 @@ class EjecucionHistoria(SQLModel, table=True):
     """Que paso, para una persona."""
 
 
-class SnapshotCuenta(SQLModel, table=True):
+class SnapshotCuenta(Tabla, table=True):
     """Una cuenta canonica observada en un corte canonico, con sus variables historicas.
 
     Guarda solo las variables con significado claro y uso transversal: saldos, atraso, producto,
@@ -1142,7 +1174,7 @@ class SnapshotCuenta(SQLModel, table=True):
     """Su hoja o su miembro del zip, como `_source_sheet`; vacia en un csv suelto."""
 
 
-class PagoObservado(SQLModel, table=True):
+class PagoObservado(Tabla, table=True):
     """Una fila aceptada de pagos/v1, tal como llego: un movimiento observado.
 
     Una fila de la fuente es un pago observado, y ninguno se deduplica: dos filas identicas son dos
@@ -1275,7 +1307,7 @@ CONTEOS_DEL_MOTOR = (
 )
 
 
-class EjecucionMotorPagos(SQLModel, table=True):
+class EjecucionMotorPagos(Tabla, table=True):
     """Una interpretacion versionada de los pagos observados de una ventana: un despacho, una
     cartera y un mes de recepcion, [periodo_desde, periodo_hasta).
 
@@ -1405,7 +1437,7 @@ class EjecucionMotorPagos(SQLModel, table=True):
     detalle: str | None = None
 
 
-class MovimientoEconomicoCanonico(SQLModel, table=True):
+class MovimientoEconomicoCanonico(Tabla, table=True):
     """Un movimiento economico distinto, como lo interpreta una ejecucion del motor de pagos.
 
     No viene del acreedor: lo funda un grupo de observaciones identicas, y su `movimiento_id` sale
@@ -1478,7 +1510,7 @@ class MovimientoEconomicoCanonico(SQLModel, table=True):
     """La firma exacta de sus observaciones: de ella sale su movimiento_id."""
 
 
-class ResultadoPagoObservado(SQLModel, table=True):
+class ResultadoPagoObservado(Tabla, table=True):
     """Lo que una ejecucion del motor de pagos concluyo de un pago observado, y por que.
 
     Cada observacion de la ventana tiene exactamente uno por ejecucion: su llave primaria es la
@@ -1567,7 +1599,7 @@ MEDIO_DEL_CANAL = (
 )
 
 
-class EventoLifecycle(SQLModel, table=True):
+class EventoLifecycle(Tabla, table=True):
     """Un evento operacional del lifecycle de cobranza: el sobre comun de toda accion registrada.
 
     Distingue dos tiempos que no se sustituyen: `ocurrido_en`, cuando paso en el negocio, y
@@ -1671,7 +1703,7 @@ class EventoLifecycle(SQLModel, table=True):
     """SHA-256 de la peticion en forma canonica (`lifecycle.reglas.huella`)."""
 
 
-class GestionCobranza(SQLModel, table=True):
+class GestionCobranza(Tabla, table=True):
     """Una gestion de cobranza: una accion concreta para cobrar o comunicarse con una cuenta.
 
     La registra un evento GESTION_REGISTRADA, y su momento de negocio es el de ese evento (se repite
@@ -1740,7 +1772,7 @@ class GestionCobranza(SQLModel, table=True):
     """Texto libre, sin datos personales: la API y la importacion rechazan lo que lo parece."""
 
 
-class VisitaCampo(SQLModel, table=True):
+class VisitaCampo(Tabla, table=True):
     """El detalle de una gestion de CAMPO: que encontro la visita. Sin GPS, rutas ni zonas, que son
     de versiones posteriores; su resultado no se valida contra ninguna geografia."""
 
@@ -1772,7 +1804,7 @@ class VisitaCampo(SQLModel, table=True):
     observacion: str | None = Field(default=None, max_length=500)
 
 
-class PromesaPago(SQLModel, table=True):
+class PromesaPago(Tabla, table=True):
     """Una promesa de pago, nacida de una gestion con resultado PROMESA: cuanto y hasta cuando.
 
     La crea un evento PROMESA_CREADA, cuyo ocurrido_en es el momento en que se acordo. No guarda si
@@ -1809,7 +1841,7 @@ class PromesaPago(SQLModel, table=True):
     version_modelo: str = Field(max_length=32)
 
 
-class ConvenioCobranza(SQLModel, table=True):
+class ConvenioCobranza(Tabla, table=True):
     """Un convenio de cobranza: un acuerdo operacional registrado, nacido de una gestion con
     resultado CONVENIO. Guarda lo que la operacion acordo (monto total, vigencia y, si se
     declararon, sus cuotas) y nada mas: ni tasas ni terminos que nadie registro. No es un ledger:
@@ -1851,7 +1883,7 @@ class ConvenioCobranza(SQLModel, table=True):
     version_modelo: str = Field(max_length=32)
 
 
-class CuotaConvenio(SQLModel, table=True):
+class CuotaConvenio(Tabla, table=True):
     """Una obligacion del calendario de un convenio, tal como se declaro: cuando y cuanto. Nunca se
     inventa una periodicidad que no se declaro."""
 
@@ -1918,7 +1950,7 @@ class ResultadoAtribucion(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionAtribucion(SQLModel, table=True):
+class EjecucionAtribucion(Tabla, table=True):
     """Una atribucion versionada de los movimientos economicos de una ventana: un despacho, una
     cartera y un mes de recepcion, [periodo_desde, periodo_hasta).
 
@@ -2037,7 +2069,7 @@ class EjecucionAtribucion(SQLModel, table=True):
     detalle: str | None = None
 
 
-class AtribucionMovimiento(SQLModel, table=True):
+class AtribucionMovimiento(Tabla, table=True):
     """Lo que una ejecucion de la atribucion concluyo de un movimiento economico canonico, y por
     que.
 
@@ -2100,7 +2132,7 @@ class AtribucionMovimiento(SQLModel, table=True):
     motivos: list[dict] = Field(sa_type=JSONB)
 
 
-class CandidatoAtribucion(SQLModel, table=True):
+class CandidatoAtribucion(Tabla, table=True):
     """Una gestion candidata de un movimiento en una ejecucion: por que el movimiento quedo asociado
     o ambiguo, en una relacion que se puede consultar y no en una lista de texto."""
 
@@ -2162,7 +2194,7 @@ class ResultadoEvaluacionPromesas(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionEvaluacionPromesas(SQLModel, table=True):
+class EjecucionEvaluacionPromesas(Tabla, table=True):
     """Una evaluacion versionada de las promesas de una cartera a una fecha de corte (`as_of`).
 
     Evalua, en un solo trabajo y por conjuntos, cada promesa acordada hasta el final de as_of. La
@@ -2246,7 +2278,7 @@ class EjecucionEvaluacionPromesas(SQLModel, table=True):
     detalle: str | None = None
 
 
-class EvaluacionPromesa(SQLModel, table=True):
+class EvaluacionPromesa(Tabla, table=True):
     """Lo que una ejecucion de la evaluacion concluyo de una promesa, y por que."""
 
     __tablename__ = "evaluacion_promesa"
@@ -2349,7 +2381,7 @@ class ResultadoEjecucionDecisionV2(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionDecisionV2(SQLModel, table=True):
+class EjecucionDecisionV2(Tabla, table=True):
     """Una ejecucion de decision/v2 sobre un corte canonico, a un as_of y con conocimiento hasta
     known_at.
 
@@ -2462,7 +2494,7 @@ class EjecucionDecisionV2(SQLModel, table=True):
     detalle: str | None = None
 
 
-class FeatureDecisionCuenta(SQLModel, table=True):
+class FeatureDecisionCuenta(Tabla, table=True):
     """Las features exactas con que una ejecucion de decision/v2 decidio una cuenta.
 
     Una fila por cuenta del corte y ejecucion, inmutable: no se recalcula al consultar una decision
@@ -2570,7 +2602,7 @@ class FeatureDecisionCuenta(SQLModel, table=True):
     feature_hash: bytes = Field(sa_type=sa.LargeBinary)
 
 
-class ResultadoDecisionV2(SQLModel, table=True):
+class ResultadoDecisionV2(Tabla, table=True):
     """Lo que una ejecucion de decision/v2 decidio de una cuenta, y por que.
 
     Apunta a sus features por la misma llave natural (la llave foranea compuesta es su
@@ -2756,7 +2788,7 @@ class NivelGeografia(StrEnum):
     MUNICIPAL = "MUNICIPAL"
 
 
-class VersionGeografia(SQLModel, table=True):
+class VersionGeografia(Tabla, table=True):
     """Una version importada de una referencia geografica publica: de que producto y edicion salio,
     de que archivo (por su SHA-256), en que sistema de coordenadas venia y como se importo.
 
@@ -2851,7 +2883,7 @@ class VersionGeografia(SQLModel, table=True):
     detalle: str | None = None
 
 
-class MunicipioGeografico(SQLModel, table=True):
+class MunicipioGeografico(Tabla, table=True):
     """Un area geoestadistica municipal de una version de la referencia, con su geometria.
 
     Se identifica por su CVEGEO dentro de su version, nunca por su nombre. El nombre oficial es el
@@ -2918,7 +2950,7 @@ class ResultadoEjecucionGeografia(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionGeografia(SQLModel, table=True):
+class EjecucionGeografia(Tabla, table=True):
     """Una ejecucion de geografia/v1: la geografia de cada cuenta de un corte canonico, con una
     version declarada de la referencia.
 
@@ -3011,7 +3043,7 @@ class EjecucionGeografia(SQLModel, table=True):
     detalle: str | None = None
 
 
-class ResultadoGeografiaCuenta(SQLModel, table=True):
+class ResultadoGeografiaCuenta(Tabla, table=True):
     """Lo que geografia/v1 concluyo de la coordenada observada de una cuenta en una ejecucion.
 
     Guarda la coordenada tal como vino en la fuente (latitud y longitud observadas, que pueden ser
@@ -3095,7 +3127,7 @@ class EstadoVersionBases(StrEnum):
     PUBLICADA = "PUBLICADA"
 
 
-class VersionBasesOperativas(SQLModel, table=True):
+class VersionBasesOperativas(Tabla, table=True):
     """Una version de la configuracion de bases operativas: que bases hay, donde estan, si estan
     activas y que municipios puede atender cada una.
 
@@ -3142,7 +3174,7 @@ class VersionBasesOperativas(SQLModel, table=True):
     creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
-class BaseOperativa(SQLModel, table=True):
+class BaseOperativa(Tabla, table=True):
     """Una base de una version: un punto desde el cual puede organizarse trabajo de campo.
 
     No representa capacidad, gestores, jornadas ni rutas: eso es de v0.12 en adelante. El mismo
@@ -3174,7 +3206,7 @@ class BaseOperativa(SQLModel, table=True):
     """Donde esta, en EPSG:4326."""
 
 
-class CoberturaBaseMunicipio(SQLModel, table=True):
+class CoberturaBaseMunicipio(Tabla, table=True):
     """Que municipio puede atender una base: declarado, nunca inferido porque la base este cerca.
 
     El municipio se nombra por su CVEGEO, no por la fila de una version de la referencia: la
@@ -3218,7 +3250,7 @@ class ResultadoEjecucionTerritorialV2(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionTerritorialV2(SQLModel, table=True):
+class EjecucionTerritorialV2(Tabla, table=True):
     """Una ejecucion de territorial/v2: a que base operativa se asigna cada cuenta de un corte, con
     entradas declaradas.
 
@@ -3324,7 +3356,7 @@ class EjecucionTerritorialV2(SQLModel, table=True):
     detalle: str | None = None
 
 
-class AsignacionTerritorialV2(SQLModel, table=True):
+class AsignacionTerritorialV2(Tabla, table=True):
     """Lo que territorial/v2 concluyo de una cuenta: a que base se asigna, o por que no.
 
     Apunta a su resultado geografico por su llave natural (ejecucion de geografia, cuenta), y a su
@@ -3476,7 +3508,7 @@ class EstadoVersionCampo(StrEnum):
     PUBLICADA = "PUBLICADA"
 
 
-class VersionConfiguracionCampo(SQLModel, table=True):
+class VersionConfiguracionCampo(Tabla, table=True):
     """Una version de la configuracion de campo, sobre una version de bases declarada.
 
     Es configuracion operacional versionada, no una fuente de negocio ni datos de CARTERA o PAGOS.
@@ -3549,7 +3581,7 @@ class VersionConfiguracionCampo(SQLModel, table=True):
     """Nace publicada, en la transaccion que la crea: coincide con creada_en."""
 
 
-class CalendarioCampo(SQLModel, table=True):
+class CalendarioCampo(Tabla, table=True):
     """Un calendario de una configuracion: las ventanas de cada dia de la semana y sus excepciones,
     reutilizable por varios gestores."""
 
@@ -3581,7 +3613,7 @@ class TipoExcepcionCampo(StrEnum):
     VENTANAS_ESPECIALES = "VENTANAS_ESPECIALES"
 
 
-class ExcepcionCalendarioCampo(SQLModel, table=True):
+class ExcepcionCalendarioCampo(Tabla, table=True):
     """Lo que un calendario dice de una fecha, en lugar de su semana: CERRADO (un festivo, una
     capacitacion), o VENTANAS_ESPECIALES (una media jornada), con sus ventanas."""
 
@@ -3611,7 +3643,7 @@ class ExcepcionCalendarioCampo(SQLModel, table=True):
     """Para personas: festivo, capacitacion, media jornada. No es un dato de nadie."""
 
 
-class VentanaJornadaCampo(SQLModel, table=True):
+class VentanaJornadaCampo(Tabla, table=True):
     """Una ventana de disponibilidad: de un dia de la semana de un calendario, o de una excepcion
     VENTANAS_ESPECIALES. En hora local de la zona de su configuracion, como minutos desde la
     medianoche: [minuto_inicio, minuto_fin), dentro de 00:00 a 24:00. Dos ventanas del mismo dia no
@@ -3649,7 +3681,7 @@ class VentanaJornadaCampo(SQLModel, table=True):
     """1440 es las 24:00: el fin del dia."""
 
 
-class GestorCampo(SQLModel, table=True):
+class GestorCampo(Tabla, table=True):
     """Un gestor de campo de una configuracion: un recurso operacional, no una persona.
 
     Se identifica por su codigo (GESTOR_001); no guarda nombre, correo, telefono ni ningun dato
@@ -3739,7 +3771,7 @@ class ResultadoEjecucionCampoV2(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionCampoV2(SQLModel, table=True):
+class EjecucionCampoV2(Tabla, table=True):
     """Un plan de campo/v2: las candidatas de campo de una decision/v2, en una fecha de operacion,
     con entradas declaradas.
 
@@ -3867,7 +3899,7 @@ class EjecucionCampoV2(SQLModel, table=True):
     detalle: str | None = None
 
 
-class AsignacionCampoCuenta(SQLModel, table=True):
+class AsignacionCampoCuenta(Tabla, table=True):
     """Lo que un plan de campo/v2 concluyo de una candidata: su gestor, su particion, o por que no.
 
     Apunta a la decision de su cuenta y a su asignacion territorial por sus llaves naturales, y a su
@@ -3987,7 +4019,7 @@ class AsignacionCampoCuenta(SQLModel, table=True):
     """Por que salio asi, con codigos estables. Sin coordenadas."""
 
 
-class UnidadTerritorialCampo(SQLModel, table=True):
+class UnidadTerritorialCampo(Tabla, table=True):
     """Una unidad de la particion que ocupo un plan: una zona, una subzona, un tramo o un
     microtramo con candidatas. No se materializan las celdas vacias, y no se guarda ninguna
     geometria, celda ni coordenada: el identificador, su padre, su base y su municipio."""
@@ -4047,7 +4079,7 @@ class UnidadTerritorialCampo(SQLModel, table=True):
     disponibles."""
 
 
-class CargaGestorCampo(SQLModel, table=True):
+class CargaGestorCampo(Tabla, table=True):
     """La carga de un gestor de la configuracion en un plan: su jornada en la fecha, su capacidad
     efectiva, cuantas cuentas recibio, de cuantos microtramos y tramos, cuantas por spillover, y las
     ventanas de su dia, para el ruteo de v0.13. Una fila por cada gestor de la configuracion."""
@@ -4217,7 +4249,7 @@ class EstadoVersionRedVial(StrEnum):
     FALLIDA = "FALLIDA"
 
 
-class VersionRedVial(SQLModel, table=True):
+class VersionRedVial(Tabla, table=True):
     """Una version de la red vial: de que datos publicos salio (OpenStreetMap, ODbL), con que motor
     de ruteo, perfil y parametros se preparo, y su huella.
 
@@ -4338,7 +4370,7 @@ class ResultadoEjecucionRuteoV2(StrEnum):
     en ninguno."""
 
 
-class EjecucionRuteoV2(SQLModel, table=True):
+class EjecucionRuteoV2(Tabla, table=True):
     """Una ejecucion de ruteo/v2: las rutas de los gestores de un plan de campo/v2, sobre una
     version declarada de la red vial.
 
@@ -4438,7 +4470,7 @@ class EjecucionRuteoV2(SQLModel, table=True):
     detalle: str | None = None
 
 
-class RutaGestorV2(SQLModel, table=True):
+class RutaGestorV2(Tabla, table=True):
     """La ruta de un gestor en una ejecucion: sale de su base, visita sus paradas PROGRAMADA en
     orden y regresa a la base, dentro de su jornada; o por que no hay ruta.
 
@@ -4521,7 +4553,7 @@ class RutaGestorV2(SQLModel, table=True):
     creada_en: datetime = Field(default_factory=ahora, sa_type=sa.DateTime(timezone=True))
 
 
-class ParadaRutaV2(SQLModel, table=True):
+class ParadaRutaV2(Tabla, table=True):
     """Una parada de una ruta: una cuenta ASIGNADA del plan de campo/v2, con su estado, su motivo y,
     si quedo PROGRAMADA, su orden y sus instantes planificados (ETA estaticas, sin trafico).
 
@@ -4686,7 +4718,7 @@ class ResultadoEjecucionAnalytics(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionAnalytics(SQLModel, table=True):
+class EjecucionAnalytics(Tabla, table=True):
     """Una ejecucion de analytics/v1: la cohorte de un corte canonico, de fecha_corte a as_of, con
     lo que se conocia en known_at, sobre un manifiesto declarado.
 
@@ -4804,7 +4836,7 @@ class EjecucionAnalytics(SQLModel, table=True):
     detalle: str | None = None
 
 
-class EntradaAnalytics(SQLModel, table=True):
+class EntradaAnalytics(Tabla, table=True):
     """Una entrada declarada del manifiesto de una ejecucion: el corte, o una ejecucion de otro
     dominio, con su identificador publico, su version, su firma, su ventana o su fecha, y el
     instante en que estuvo disponible. Nace con la ejecucion y no cambia."""
@@ -4918,7 +4950,7 @@ class EntradaAnalytics(SQLModel, table=True):
     """Lo minimo que la describe, sin datos de cuentas."""
 
 
-class AgregadoAnalytics(SQLModel, table=True):
+class AgregadoAnalytics(Tabla, table=True):
     """Un valor publicado: una metrica del catalogo, en un periodo de una vista, en una celda de un
     conjunto de dimensiones. Inmutable.
 
@@ -4969,7 +5001,7 @@ class AgregadoAnalytics(SQLModel, table=True):
     cobertura, la supresion. Vacio en un valor DISPONIBLE con denominador distinto de cero."""
 
 
-class ControlAnalytics(SQLModel, table=True):
+class ControlAnalytics(Tabla, table=True):
     """Una reconciliacion de una ejecucion: que se esperaba, que se observo y la diferencia, sin
     datos de cuentas. Un control que falla deja la ejecucion FALLIDA."""
 
@@ -5125,7 +5157,7 @@ class ResultadoScoringPredictivo(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionEntrenamientoPredictivo(SQLModel, table=True):
+class EjecucionEntrenamientoPredictivo(Tabla, table=True):
     """Un entrenamiento de predictive/model-v1 sobre un manifiesto explicito: que anclas, con que
     relojes, que split y que interpretaciones de pagos definen sus labels. Guarda las versiones y
     los hashes de las features, de los targets y de la politica, el hash del manifiesto, la firma
@@ -5215,7 +5247,7 @@ class EjecucionEntrenamientoPredictivo(SQLModel, table=True):
     detalle: str | None = None
 
 
-class AnclaEntrenamientoPredictivo(SQLModel, table=True):
+class AnclaEntrenamientoPredictivo(Tabla, table=True):
     """Un ancla del manifiesto de un entrenamiento: un corte canonico, el dia de la prediccion (su
     fecha de corte), sus dos fronteras de conocimiento, las marcas de cobertura que declara y su
     split. Nace con el entrenamiento y no cambia."""
@@ -5257,7 +5289,7 @@ class AnclaEntrenamientoPredictivo(SQLModel, table=True):
     """SHA-256 de la declaracion canonica del ancla."""
 
 
-class InterpretacionEntrenamientoPredictivo(SQLModel, table=True):
+class InterpretacionEntrenamientoPredictivo(Tabla, table=True):
     """Una interpretacion de pagos declarada para los labels de un entrenamiento: una por mes.
     Nace con el entrenamiento y no cambia."""
 
@@ -5286,7 +5318,7 @@ class InterpretacionEntrenamientoPredictivo(SQLModel, table=True):
     ejecucion_motor_pagos_id: int
 
 
-class VersionModeloPredictivo(SQLModel, table=True):
+class VersionModeloPredictivo(Tabla, table=True):
     """Una version de predictive/model-v1: lo que dejo un entrenamiento EXITOSA, con sus versiones
     y hashes, el hash del dataset, el del modelo (de sus artefactos), sus periodos y la referencia
     de TRAIN para el drift. PUBLICADA, es inmutable y es la unica que un scoring puede usar; un
@@ -5363,7 +5395,7 @@ class VersionModeloPredictivo(SQLModel, table=True):
     versiones del entorno con que se entreno."""
 
 
-class ComponenteModeloPredictivo(SQLModel, table=True):
+class ComponenteModeloPredictivo(Tabla, table=True):
     """Un componente de una version: el modelo de un target, con su algoritmo, sus
     hiperparametros, su artefacto JSON con su hash, su calibracion, sus metricas de VALIDATION y de
     TEST, el baseline de TEST, sus intervalos bootstrap y sus compuertas. Inmutable."""
@@ -5403,7 +5435,7 @@ class ComponenteModeloPredictivo(SQLModel, table=True):
     compuertas: list[dict] = Field(sa_type=JSONB)
 
 
-class EjecucionScoringPredictivo(SQLModel, table=True):
+class EjecucionScoringPredictivo(Tabla, table=True):
     """Un scoring: una version PUBLICADA declarada, un corte canonico, su as_of (el dia del corte) y
     known_at. Nunca "el ultimo modelo". La base garantiza a lo mas una EXITOSA y una EN_PROCESO por
     firma."""
@@ -5499,7 +5531,7 @@ class EjecucionScoringPredictivo(SQLModel, table=True):
     detalle: str | None = None
 
 
-class PrediccionCuenta(SQLModel, table=True):
+class PrediccionCuenta(Tabla, table=True):
     """La prediccion de una cuenta del corte en un scoring: sus tres probabilidades, su riesgo sin
     recuperacion (el complemento exacto de la primera) y su recuperacion positiva esperada, con el
     feature_hash de las features con que se calculo. Sin datos personales. Inmutable."""
@@ -5564,7 +5596,7 @@ class PrediccionCuenta(SQLModel, table=True):
     feature_hash: bytes = Field(sa_type=sa.LargeBinary)
 
 
-class DriftPredictivo(SQLModel, table=True):
+class DriftPredictivo(Tabla, table=True):
     """El drift de un scoring contra TRAIN, por feature y por salida: su PSI, su fraccion de NULL
     en TRAIN y en el scoring, y su severidad. Agregado: ningun bin nombra una cuenta. Inmutable."""
 
@@ -5739,7 +5771,7 @@ class EstadoVersionOptimizacion(StrEnum):
     PUBLICADA = "PUBLICADA"
 
 
-class VersionConfiguracionOptimizacion(SQLModel, table=True):
+class VersionConfiguracionOptimizacion(Tabla, table=True):
     """Una version de la configuracion de un escenario de optimizacion: su matriz de admisibilidad,
     sus pools con su capacidad y sus unidades, sus restricciones, el total de cuentas, el
     presupuesto de unidades y si admite predicciones CON_IMPUTACION.
@@ -5803,7 +5835,7 @@ class VersionConfiguracionOptimizacion(SQLModel, table=True):
     publicada_en: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
 
 
-class AdmisibilidadCanalOptimizacion(SQLModel, table=True):
+class AdmisibilidadCanalOptimizacion(Tabla, table=True):
     """Una celda de la matriz de admisibilidad de una configuracion: si, para una cuenta a la que
     decision/v2 le recomendo `canal_decision`, `canal_operativo` es operativamente admisible.
     Admisible no es efectivo: no dice que ese canal funcione mejor."""
@@ -5828,7 +5860,7 @@ class AdmisibilidadCanalOptimizacion(SQLModel, table=True):
     permitido: bool
 
 
-class PoolCapacidadOptimizacion(SQLModel, table=True):
+class PoolCapacidadOptimizacion(Tabla, table=True):
     """Un pool de capacidad de una configuracion: cuantas cuentas puede atender un recurso de un
     canal, en un alcance, y cuantas unidades abstractas de esfuerzo consume cada asignacion. Un pool
     de CAMPO es de un gestor (su codigo), y su capacidad nunca pasa de las paradas PROGRAMADA de ese
@@ -5874,7 +5906,7 @@ class PoolCapacidadOptimizacion(SQLModel, table=True):
     activo: bool
 
 
-class RestriccionOptimizacion(SQLModel, table=True):
+class RestriccionOptimizacion(Tabla, table=True):
     """Una restriccion de cobertura de una configuracion: un minimo o un maximo de cuentas, o de
     participacion en puntos base, de un grupo de una dimension operacional publica."""
 
@@ -5936,7 +5968,7 @@ class ResultadoOptimizacion(StrEnum):
     INTENTOS_AGOTADOS = "INTENTOS_AGOTADOS"
 
 
-class EjecucionOptimizacion(SQLModel, table=True):
+class EjecucionOptimizacion(Tabla, table=True):
     """Una ejecucion de optimization/v1: el plan de una fecha de operacion, con entradas
     declaradas exactas.
 
@@ -6113,7 +6145,7 @@ class EjecucionOptimizacion(SQLModel, table=True):
     detalle: str | None = None
 
 
-class ResultadoOptimizacionCuenta(SQLModel, table=True):
+class ResultadoOptimizacionCuenta(Tabla, table=True):
     """Lo que un plan concluyo de una cuenta del universo: ASIGNADA a un pool, NO_SELECCIONADA
     (era elegible y el plan optimo no la asigna) o NO_ELEGIBLE con su motivo factual.
 
@@ -6234,7 +6266,7 @@ class ResultadoOptimizacionCuenta(SQLModel, table=True):
     clase de restricciones, al menos u[s] cuentas con mejor orden canonico."""
 
 
-class UsoPoolOptimizacion(SQLModel, table=True):
+class UsoPoolOptimizacion(Tabla, table=True):
     """El uso de un pool de la configuracion en un plan: su capacidad declarada y efectiva, cuantas
     cuentas elegibles y retenidas tenia, cuantas uso, su holgura y las unidades que consumio."""
 
@@ -6283,7 +6315,7 @@ class UsoPoolOptimizacion(SQLModel, table=True):
     """En CAMPO: el gestor de la configuracion de campo del ruteo que tiene el codigo del pool."""
 
 
-class ResultadoRestriccionOptimizacion(SQLModel, table=True):
+class ResultadoRestriccionOptimizacion(Tabla, table=True):
     """Una restriccion de un plan con su lado izquierdo, su derecho, su holgura y si quedo activa
     (holgura cero, en enteros): cada capacidad de pool, el total de cuentas, el presupuesto y cada
     cobertura. Una participacion, en su forma lineal (10,000 por las del grupo contra los puntos
@@ -6377,7 +6409,7 @@ PROPIEDAD_DEL_TRABAJO = (
 """Solo un trabajo EJECUTANDO tiene dueno y lease, y solo uno terminado tiene fin."""
 
 
-class ArchivoCorrida(SQLModel, table=True):
+class ArchivoCorrida(Tabla, table=True):
     """El archivo de una corrida de v0.5, en BYTEA. Desde la 0007 es una estructura heredada.
 
     En v0.5 la API guardaba aqui el archivo y el worker lo borraba al terminar la ingesta. Desde
@@ -6424,7 +6456,7 @@ class EtapaFlujo(StrEnum):
     COMPLETADA = "COMPLETADA"
 
 
-class FlujoOrquestacion(SQLModel, table=True):
+class FlujoOrquestacion(Tabla, table=True):
     """La cadena automatica de una corrida: ingesta, decision, territorial y ruteo, una etapa
     despues de otra, sin que el cliente pida cada una.
 
@@ -6567,7 +6599,7 @@ class EstadoTrabajo(StrEnum):
     FALLIDO = "FALLIDO"  # agoto sus intentos sin que su objetivo llegara a un estado terminal
 
 
-class TrabajoOrquestacion(SQLModel, table=True):
+class TrabajoOrquestacion(Tabla, table=True):
     """Un trabajo de la cola durable: ejecutar un motor sobre un recurso que ya existe EN_PROCESO.
 
     La entrega es al menos una vez: un worker lo toma con FOR UPDATE SKIP LOCKED, lo marca

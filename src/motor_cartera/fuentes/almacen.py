@@ -107,12 +107,18 @@ def _validar(sha256: str) -> str:
     return sha256
 
 
+class Legible(Protocol):
+    """Lo unico que el almacen lee de un origen: sus bytes, por bloques."""
+
+    def read(self, n: int = -1, /) -> bytes: ...
+
+
 class SourceArtifactStore(Protocol):
     """Lo que la ingesta necesita de un almacen de artefactos fuente."""
 
     def guardar(
         self,
-        origen: BinaryIO,
+        origen: Legible,
         *,
         limite_bytes: int | None = None,
         validar: Callable[[Path], None] | None = None,
@@ -140,7 +146,7 @@ class LocalContentAddressedStore:
 
     def guardar(
         self,
-        origen: BinaryIO,
+        origen: Legible,
         *,
         limite_bytes: int | None = None,
         validar: Callable[[Path], None] | None = None,

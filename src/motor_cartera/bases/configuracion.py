@@ -41,6 +41,7 @@ from motor_cartera.db.modelos import (
     VersionBasesOperativas,
 )
 from motor_cartera.db.sesion import insertar_en_savepoint, restriccion
+from motor_cartera.invariantes import presente
 
 VERSION_CONFIGURACION = "bases-operativas/v1"
 """Cambia si cambia la forma canonica con que se calcula el hash."""
@@ -198,7 +199,8 @@ def leer(documento: Any) -> ConfiguracionBases:
         problemas.append(f"codigos repetidos: {', '.join(repetidos)}")
     if problemas:
         raise ConfiguracionInvalida(problemas)
-    return ConfiguracionBases(nombre, tuple(sorted(leidas, key=lambda b: b.codigo)))
+    validas = [presente(b, "una base sin problemas") for b in leidas]
+    return ConfiguracionBases(nombre, tuple(sorted(validas, key=lambda b: b.codigo)))
 
 
 def leer_jsonl(texto: str, nombre: str) -> ConfiguracionBases:
@@ -242,7 +244,7 @@ def publicar(s: Session, configuracion: ConfiguracionBases) -> Publicada:
     if error is not None:
         if restriccion(error) != RESTRICCION_HASH:
             raise error
-        return Publicada(_por_hash(s, huella), creada=False)
+        return Publicada(presente(_por_hash(s, huella), "la version con ese hash"), creada=False)
     for base in configuracion.bases:
         base_id = s.execute(
             text(

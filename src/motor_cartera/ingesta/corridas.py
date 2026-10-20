@@ -27,13 +27,13 @@ import logging
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pandas as pd
 from sqlalchemy import case, insert, update
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from motor_cartera.config import Config, config
@@ -48,8 +48,16 @@ from motor_cartera.contratos import (
 )
 from motor_cartera.contratos.cartera_v2 import VERSION_CONTRATO_V2
 from motor_cartera.contratos.fuente import ErrorDeEstructura
-from motor_cartera.db.modelos import ArtefactoFuente, Corrida, Cuenta, EstadoCorrida, Rechazo, ahora
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.modelos import (
+    ArtefactoFuente,
+    Corrida,
+    Cuenta,
+    EstadoCorrida,
+    Rechazo,
+    ahora,
+    id_de,
+)
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.fuentes.almacen import ArtefactoCorrupto
 from motor_cartera.fuentes.artefactos import (
     ArtefactoGuardado,
@@ -61,6 +69,7 @@ from motor_cartera.fuentes.artefactos import (
 )
 from motor_cartera.fuentes.proyeccion import VERSION_PROYECCION
 from motor_cartera.ingesta.lectores import ErrorDeLectura, Lectura, leer_contenido
+from motor_cartera.invariantes import presente
 
 log = logging.getLogger(__name__)
 
@@ -142,9 +151,12 @@ def abrir_corrida(
         raise ValueError("Una corrida se abre con su contenido o con su artefacto ya guardado.")
     verificar_declaracion(contrato, fecha_corte)
     if guardado is None:
-        guardado = guardar_contenido(almacen_de(config), contenido, origen)
+        guardado = guardar_contenido(
+            almacen_de(config), presente(contenido, "el contenido"), origen
+        )
     firma = guardado.objeto.sha256
     artefacto = registrar_artefacto(s, guardado)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
         previa = s.exec(_previa(firma)).first()
         if previa is not None:
@@ -167,7 +179,7 @@ def abrir_corrida(
         if restriccion(error) != INDICE_FIRMA_EN_PROCESO:
             raise error
     else:
-        raise error
+        raise presente(error, "el ultimo choque de la apertura")
 
     if confirmar:
         s.commit()
@@ -266,7 +278,7 @@ def ingerir_archivo(
             contrato=contrato,
             fecha_corte=fecha_corte,
         )
-    procesar_corrida(corrida.id)
+    procesar_corrida(id_de(corrida))
     with sesion() as s:
         return s.get_one(Corrida, corrida.id)
 
@@ -343,7 +355,11 @@ def corrida_vigente(s: Session) -> Corrida | None:
     return s.exec(
         select(Corrida)
         .where(Corrida.estado == EstadoCorrida.EXITOSA)
-        .order_by(Corrida.fecha_corte.desc(), Corrida.terminada_en.desc(), Corrida.id.desc())
+        .order_by(
+            col(Corrida.fecha_corte).desc(),
+            col(Corrida.terminada_en).desc(),
+            col(Corrida.id).desc(),
+        )
     ).first()
 
 
@@ -362,9 +378,9 @@ def _previa(firma: str) -> SelectOfScalar[Corrida]:
         select(Corrida)
         .where(
             Corrida.firma == firma,
-            Corrida.estado.in_([EstadoCorrida.EXITOSA, EstadoCorrida.EN_PROCESO]),
+            col(Corrida.estado).in_([EstadoCorrida.EXITOSA, EstadoCorrida.EN_PROCESO]),
         )
-        .order_by(case((Corrida.estado == EstadoCorrida.EXITOSA, 0), else_=1))
+        .order_by(case((col(Corrida.estado) == EstadoCorrida.EXITOSA, 0), else_=1))
     )
 
 
@@ -375,9 +391,11 @@ def _cerrar(s: Session, corrida: Corrida, lectura: Lectura, separacion: Separaci
     estado, veredicto = decidir(leidas, rechazadas, corrida.tolerancia_rechazo, cortes)
 
     if separacion.rechazos:
-        s.execute(insert(Rechazo), _filas_rechazo(corrida.id, lectura.datos, separacion.rechazos))
+        s.execute(
+            insert(Rechazo), _filas_rechazo(id_de(corrida), lectura.datos, separacion.rechazos)
+        )
     if estado is EstadoCorrida.EXITOSA:
-        s.execute(insert(Cuenta), _filas_cuenta(corrida.id, separacion.validas))
+        s.execute(insert(Cuenta), _filas_cuenta(id_de(corrida), separacion.validas))
 
     corrida.estado = estado
     corrida.filas_leidas = leidas
@@ -410,12 +428,14 @@ def _fallar(s: Session, corrida_id: int, etiqueta: UUID, motivo: str) -> None:
     terminarla, y un fallo que llega tarde no cambia una EXITOSA, una RECHAZADA ni otra FALLIDA.
     Si ya termino, se deja como esta y el fallo queda solo en la bitacora.
     """
-    registrado = s.execute(
-        update(Corrida)
-        .where(Corrida.id == corrida_id, Corrida.estado == EstadoCorrida.EN_PROCESO)
-        .values(estado=EstadoCorrida.FALLIDA, detalle=motivo, terminada_en=ahora())
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    registrado = filas_afectadas(
+        s.execute(
+            update(Corrida)
+            .where(col(Corrida.id) == corrida_id, col(Corrida.estado) == EstadoCorrida.EN_PROCESO)
+            .values(estado=EstadoCorrida.FALLIDA, detalle=motivo, terminada_en=ahora())
+            .execution_options(synchronize_session=False)
+        )
+    )
     s.commit()
     if registrado:
         log.warning("corrida %s fallida: %s", etiqueta, motivo)
@@ -426,7 +446,8 @@ def _fallar(s: Session, corrida_id: int, etiqueta: UUID, motivo: str) -> None:
 
 def _filas_cuenta(corrida_id: int, validas: pd.DataFrame) -> list[dict[str, Any]]:
     registros = validas.assign(corrida_id=corrida_id, fecha_corte=validas["fecha_corte"].dt.date)
-    return registros.to_dict("records")
+    # Las columnas de un DataFrame de cuentas son textos.
+    return cast(list[dict[str, Any]], registros.to_dict("records"))
 
 
 def _filas_rechazo(

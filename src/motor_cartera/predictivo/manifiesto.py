@@ -35,7 +35,12 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from motor_cartera.analytics.catalogo import canonico
-from motor_cartera.db.modelos import CorteCanonico, EjecucionMotorPagos, EstadoMotorPagos
+from motor_cartera.db.modelos import (
+    CorteCanonico,
+    EjecucionMotorPagos,
+    EstadoMotorPagos,
+    id_de,
+)
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, periodos_entre
 from motor_cartera.predictivo import features as features_
 from motor_cartera.predictivo import targets as targets_
@@ -129,15 +134,17 @@ def _instante(texto: object, campo: str) -> datetime:
     return valor
 
 
-def _fecha(texto: object, campo: str) -> date | None:
-    if texto is None:
-        return None
+def _fecha(texto: object, campo: str) -> date:
     if isinstance(texto, date):
         return texto
     try:
         return date.fromisoformat(str(texto))
     except ValueError as exc:
         raise ManifiestoInvalido(f"{campo}: {texto!r} no es una fecha AAAA-MM-DD.") from exc
+
+
+def _fecha_opcional(texto: object, campo: str) -> date | None:
+    return None if texto is None else _fecha(texto, campo)
 
 
 def leer(datos: dict) -> ManifiestoDeclarado:
@@ -150,10 +157,10 @@ def leer(datos: dict) -> ManifiestoDeclarado:
                 feature_as_of=_fecha(a["feature_as_of"], "feature_as_of"),
                 feature_known_at=_instante(a["feature_known_at"], "feature_known_at"),
                 label_known_at=_instante(a["label_known_at"], "label_known_at"),
-                pagos_completos_hasta=_fecha(
+                pagos_completos_hasta=_fecha_opcional(
                     a.get("pagos_completos_hasta"), "pagos_completos_hasta"
                 ),
-                lifecycle_completo_hasta=_fecha(
+                lifecycle_completo_hasta=_fecha_opcional(
                     a.get("lifecycle_completo_hasta"), "lifecycle_completo_hasta"
                 ),
                 split=str(a["split"]),
@@ -480,7 +487,7 @@ def _interpretaciones(
                 )
             comprobar_vigente(s, e, conocido)
             comprobar_completa(s, e, conocido, despacho, cartera)
-            comprobadas.add((e.id, conocido))
+            comprobadas.add((id_de(e), conocido))
     return [Interpretacion(e) for e in por_mes.values()]
 
 

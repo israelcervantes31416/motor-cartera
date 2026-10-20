@@ -26,7 +26,7 @@ from typing import BinaryIO
 from uuid import uuid4
 
 from sqlalchemy.dialects.postgresql import insert
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import ArtefactoFuente, ahora
@@ -148,7 +148,7 @@ def auditar_artefactos(s: Session, almacen: SourceArtifactStore) -> list[Auditor
     """Vuelve a firmar cada artefacto que la base registra: que el objeto exista y que sus bytes
     sean los de su SHA-256 y su tamano. Lee cada objeto por bloques; no modifica nada."""
     resultado = []
-    for artefacto in s.exec(select(ArtefactoFuente).order_by(ArtefactoFuente.id)).all():
+    for artefacto in s.exec(select(ArtefactoFuente).order_by(col(ArtefactoFuente.id))).all():
         try:
             almacen.verificar(artefacto.sha256, artefacto.tamano_bytes)
         except (ArtefactoFaltante, ArtefactoCorrupto) as exc:
@@ -172,7 +172,7 @@ class _Encadenado(io.RawIOBase):
 
     def read(self, n: int | None = -1) -> bytes:
         if not self._cabeza:
-            return self._resto.read(n)
+            return self._resto.read(-1 if n is None else n)
         if n is None or n < 0:
             datos, self._cabeza = self._cabeza + self._resto.read(), b""
             return datos

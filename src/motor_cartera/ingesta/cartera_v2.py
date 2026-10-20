@@ -48,6 +48,7 @@ from motor_cartera.db.modelos import (
     EstadoCorrida,
     HojaCompanera,
     ahora,
+    id_de,
 )
 from motor_cartera.fuentes.artefactos import ArtefactoGuardado, almacen_de, registrar_artefacto
 from motor_cartera.fuentes.conformado import EscritorConformado
@@ -63,6 +64,7 @@ from motor_cartera.fuentes.proyeccion import (
 from motor_cartera.historia.ejecuciones import abrir_historia
 from motor_cartera.ingesta.fuente_oficial import DUPLICADO, Cronometro, JuicioDeFuente, Rechazado
 from motor_cartera.ingesta.lectores import ErrorDeLectura
+from motor_cartera.invariantes import presente
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +110,7 @@ def juzgar_y_publicar(
             juicio = JuicioDeFuente(
                 CONTRATO_V2,
                 directorio,
-                rechazar=lambda rechazados: _copiar_rechazos(s, corrida.id, rechazados),
+                rechazar=lambda rechazados: _copiar_rechazos(s, id_de(corrida), rechazados),
                 validar_extra=rechazos_geograficos,
                 filas_por_lote=config.filas_por_lote,
                 cronometro=cronometro,
@@ -123,9 +125,10 @@ def juzgar_y_publicar(
         duplicadas = juicio.duplicadas()
         if duplicadas:
             with cronometro.fase("persistencia"):
-                _marcar_duplicadas(s, corrida.id, duplicadas)
+                _marcar_duplicadas(s, id_de(corrida), duplicadas)
         validas = juicio.validas
-        cortes = {corrida.fecha_corte: validas} if validas else {}
+        fecha_corte = presente(corrida.fecha_corte, "la fecha de corte de una cartera/v2")
+        cortes = {fecha_corte: validas} if validas else {}
         estado, veredicto = decidir(
             juicio.leidas, juicio.rechazadas, corrida.tolerancia_rechazo, cortes
         )
@@ -139,16 +142,16 @@ def juzgar_y_publicar(
                 {
                     "contrato": CONTRATO_V2.version,
                     "artefacto_original": artefacto.sha256,
-                    "fecha_corte": corrida.fecha_corte.isoformat(),
+                    "fecha_corte": fecha_corte.isoformat(),
                     "proyeccion": VERSION_PROYECCION,
                 },
             )
 
         def publicar(canonicos, hojas) -> None:
             with cronometro.fase("conformado"):
-                escritor.escribir(canonicos, hojas)
+                presente(escritor, "el escritor del conformado").escribir(canonicos, hojas)
             with cronometro.fase("proyeccion"):
-                filas = list(filas_cuenta(canonicos, corrida.id, corrida.fecha_corte))
+                filas = list(filas_cuenta(canonicos, id_de(corrida), fecha_corte))
             with cronometro.fase("persistencia"):
                 copiar(s, "cuenta", COLUMNAS_CUENTA, filas)
 
@@ -168,7 +171,7 @@ def juzgar_y_publicar(
                 )
 
     if companera is not None:
-        s.add(_hoja(corrida.id, companera))
+        s.add(_hoja(id_de(corrida), companera))
     corrida.estado = estado
     corrida.filas_leidas = juicio.leidas
     corrida.filas_validas = validas
@@ -234,8 +237,8 @@ def _publicar_conformado(
     dataset = DatasetConformado(
         contrato=CONTRATO_V2.version,
         corrida_id=corrida.id,
-        artefacto_original_id=original.id,
-        artefacto_conformado_id=conformado.id,
+        artefacto_original_id=id_de(original),
+        artefacto_conformado_id=id_de(conformado),
         firma_contenido=firma_contenido,
         filas=escritor.filas,
         columnas=len(CONTRATO_V2.columnas),

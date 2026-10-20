@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -23,6 +23,7 @@ from motor_cartera.db.modelos import (
     PromesaPago,
     TrabajoOrquestacion,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.evaluacion.reglas import EstadoEvaluacion
 
 
@@ -39,7 +40,7 @@ class EjecucionVista:
 def _ejecuciones() -> Select[Any]:
     return select(EjecucionEvaluacionPromesas, TrabajoOrquestacion.trabajo_id).outerjoin(
         TrabajoOrquestacion,
-        TrabajoOrquestacion.ejecucion_evaluacion_promesas_id == EjecucionEvaluacionPromesas.id,
+        col(TrabajoOrquestacion.ejecucion_evaluacion_promesas_id) == EjecucionEvaluacionPromesas.id,
     )
 
 
@@ -78,7 +79,10 @@ def listar(
     filas = s.exec(
         _ejecuciones()
         .where(*condiciones)
-        .order_by(EjecucionEvaluacionPromesas.as_of.desc(), EjecucionEvaluacionPromesas.id.desc())
+        .order_by(
+            col(EjecucionEvaluacionPromesas.as_of).desc(),
+            col(EjecucionEvaluacionPromesas.id).desc(),
+        )
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -121,18 +125,18 @@ def evaluaciones_de(
         EstadoEvaluacion.NO_EVALUABLE: ejecucion.no_evaluables,
     }[estado]
     filas = s.exec(
-        select(
+        seleccionar(
             EvaluacionPromesa,
-            PromesaPago.promesa_id,
-            PromesaPago.monto_prometido,
-            PromesaPago.fecha_limite,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
+            col(PromesaPago.promesa_id),
+            col(PromesaPago.monto_prometido),
+            col(PromesaPago.fecha_limite),
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
         )
-        .join(PromesaPago, PromesaPago.id == EvaluacionPromesa.promesa_pago_id)
-        .join(CuentaCanonica, CuentaCanonica.id == PromesaPago.cuenta_canonica_id)
+        .join(PromesaPago, col(PromesaPago.id) == EvaluacionPromesa.promesa_pago_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == PromesaPago.cuenta_canonica_id)
         .where(*condiciones)
-        .order_by(EvaluacionPromesa.promesa_pago_id)
+        .order_by(col(EvaluacionPromesa.promesa_pago_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()

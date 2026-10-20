@@ -1,7 +1,7 @@
 [project]
 name = "motor-cartera"
-version = "0.18.0"
-description = "Motor de ingesta, validación, segmentación, decisión, priorización territorial y ruteo sintético determinista de cartera de crédito al consumo, con orquestación durable sobre PostgreSQL, un modelo histórico con Cuenta 360, un motor de pagos canónico con conciliación, el lifecycle de cobranza con atribución operativa y un Decision Engine v2 point-in-time y explicable, sobre datos sintéticos"
+version = "0.18.1"
+description = "Plataforma de inteligencia de cobranza (collection intelligence) sobre una cartera sintética: ingeniería de datos point-in-time, decisión explicable, analytics, modelos predictivos, optimización de capacidad y ruteo vial."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -37,7 +37,17 @@ dev = [
     "httpx2>=2.0",
     "scikit-learn>=1.6",
     "bcrypt>=4.2",
+    # El verificador de tipos de src/motor_cartera (pyright, en el CI) y los stubs de pandas y de
+    # SciPy, que no traen los suyos completos. Nada de esto se importa en el servicio.
+    "pyright>=1.1.414",
+    "pandas-stubs>=3.0.5.260914",
+    "scipy-stubs>=1.18.1.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/israelcervantes31416/motor-cartera"
+Documentation = "https://github.com/israelcervantes31416/motor-cartera/tree/main/docs"
+Changelog = "https://github.com/israelcervantes31416/motor-cartera/blob/main/CHANGELOG.md"
 
 [project.scripts]
 motor-cartera = "motor_cartera.cli:app"
@@ -59,3 +69,26 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+# Todo src/motor_cartera en modo standard, sin carpetas excluidas. Lo que falta para el modo
+# estricto esta en docs/desarrollo.md.
+[tool.pyright]
+include = ["src/motor_cartera"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+# El modo estricto, en los modulos que ya lo cumplen: que no retrocedan.
+strict = [
+    "src/motor_cartera/invariantes.py",
+    "src/motor_cartera/atraso.py",
+    "src/motor_cartera/api/limites.py",
+    "src/motor_cartera/atribucion/reglas.py",
+    "src/motor_cartera/db/esquema.py",
+    "src/motor_cartera/decision_v2/features.py",
+    "src/motor_cartera/evaluacion/reglas.py",
+    "src/motor_cartera/fuentes/formatos.py",
+    "src/motor_cartera/historia/identidad.py",
+    "src/motor_cartera/motor_pagos/contexto.py",
+    "src/motor_cartera/observabilidad/auditoria.py",
+    "src/motor_cartera/predictivo/glm.py",
+    "src/motor_cartera/ruteo_v2/sintetica.py",
+]

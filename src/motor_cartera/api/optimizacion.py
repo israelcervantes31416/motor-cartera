@@ -55,6 +55,7 @@ from motor_cartera.db.modelos import (
     EjecucionScoringPredictivo,
     EstadoOptimizacion,
     VersionConfiguracionOptimizacion,
+    id_de,
 )
 from motor_cartera.optimizacion import configuracion as configuracion_
 from motor_cartera.optimizacion import consultas, ejecuciones
@@ -602,7 +603,7 @@ def explicar(
     elegibilidad. Nunca "este canal maximiza su probabilidad de pago"."""
     vista = _publicada(s, optimizacion_run_id)
     cuenta = _cuenta(s, cuenta_id)
-    explicacion = consultas.explicar(s, vista, cuenta.id)
+    explicacion = consultas.explicar(s, vista, id_de(cuenta))
     if explicacion is None:
         raise ErrorDeApi(404, "SIN_RESULTADO", f"El plan no tiene un resultado de {cuenta_id}.")
     return ExplicacionCuentaRespuesta(
@@ -631,7 +632,7 @@ def planes_de_cuenta(
     sombra: no dice que se haya hecho nada con la cuenta."""
     cuenta = _cuenta(s, cuenta_id)
     total, filas = consultas.planes_de_cuenta(
-        s, cuenta.id, desplazamiento=parametros.desplazamiento, limite=parametros.por_pagina
+        s, id_de(cuenta), desplazamiento=parametros.desplazamiento, limite=parametros.por_pagina
     )
     return PaginaPlanesDeCuenta(
         cuenta_id=cuenta_id,

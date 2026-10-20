@@ -26,7 +26,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import and_, func, text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     ArtefactoFuente,
@@ -38,9 +38,11 @@ from motor_cartera.db.modelos import (
     IngestaPagos,
     PagoObservado,
     SnapshotCuenta,
+    id_de,
 )
 from motor_cartera.historia import presencia
 from motor_cartera.historia.presencia import Corte, Enlace, Evento, ResumenPresencia
+from motor_cartera.invariantes import presente
 
 
 class CuentaNoEncontrada(Exception):
@@ -160,15 +162,16 @@ def resumen(s: Session, cuenta: CuentaCanonica, al: date | None = None) -> Resum
     # Primero sus cortes y despues los de la cartera. Con una sola foto de la base (la sesion de
     # lectura) el orden da igual; con READ COMMITTED, al menos la cuenta nunca trae un corte que la
     # cartera no.
-    fechas = fechas_observadas(s, cuenta.id, al)
+    fechas = fechas_observadas(s, id_de(cuenta), al)
     cortes = cortes_de_la_cartera(s, cuenta.despacho_id, cuenta.cartera_id, al)
     vista = presencia.resumir(cortes, fechas)
     actual = None
     if vista.estado == presencia.Presencia.EN_CARTERA:
-        actual = _snapshot_en(s, cuenta.id, vista.ultimo_corte.fecha_corte)
+        ultimo_corte = presente(vista.ultimo_corte, "el ultimo corte de una cuenta EN_CARTERA")
+        actual = _snapshot_en(s, id_de(cuenta), ultimo_corte.fecha_corte)
     ultimo = None
     if vista.ultima_observacion is not None:
-        ultimo = actual or _snapshot_en(s, cuenta.id, vista.ultima_observacion)
+        ultimo = actual or _snapshot_en(s, id_de(cuenta), vista.ultima_observacion)
     pagos = _contar_pagos(s, cuenta.despacho_id, cuenta.cartera_id, cuenta.cliente_unico, al)
     return Resumen360(cuenta, al, vista, actual, ultimo, pagos)
 
@@ -190,7 +193,8 @@ def historia(
         .select_from(SnapshotCuenta)
         .where(SnapshotCuenta.cuenta_canonica_id == cuenta.id)
     ).one()
-    orden = SnapshotCuenta.fecha_corte.desc() if descendente else SnapshotCuenta.fecha_corte
+    fecha = col(SnapshotCuenta.fecha_corte)
+    orden = fecha.desc() if descendente else fecha
     if descendente:
         inicio, cuantos = desplazamiento, limite + 1
     else:
@@ -221,7 +225,7 @@ def historia(
 
 def eventos(s: Session, cuenta: CuentaCanonica) -> list[Evento]:
     """Los eventos de presencia de la cuenta, en orden de corte, calculados al consultar."""
-    fechas = fechas_observadas(s, cuenta.id)  # antes que los cortes, como en `resumen`
+    fechas = fechas_observadas(s, id_de(cuenta))  # antes que los cortes, como en `resumen`
     cortes = cortes_de_la_cartera(s, cuenta.despacho_id, cuenta.cartera_id)
     return presencia.eventos(cortes, fechas)
 
@@ -236,13 +240,13 @@ def pagos_observados(
     total = s.exec(select(func.count()).select_from(PagoObservado).where(de_la_cuenta)).one()
     filas = s.exec(
         select(PagoObservado, IngestaPagos.pagos_run_id, DatasetConformado.dataset_id)
-        .join(IngestaPagos, IngestaPagos.id == PagoObservado.ingesta_pagos_id)
-        .join(DatasetConformado, DatasetConformado.id == PagoObservado.dataset_conformado_id)
+        .join(IngestaPagos, col(IngestaPagos.id) == PagoObservado.ingesta_pagos_id)
+        .join(DatasetConformado, col(DatasetConformado.id) == PagoObservado.dataset_conformado_id)
         .where(de_la_cuenta)
         .order_by(
-            PagoObservado.fecha_recepcion.desc(),
-            PagoObservado.dataset_conformado_id.desc(),
-            PagoObservado.source_row.desc(),
+            col(PagoObservado.fecha_recepcion).desc(),
+            col(PagoObservado.dataset_conformado_id).desc(),
+            col(PagoObservado.source_row).desc(),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -258,23 +262,25 @@ def cortes_de_la_cartera(
 ) -> list[Corte]:
     """Los cortes canonicos de la cartera, en orden de fecha; con `al`, los de fecha hasta ese dia.
     Hay uno por fecha: unos cientos en anos de cortes semanales."""
-    consulta = select(CorteCanonico.fecha_corte, CorteCanonico.corte_id).where(
+    consulta = select(col(CorteCanonico.fecha_corte), col(CorteCanonico.corte_id)).where(
         CorteCanonico.despacho_id == despacho_id, CorteCanonico.cartera_id == cartera_id
     )
     if al is not None:
         consulta = consulta.where(CorteCanonico.fecha_corte <= al)
-    return [Corte(*fila) for fila in s.exec(consulta.order_by(CorteCanonico.fecha_corte)).all()]
+    return [
+        Corte(*fila) for fila in s.exec(consulta.order_by(col(CorteCanonico.fecha_corte))).all()
+    ]
 
 
 def fechas_observadas(s: Session, cuenta_canonica_id: int, al: date | None = None) -> list[date]:
     """Las fechas de los cortes en que la cuenta tiene snapshot: solo lee el indice de la
     historia."""
-    consulta = select(SnapshotCuenta.fecha_corte).where(
+    consulta = select(col(SnapshotCuenta.fecha_corte)).where(
         SnapshotCuenta.cuenta_canonica_id == cuenta_canonica_id
     )
     if al is not None:
         consulta = consulta.where(SnapshotCuenta.fecha_corte <= al)
-    return list(s.exec(consulta.order_by(SnapshotCuenta.fecha_corte)).all())
+    return list(s.exec(consulta.order_by(col(SnapshotCuenta.fecha_corte))).all())
 
 
 def listar_cortes(
@@ -288,15 +294,19 @@ def listar_cortes(
 ) -> tuple[int, list[CorteVisto], CorteVisto | None]:
     """Una pagina de los cortes de la cartera, el total y el ultimo, este o no en la pagina."""
     de_la_cartera = and_(
-        CorteCanonico.despacho_id == despacho_id, CorteCanonico.cartera_id == cartera_id
+        col(CorteCanonico.despacho_id) == despacho_id, col(CorteCanonico.cartera_id) == cartera_id
     )
     total = s.exec(select(func.count()).select_from(CorteCanonico).where(de_la_cartera)).one()
-    orden = CorteCanonico.fecha_corte.desc() if descendente else CorteCanonico.fecha_corte
+    fecha = col(CorteCanonico.fecha_corte)
+    orden = fecha.desc() if descendente else fecha
     filas = s.exec(
         _cortes_vistos().where(de_la_cartera).order_by(orden).offset(desplazamiento).limit(limite)
     ).all()
     ultimo = s.exec(
-        _cortes_vistos().where(de_la_cartera).order_by(CorteCanonico.fecha_corte.desc()).limit(1)
+        _cortes_vistos()
+        .where(de_la_cartera)
+        .order_by(col(CorteCanonico.fecha_corte).desc())
+        .limit(1)
     ).first()
     return (
         total,
@@ -318,12 +328,15 @@ def detalle_del_corte(s: Session, corte_id: UUID) -> DetalleDelCorte:
         for f in s.exec(
             select(EjecucionHistoria, DatasetConformado, Corrida, ArtefactoFuente)
             .join(
-                DatasetConformado, DatasetConformado.id == EjecucionHistoria.dataset_conformado_id
+                DatasetConformado,
+                col(DatasetConformado.id) == EjecucionHistoria.dataset_conformado_id,
             )
-            .join(Corrida, Corrida.id == DatasetConformado.corrida_id)
-            .join(ArtefactoFuente, ArtefactoFuente.id == DatasetConformado.artefacto_original_id)
+            .join(Corrida, col(Corrida.id) == DatasetConformado.corrida_id)
+            .join(
+                ArtefactoFuente, col(ArtefactoFuente.id) == DatasetConformado.artefacto_original_id
+            )
             .where(EjecucionHistoria.corte_canonico_id == visto.corte.id)
-            .order_by(EjecucionHistoria.terminada_en, EjecucionHistoria.id)
+            .order_by(col(EjecucionHistoria.terminada_en), col(EjecucionHistoria.id))
         ).all()
     ]
     return DetalleDelCorte(
@@ -370,16 +383,16 @@ def relacion_de_pagos(s: Session, dataset_conformado_id: int) -> RelacionDePagos
 def _snapshots_vistos():
     return (
         select(SnapshotCuenta, CorteCanonico.corte_id, DatasetConformado.dataset_id)
-        .join(CorteCanonico, CorteCanonico.id == SnapshotCuenta.corte_canonico_id)
-        .join(DatasetConformado, DatasetConformado.id == CorteCanonico.dataset_conformado_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == SnapshotCuenta.corte_canonico_id)
+        .join(DatasetConformado, col(DatasetConformado.id) == CorteCanonico.dataset_conformado_id)
     )
 
 
 def _cortes_vistos():
     return (
         select(CorteCanonico, DatasetConformado.dataset_id, Corrida.run_id)
-        .join(DatasetConformado, DatasetConformado.id == CorteCanonico.dataset_conformado_id)
-        .join(Corrida, Corrida.id == DatasetConformado.corrida_id)
+        .join(DatasetConformado, col(DatasetConformado.id) == CorteCanonico.dataset_conformado_id)
+        .join(Corrida, col(Corrida.id) == DatasetConformado.corrida_id)
     )
 
 
@@ -410,9 +423,9 @@ def _enlazar(
 
 def _de_la_cuenta(despacho_id: str, cartera_id: str, cliente_unico: str):
     return and_(
-        PagoObservado.despacho_id == despacho_id,
-        PagoObservado.cartera_id == cartera_id,
-        PagoObservado.cliente_unico == cliente_unico,
+        col(PagoObservado.despacho_id) == despacho_id,
+        col(PagoObservado.cartera_id) == cartera_id,
+        col(PagoObservado.cliente_unico) == cliente_unico,
     )
 
 
@@ -423,6 +436,7 @@ def _contar_pagos(
     if al is not None:
         # Hasta el final de ese dia, en la hora local de la fuente, que no tiene zona.
         condicion = and_(
-            condicion, PagoObservado.fecha_recepcion < datetime.combine(al + timedelta(1), time())
+            condicion,
+            col(PagoObservado.fecha_recepcion) < datetime.combine(al + timedelta(1), time()),
         )
     return s.exec(select(func.count()).select_from(PagoObservado).where(condicion)).one()

@@ -7,7 +7,7 @@ de corte es obligatoria: nunca sale del reloj, y la misma fecha con los mismos d
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -18,6 +18,7 @@ from motor_cartera.api.errores import ErrorDeApi, errores
 from motor_cartera.api.esquemas_lifecycle import (
     ConteosEvaluacionRespuesta,
     EjecucionEvaluacionRespuesta,
+    EstadoDeEvaluacion,
     EvaluacionEnEjecucionRespuesta,
     EvaluacionPromesasEntrada,
     PaginaEvaluaciones,
@@ -27,6 +28,7 @@ from motor_cartera.api.esquemas_lifecycle import (
 )
 from motor_cartera.api.operacional import SIN_CLAVE
 from motor_cartera.config import Config
+from motor_cartera.db.modelos import EstadoEvaluacionPromesas
 from motor_cartera.evaluacion import consultas
 from motor_cartera.evaluacion.consultas import EjecucionVista, EvaluacionNoEncontrada
 from motor_cartera.evaluacion.ejecuciones import EvaluacionEnProceso, abrir
@@ -121,7 +123,7 @@ def listar_evaluaciones(
         despacho_id=config.despacho_id,
         cartera_id=config.cartera_id,
         as_of=parametros.as_of,
-        estado=parametros.estado,
+        estado=None if parametros.estado is None else EstadoEvaluacionPromesas(parametros.estado),
         desplazamiento=parametros.desplazamiento,
         limite=parametros.por_pagina,
     )
@@ -188,7 +190,8 @@ def promesas_evaluadas(
                 cliente_unico=e.cliente_unico,
                 monto_prometido=e.monto_prometido,
                 fecha_limite=e.fecha_limite,
-                estado=e.evaluacion.estado,
+                # La base guarda el texto; pydantic lo valida contra el literal al construir.
+                estado=cast(EstadoDeEvaluacion, e.evaluacion.estado),
                 monto_observado=e.evaluacion.monto_observado,
                 movimientos_compatibles=e.evaluacion.movimientos_compatibles,
                 primer_movimiento_en=e.evaluacion.primer_movimiento_en,

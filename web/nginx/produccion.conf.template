@@ -173,11 +173,16 @@ server {
         proxy_set_header Content-Length "";
         proxy_set_header Host $host;
         proxy_set_header X-Request-ID $request_id;
+        # La IP del socket, como en proxy-oauth2.conf: una X-Real-IP o una X-Forwarded-For que
+        # traiga el navegador no llega a oauth2-proxy, que confia en ellas desde esta red.
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Uri $request_uri;
         proxy_set_header Authorization "";
         proxy_set_header X-API-Key "";
+        proxy_set_header X-MC-Gateway "";
         proxy_connect_timeout 3s;
         proxy_read_timeout 5s;
     }

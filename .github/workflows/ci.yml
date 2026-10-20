@@ -193,6 +193,14 @@ jobs:
       - name: Formato
         run: ruff format --check .
 
+      # Los tipos de src/motor_cartera con pyright: standard en todo el paquete y strict en los
+      # modulos que ya lo cumplen ([tool.pyright] del pyproject.toml). Su motor corre con el Node de
+      # la app web; no consulta PyPI por una version mas nueva.
+      - name: Tipos de Python
+        env:
+          PYRIGHT_PYTHON_IGNORE_WARNINGS: "1"
+        run: pyright
+
       # Que el esquema suba desde cero, que coincida con los modelos (si alguien cambia un
       # modelo sin migracion, `alembic check` falla) y que la migracion tambien baje.
       - name: Migraciones

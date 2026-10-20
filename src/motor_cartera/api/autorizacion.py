@@ -488,7 +488,9 @@ def operaciones_de_las_rutas(app: FastAPI) -> set[tuple[str, str]]:
     return {
         (metodo, contexto.path_format)
         for contexto in iter_route_contexts(app.routes)
-        if isinstance(contexto.original_route, APIRoute) and contexto.include_in_schema
+        if isinstance(contexto.original_route, APIRoute)
+        and contexto.include_in_schema
+        and contexto.path_format is not None
         for metodo in contexto.methods or ()
         if metodo in METODOS_DE_OPERACION
     }

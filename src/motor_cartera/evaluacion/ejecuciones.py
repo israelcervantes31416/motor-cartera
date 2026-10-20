@@ -28,7 +28,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     EjecucionEvaluacionPromesas,
@@ -36,10 +36,12 @@ from motor_cartera.db.modelos import (
     ResultadoEvaluacionPromesas,
     TipoTrabajo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.evaluacion.reglas import VERSION_EVALUACION, EstadoEvaluacion, Motivo
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS
 from motor_cartera.orquestacion import cola
 
@@ -113,8 +115,9 @@ def abrir(
         activa = _activa(s, despacho_id, cartera_id, as_of)
         if reusar and activa is not None:
             return activa, False
-        raise EvaluacionEnProceso(activa) from error
-    cola.crear(s, TipoTrabajo.EVALUACION_PROMESAS, ejecucion.id, max_intentos=max_intentos)
+        en_proceso = presente(activa, "la evaluacion EN_PROCESO de esa fecha")
+        raise EvaluacionEnProceso(en_proceso) from error
+    cola.crear(s, TipoTrabajo.EVALUACION_PROMESAS, id_de(ejecucion), max_intentos=max_intentos)
     log.info(
         "evaluacion de promesas %s abierta para %s/%s al %s",
         ejecucion.evaluacion_run_id,
@@ -498,21 +501,23 @@ def _fallar(
         s.rollback()
         log.warning("evaluacion %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionEvaluacionPromesas)
-        .where(
-            EjecucionEvaluacionPromesas.id == ejecucion_id,
-            EjecucionEvaluacionPromesas.estado == EstadoEvaluacionPromesas.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionEvaluacionPromesas)
+            .where(
+                col(EjecucionEvaluacionPromesas.id) == ejecucion_id,
+                col(EjecucionEvaluacionPromesas.estado) == EstadoEvaluacionPromesas.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoEvaluacionPromesas.FALLIDA,
+                resultado=resultado.value,
+                firma_entrada=avance.firma,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoEvaluacionPromesas.FALLIDA,
-            resultado=resultado.value,
-            firma_entrada=avance.firma,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("evaluacion %s fallida (%s): %s", etiqueta, resultado.value, motivo)

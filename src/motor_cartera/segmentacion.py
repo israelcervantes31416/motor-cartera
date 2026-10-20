@@ -7,12 +7,13 @@ from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import ColumnElement, case, func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 # Los tramos viven en atraso.py, la unica fuente de sus fronteras. tramo_de_atraso no se usa en
 # este modulo: se importa para que quien lo importaba desde aqui siga funcionando.
 from motor_cartera.atraso import TRAMOS_ATRASO, tramo_de_atraso  # noqa: F401
 from motor_cartera.db.modelos import Cuenta
+from motor_cartera.db.sesion import seleccionar
 
 
 class Dimension(StrEnum):
@@ -64,7 +65,7 @@ def resumir(
         filtros.append(Cuenta.canal == canal)
 
     grupos = (
-        select(*expresiones, func.count().label("cuentas"), func.sum(Cuenta.saldo_total))
+        seleccionar(*expresiones, func.count().label("cuentas"), func.sum(Cuenta.saldo_total))
         .where(*filtros)
         .group_by(*expresiones)
         .order_by(*expresiones)
@@ -97,7 +98,7 @@ def _expresion(dimension: Dimension) -> ColumnElement:
         # atraso ("0", "1-30", ... "91+") y no el alfabetico.
         ultimo = len(TRAMOS_ATRASO) - 1
         cortes = [
-            (Cuenta.dias_atraso <= hasta, i)
+            (col(Cuenta.dias_atraso) <= hasta, i)
             for i, (_, _, hasta) in enumerate(TRAMOS_ATRASO)
             if hasta is not None
         ]
@@ -105,7 +106,7 @@ def _expresion(dimension: Dimension) -> ColumnElement:
     return getattr(Cuenta, dimension.value).label(dimension.value)
 
 
-def _etiqueta(dimension: Dimension, valor: object) -> str:
+def _etiqueta(dimension: Dimension, valor: int | str) -> str:
     if dimension is Dimension.TRAMO_ATRASO:
         return TRAMOS_ATRASO[int(valor)][0]
     return str(valor)

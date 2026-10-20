@@ -462,8 +462,8 @@ consulta y 111 ms la explicación de una cuenta. Las métricas, el backtest, el 
 - La recuperación positiva esperada **no es la recuperación neta esperada**: los netos negativos se
   truncan a cero por definición.
 - **Un PSI alto no prueba por sí solo un deterioro.** Mide un cambio de distribución.
-- No hay reentrenamiento automático, aprendizaje en línea, ML causal, *uplift*, Decision Engine v3
-  ni optimización.
+- No hay reentrenamiento automático, aprendizaje en línea, ML causal, *uplift* ni Decision Engine
+  v3; la optimización (`optimization/v1`) es otro motor, que lee un scoring sin cambiarlo.
 - La anulación de un pago por un reverso de otro mes depende de que la interpretación vigente del
   mes del pago ya haya visto ese reverso (su contexto); la regla es la de `motor-pagos/v1` y
   `analytics/v1`.

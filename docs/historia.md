@@ -461,8 +461,8 @@ de 11.8 a 69.9 s, y los pagos, de 10.3 a 96.9 s, en datasets casi del mismo tama
 más lentos coinciden con sincronizaciones de checkpoint que PostgreSQL registró (`log_checkpoints`):
 una de 60.4 s mientras se escribían los snapshots del 2026-01-21, el corte más lento, y otra de
 41.9 s durante los pagos del 2026-03-05 al 11. Los demás, incluido el archivo de pagos más lento
-(98.5 s), no coinciden con ningún evento de la base: la máquina no era dedicada. En el servidor de
-producción se vuelve a medir, con su configuración (v0.18).
+(98.5 s), no coinciden con ningún evento de la base: la máquina no era dedicada. En un servidor de
+producción habría que medirlo otra vez, con su configuración: no hay una medición así.
 
 Después de materializar todo, `VACUUM ANALYZE` de las cuatro tablas históricas tomó 127.7 s.
 

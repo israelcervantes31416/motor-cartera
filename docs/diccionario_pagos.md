@@ -18,8 +18,8 @@ este repositorio sale de un archivo real.**
   llave histórica del motor de pagos, que la usa solo como heurística y nunca fusiona por ella
   ([motor_pagos.md](motor_pagos.md)).
 - **No interpreta signos ni concilia.** Un importe negativo es válido; qué significa lo interpreta,
-  desde v0.8, el motor de pagos (un negativo no es, por sí solo, un reverso), y a qué gestión se
-  atribuye cada pago queda para después del lifecycle de v0.9.
+  desde v0.8, el motor de pagos (un negativo no es, por sí solo, un reverso), y con qué gestiones
+  se asocia cada pago, desde v0.9, la atribución operativa ([atribucion.md](atribucion.md)).
 - **No trae columnas técnicas.** Ni identificador de movimiento, ni de crédito, ni de lote, ni el
   nombre del archivo: un archivo que traiga una columna de más falla por estructura.
 - **No exige que el año y la semana correspondan a la fecha de recepción.** Se conservan como

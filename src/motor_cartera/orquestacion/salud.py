@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,11 +25,14 @@ from motor_cartera.db.esquema import CABEZA_ESPERADA, revision_actual
 from motor_cartera.db.sesion import crear_motor
 from motor_cartera.observabilidad import metricas
 
+if TYPE_CHECKING:
+    from motor_cartera.ruteo_v2.ejecuciones import SaludRuteo
+
 
 @dataclass
 class SaludDelWorker:
     umbral_segundos: float = 60.0
-    ruteo: object | None = None
+    ruteo: SaludRuteo | None = None
     """La salud del proveedor de ruteo del worker (SaludRuteo), si tiene uno."""
     _latido: float = field(default_factory=time.monotonic)
     trabajo_en_curso: bool = False

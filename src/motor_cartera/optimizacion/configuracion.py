@@ -52,6 +52,8 @@ from motor_cartera.db.modelos import (
     ahora,
 )
 from motor_cartera.db.sesion import insertar_en_savepoint, restriccion
+from motor_cartera.invariantes import presente
+from motor_cartera.lifecycle.reglas import Canal
 from motor_cartera.optimizacion.politica import (
     ALCANCE_DEL_CANAL,
     BPS,
@@ -297,10 +299,10 @@ def _pool(valor: Any, i: int, problemas: list[str]) -> PoolConfigurado | None:
     alcance = _uno_de(valor.get("tipo_alcance"), TipoAlcance, f"{donde}.tipo_alcance", problemas)
     referencia = valor.get("referencia_alcance")
     if canal is not None and alcance is not None:
-        if TipoAlcance(alcance) not in ALCANCE_DEL_CANAL[canal]:
+        if TipoAlcance(alcance) not in ALCANCE_DEL_CANAL[Canal(canal)]:
             problemas.append(
                 f"{donde}: un pool {canal} es de alcance "
-                + " o ".join(sorted(a.value for a in ALCANCE_DEL_CANAL[canal]))
+                + " o ".join(sorted(a.value for a in ALCANCE_DEL_CANAL[Canal(canal)]))
                 + f", no {alcance}"
             )
         if alcance == TipoAlcance.GLOBAL and referencia is not None:
@@ -325,7 +327,14 @@ def _pool(valor: Any, i: int, problemas: list[str]) -> PoolConfigurado | None:
         UNIDADES_MAXIMAS,
     )
     activo = _booleano(valor.get("activo"), f"{donde}.activo", problemas)
-    if len(problemas) > antes:
+    if (
+        len(problemas) > antes
+        or codigo is None
+        or canal is None
+        or alcance is None
+        or unidades is None
+        or activo is None
+    ):
         return None
     return PoolConfigurado(codigo, canal, alcance, referencia, capacidad, unidades, activo)
 
@@ -360,7 +369,15 @@ def _restriccion(valor: Any, i: int, problemas: list[str]) -> RestriccionConfigu
         tope or PUBLIC_V1.limite_exacto,
     )
     activa = _booleano(valor.get("activa"), f"{donde}.activa", problemas)
-    if len(problemas) > antes:
+    if (
+        len(problemas) > antes
+        or codigo is None
+        or tipo is None
+        or dimension is None
+        or not isinstance(valor_dimension, str)
+        or limite is None
+        or activa is None
+    ):
         return None
     return RestriccionConfigurada(codigo, tipo, dimension, valor_dimension, limite, activa)
 
@@ -423,7 +440,7 @@ def leer(documento: Any) -> ConfiguracionOptimizacion:
         problemas.append(f"restricciones: el codigo {codigo} esta dos veces")
     if pools and not any(p.activo for p in pools):
         problemas.append("pools: al menos uno activo")
-    if problemas:
+    if problemas or nombre is None or imputacion is None:
         raise ConfiguracionInvalida(problemas)
     return ConfiguracionOptimizacion(
         nombre=nombre,
@@ -527,7 +544,7 @@ def registrar(
     if error is not None:
         if restriccion(error) != RESTRICCION_HASH:
             raise error
-        existente = _por_hash(s, huella)
+        existente = presente(_por_hash(s, huella), "la version con ese hash")
         if publicar and existente.estado == EstadoVersionOptimizacion.BORRADOR:
             return Registrada(_publicar(s, existente), creada=False, publicada_ahora=True)
         return Registrada(existente, creada=False)

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Response
 from sqlalchemy import func, text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.api.dependencias import Sesion, SesionDeLectura
 from motor_cartera.api.errores import DetalleError, ErrorDeApi, errores
@@ -103,7 +103,7 @@ def versiones(
     total = s.exec(select(func.count()).select_from(VersionBasesOperativas)).one()
     filas = s.exec(
         select(VersionBasesOperativas)
-        .order_by(VersionBasesOperativas.id.desc())
+        .order_by(col(VersionBasesOperativas.id).desc())
         .offset(parametros.desplazamiento)
         .limit(parametros.por_pagina)
     ).all()
@@ -135,7 +135,9 @@ def version(bases_version_id: UUID, s: SesionDeLectura) -> VersionBasesDetalleRe
                 ":version"
             ),
             {"version": v.id},
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     return VersionBasesDetalleRespuesta(
         **version_respuesta(v).model_dump(),

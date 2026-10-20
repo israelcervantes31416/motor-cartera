@@ -23,7 +23,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy import ColumnElement, and_, exists, func, text
 from sqlalchemy.orm import aliased
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -41,7 +41,9 @@ from motor_cartera.db.modelos import (
     PromesaPago,
     SnapshotCuenta,
     VisitaCampo,
+    id_de,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.lifecycle.reglas import (
     EstadoConvenio,
     EstadoGestion,
@@ -84,7 +86,7 @@ def _cierre(tipo: TipoEvento, sobre) -> Any:
     """Un alias del evento de ese tipo que se refiere a `sobre` (un id de evento): para un LEFT
     JOIN por el indice unico de los eventos relacionados."""
     cierre = aliased(EventoLifecycle)
-    return cierre, and_(cierre.evento_relacionado_id == sobre, cierre.tipo_evento == tipo)
+    return cierre, and_(cierre.evento_relacionado_id == sobre, col(cierre.tipo_evento) == tipo)
 
 
 def anulada(evento_id) -> ColumnElement:
@@ -93,7 +95,7 @@ def anulada(evento_id) -> ColumnElement:
     cierre = aliased(EventoLifecycle)
     return exists().where(
         cierre.evento_relacionado_id == evento_id,
-        cierre.tipo_evento == TipoEvento.GESTION_ANULADA,
+        col(cierre.tipo_evento) == TipoEvento.GESTION_ANULADA,
     )
 
 
@@ -121,22 +123,24 @@ class GestionVista:
 def _gestiones_vistas() -> Select[Any]:
     anulacion, cuando = _cierre(TipoEvento.GESTION_ANULADA, GestionCobranza.evento_lifecycle_id)
     return (
-        select(
+        seleccionar(
             GestionCobranza,
             EventoLifecycle,
             anulacion,
             VisitaCampo,
-            PromesaPago.promesa_id,
-            ConvenioCobranza.convenio_id,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
+            col(PromesaPago.promesa_id),
+            col(ConvenioCobranza.convenio_id),
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
         )
-        .join(EventoLifecycle, EventoLifecycle.id == GestionCobranza.evento_lifecycle_id)
-        .join(CuentaCanonica, CuentaCanonica.id == GestionCobranza.cuenta_canonica_id)
+        .join(EventoLifecycle, col(EventoLifecycle.id) == GestionCobranza.evento_lifecycle_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == GestionCobranza.cuenta_canonica_id)
         .outerjoin(anulacion, cuando)
-        .outerjoin(VisitaCampo, VisitaCampo.gestion_cobranza_id == GestionCobranza.id)
-        .outerjoin(PromesaPago, PromesaPago.gestion_cobranza_id == GestionCobranza.id)
-        .outerjoin(ConvenioCobranza, ConvenioCobranza.gestion_cobranza_id == GestionCobranza.id)
+        .outerjoin(VisitaCampo, col(VisitaCampo.gestion_cobranza_id) == GestionCobranza.id)
+        .outerjoin(PromesaPago, col(PromesaPago.gestion_cobranza_id) == GestionCobranza.id)
+        .outerjoin(
+            ConvenioCobranza, col(ConvenioCobranza.gestion_cobranza_id) == GestionCobranza.id
+        )
     )
 
 
@@ -180,7 +184,7 @@ def gestiones_de_cuenta(
     filas = s.exec(
         _gestiones_vistas()
         .where(*condiciones)
-        .order_by(GestionCobranza.ocurrido_en.desc(), GestionCobranza.id.desc())
+        .order_by(col(GestionCobranza.ocurrido_en).desc(), col(GestionCobranza.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -225,20 +229,20 @@ def _promesas_vistas() -> Select[Any]:
     anulacion, anulada_ = _cierre(TipoEvento.GESTION_ANULADA, GestionCobranza.evento_lifecycle_id)
     de_la_gestion = aliased(EventoLifecycle)
     return (
-        select(
+        seleccionar(
             PromesaPago,
             EventoLifecycle,
-            GestionCobranza.gestion_id,
-            de_la_gestion.evento_id,
+            col(GestionCobranza.gestion_id),
+            col(de_la_gestion.evento_id),
             cancelacion,
             anulacion,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
         )
-        .join(EventoLifecycle, EventoLifecycle.id == PromesaPago.evento_lifecycle_id)
-        .join(GestionCobranza, GestionCobranza.id == PromesaPago.gestion_cobranza_id)
-        .join(de_la_gestion, de_la_gestion.id == GestionCobranza.evento_lifecycle_id)
-        .join(CuentaCanonica, CuentaCanonica.id == PromesaPago.cuenta_canonica_id)
+        .join(EventoLifecycle, col(EventoLifecycle.id) == PromesaPago.evento_lifecycle_id)
+        .join(GestionCobranza, col(GestionCobranza.id) == PromesaPago.gestion_cobranza_id)
+        .join(de_la_gestion, col(de_la_gestion.id) == GestionCobranza.evento_lifecycle_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == PromesaPago.cuenta_canonica_id)
         .outerjoin(cancelacion, cancelada)
         .outerjoin(anulacion, anulada_)
     )
@@ -267,12 +271,12 @@ def promesas_de_cuenta(
         de_la_promesa = aliased(GestionCobranza)
         cierre = aliased(EventoLifecycle)
         anulada_ = exists().where(
-            de_la_promesa.id == PromesaPago.gestion_cobranza_id,
+            col(de_la_promesa.id) == PromesaPago.gestion_cobranza_id,
             anulada(de_la_promesa.evento_lifecycle_id),
         )
         cancelada = exists().where(
-            cierre.evento_relacionado_id == PromesaPago.evento_lifecycle_id,
-            cierre.tipo_evento == TipoEvento.PROMESA_CANCELADA,
+            col(cierre.evento_relacionado_id) == PromesaPago.evento_lifecycle_id,
+            col(cierre.tipo_evento) == TipoEvento.PROMESA_CANCELADA,
         )
         condiciones.append(
             {
@@ -285,7 +289,7 @@ def promesas_de_cuenta(
     filas = s.exec(
         _promesas_vistas()
         .where(*condiciones)
-        .order_by(PromesaPago.fecha_limite.desc(), PromesaPago.id.desc())
+        .order_by(col(PromesaPago.fecha_limite).desc(), col(PromesaPago.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -303,17 +307,18 @@ def ultimas_evaluaciones(s: Session, promesas: list[int]) -> dict[int, Evaluacio
         select(EvaluacionPromesa, EjecucionEvaluacionPromesas)
         .join(
             EjecucionEvaluacionPromesas,
-            EjecucionEvaluacionPromesas.id == EvaluacionPromesa.ejecucion_evaluacion_promesas_id,
+            col(EjecucionEvaluacionPromesas.id)
+            == EvaluacionPromesa.ejecucion_evaluacion_promesas_id,
         )
         .where(
-            EvaluacionPromesa.promesa_pago_id.in_(promesas),
+            col(EvaluacionPromesa.promesa_pago_id).in_(promesas),
             EjecucionEvaluacionPromesas.estado == EstadoEvaluacionPromesas.EXITOSA,
         )
-        .distinct(EvaluacionPromesa.promesa_pago_id)
+        .distinct(col(EvaluacionPromesa.promesa_pago_id))
         .order_by(
-            EvaluacionPromesa.promesa_pago_id,
-            EjecucionEvaluacionPromesas.as_of.desc(),
-            EjecucionEvaluacionPromesas.id.desc(),
+            col(EvaluacionPromesa.promesa_pago_id),
+            col(EjecucionEvaluacionPromesas.as_of).desc(),
+            col(EjecucionEvaluacionPromesas.id).desc(),
         )
     ).all()
     return {
@@ -368,20 +373,20 @@ def _convenios_vistos() -> Select[Any]:
     anulacion, anulada_ = _cierre(TipoEvento.GESTION_ANULADA, GestionCobranza.evento_lifecycle_id)
     de_la_gestion = aliased(EventoLifecycle)
     return (
-        select(
+        seleccionar(
             ConvenioCobranza,
             EventoLifecycle,
-            GestionCobranza.gestion_id,
-            de_la_gestion.evento_id,
+            col(GestionCobranza.gestion_id),
+            col(de_la_gestion.evento_id),
             cancelacion,
             anulacion,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
         )
-        .join(EventoLifecycle, EventoLifecycle.id == ConvenioCobranza.evento_lifecycle_id)
-        .join(GestionCobranza, GestionCobranza.id == ConvenioCobranza.gestion_cobranza_id)
-        .join(de_la_gestion, de_la_gestion.id == GestionCobranza.evento_lifecycle_id)
-        .join(CuentaCanonica, CuentaCanonica.id == ConvenioCobranza.cuenta_canonica_id)
+        .join(EventoLifecycle, col(EventoLifecycle.id) == ConvenioCobranza.evento_lifecycle_id)
+        .join(GestionCobranza, col(GestionCobranza.id) == ConvenioCobranza.gestion_cobranza_id)
+        .join(de_la_gestion, col(de_la_gestion.id) == GestionCobranza.evento_lifecycle_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == ConvenioCobranza.cuenta_canonica_id)
         .outerjoin(cancelacion, cancelado)
         .outerjoin(anulacion, anulada_)
     )
@@ -398,7 +403,7 @@ def obtener_convenio(s: Session, convenio_id: UUID, *, version_motor: str) -> Co
         s.exec(
             select(CuotaConvenio)
             .where(CuotaConvenio.convenio_cobranza_id == convenio.id)
-            .order_by(CuotaConvenio.numero)
+            .order_by(col(CuotaConvenio.numero))
         ).all()
     )
     cuenta = s.get_one(CuentaCanonica, convenio.cuenta_canonica_id)
@@ -422,7 +427,7 @@ def convenios_de_cuenta(
     filas = s.exec(
         _convenios_vistos()
         .where(condicion)
-        .order_by(ConvenioCobranza.fecha_inicio.desc(), ConvenioCobranza.id.desc())
+        .order_by(col(ConvenioCobranza.fecha_inicio).desc(), col(ConvenioCobranza.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -430,8 +435,8 @@ def convenios_de_cuenta(
     if por_convenio:
         for cuota in s.exec(
             select(CuotaConvenio)
-            .where(CuotaConvenio.convenio_cobranza_id.in_(list(por_convenio)))
-            .order_by(CuotaConvenio.convenio_cobranza_id, CuotaConvenio.numero)
+            .where(col(CuotaConvenio.convenio_cobranza_id).in_(list(por_convenio)))
+            .order_by(col(CuotaConvenio.convenio_cobranza_id), col(CuotaConvenio.numero))
         ).all():
             por_convenio[cuota.convenio_cobranza_id].append(cuota)
     return total, [ConvenioVista(*f, cuotas=tuple(por_convenio[f[0].id])) for f in filas]
@@ -533,30 +538,30 @@ def resumen_de_cuenta(
         select(
             func.count().filter(~es_anulada),
             func.count().filter(es_anulada),
-            func.count().filter(~es_anulada, GestionCobranza.canal == "CAMPO"),
+            func.count().filter(~es_anulada, col(GestionCobranza.canal) == "CAMPO"),
         ).where(*de_la_cuenta)
     ).one()
 
     def ultima(*condiciones) -> UltimaGestion | None:
         fila = s.exec(
-            select(
-                GestionCobranza.gestion_id,
-                GestionCobranza.ocurrido_en,
-                GestionCobranza.canal,
-                GestionCobranza.nivel_contacto,
-                GestionCobranza.resultado,
+            seleccionar(
+                col(GestionCobranza.gestion_id),
+                col(GestionCobranza.ocurrido_en),
+                col(GestionCobranza.canal),
+                col(GestionCobranza.nivel_contacto),
+                col(GestionCobranza.resultado),
             )
             .where(*de_la_cuenta, ~es_anulada, *condiciones)
-            .order_by(GestionCobranza.ocurrido_en.desc(), GestionCobranza.id.desc())
+            .order_by(col(GestionCobranza.ocurrido_en).desc(), col(GestionCobranza.id).desc())
             .limit(1)
         ).first()
         return None if fila is None else UltimaGestion(*fila)
 
     promesas, promesas_vigentes = _acuerdos(
-        s, PromesaPago, TipoEvento.PROMESA_CANCELADA, cuenta.id, fin
+        s, PromesaPago, TipoEvento.PROMESA_CANCELADA, id_de(cuenta), fin
     )
     convenios, convenios_vigentes = _acuerdos(
-        s, ConvenioCobranza, TipoEvento.CONVENIO_CANCELADO, cuenta.id, fin
+        s, ConvenioCobranza, TipoEvento.CONVENIO_CANCELADO, id_de(cuenta), fin
     )
     return ResumenLifecycle(
         gestiones=en_vigor,
@@ -586,7 +591,7 @@ def _acuerdos(s: Session, modelo, cancelacion: TipoEvento, cuenta_id: int, fin) 
         hasta_fin.append(cancelado.ocurrido_en < fin)
     cancelada = exists().where(
         cancelado.evento_relacionado_id == modelo.evento_lifecycle_id,
-        cancelado.tipo_evento == cancelacion,
+        col(cancelado.tipo_evento) == cancelacion,
         *hasta_fin,
     )
     total, en_vigor = s.exec(
@@ -733,7 +738,7 @@ def linea_de_tiempo(
     for dominio, _, _, llave in filas:
         llaves[dominio].append(llave)
     eventos = eventos_vistos(s, llaves[Dominio.OPERACIONAL])
-    observaciones = _observaciones(s, cuenta.id, llaves[Dominio.FUENTE_CORTE])
+    observaciones = _observaciones(s, id_de(cuenta), llaves[Dominio.FUENTE_CORTE])
     movimientos = _movimientos(s, llaves[Dominio.ECONOMICO])
     elementos = []
     for dominio, tipo, instante, llave in filas:
@@ -758,18 +763,20 @@ def eventos_vistos(s: Session, ids: list[int]) -> dict[int, EventoVisto]:
         return {}
     relacionado = aliased(EventoLifecycle)
     filas = s.exec(
-        select(
+        seleccionar(
             EventoLifecycle,
-            relacionado.evento_id,
+            col(relacionado.evento_id),
             GestionCobranza,
             PromesaPago,
             ConvenioCobranza,
         )
-        .outerjoin(relacionado, relacionado.id == EventoLifecycle.evento_relacionado_id)
-        .outerjoin(GestionCobranza, GestionCobranza.evento_lifecycle_id == EventoLifecycle.id)
-        .outerjoin(PromesaPago, PromesaPago.evento_lifecycle_id == EventoLifecycle.id)
-        .outerjoin(ConvenioCobranza, ConvenioCobranza.evento_lifecycle_id == EventoLifecycle.id)
-        .where(EventoLifecycle.id.in_(ids))
+        .outerjoin(relacionado, col(relacionado.id) == EventoLifecycle.evento_relacionado_id)
+        .outerjoin(GestionCobranza, col(GestionCobranza.evento_lifecycle_id) == EventoLifecycle.id)
+        .outerjoin(PromesaPago, col(PromesaPago.evento_lifecycle_id) == EventoLifecycle.id)
+        .outerjoin(
+            ConvenioCobranza, col(ConvenioCobranza.evento_lifecycle_id) == EventoLifecycle.id
+        )
+        .where(col(EventoLifecycle.id).in_(ids))
     ).all()
     return {fila[0].id: EventoVisto(*fila) for fila in filas}
 
@@ -781,12 +788,12 @@ def _observaciones(s: Session, cuenta_id: int, cortes: list[int]) -> dict[int, O
         select(
             SnapshotCuenta, CorteCanonico.corte_id, DatasetConformado.dataset_id, ArtefactoFuente
         )
-        .join(CorteCanonico, CorteCanonico.id == SnapshotCuenta.corte_canonico_id)
-        .join(DatasetConformado, DatasetConformado.id == CorteCanonico.dataset_conformado_id)
-        .join(ArtefactoFuente, ArtefactoFuente.id == DatasetConformado.artefacto_original_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == SnapshotCuenta.corte_canonico_id)
+        .join(DatasetConformado, col(DatasetConformado.id) == CorteCanonico.dataset_conformado_id)
+        .join(ArtefactoFuente, col(ArtefactoFuente.id) == DatasetConformado.artefacto_original_id)
         .where(
             SnapshotCuenta.cuenta_canonica_id == cuenta_id,
-            SnapshotCuenta.corte_canonico_id.in_(cortes),
+            col(SnapshotCuenta.corte_canonico_id).in_(cortes),
         )
     ).all()
     return {fila[0].corte_canonico_id: ObservacionEnCorte(*fila) for fila in filas}

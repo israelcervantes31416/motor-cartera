@@ -33,6 +33,7 @@ from motor_cartera.db.modelos import (
     VersionModeloPredictivo,
 )
 from motor_cartera.db.sesion import sesion
+from motor_cartera.invariantes import presente
 from motor_cartera.predictivo import artefacto as artefacto_
 from motor_cartera.predictivo import construccion
 from motor_cartera.predictivo import features as features_
@@ -103,7 +104,9 @@ def explicar(scoring_run_id: UUID, cuenta_id: UUID, *, top: int = 5) -> dict:
             s,
             relojes,
             cuenta=cuenta.id,
-            disponibilidad=construccion.Disponibilidad.desde_definicion(s, e.disponibilidad),
+            disponibilidad=construccion.Disponibilidad.desde_definicion(
+                s, presente(e.disponibilidad, "la disponibilidad de un scoring publicado")
+            ),
         )
         fila = s.execute(text("SELECT * FROM pf_feature")).mappings().one()
         s.rollback()

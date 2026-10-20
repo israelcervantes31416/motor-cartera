@@ -39,7 +39,7 @@ import pyarrow as pa
 import pyarrow.csv as pacsv
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.copia import copiar_csv
 from motor_cartera.db.modelos import (
@@ -55,10 +55,12 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionModeloPredictivo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision_v2.ejecuciones import esperar_frontera
 from motor_cartera.geografia.ejecuciones import _traza
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 from motor_cartera.predictivo import artefacto as artefacto_
 from motor_cartera.predictivo import construccion, drift, medicion, sql
@@ -213,7 +215,7 @@ def abrir(
     corte = s.exec(select(CorteCanonico).where(CorteCanonico.corte_id == corte_id)).first()
     if corte is None:
         raise CorteNoEncontrado(f"No existe un corte canonico con corte_id {corte_id}.")
-    reloj = s.execute(text("SELECT now()")).scalar_one()
+    reloj: datetime = s.execute(text("SELECT now()")).scalar_one()
     if known_at is None:
         if modo == ModoScoringPredictivo.BACKTEST:
             raise KnownAtObligatorio("Un BACKTEST declara su known_at.")
@@ -249,8 +251,8 @@ def abrir(
     if activa is not None:
         raise ScoringEnProceso(activa)
     ejecucion = EjecucionScoringPredictivo(
-        version_modelo_predictivo_id=version.id,
-        corte_canonico_id=corte.id,
+        version_modelo_predictivo_id=id_de(version),
+        corte_canonico_id=id_de(corte),
         despacho_id=corte.despacho_id,
         cartera_id=corte.cartera_id,
         as_of=corte.fecha_corte,
@@ -275,7 +277,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.PREDICTIVE_SCORING,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -419,28 +421,31 @@ def _leer(ejecucion_id: int) -> _Corrida | None:
             and len(componentes) == len(targets_.TARGETS)
             and all(artefacto_.hash_artefacto(c.artefacto) == c.hash_artefacto for c in componentes)
         )
-        corrida = _Corrida(
-            ejecucion_id=e.id,
-            scoring_run_id=e.scoring_run_id,
-            relojes=construccion.Relojes(
-                e.corte_canonico_id,
-                e.despacho_id,
-                e.cartera_id,
-                e.as_of,
-                e.known_at,
-                e.zona_horaria,
-            ),
-            politica=politica,
-            artefactos={Target(c.target): c.artefacto for c in componentes},
-            referencia=version.referencia_drift,
-            cartera_del_modelo=(entrenamiento.despacho_id, entrenamiento.cartera_id),
-            cuentas_objetivo=e.cuentas_objetivo,
-            firma=e.firma_inputs,
-        )
-    if not soportado:
+        if politica is None or not soportado:
+            corrida = None
+        else:
+            corrida = _Corrida(
+                ejecucion_id=id_de(e),
+                scoring_run_id=e.scoring_run_id,
+                relojes=construccion.Relojes(
+                    e.corte_canonico_id,
+                    e.despacho_id,
+                    e.cartera_id,
+                    e.as_of,
+                    e.known_at,
+                    e.zona_horaria,
+                ),
+                politica=politica,
+                artefactos={Target(c.target): c.artefacto for c in componentes},
+                referencia=version.referencia_drift,
+                cartera_del_modelo=(entrenamiento.despacho_id, entrenamiento.cartera_id),
+                cuentas_objetivo=e.cuentas_objetivo,
+                firma=e.firma_inputs,
+            )
+    if corrida is None:
         _fallar(
             ejecucion_id,
-            corrida.scoring_run_id,
+            e.scoring_run_id,
             ResultadoScoringPredictivo.VERSION_NO_SOPORTADA,
             "El modelo no esta PUBLICADA con sus cuatro artefactos integros, o sus features no son "
             "las de este servicio; no se publico nada.",
@@ -671,12 +676,14 @@ def _publicar(
                 _punto_de_falla(ANTES_PUBLICAR)
                 with tiempos.fase("publicacion"):
                     columnas = ", ".join(COLUMNAS_PREDICCION)
-                    publicadas = s.execute(
-                        text(
-                            f"INSERT INTO prediccion_cuenta ({columnas}) SELECT {columnas} "
-                            "FROM ps_prediccion ORDER BY cuenta_canonica_id"
+                    publicadas = filas_afectadas(
+                        s.execute(
+                            text(
+                                f"INSERT INTO prediccion_cuenta ({columnas}) SELECT {columnas} "
+                                "FROM ps_prediccion ORDER BY cuenta_canonica_id"
+                            )
                         )
-                    ).rowcount
+                    )
                     s.add_all(_modelo_drift(corrida.ejecucion_id, f) for f in filas_drift)
                     s.flush()
                 if publicadas != corrida.cuentas_objetivo:
@@ -711,7 +718,7 @@ def _publicar(
             with sesion() as s2:
                 previa = _de_firma(s2, corrida.firma, EstadoScoringPredictivo.EXITOSA)
                 s2.expunge_all()
-            raise ScoringYaPublicado(previa) from exc
+            raise ScoringYaPublicado(presente(previa, "el scoring que publico primero")) from exc
         cola.confirmar_dueno(s)
         s.commit()
     log.info(
@@ -728,7 +735,7 @@ def _modelo_drift(ejecucion_id: int, f: drift.Fila) -> DriftPredictivo:
         tipo=f.tipo,
         nombre=f.nombre,
         clase=f.clase,
-        psi=decimal(f.psi, drift.DECIMALES_PSI),
+        psi=Decimal(f"{f.psi:.{drift.DECIMALES_PSI}f}"),
         severidad=f.severidad,
         faltantes_train=decimal(f.faltantes_train, drift.DECIMALES_FRACCION),
         faltantes_scoring=decimal(f.faltantes_scoring, drift.DECIMALES_FRACCION),
@@ -786,8 +793,8 @@ def _fallar(
         s.execute(
             update(EjecucionScoringPredictivo)
             .where(
-                EjecucionScoringPredictivo.id == ejecucion_id,
-                EjecucionScoringPredictivo.estado == EstadoScoringPredictivo.EN_PROCESO,
+                col(EjecucionScoringPredictivo.id) == ejecucion_id,
+                col(EjecucionScoringPredictivo.estado) == EstadoScoringPredictivo.EN_PROCESO,
             )
             .values(
                 estado=EstadoScoringPredictivo.FALLIDA,

@@ -15,7 +15,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 
 from motor_cartera.api.dependencias import Sesion
 from motor_cartera.api.errores import ErrorDeApi, errores
@@ -36,6 +36,8 @@ from motor_cartera.db.modelos import (
     EstadoTerritorial,
     ResultadoTerritorial,
 )
+from motor_cartera.db.sesion import seleccionar
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion.flujo import FlujoDetenido, FlujoEnProceso, encolar_territorial
 from motor_cartera.territorial.ejecuciones import (
     VERSION_DECISION_COMPATIBLE,
@@ -240,7 +242,7 @@ def listar_ejecuciones_territoriales(
         select(EjecucionTerritorial)
         .where(de_la_decision)
         # El id solo desempata dos ejecuciones iniciadas en el mismo instante; no sale de la base.
-        .order_by(EjecucionTerritorial.iniciada_en.desc(), EjecucionTerritorial.id.desc())
+        .order_by(col(EjecucionTerritorial.iniciada_en).desc(), col(EjecucionTerritorial.id).desc())
         .offset(paginacion.desplazamiento)
         .limit(paginacion.por_pagina)
     ).all()
@@ -332,22 +334,22 @@ def listar_municipios(
     # Una sola consulta por pagina. Una ejecucion EXITOSA ya no cambia, asi que OFFSET no salta ni
     # repite municipios entre una pagina y otra.
     municipios = s.exec(
-        select(
-            ResultadoTerritorial.cve_entidad,
-            ResultadoTerritorial.cve_municipio,
-            ResultadoTerritorial.cuentas_total,
-            ResultadoTerritorial.saldo_total,
-            ResultadoTerritorial.cuentas_campo,
-            ResultadoTerritorial.saldo_campo,
-            ResultadoTerritorial.carga,
-            ResultadoTerritorial.posicion_campo,
-            ResultadoTerritorial.motivos,
+        seleccionar(
+            col(ResultadoTerritorial.cve_entidad),
+            col(ResultadoTerritorial.cve_municipio),
+            col(ResultadoTerritorial.cuentas_total),
+            col(ResultadoTerritorial.saldo_total),
+            col(ResultadoTerritorial.cuentas_campo),
+            col(ResultadoTerritorial.saldo_campo),
+            col(ResultadoTerritorial.carga),
+            col(ResultadoTerritorial.posicion_campo),
+            col(ResultadoTerritorial.motivos),
         )
         .where(de_la_ejecucion)
         # El orden de territorial/v1: el lugar de campo, y los que no tienen (NULL) al final, por
         # clave. El lugar es unico en la ejecucion, asi que la clave solo ordena a los NULL.
         .order_by(
-            ResultadoTerritorial.posicion_campo.asc().nulls_last(),
+            col(ResultadoTerritorial.posicion_campo).asc().nulls_last(),
             ResultadoTerritorial.cve_entidad,
             ResultadoTerritorial.cve_municipio,
         )
@@ -374,7 +376,7 @@ def _buscar_decision(s: Session, decision_run_id: UUID) -> tuple[int, UUID]:
     fila = s.exec(
         select(EjecucionDecision.id, Corrida.run_id)
         .select_from(EjecucionDecision)
-        .join(Corrida, EjecucionDecision.corrida_id == Corrida.id)
+        .join(Corrida, col(EjecucionDecision.corrida_id) == Corrida.id)
         .where(EjecucionDecision.decision_run_id == decision_run_id)
     ).first()
     if fila is None:
@@ -384,7 +386,7 @@ def _buscar_decision(s: Session, decision_run_id: UUID) -> tuple[int, UUID]:
             f"No existe una ejecucion de decision con decision_run_id {decision_run_id}.",
         )
     ejecucion_decision_id, run_id = fila
-    return ejecucion_decision_id, run_id
+    return presente(ejecucion_decision_id, "su id"), run_id
 
 
 def _buscar_territorial(
@@ -396,8 +398,11 @@ def _buscar_territorial(
     fila = s.exec(
         select(EjecucionTerritorial, EjecucionDecision.decision_run_id, Corrida.run_id)
         .select_from(EjecucionTerritorial)
-        .join(EjecucionDecision, EjecucionTerritorial.ejecucion_decision_id == EjecucionDecision.id)
-        .join(Corrida, EjecucionDecision.corrida_id == Corrida.id)
+        .join(
+            EjecucionDecision,
+            col(EjecucionTerritorial.ejecucion_decision_id) == EjecucionDecision.id,
+        )
+        .join(Corrida, col(EjecucionDecision.corrida_id) == Corrida.id)
         .where(EjecucionTerritorial.territorial_run_id == territorial_run_id)
     ).first()
     if fila is None:

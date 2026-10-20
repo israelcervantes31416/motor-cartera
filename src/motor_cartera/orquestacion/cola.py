@@ -22,14 +22,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, update
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
-from motor_cartera.db.modelos import EstadoTrabajo, TipoTrabajo, TrabajoOrquestacion
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.modelos import EstadoTrabajo, TipoTrabajo, TrabajoOrquestacion, id_de
+from motor_cartera.db.sesion import filas_afectadas, reloj_de_la_base, sesion
 from motor_cartera.orquestacion.objetivos import OBJETIVOS
 
 log = logging.getLogger(__name__)
@@ -93,14 +94,15 @@ def crear(
     primer plano, sin que otro worker se le adelante. Si ese proceso muere, el lease vence y la cola
     lo recupera como a cualquier otro.
     """
-    ahora = func.now()
+    ahora = reloj_de_la_base()
+    objetivo: dict[str, Any] = {OBJETIVOS[tipo].columna: objetivo_id}
     trabajo = TrabajoOrquestacion(
         tipo=tipo,
         flujo_id=flujo_id,
         max_intentos=max_intentos,
         creado_en=ahora,
         disponible_desde=ahora,
-        **{OBJETIVOS[tipo].columna: objetivo_id},
+        **objetivo,
     )
     if tomado_por is not None:
         if lease_segundos is None:
@@ -118,7 +120,7 @@ def crear(
 def reclamo_de(trabajo: TrabajoOrquestacion) -> Reclamo:
     """Lo que el worker que tiene el trabajo necesita para ejecutarlo y cerrarlo."""
     return Reclamo(
-        id=trabajo.id,
+        id=id_de(trabajo),
         trabajo_id=trabajo.trabajo_id,
         tipo=trabajo.tipo,
         objetivo_id=getattr(trabajo, OBJETIVOS[trabajo.tipo].columna),
@@ -154,11 +156,11 @@ def reclamar(
     with sesion() as s:
         condiciones = [_reclamable()]
         if excluir:
-            condiciones.append(TrabajoOrquestacion.tipo.notin_(sorted(excluir)))
+            condiciones.append(col(TrabajoOrquestacion.tipo).notin_(sorted(excluir)))
         trabajo = s.exec(
             select(TrabajoOrquestacion)
             .where(*condiciones)
-            .order_by(_prioridad(), TrabajoOrquestacion.id)
+            .order_by(_prioridad(), col(TrabajoOrquestacion.id))
             .limit(1)
             .with_for_update(skip_locked=True)
         ).first()
@@ -178,7 +180,7 @@ def reclamar(
         if trabajo.estado == EstadoTrabajo.EJECUTANDO:
             valores["ultimo_error"] = LEASE_VENCIDO
         reclamo = Reclamo(
-            id=trabajo.id,
+            id=id_de(trabajo),
             trabajo_id=trabajo.trabajo_id,
             tipo=trabajo.tipo,
             objetivo_id=getattr(trabajo, OBJETIVOS[trabajo.tipo].columna),
@@ -189,7 +191,7 @@ def reclamar(
         )
         s.execute(
             update(TrabajoOrquestacion)
-            .where(TrabajoOrquestacion.id == trabajo.id)
+            .where(col(TrabajoOrquestacion.id) == trabajo.id)
             .values(**valores)
             .execution_options(synchronize_session=False)
         )
@@ -211,16 +213,18 @@ def renovar(trabajo_id: int, worker_id: str, lease_segundos: float) -> bool:
     `worker_id`. False si ya no lo es: su lease vencio y otro worker lo tomo, y este ya no debe
     cerrarlo. Usa su propia sesion, para latir mientras el motor trabaja en la suya."""
     with sesion() as s:
-        renovados = s.execute(
-            update(TrabajoOrquestacion)
-            .where(
-                TrabajoOrquestacion.id == trabajo_id,
-                TrabajoOrquestacion.estado == EstadoTrabajo.EJECUTANDO,
-                TrabajoOrquestacion.worker_id == worker_id,
+        renovados = filas_afectadas(
+            s.execute(
+                update(TrabajoOrquestacion)
+                .where(
+                    col(TrabajoOrquestacion.id) == trabajo_id,
+                    col(TrabajoOrquestacion.estado) == EstadoTrabajo.EJECUTANDO,
+                    col(TrabajoOrquestacion.worker_id) == worker_id,
+                )
+                .values(latido_en=func.now(), lease_hasta=_lease(lease_segundos))
+                .execution_options(synchronize_session=False)
             )
-            .values(latido_en=func.now(), lease_hasta=_lease(lease_segundos))
-            .execution_options(synchronize_session=False)
-        ).rowcount
+        )
         s.commit()
     return renovados == 1
 
@@ -322,16 +326,18 @@ def agotar(s: Session, trabajo_id: int, worker_id: str, *, error: str) -> None:
 def _cerrar(s: Session, trabajo_id: int, dueno: str, **valores: object) -> None:
     """El UPDATE que cierra un trabajo, condicionado a que siga EJECUTANDO y siga siendo de `dueno`:
     un dueno anterior, que perdio el lease, nunca lo cierra."""
-    cerrados = s.execute(
-        update(TrabajoOrquestacion)
-        .where(
-            TrabajoOrquestacion.id == trabajo_id,
-            TrabajoOrquestacion.estado == EstadoTrabajo.EJECUTANDO,
-            TrabajoOrquestacion.worker_id == dueno,
+    cerrados = filas_afectadas(
+        s.execute(
+            update(TrabajoOrquestacion)
+            .where(
+                col(TrabajoOrquestacion.id) == trabajo_id,
+                col(TrabajoOrquestacion.estado) == EstadoTrabajo.EJECUTANDO,
+                col(TrabajoOrquestacion.worker_id) == dueno,
+            )
+            .values(**valores)
+            .execution_options(synchronize_session=False)
         )
-        .values(**valores)
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     if cerrados != 1:
         raise TrabajoAjeno(f"El trabajo {trabajo_id} ya no es de {dueno}: no le toca cerrarlo.")
 
@@ -341,11 +347,11 @@ def _reclamable():
     vencido."""
     return or_(
         and_(
-            TrabajoOrquestacion.estado == EstadoTrabajo.PENDIENTE,
+            col(TrabajoOrquestacion.estado) == EstadoTrabajo.PENDIENTE,
             TrabajoOrquestacion.disponible_desde <= func.now(),
         ),
         and_(
-            TrabajoOrquestacion.estado == EstadoTrabajo.EJECUTANDO,
+            col(TrabajoOrquestacion.estado) == EstadoTrabajo.EJECUTANDO,
             TrabajoOrquestacion.lease_hasta < func.now(),
         ),
     )
@@ -371,22 +377,22 @@ def _prioridad():
     (decision/v2 decide con lo que se conocia en su known_at, se ejecute cuando se ejecute): solo
     cual de los que ya se pueden tomar va primero."""
     return case(
-        (TrabajoOrquestacion.tipo == TipoTrabajo.HISTORIA, 1),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.MOTOR_PAGOS, 2),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.ATRIBUCION, 3),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.EVALUACION_PROMESAS, 3),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.DECISION_V2, 4),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.GEOGRAFIA, 4),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.TERRITORIAL_V2, 5),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.CAMPO_V2, 6),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.RUTEO_V2, 7),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.ANALYTICS, 8),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.PREDICTIVE_TRAINING, 9),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.PREDICTIVE_SCORING, 9),
-        (TrabajoOrquestacion.tipo == TipoTrabajo.OPTIMIZATION, 10),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.HISTORIA, 1),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.MOTOR_PAGOS, 2),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.ATRIBUCION, 3),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.EVALUACION_PROMESAS, 3),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.DECISION_V2, 4),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.GEOGRAFIA, 4),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.TERRITORIAL_V2, 5),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.CAMPO_V2, 6),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.RUTEO_V2, 7),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.ANALYTICS, 8),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.PREDICTIVE_TRAINING, 9),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.PREDICTIVE_SCORING, 9),
+        (col(TrabajoOrquestacion.tipo) == TipoTrabajo.OPTIMIZATION, 10),
         else_=0,
     )
 
 
-def _lease(segundos: float):
-    return func.now() + timedelta(seconds=segundos)
+def _lease(segundos: float) -> datetime:
+    return cast(datetime, func.now() + timedelta(seconds=segundos))

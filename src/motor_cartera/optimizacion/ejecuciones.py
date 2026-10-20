@@ -36,7 +36,7 @@ import pyarrow as pa
 import pyarrow.csv as pacsv
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.copia import copiar, copiar_csv
 from motor_cartera.db.modelos import (
@@ -59,9 +59,11 @@ from motor_cartera.db.modelos import (
     VersionConfiguracionOptimizacion,
     VersionModeloPredictivo,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.geografia.ejecuciones import _traza
+from motor_cartera.invariantes import presente
 from motor_cartera.optimizacion import configuracion as configuracion_
 from motor_cartera.optimizacion import formulacion, sql
 from motor_cartera.optimizacion import solver as solver_
@@ -383,9 +385,9 @@ def abrir(
     if activa is not None:
         raise OptimizacionEnProceso(activa)
     ejecucion = EjecucionOptimizacion(
-        ejecucion_scoring_predictivo_id=d.scoring.id,
-        ejecucion_decision_v2_id=d.decision.id,
-        corte_canonico_id=d.corte.id,
+        ejecucion_scoring_predictivo_id=id_de(d.scoring),
+        ejecucion_decision_v2_id=id_de(d.decision),
+        corte_canonico_id=id_de(d.corte),
         ejecucion_ruteo_v2_id=None if d.ruteo is None else d.ruteo.id,
         ejecucion_campo_v2_id=None if d.campo is None else d.campo.id,
         ejecucion_territorial_v2_id=None
@@ -397,7 +399,7 @@ def abrir(
         version_bases_operativas_id=None
         if d.campo is None
         else d.campo.version_bases_operativas_id,
-        version_configuracion_optimizacion_id=d.configuracion.id,
+        version_configuracion_optimizacion_id=id_de(d.configuracion),
         fecha_operacion=fecha_operacion,
         version_motor=VERSION_MOTOR,
         version_politica=politica.version,
@@ -421,7 +423,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.OPTIMIZATION,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -582,29 +584,32 @@ def _leer(ejecucion_id: int) -> _Corrida | None:
             key=lambda p: p.codigo,
         )
         corte = s.get_one(CorteCanonico, e.corte_canonico_id)
-        corrida = _Corrida(
-            ejecucion_id=e.id,
-            run_id=e.optimizacion_run_id,
-            firma=e.firma_inputs,
-            politica=politica,
-            entradas=sql.Entradas(
-                scoring=e.ejecucion_scoring_predictivo_id,
-                decision=e.ejecucion_decision_v2_id,
-                corte=e.corte_canonico_id,
-                configuracion=version.id,
-                ruteo=e.ejecucion_ruteo_v2_id,
-                territorial=e.ejecucion_territorial_v2_id,
-                configuracion_campo=e.version_configuracion_campo_id,
-                bases=e.version_bases_operativas_id,
-                permitir_imputacion=version.permitir_predicciones_con_imputacion,
-            ),
-            contenido=contenido,
-            pools=pools,
-            cuentas_universo=e.cuentas_universo,
-            drift=scoring.drift_resumen,
-            fecha_corte=corte.fecha_corte,
-            fecha_operacion=e.fecha_operacion,
-        )
+        if politica is None:
+            corrida = None
+        else:
+            corrida = _Corrida(
+                ejecucion_id=id_de(e),
+                run_id=e.optimizacion_run_id,
+                firma=e.firma_inputs,
+                politica=politica,
+                entradas=sql.Entradas(
+                    scoring=e.ejecucion_scoring_predictivo_id,
+                    decision=e.ejecucion_decision_v2_id,
+                    corte=e.corte_canonico_id,
+                    configuracion=id_de(version),
+                    ruteo=e.ejecucion_ruteo_v2_id,
+                    territorial=e.ejecucion_territorial_v2_id,
+                    configuracion_campo=e.version_configuracion_campo_id,
+                    bases=e.version_bases_operativas_id,
+                    permitir_imputacion=version.permitir_predicciones_con_imputacion,
+                ),
+                contenido=contenido,
+                pools=pools,
+                cuentas_universo=e.cuentas_universo,
+                drift=scoring.drift_resumen,
+                fecha_corte=corte.fecha_corte,
+                fecha_operacion=e.fecha_operacion,
+            )
         s.expunge_all()
         entradas_exitosas = (
             scoring.estado == EstadoScoringPredictivo.EXITOSA
@@ -622,10 +627,10 @@ def _leer(ejecucion_id: int) -> _Corrida | None:
             solver_.hash_huella(solver_.huella(politica)) if politica is not None else None
         )
         huella_declarada = e.solver_fingerprint
-    if not soportada:
+    if corrida is None or not soportada:
         _fallar(
             ejecucion_id,
-            corrida.run_id,
+            e.optimizacion_run_id,
             ResultadoOptimizacion.VERSION_NO_SOPORTADA,
             "La ejecucion es de otro motor, de otra politica o su configuracion ya no es la de su "
             "hash; no se publico nada.",
@@ -665,7 +670,7 @@ def _armar(
             gestores = sql.gestores_de(s, e.configuracion_campo) if e.configuracion_campo else {}
             bases = sql.bases_de(s, e.bases) if e.bases is not None else {}
             activos = [
-                sql.PoolActivo(j, p.id, p.canal, p.tipo_alcance, p.referencia_alcance)
+                sql.PoolActivo(j, id_de(p), p.canal, p.tipo_alcance, p.referencia_alcance)
                 for j, p in enumerate(corrida.pools)
             ]
             sql.preparar(s, e, activos)
@@ -686,7 +691,7 @@ def _armar(
     _punto_de_falla(DESPUES_ELEGIBILIDAD)
     # Lo que la configuracion nombra y la cadena del ruteo no tiene: un gestor o una base.
     desconocidos = sorted(
-        p.referencia_alcance
+        _referencia(p)
         for p in corrida.pools
         if p.tipo_alcance == TipoAlcance.GESTOR_CAMPO and p.referencia_alcance not in gestores
     )
@@ -701,9 +706,7 @@ def _armar(
                 {"gestores": desconocidos[:100], "cuantos": len(desconocidos)},
             )
         )
-    nombradas = {
-        p.referencia_alcance for p in corrida.pools if p.tipo_alcance == TipoAlcance.BASE
-    } | {
+    nombradas = {_referencia(p) for p in corrida.pools if p.tipo_alcance == TipoAlcance.BASE} | {
         r.valor_dimension
         for r in corrida.contenido.restricciones
         if r.activa and r.dimension == Dimension.BASE
@@ -732,6 +735,12 @@ def _armar(
     return universo, problema, hallazgos
 
 
+def _referencia(p: PoolCapacidadOptimizacion) -> str:
+    """La base o el gestor de un pool que no es GLOBAL: ck_pool_optimizacion_coherencia la
+    exige."""
+    return presente(p.referencia_alcance, f"la referencia del pool {p.codigo}")
+
+
 def _problema(
     corrida: _Corrida,
     universo: sql.Universo,
@@ -742,10 +751,10 @@ def _problema(
     pools = []
     for p in corrida.pools:
         if p.canal == "CAMPO":
-            tope = programadas.get(p.referencia_alcance, 0)
+            tope = programadas.get(_referencia(p), 0)
             efectiva = tope if p.capacidad is None else min(p.capacidad, tope)
         else:
-            efectiva = p.capacidad
+            efectiva = presente(p.capacidad, f"la capacidad del pool {p.codigo}")
         pools.append(
             formulacion.Pool(
                 p.codigo,
@@ -836,7 +845,7 @@ def _sin_plan(
 ) -> None:
     """Una ejecucion sin plan optimo demostrado: FALLIDA, con su prechequeo, su certificado (lo que
     el solver si dijo, sin publicarlo) y, si fue infactible para el solver, la relajacion minima."""
-    diagnostico = {"hallazgos": [h.definicion() for h in resolucion.hallazgos]}
+    diagnostico: dict[str, object] = {"hallazgos": [h.definicion() for h in resolucion.hallazgos]}
     if resolucion.estado == EstadoSolver.INFEASIBLE:
         with tiempos.fase("relajacion"):
             diagnostico["diagnostico_relajacion"] = formulacion.diagnosticar_relajacion(
@@ -911,8 +920,8 @@ def armar_plan(
 ) -> Plan:
     """El plan publicable: cada cuenta con su estado y su motivo factual, el uso de cada pool, cada
     restriccion, el hash canonico y el resumen. Verifica en enteros que el plan cumple todo."""
-    asignacion = resolucion.asignacion
-    retenida = resolucion.reduccion.retenida
+    asignacion = presente(resolucion.asignacion, "la asignacion de un plan optimo")
+    retenida = presente(resolucion.reduccion, "la reduccion de un plan optimo").retenida
     evaluacion = formulacion.evaluar(problema, asignacion, retenida)
     if not evaluacion.factible:
         raise _NoSePublica(
@@ -932,7 +941,7 @@ def armar_plan(
     canales = np.array([p.canal for p in problema.pools] or ["-"], dtype=object)
     ids_pool = np.array([p.id for p in corrida.pools] or [0], dtype=np.int64)
     unidades = problema.unidades if problema.pools else np.ones(1, dtype=np.int64)
-    canal_asignado = np.where(asignada, canales[pool], None)
+    canal_asignado = np.where(asignada, canales[pool], np.array(None, dtype=object))
     en_campo = asignada & (canal_asignado == "CAMPO")
     gestor = np.where(en_campo, universo.gestor, -1)
     orden = np.where(en_campo, universo.orden_visita, -1)
@@ -1009,7 +1018,7 @@ def armar_plan(
                 corrida.ejecucion_id,
                 p.id,
                 corrida.entradas.configuracion,
-                gestores_por_codigo.get(p.referencia_alcance) if p.canal == "CAMPO" else None,
+                gestores_por_codigo.get(_referencia(p)) if p.canal == "CAMPO" else None,
             )
         )
         del j
@@ -1099,7 +1108,7 @@ def _resumen(
                 r.codigo for r in restricciones if r.binding and not r.codigo.startswith("POOL:")
             ),
         },
-        "reduccion": resolucion.reduccion.resumen(),
+        "reduccion": presente(resolucion.reduccion, "la reduccion de un plan optimo").resumen(),
         "drift_scoring": {
             "resumen": corrida.drift,
             "nota": "El drift del scoring declarado se reporta y no cambia el objetivo: un PSI "
@@ -1142,12 +1151,14 @@ def _publicar(
                 _punto_de_falla(ANTES_PUBLICAR)
                 with tiempos.fase("publicacion"):
                     columnas = ", ".join(COLUMNAS_RESULTADO)
-                    publicadas = s.execute(
-                        text(
-                            f"INSERT INTO resultado_optimizacion_cuenta ({columnas}) "
-                            f"SELECT {columnas} FROM po_resultado ORDER BY cuenta_canonica_id"
+                    publicadas = filas_afectadas(
+                        s.execute(
+                            text(
+                                f"INSERT INTO resultado_optimizacion_cuenta ({columnas}) "
+                                f"SELECT {columnas} FROM po_resultado ORDER BY cuenta_canonica_id"
+                            )
                         )
-                    ).rowcount
+                    )
                     copiar(
                         s,
                         "uso_pool_optimizacion",
@@ -1208,7 +1219,9 @@ def _publicar(
             with sesion() as s2:
                 previa = _de_firma(s2, corrida.firma, EstadoOptimizacion.EXITOSA)
                 s2.expunge_all()
-            raise OptimizacionYaPublicada(previa) from exc
+            raise OptimizacionYaPublicada(
+                presente(previa, "la ejecucion que publico primero")
+            ) from exc
         cola.confirmar_dueno(s)
         s.commit()
     log.info(
@@ -1269,19 +1282,21 @@ def _cerrar(
     plan: Plan,
     tiempos: medicion.Tiempos,
 ) -> None:
-    o = resolucion.objetivos
+    o = presente(resolucion.objetivos, "los objetivos de un plan optimo")
+    reduccion = presente(resolucion.reduccion, "la reduccion de un plan optimo")
+    modelo = presente(resolucion.modelo, "el modelo de un plan optimo")
     primero = resolucion.niveles[0]
     ejecucion.estado = EstadoOptimizacion.EXITOSA
     ejecucion.resultado = ResultadoOptimizacion.PLAN_PUBLICADO.value
     ejecucion.cuentas_elegibles = int(problema.elegibles.sum())
     ejecucion.cuentas_con_imputacion = plan.resumen["con_imputacion"]["universo"]
-    ejecucion.cuentas_retenidas = int(resolucion.reduccion.retenida.sum())
+    ejecucion.cuentas_retenidas = int(reduccion.retenida.sum())
     ejecucion.cuentas_asignadas = plan.evaluacion.cuentas
     ejecucion.cuentas_publicadas = corrida.cuentas_universo
-    ejecucion.clases = resolucion.reduccion.clases
-    ejecucion.variables = resolucion.modelo.variables
-    ejecucion.restricciones_solver = resolucion.modelo.restricciones
-    ejecucion.elementos_no_nulos = resolucion.modelo.no_nulos
+    ejecucion.clases = reduccion.clases
+    ejecucion.variables = modelo.variables
+    ejecucion.restricciones_solver = modelo.restricciones
+    ejecucion.elementos_no_nulos = modelo.no_nulos
     ejecucion.objetivo_primario_centavos = o.valor
     ejecucion.objetivo_secundario = o.contacto
     ejecucion.unidades_recurso = o.unidades
@@ -1338,8 +1353,8 @@ def _fallar(
         s.execute(
             update(EjecucionOptimizacion)
             .where(
-                EjecucionOptimizacion.id == ejecucion_id,
-                EjecucionOptimizacion.estado == EstadoOptimizacion.EN_PROCESO,
+                col(EjecucionOptimizacion.id) == ejecucion_id,
+                col(EjecucionOptimizacion.estado) == EstadoOptimizacion.EN_PROCESO,
             )
             .values(
                 estado=EstadoOptimizacion.FALLIDA,

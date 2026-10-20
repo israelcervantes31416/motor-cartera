@@ -25,7 +25,7 @@ from datetime import date
 from uuid import UUID
 
 from sqlalchemy import exists
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
@@ -35,7 +35,7 @@ from motor_cartera.db.modelos import (
     EstadoHistoria,
     IngestaPagos,
 )
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import seleccionar, sesion
 from motor_cartera.historia.ejecuciones import (
     TIPO_DEL_CONTRATO,
     VERSION_MODELO_HISTORIA,
@@ -85,35 +85,35 @@ class Encolado:
 
 def diagnosticar(s: Session) -> Diagnostico:
     """Cada dataset conformado con historia, clasificado por como esta su historia/v1."""
-    de_la_version = (EjecucionHistoria.dataset_conformado_id == DatasetConformado.id) & (
-        EjecucionHistoria.version_modelo == VERSION_MODELO_HISTORIA
+    de_la_version = (col(EjecucionHistoria.dataset_conformado_id) == DatasetConformado.id) & (
+        col(EjecucionHistoria.version_modelo) == VERSION_MODELO_HISTORIA
     )
 
     def con_estado(estado: EstadoHistoria):
-        return exists().where(de_la_version, EjecucionHistoria.estado == estado)
+        return exists().where(de_la_version, col(EjecucionHistoria.estado) == estado)
 
     ultimo_resultado = (
         select(EjecucionHistoria.resultado)
         .where(de_la_version, EjecucionHistoria.estado == EstadoHistoria.FALLIDA)
-        .order_by(EjecucionHistoria.id.desc())
+        .order_by(col(EjecucionHistoria.id).desc())
         .limit(1)
         .scalar_subquery()
     )
     filas = s.exec(
-        select(
-            DatasetConformado.id,
-            DatasetConformado.dataset_id,
-            DatasetConformado.contrato,
-            Corrida.fecha_corte,
-            Corrida.run_id,
-            IngestaPagos.pagos_run_id,
+        seleccionar(
+            col(DatasetConformado.id),
+            col(DatasetConformado.dataset_id),
+            col(DatasetConformado.contrato),
+            col(Corrida.fecha_corte),
+            col(Corrida.run_id),
+            col(IngestaPagos.pagos_run_id),
             con_estado(EstadoHistoria.EXITOSA),
             con_estado(EstadoHistoria.EN_PROCESO),
             ultimo_resultado,
         )
-        .outerjoin(Corrida, Corrida.id == DatasetConformado.corrida_id)
-        .outerjoin(IngestaPagos, IngestaPagos.id == DatasetConformado.ingesta_pagos_id)
-        .where(DatasetConformado.contrato.in_(list(TIPO_DEL_CONTRATO)))
+        .outerjoin(Corrida, col(Corrida.id) == DatasetConformado.corrida_id)
+        .outerjoin(IngestaPagos, col(IngestaPagos.id) == DatasetConformado.ingesta_pagos_id)
+        .where(col(DatasetConformado.contrato).in_(list(TIPO_DEL_CONTRATO)))
     ).all()
     materializados = en_cola = 0
     sin_historia: list[Pendiente] = []

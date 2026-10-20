@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, computed_field
 
 from motor_cartera.api.esquemas import (
     ArtefactoRespuesta,
@@ -87,7 +87,13 @@ class VisitaEntrada(BaseModel):
     observacion: str | None = _texto()
 
 
-EJEMPLO_GESTION = {
+EstadoDeEvaluacion = Literal[
+    "PENDIENTE", "CUMPLIDA", "PARCIAL", "INCUMPLIDA", "CANCELADA", "NO_EVALUABLE"
+]
+"""Lo que evaluacion-promesa/v1 concluye de una promesa (evaluacion.reglas.EstadoEvaluacion)."""
+
+
+EJEMPLO_GESTION: dict[str, JsonValue] = {
     "ocurrido_en": "2026-09-20T10:15:00-06:00",
     "canal": "TELEFONICA",
     "medio": "LLAMADA",
@@ -267,7 +273,7 @@ class EvaluacionDePromesaRespuesta(BaseModel):
     evaluacion_run_id: UUID
     version_evaluacion: str
     as_of: date = Field(description="Su fecha de corte: se observo hasta el final de ese dia.")
-    estado: Literal["PENDIENTE", "CUMPLIDA", "PARCIAL", "INCUMPLIDA", "CANCELADA", "NO_EVALUABLE"]
+    estado: EstadoDeEvaluacion
     monto_observado: Decimal = Field(
         description="Lo que suman los movimientos compatibles: PAGO de la cuenta, recibidos desde "
         "que se acordo hasta su fecha limite (o su fecha de corte, si es antes), sin los que un "
@@ -541,7 +547,7 @@ class EvaluacionEnEjecucionRespuesta(BaseModel):
     cliente_unico: str
     monto_prometido: Decimal
     fecha_limite: date
-    estado: Literal["PENDIENTE", "CUMPLIDA", "PARCIAL", "INCUMPLIDA", "CANCELADA", "NO_EVALUABLE"]
+    estado: EstadoDeEvaluacion
     monto_observado: Decimal
     movimientos_compatibles: int
     primer_movimiento_en: datetime | None

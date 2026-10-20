@@ -155,8 +155,8 @@ def _tipos(modelo) -> dict[str, str]:
 def _admite_nulo(columna: str) -> bool:
     tabla = SnapshotCuenta.__table__
     if columna in tabla.columns:
-        return tabla.columns[columna].nullable
-    return CuentaCanonica.__table__.columns[columna].nullable
+        return bool(tabla.columns[columna].nullable)
+    return bool(CuentaCanonica.__table__.columns[columna].nullable)
 
 
 def abrir_parquet(ruta, contrato: ContratoFuente, filas: int) -> pq.ParquetFile:

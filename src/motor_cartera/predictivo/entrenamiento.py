@@ -34,12 +34,13 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import overload
 from uuid import UUID
 
 import numpy as np
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.analytics.catalogo import canonico
 from motor_cartera.db.modelos import (
@@ -55,10 +56,12 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionModeloPredictivo,
     ahora,
+    id_de,
 )
 from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
 from motor_cartera.decision_v2.ejecuciones import esperar_frontera
 from motor_cartera.geografia.ejecuciones import _traza
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 from motor_cartera.predictivo import artefacto as artefacto_
 from motor_cartera.predictivo import dataset as dataset_
@@ -170,8 +173,8 @@ def abrir(
         d = ancla.declarada
         s.add(
             AnclaEntrenamientoPredictivo(
-                ejecucion_entrenamiento_predictivo_id=ejecucion.id,
-                corte_canonico_id=ancla.corte.id,
+                ejecucion_entrenamiento_predictivo_id=id_de(ejecucion),
+                corte_canonico_id=id_de(ancla.corte),
                 feature_as_of=d.feature_as_of,
                 feature_known_at=d.feature_known_at,
                 label_known_at=d.label_known_at,
@@ -184,16 +187,16 @@ def abrir(
     for interpretacion in r.interpretaciones:
         s.add(
             InterpretacionEntrenamientoPredictivo(
-                ejecucion_entrenamiento_predictivo_id=ejecucion.id,
+                ejecucion_entrenamiento_predictivo_id=id_de(ejecucion),
                 periodo_desde=interpretacion.ejecucion.periodo_desde,
-                ejecucion_motor_pagos_id=interpretacion.ejecucion.id,
+                ejecucion_motor_pagos_id=id_de(interpretacion.ejecucion),
             )
         )
     s.flush()
     cola.crear(
         s,
         TipoTrabajo.PREDICTIVE_TRAINING,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -356,7 +359,7 @@ def _leer(ejecucion_id: int) -> _Corrida | None:
                 select(AnclaEntrenamientoPredictivo, CorteCanonico.corte_id)
                 .join(
                     CorteCanonico,
-                    CorteCanonico.id == AnclaEntrenamientoPredictivo.corte_canonico_id,
+                    col(CorteCanonico.id) == AnclaEntrenamientoPredictivo.corte_canonico_id,
                 )
                 .where(
                     AnclaEntrenamientoPredictivo.ejecucion_entrenamiento_predictivo_id
@@ -371,25 +374,28 @@ def _leer(ejecucion_id: int) -> _Corrida | None:
                     InterpretacionEntrenamientoPredictivo.ejecucion_entrenamiento_predictivo_id
                     == ejecucion_id
                 )
-                .order_by(InterpretacionEntrenamientoPredictivo.periodo_desde)
+                .order_by(col(InterpretacionEntrenamientoPredictivo.periodo_desde))
             ).all()
         )
-        corrida = _Corrida(
-            ejecucion_id=e.id,
-            training_run_id=e.training_run_id,
-            despacho_id=e.despacho_id,
-            cartera_id=e.cartera_id,
-            zona=e.zona_horaria,
-            politica=politica,
-            anclas=anclas,
-            interpretaciones=interpretaciones,
-            firma=e.firma_inputs,
-            hash_manifiesto=e.hash_manifiesto,
-        )
-    if not soportada:
+        if politica is None or not soportada:
+            corrida = None
+        else:
+            corrida = _Corrida(
+                ejecucion_id=id_de(e),
+                training_run_id=e.training_run_id,
+                despacho_id=e.despacho_id,
+                cartera_id=e.cartera_id,
+                zona=e.zona_horaria,
+                politica=politica,
+                anclas=anclas,
+                interpretaciones=interpretaciones,
+                firma=e.firma_inputs,
+                hash_manifiesto=e.hash_manifiesto,
+            )
+    if corrida is None:
         _fallar(
             ejecucion_id,
-            corrida.training_run_id,
+            e.training_run_id,
             ResultadoEntrenamientoPredictivo.VERSION_NO_SOPORTADA,
             f"La ejecucion pide {e.version_modelo}, {e.version_features}, {e.version_targets} y "
             f"{e.version_politica} con sus hashes, y este servicio no entrena exactamente eso; no "
@@ -1495,7 +1501,9 @@ def _publicar(corrida: _Corrida, r: _Resultado, tiempos: medicion.Tiempos) -> No
             with sesion() as s2:
                 previa = _de_firma(s2, corrida.firma, EstadoEntrenamientoPredictivo.EXITOSA)
                 s2.expunge_all()
-            raise EntrenamientoYaPublicado(previa) from exc
+            raise EntrenamientoYaPublicado(
+                presente(previa, "la ejecucion que publico primero")
+            ) from exc
         except Exception:
             s.rollback()
             raise
@@ -1531,7 +1539,7 @@ def _registrar(s: Session, corrida: _Corrida, r: _Resultado) -> VersionModeloPre
     for c in r.componentes:
         s.add(
             ComponenteModeloPredictivo(
-                version_modelo_predictivo_id=version.id,
+                version_modelo_predictivo_id=id_de(version),
                 target=c.target.value,
                 algoritmo=c.algoritmo,
                 hiperparametros=c.hiperparametros,
@@ -1551,7 +1559,13 @@ def _registrar(s: Session, corrida: _Corrida, r: _Resultado) -> VersionModeloPre
     return version
 
 
-def _json(valor):
+@overload
+def _json(valor: dict) -> dict: ...
+@overload
+def _json(valor: list) -> list: ...
+@overload
+def _json(valor: object) -> object: ...
+def _json(valor: object) -> object:
     """Un valor de las metricas como JSON: floats de NumPy a float, sin NaN ni infinitos."""
     if isinstance(valor, dict):
         return {str(k): _json(v) for k, v in valor.items()}
@@ -1635,8 +1649,9 @@ def _fallar(
         s.execute(
             update(EjecucionEntrenamientoPredictivo)
             .where(
-                EjecucionEntrenamientoPredictivo.id == ejecucion_id,
-                EjecucionEntrenamientoPredictivo.estado == EstadoEntrenamientoPredictivo.EN_PROCESO,
+                col(EjecucionEntrenamientoPredictivo.id) == ejecucion_id,
+                col(EjecucionEntrenamientoPredictivo.estado)
+                == EstadoEntrenamientoPredictivo.EN_PROCESO,
             )
             .values(
                 estado=EstadoEntrenamientoPredictivo.FALLIDA,
@@ -1660,13 +1675,13 @@ def interpretaciones_de(s: Session, ejecucion_id: int) -> list[EjecucionMotorPag
             select(EjecucionMotorPagos)
             .join(
                 InterpretacionEntrenamientoPredictivo,
-                InterpretacionEntrenamientoPredictivo.ejecucion_motor_pagos_id
+                col(InterpretacionEntrenamientoPredictivo.ejecucion_motor_pagos_id)
                 == EjecucionMotorPagos.id,
             )
             .where(
                 InterpretacionEntrenamientoPredictivo.ejecucion_entrenamiento_predictivo_id
                 == ejecucion_id
             )
-            .order_by(InterpretacionEntrenamientoPredictivo.periodo_desde)
+            .order_by(col(InterpretacionEntrenamientoPredictivo.periodo_desde))
         ).all()
     )

@@ -28,7 +28,7 @@ from datetime import date
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.atribucion.ejecuciones import abrir, gestiones_del_rango
 from motor_cartera.atribucion.reglas import VERSION_ATRIBUCION
@@ -38,6 +38,7 @@ from motor_cartera.db.modelos import (
     EjecucionMotorPagos,
     EstadoAtribucion,
     EstadoMotorPagos,
+    id_de,
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.motor_pagos.ejecuciones import Ventana
@@ -97,7 +98,7 @@ def diagnosticar(s: Session) -> Diagnostico:
             EjecucionMotorPagos.version_motor == VERSION_MOTOR_PAGOS,
             EjecucionMotorPagos.estado == EstadoMotorPagos.EXITOSA,
         )
-        .order_by(EjecucionMotorPagos.id)
+        .order_by(col(EjecucionMotorPagos.id))
     ).all()
     vigente_del_motor: dict[tuple, EjecucionMotorPagos] = {}
     for motor in motores:
@@ -106,7 +107,7 @@ def diagnosticar(s: Session) -> Diagnostico:
     for ejecucion in s.exec(
         select(EjecucionAtribucion)
         .where(EjecucionAtribucion.version_atribucion == VERSION_ATRIBUCION)
-        .order_by(EjecucionAtribucion.id)
+        .order_by(col(EjecucionAtribucion.id))
     ).all():
         atribuciones[(ejecucion.despacho_id, ejecucion.cartera_id, ejecucion.periodo_desde)].append(
             ejecucion
@@ -114,7 +115,7 @@ def diagnosticar(s: Session) -> Diagnostico:
     al_dia = en_cola = pagos_totales = 0
     listas: dict[str, list[EstadoDeVentana]] = defaultdict(list)
     for llave, motor in sorted(vigente_del_motor.items()):
-        pagos = pagos_de(s, motor.id)
+        pagos = pagos_de(s, id_de(motor))
         pagos_totales += pagos
         todas = atribuciones.get(llave, [])
         exitosas = [e for e in todas if e.estado == EstadoAtribucion.EXITOSA]
@@ -173,7 +174,7 @@ def gestiones_en_el_rango(
 ) -> tuple[int, int]:
     """Cuantas gestiones leeria hoy una atribucion de la interpretacion `motor_id` con esa ventana,
     y cuantas de ellas estan anuladas: exactamente el conjunto que entra en su firma de entrada."""
-    return s.execute(
+    resultado = s.execute(
         text(
             "SELECT count(*), count(*) FILTER (WHERE anulada) FROM ("
             + gestiones_del_rango(
@@ -186,7 +187,8 @@ def gestiones_en_el_rango(
             + ") leidas"
         ),
         {"motor": motor_id, "zona": zona, "ventana": ventana_dias},
-    ).one()
+    )
+    return resultado.tuples().one()
 
 
 def _desactualizada(
@@ -197,7 +199,7 @@ def _desactualizada(
     if vigente.ejecucion_motor_pagos_id != motor.id:
         return f"otra interpretacion de pagos ({motor.motor_pagos_run_id})"
     gestiones, anuladas = gestiones_en_el_rango(
-        s, motor.id, ventana_dias=vigente.ventana_dias, zona=vigente.zona_horaria
+        s, id_de(motor), ventana_dias=vigente.ventana_dias, zona=vigente.zona_horaria
     )
     if (gestiones, anuladas) != (vigente.gestiones_leidas, vigente.gestiones_anuladas):
         return (

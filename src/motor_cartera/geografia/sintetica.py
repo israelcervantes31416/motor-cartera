@@ -17,6 +17,7 @@ import io
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import shapefile
 
@@ -103,7 +104,10 @@ def escribir_capa(
     `.prj` y, si se da, `.cpg`. Devuelve la ruta del zip. Con `orientar=False`, los anillos van tal
     como se dieron, para probar capas mal formadas."""
     shp, shx, dbf = io.BytesIO(), io.BytesIO(), io.BytesIO()
-    escritor = shapefile.Writer(
+    # Sin tipo estatico: las firmas de pyshp 3 no aceptan un BytesIO (su protocolo de escritura no
+    # es posicional) ni los anillos como listas de pares.
+    escritura: Any = shapefile.Writer
+    escritor = escritura(
         shp=shp, shx=shx, dbf=dbf, shapeType=shapefile.POLYGON, encoding=codificacion
     )
     anchos = {"CVEGEO": 5, "CVE_ENT": 2, "CVE_MUN": 3, "NOMGEO": 80}

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
+from typing import Any, cast
 
+from sqlalchemy import func
+from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.sql.expression import Select
 
 from motor_cartera.config import config
 
@@ -74,6 +79,31 @@ def insertar_en_savepoint(s: Session, objeto: SQLModel) -> IntegrityError | None
     except IntegrityError as exc:
         return exc
     return None
+
+
+def reloj_de_la_base() -> datetime:
+    """`now()` de PostgreSQL (el instante de la transaccion) como valor de una columna: lo
+    resuelve el servidor al escribir la fila. Se tipa como lo que la columna guarda."""
+    return cast(datetime, func.now())
+
+
+def seleccionar(*columnas: Any) -> Select[Any]:
+    """El `select()` de SQLModel con cinco columnas o mas. Sus sobrecargas tipadas llegan a cuatro;
+    con mas de una columna devuelve siempre su `Select`, que es lo que este declara."""
+    return cast(Select[Any], select(*columnas))
+
+
+def con_columnas(consulta: Select[Any], *columnas: Any) -> Select[Any]:
+    """`add_columns` sobre un select de SQLModel. Es generativo: devuelve una copia de la misma
+    clase, que SQLAlchemy tipa como su propio Select."""
+    return cast(Select[Any], consulta.add_columns(*columnas))
+
+
+def filas_afectadas(resultado: Result[Any]) -> int:
+    """Cuantas filas escribio un INSERT, un UPDATE o un DELETE. Para esas sentencias
+    `Session.execute` devuelve un `CursorResult`, que trae `rowcount`; SQLAlchemy lo tipa como el
+    `Result` general, que no lo declara."""
+    return cast(CursorResult[Any], resultado).rowcount
 
 
 def restriccion(exc: IntegrityError) -> str | None:

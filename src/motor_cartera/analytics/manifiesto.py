@@ -65,6 +65,7 @@ from motor_cartera.db.modelos import (
     EstadoMotorPagos,
     EstadoRuteoV2,
     EstadoTerritorialV2,
+    id_de,
 )
 from motor_cartera.evaluacion.reglas import VERSION_EVALUACION
 from motor_cartera.motor_pagos.reglas import VERSION_MOTOR_PAGOS, periodos_entre
@@ -368,7 +369,7 @@ def resolver(s: Session, peticion: Peticion) -> Resuelto:
         Entrada(
             Fuente.CORTE,
             corte.corte_id,
-            corte.id,
+            id_de(corte),
             corte.version_modelo,
             corte.firma_contenido,
             corte.fecha_corte,

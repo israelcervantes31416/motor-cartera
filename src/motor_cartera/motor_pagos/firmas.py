@@ -40,6 +40,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from motor_cartera.contratos.fuente import Tipo, linea_canonica
@@ -73,7 +74,7 @@ CAMPOS_FIRMADOS: tuple[CampoFirmado, ...] = tuple(
 # --- el texto canonico de cada valor --------------------------------------------------------------
 
 
-def texto_canonico(valor: object, tipo: Tipo) -> str | None:
+def texto_canonico(valor: Any, tipo: Tipo) -> str | None:
     """El texto con que un valor de PagoObservado entra en una huella. None si esta vacio."""
     if valor is None:
         return None
@@ -113,6 +114,8 @@ def texto_flotante(valor: float) -> str:
     if valor == 0:
         return "-0" if math.copysign(1.0, valor) < 0 else "0"
     signo, cifras, exponente = Decimal(repr(valor)).as_tuple()
+    if not isinstance(exponente, int):  # pragma: no cover - NaN e infinitos ya salieron
+        raise AssertionError(f"Un flotante finito tiene exponente entero: {valor!r}.")
     cifras = list(cifras)
     while len(cifras) > 1 and cifras[-1] == 0:
         cifras.pop()

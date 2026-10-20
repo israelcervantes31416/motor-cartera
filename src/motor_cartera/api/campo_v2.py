@@ -41,6 +41,7 @@ from motor_cartera.api.esquemas_campo import (
     PlanCampoEntrada,
     PlanCampoV2Respuesta,
     UnidadCampoRespuesta,
+    VentanaDelDia,
 )
 from motor_cartera.api.esquemas_geografia import CorteRespuesta
 from motor_cartera.api.geografia import corte_de
@@ -49,7 +50,13 @@ from motor_cartera.api.operacional import SIN_CLAVE
 from motor_cartera.campo_v2 import consultas
 from motor_cartera.campo_v2 import ejecuciones as motor
 from motor_cartera.campo_v2.consultas import AsignacionVista, Filtros, PlanNoEncontrado, PlanVista
-from motor_cartera.campo_v2.politica import CUANTO, POLITICAS
+from motor_cartera.campo_v2.politica import (
+    CUANTO,
+    POLITICAS,
+    EstadoCampo,
+    EstadoJornada,
+    NivelUnidad,
+)
 from motor_cartera.config import Config
 
 router = APIRouter(tags=["campo-v2"])
@@ -248,14 +255,14 @@ def cargas(
             CargaGestorRespuesta(
                 gestor=GestorDelCampo(gestor_id=c.gestor_id, codigo=c.codigo_gestor),
                 base=BaseDelCampo(base_id=c.base_id, codigo=c.codigo_base),
-                estado_jornada=c.carga.estado_jornada,
+                estado_jornada=EstadoJornada(c.carga.estado_jornada),
                 capacidad=c.carga.capacidad,
                 asignadas=c.carga.asignadas,
                 utilizacion=c.carga.utilizacion,
                 microtramos=c.carga.microtramos,
                 tramos=c.carga.tramos,
                 rebalanceadas=c.carga.rebalanceadas,
-                ventanas=c.carga.ventanas,
+                ventanas=[VentanaDelDia.model_validate(v) for v in c.carga.ventanas],
             )
             for c in filas
         ],
@@ -296,7 +303,7 @@ def unidades(
         elementos=[
             UnidadCampoRespuesta(
                 unidad_id=u.unidad.unidad_id,
-                nivel=u.unidad.nivel,
+                nivel=NivelUnidad(u.unidad.nivel),
                 padre_id=u.unidad.padre_id,
                 base=BaseDelCampo(base_id=u.base_id, codigo=u.codigo_base),
                 cve_ent=u.unidad.cve_ent,
@@ -366,12 +373,14 @@ def asignacion_respuesta(v: AsignacionVista) -> AsignacionCampoRespuesta:
     return AsignacionCampoRespuesta(
         cuenta_id=v.cuenta_id,
         cliente_unico=v.cliente_unico,
-        estado=a.estado,
+        estado=EstadoCampo(a.estado),
         prioridad=a.prioridad,
         orden_prioridad=a.orden_prioridad,
-        base=None if v.base_id is None else BaseDelCampo(base_id=v.base_id, codigo=v.codigo_base),
+        base=None
+        if v.base_id is None or v.codigo_base is None
+        else BaseDelCampo(base_id=v.base_id, codigo=v.codigo_base),
         gestor=None
-        if v.gestor_id is None
+        if v.gestor_id is None or v.codigo_gestor is None
         else GestorDelCampo(gestor_id=v.gestor_id, codigo=v.codigo_gestor),
         municipio=v.cvegeo,
         zona_id=a.zona_id,

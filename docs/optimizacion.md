@@ -380,4 +380,5 @@ Aunque un plan sea un óptimo matemático demostrado:
 - `CAMPO` no reoptimiza rutas, no mueve cuentas entre gestores ni entre bases y no planea dentro del
   día: elige entre las paradas que `ruteo/v2` ya programó.
 - No hay *uplift*, ML causal, efecto incremental de un tratamiento, Decision Engine v3, aprendizaje
-  por refuerzo, *bandits*, optimización en línea, ejecución automática, VRP global ni dashboards.
+  por refuerzo, *bandits*, optimización en línea, ejecución automática ni VRP global; el plan se ve
+  en la app, que es de solo lectura.

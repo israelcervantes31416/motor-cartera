@@ -11,7 +11,7 @@ Es **capacidad declarada, no factibilidad vial**: un gestor recibe hasta su cupo
 cuentas al día ([configuracion_campo.md](configuracion_campo.md)), y cada cuenta queda en una zona,
 una subzona, un tramo y un microtramo de una cuadrícula fija
 ([particion_campo.md](particion_campo.md)). No usa distancias, tiempos de traslado, rutas ni la
-duración de una visita: el orden de las visitas y su factibilidad son de v0.13.
+duración de una visita: el orden de las visitas y su factibilidad son de `ruteo/v2`.
 
 ```
 EjecucionDecisionV2 (EXITOSA) ──┐  el canal y la prioridad de cada cuenta

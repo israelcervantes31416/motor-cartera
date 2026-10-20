@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -29,6 +29,7 @@ from motor_cartera.db.modelos import (
     TrabajoOrquestacion,
     VersionGeografia,
 )
+from motor_cartera.db.sesion import seleccionar
 from motor_cartera.geografia.reglas import CONTEO_DE_ESTADO
 from motor_cartera.geografia.reglas import EstadoGeografia as Estado
 
@@ -51,7 +52,7 @@ def versiones(
     total = s.exec(select(func.count()).select_from(VersionGeografia)).one()
     filas = s.exec(
         select(VersionGeografia)
-        .order_by(VersionGeografia.id.desc())
+        .order_by(col(VersionGeografia.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -83,18 +84,18 @@ class EjecucionVista:
 
 def _ejecuciones() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             EjecucionGeografia,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
             VersionGeografia,
-            TrabajoOrquestacion.trabajo_id,
+            col(TrabajoOrquestacion.trabajo_id),
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionGeografia.corte_canonico_id)
-        .join(VersionGeografia, VersionGeografia.id == EjecucionGeografia.version_geografia_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionGeografia.corte_canonico_id)
+        .join(VersionGeografia, col(VersionGeografia.id) == EjecucionGeografia.version_geografia_id)
         .outerjoin(
             TrabajoOrquestacion,
-            TrabajoOrquestacion.ejecucion_geografia_id == EjecucionGeografia.id,
+            col(TrabajoOrquestacion.ejecucion_geografia_id) == EjecucionGeografia.id,
         )
     )
 
@@ -118,7 +119,7 @@ def listar(
     filas = s.exec(
         _ejecuciones()
         .where(*condiciones)
-        .order_by(EjecucionGeografia.id.desc())
+        .order_by(col(EjecucionGeografia.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -179,20 +180,20 @@ def resultados(
             select(func.count()).select_from(ResultadoGeografiaCuenta).where(*condiciones)
         ).one()
     filas = s.exec(
-        select(
+        seleccionar(
             ResultadoGeografiaCuenta,
-            CuentaCanonica.cuenta_id,
-            CuentaCanonica.cliente_unico,
-            MunicipioGeografico.cvegeo,
-            MunicipioGeografico.nombre_oficial,
+            col(CuentaCanonica.cuenta_id),
+            col(CuentaCanonica.cliente_unico),
+            col(MunicipioGeografico.cvegeo),
+            col(MunicipioGeografico.nombre_oficial),
         )
-        .join(CuentaCanonica, CuentaCanonica.id == ResultadoGeografiaCuenta.cuenta_canonica_id)
+        .join(CuentaCanonica, col(CuentaCanonica.id) == ResultadoGeografiaCuenta.cuenta_canonica_id)
         .outerjoin(
             MunicipioGeografico,
-            MunicipioGeografico.id == ResultadoGeografiaCuenta.municipio_geografico_id,
+            col(MunicipioGeografico.id) == ResultadoGeografiaCuenta.municipio_geografico_id,
         )
         .where(*condiciones)
-        .order_by(ResultadoGeografiaCuenta.cuenta_canonica_id)
+        .order_by(col(ResultadoGeografiaCuenta.cuenta_canonica_id))
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -215,24 +216,24 @@ class GeografiaEnHistoria:
 
 def _de_la_cuenta(cuenta: CuentaCanonica) -> Select[Any]:
     return (
-        select(
+        seleccionar(
             EjecucionGeografia,
             ResultadoGeografiaCuenta,
-            CorteCanonico.corte_id,
-            CorteCanonico.fecha_corte,
+            col(CorteCanonico.corte_id),
+            col(CorteCanonico.fecha_corte),
             VersionGeografia,
-            MunicipioGeografico.cvegeo,
-            MunicipioGeografico.nombre_oficial,
+            col(MunicipioGeografico.cvegeo),
+            col(MunicipioGeografico.nombre_oficial),
         )
         .join(
             ResultadoGeografiaCuenta,
-            ResultadoGeografiaCuenta.ejecucion_geografia_id == EjecucionGeografia.id,
+            col(ResultadoGeografiaCuenta.ejecucion_geografia_id) == EjecucionGeografia.id,
         )
-        .join(CorteCanonico, CorteCanonico.id == EjecucionGeografia.corte_canonico_id)
-        .join(VersionGeografia, VersionGeografia.id == EjecucionGeografia.version_geografia_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == EjecucionGeografia.corte_canonico_id)
+        .join(VersionGeografia, col(VersionGeografia.id) == EjecucionGeografia.version_geografia_id)
         .outerjoin(
             MunicipioGeografico,
-            MunicipioGeografico.id == ResultadoGeografiaCuenta.municipio_geografico_id,
+            col(MunicipioGeografico.id) == ResultadoGeografiaCuenta.municipio_geografico_id,
         )
         .where(
             ResultadoGeografiaCuenta.cuenta_canonica_id == cuenta.id,
@@ -242,7 +243,7 @@ def _de_la_cuenta(cuenta: CuentaCanonica) -> Select[Any]:
 
 
 def _orden() -> tuple:
-    return (CorteCanonico.fecha_corte.desc(), EjecucionGeografia.id.desc())
+    return (col(CorteCanonico.fecha_corte).desc(), col(EjecucionGeografia.id).desc())
 
 
 def historial(
@@ -256,7 +257,7 @@ def historial(
         .select_from(ResultadoGeografiaCuenta)
         .join(
             EjecucionGeografia,
-            EjecucionGeografia.id == ResultadoGeografiaCuenta.ejecucion_geografia_id,
+            col(EjecucionGeografia.id) == ResultadoGeografiaCuenta.ejecucion_geografia_id,
         )
         .where(
             ResultadoGeografiaCuenta.cuenta_canonica_id == cuenta.id,

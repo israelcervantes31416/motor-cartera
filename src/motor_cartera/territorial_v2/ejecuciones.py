@@ -29,7 +29,7 @@ from uuid import UUID
 
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.db.modelos import (
     CONTEOS_DE_TERRITORIAL_V2,
@@ -42,10 +42,12 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     VersionBasesOperativas,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.geografia.reglas import EstadoGeografia as Geografia
 from motor_cartera.ingesta.fuente_oficial import Cronometro
+from motor_cartera.invariantes import presente
 from motor_cartera.orquestacion import cola
 from motor_cartera.territorial_v2.politica import (
     CONTEO_DE_ESTADO,
@@ -219,9 +221,9 @@ def abrir(
     if activa is not None:
         raise TerritorialV2EnProceso(activa)
     ejecucion = EjecucionTerritorialV2(
-        corte_canonico_id=e.corte.id,
-        ejecucion_geografia_id=e.geografia.id,
-        version_bases_operativas_id=e.bases.id,
+        corte_canonico_id=id_de(e.corte),
+        ejecucion_geografia_id=id_de(e.geografia),
+        version_bases_operativas_id=id_de(e.bases),
         version_motor=VERSION_MOTOR,
         version_politica=e.politica.version,
         hash_politica=hash_politica(e.politica),
@@ -241,7 +243,7 @@ def abrir(
     cola.crear(
         s,
         TipoTrabajo.TERRITORIAL_V2,
-        ejecucion.id,
+        id_de(ejecucion),
         max_intentos=max_intentos,
         tomado_por=tomado_por,
         lease_segundos=lease_segundos,
@@ -352,7 +354,12 @@ def asignar(ejecucion_id: int, *, cronometro: Cronometro | None = None) -> None:
             return
         _fallar(s, ejecucion_id, etiqueta, resultado, motivo)
         if resultado == ResultadoEjecucionTerritorialV2.YA_GENERADO:
-            raise TerritorialV2YaGenerado(_de_firma(s, firma, EstadoTerritorialV2.EXITOSA))
+            raise TerritorialV2YaGenerado(
+                presente(
+                    _de_firma(s, firma, EstadoTerritorialV2.EXITOSA),
+                    "la asignacion que genero primero",
+                )
+            )
 
 
 def _asignar(s: Session, ejecucion: EjecucionTerritorialV2, cronometro: Cronometro) -> None:
@@ -400,7 +407,7 @@ def _asignar(s: Session, ejecucion: EjecucionTerritorialV2, cronometro: Cronomet
     _punto_de_falla(DESPUES_DE_LAS_DISTANCIAS)
     _punto_de_falla(ANTES_DE_PUBLICAR)
     with cronometro.fase("publicacion"):
-        publicadas = s.execute(text(SQL_ASIGNACIONES), parametros).rowcount
+        publicadas = filas_afectadas(s.execute(text(SQL_ASIGNACIONES), parametros))
     _punto_de_falla(DESPUES_DE_LAS_ASIGNACIONES)
     with cronometro.fase("conteos"):
         conteos, distribucion = _contar(s, ejecucion)
@@ -535,7 +542,9 @@ def _contar(s: Session, ejecucion: EjecucionTerritorialV2) -> tuple[dict[str, in
                 "WHERE ejecucion_territorial_v2_id = :ejecucion GROUP BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     por_base = {
         codigo: {"cuentas": cuentas, "distancia_mediana_m": str(mediana)}
@@ -558,7 +567,9 @@ def _contar(s: Session, ejecucion: EjecucionTerritorialV2) -> tuple[dict[str, in
                 ":ejecucion GROUP BY 1 ORDER BY 1"
             ),
             parametros,
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     conteos = {
         columna: por_estado.get(estado.value, 0) for estado, columna in CONTEO_DE_ESTADO.items()
@@ -614,21 +625,23 @@ def _fallar(
         s.rollback()
         log.warning("territorial v2 %s: su trabajo ya no es de este worker: %s", etiqueta, motivo)
         raise
-    registrado = s.execute(
-        update(EjecucionTerritorialV2)
-        .where(
-            EjecucionTerritorialV2.id == ejecucion_id,
-            EjecucionTerritorialV2.estado == EstadoTerritorialV2.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionTerritorialV2)
+            .where(
+                col(EjecucionTerritorialV2.id) == ejecucion_id,
+                col(EjecucionTerritorialV2.estado) == EstadoTerritorialV2.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoTerritorialV2.FALLIDA,
+                resultado=resultado.value,
+                detalle=motivo,
+                terminada_en=ahora(),
+                **dict.fromkeys(CONTEOS_DE_TERRITORIAL_V2, 0),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoTerritorialV2.FALLIDA,
-            resultado=resultado.value,
-            detalle=motivo,
-            terminada_en=ahora(),
-            **dict.fromkeys(CONTEOS_DE_TERRITORIAL_V2, 0),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("territorial v2 %s fallida (%s): %s", etiqueta, resultado.value, motivo)

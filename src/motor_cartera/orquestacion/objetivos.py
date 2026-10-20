@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import update
+from sqlalchemy.orm import InstrumentedAttribute
 from sqlmodel import Session, SQLModel, select
 
 from motor_cartera.db.modelos import (
@@ -73,6 +74,7 @@ from motor_cartera.db.modelos import (
     TipoTrabajo,
     ahora,
 )
+from motor_cartera.db.sesion import filas_afectadas
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,13 @@ class Objetivo:
     @property
     def terminales(self) -> frozenset[str]:
         """Los estados de los que ya no sale: todos menos EN_PROCESO."""
-        return frozenset(e for e in self.estados if e != self.estados.EN_PROCESO)
+        return frozenset(e for e in self.estados if e != self.estados["EN_PROCESO"])
+
+
+def columna(modelo: type[SQLModel], nombre: str) -> InstrumentedAttribute[Any]:
+    """La columna `nombre` (id, estado...) de un modelo del registro. El registro es
+    heterogeneo: cada modelo la declara con su propio tipo, y la cola solo la compara."""
+    return getattr(modelo, nombre)
 
 
 OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
@@ -282,7 +290,9 @@ OBJETIVOS: dict[TipoTrabajo, Objetivo] = {
 def estado(s: Session, tipo: TipoTrabajo, objetivo_id: int) -> StrEnum:
     """El estado del recurso, como esta en la base en este momento."""
     modelo = OBJETIVOS[tipo].modelo
-    return s.exec(select(modelo.estado).where(modelo.id == objetivo_id)).one()
+    return s.exec(
+        select(columna(modelo, "estado")).where(columna(modelo, "id") == objetivo_id)
+    ).one()
 
 
 def es_terminal(tipo: TipoTrabajo, estado_actual: str) -> bool:
@@ -299,12 +309,20 @@ def fallar(s: Session, tipo: TipoTrabajo, objetivo_id: int, motivo: str) -> bool
     """
     objetivo = OBJETIVOS[tipo]
     modelo, estados = objetivo.modelo, objetivo.estados
-    cambiados = s.execute(
-        update(modelo)
-        .where(modelo.id == objetivo_id, modelo.estado == estados.EN_PROCESO)
-        .values(
-            estado=estados.FALLIDA, detalle=motivo, terminada_en=ahora(), **objetivo.sin_publicar
+    cambiados = filas_afectadas(
+        s.execute(
+            update(modelo)
+            .where(
+                columna(modelo, "id") == objetivo_id,
+                columna(modelo, "estado") == estados["EN_PROCESO"],
+            )
+            .values(
+                estado=estados["FALLIDA"],
+                detalle=motivo,
+                terminada_en=ahora(),
+                **objetivo.sin_publicar,
+            )
+            .execution_options(synchronize_session=False)
         )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     return cambiados == 1

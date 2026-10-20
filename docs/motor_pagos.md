@@ -691,7 +691,7 @@ cada sentencia se resuelve en menos de 0.25 ms dentro de PostgreSQL con 8 millon
 8 millones de resultados. Lo que cuesta es escribir una interpretación completa, y particionar no lo
 reduce. El caso en que podría pagar es la retención: quitar las interpretaciones que ya no son
 vigentes, que crecen con cada llegada tardía, quitando particiones enteras. Es una decisión de la
-operación, con datos de producción (v0.18).
+operación, con datos de producción.
 
 ## Lo que no sabemos, y se dice
 
@@ -713,15 +713,15 @@ Esto es una fortaleza del diseño, no una debilidad:
 ## Lo que `motor-pagos/v1` no hace, a propósito
 
 - **No atribuye pagos a gestiones.** Los campos `Gestor`, `Fecha_de_Gestion` y `Campaña` se
-  conservan y se ven en cada observación, pero la atribución definitiva gestión → pago necesita el
-  lifecycle de cobranza (gestión, contacto, promesa, visita y resultado), que construye **v0.9**; la
-  atribución formal queda para después de él. La interfaz futura cuelga de
-  `MovimientoEconomicoCanonico` por su `movimiento_id`, sin tocar esta capa.
+  conservan y se ven en cada observación, pero la asociación gestión → pago es de `atribucion/v1`
+  (v0.9), sobre el lifecycle de cobranza, y cuelga de `MovimientoEconomicoCanonico` por su
+  `movimiento_id`, sin tocar esta capa ([atribucion.md](atribucion.md)).
 - **No construye un `GestorCanonico`** desde el texto libre de `Gestor`: es un atributo observado del
   movimiento.
 - **No resuelve las coincidencias ambiguas** ni usa `Concepto_Cálculo`, `Captación` o
   `Cobranza_Total` para decidir signos: necesitan reglas con evidencia.
 - **No reconcilia un pago con la diferencia de saldo** entre dos snapshots: lo muestra, no lo afirma.
-- **No alimenta a `decision/v1`**: el Decision Engine v2, que podrá usar la recuperación, es de v0.10.
-- Tampoco: nuevos scores, ML, roll rates, vintages, cure rates, pronósticos, causalidad, geografía
-  real, bases operativas, capacidad, OSRM, VRP, dashboards, nube ni multitenancy.
+- **No alimenta a `decision/v1`**: la recuperación interpretada la usa `decision/v2` (v0.10).
+- Tampoco: scores, ML, roll rates, vintages, cure rates, pronósticos, causalidad ni multitenancy.
+  La geografía, la capacidad, el ruteo, la analítica, la predicción y la optimización son de sus
+  propios motores.

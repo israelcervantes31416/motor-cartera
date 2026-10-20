@@ -58,7 +58,6 @@ from motor_cartera.api.esquemas_ruteo_v2 import (
     TotalesRuteoV2,
 )
 from motor_cartera.app_v1 import VERSION_APP
-from motor_cartera.atraso import TRAMOS_ATRASO
 
 AVISO_APP = (
     "app/v1 es de solo lectura: compone lo que cada motor ya publico, bajo un contexto explicito "
@@ -473,7 +472,9 @@ class OrdenCuentas(StrEnum):
     RECUPERACION_POSITIVA_ESPERADA_30D = "RECUPERACION_POSITIVA_ESPERADA_30D"
 
 
-TramoAtraso = Literal[tuple(etiqueta for etiqueta, _, _ in TRAMOS_ATRASO)]  # type: ignore[valid-type]
+# Las etiquetas de TRAMOS_ATRASO (atraso.py), escritas para el verificador de tipos;
+# tests/test_documentacion.py exige que sean las mismas, en su orden.
+TramoAtraso = Literal["0", "1-30", "31-60", "61-90", "91+"]
 
 
 class ParametrosCuentas(Paginacion):

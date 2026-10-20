@@ -162,12 +162,16 @@ _TIPOS: dict[Tipo, type] = {
     Tipo.BOOLEANO: bool,
 }
 
+_CAMPOS_DE_FEATURES: dict[str, Any] = {
+    f.nombre: ((_TIPOS[f.tipo] | None) if f.nula else _TIPOS[f.tipo], ...) for f in FEATURES
+}
+
 FeaturesRespuesta = create_model(
     "FeaturesRespuesta",
     __doc__="Las features con que se decidio la cuenta, tal como se publicaron: "
     "features-decision/v1. Un null es informacion no disponible a known_at o sin de que "
     "calcularse, nunca un cero.",
-    **{f.nombre: ((_TIPOS[f.tipo] | None) if f.nula else _TIPOS[f.tipo], ...) for f in FEATURES},
+    **_CAMPOS_DE_FEATURES,
 )
 
 

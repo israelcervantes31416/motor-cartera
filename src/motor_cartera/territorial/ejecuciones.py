@@ -27,7 +27,7 @@ from uuid import UUID
 
 from sqlalchemy import Row, insert, update
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import Select, SelectOfScalar
 
 from motor_cartera.db.modelos import (
@@ -39,8 +39,16 @@ from motor_cartera.db.modelos import (
     EstadoTerritorial,
     ResultadoTerritorial,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import (
+    filas_afectadas,
+    insertar_en_savepoint,
+    restriccion,
+    seleccionar,
+    sesion,
+)
+from motor_cartera.invariantes import presente
 from motor_cartera.territorial.reglas import (
     VERSION_REGLAS_TERRITORIAL,
     EntradaTerritorio,
@@ -134,7 +142,8 @@ def abrir_ejecucion(
     razon = _por_que_no_se_organiza(ejecucion_decision)
     if razon is not None:
         raise DecisionNoTerritorializable(ejecucion_decision, razon)
-    fuente_id = ejecucion_decision.id
+    fuente_id = id_de(ejecucion_decision)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
         previa = s.exec(_exitosa(fuente_id, VERSION_REGLAS_TERRITORIAL)).one_or_none()
         if previa is not None:
@@ -152,7 +161,7 @@ def abrir_ejecucion(
         if restriccion(error) != INDICE_TERRITORIAL_EN_PROCESO:
             raise error
     else:
-        raise error
+        raise presente(error, "el ultimo choque de la apertura")
 
     if confirmar:
         s.commit()
@@ -264,7 +273,7 @@ def territorializar_decision(ejecucion_decision_id: int) -> EjecucionTerritorial
     """
     with sesion() as s:
         ejecucion = abrir_ejecucion(s, s.get_one(EjecucionDecision, ejecucion_decision_id))
-    ejecutar_territorial(ejecucion.id)
+    ejecutar_territorial(id_de(ejecucion))
     with sesion() as s:
         return s.get_one(EjecucionTerritorial, ejecucion.id)
 
@@ -306,7 +315,9 @@ def _comprobar_fuente(s: Session, ejecucion: EjecucionTerritorial) -> tuple[Ejec
     razon = _por_que_no_se_organiza(fuente)
     if razon is not None:
         raise _NoSePublica(f"{razon} No se publico ningun territorio.")
-    decisiones, de_la_corrida = s.exec(_conteo_de_decisiones(fuente.id, fuente.corrida_id)).one()
+    decisiones, de_la_corrida = s.exec(
+        _conteo_de_decisiones(id_de(fuente), fuente.corrida_id)
+    ).one()
     # El Decision Engine no publica una ejecucion sin decisiones. Si aparece una, no se le inventa
     # un territorial vacio.
     if decisiones == 0:
@@ -330,7 +341,7 @@ def _agregar(s: Session, fuente: EjecucionDecision) -> list[EntradaTerritorio]:
     cuenta. Cada fila pasa por EntradaTerritorio, que es la barrera del dominio: aqui no se repite
     ninguna de sus reglas. Si un agregado no la cumple, no se publica nada.
     """
-    filas = s.exec(_agregados(fuente.id, fuente.corrida_id)).all()
+    filas = s.exec(_agregados(id_de(fuente), fuente.corrida_id)).all()
     try:
         return [_entrada(fila) for fila in filas]
     except (TypeError, ValueError) as exc:
@@ -416,21 +427,23 @@ def _fallar(s: Session, ejecucion_id: int, etiqueta: UUID, evaluados: int, motiv
     queda solo en la bitacora. No borra resultados: los de este intento ya los quito el rollback, y
     los de una ejecucion EXITOSA son suyos.
     """
-    registrado = s.execute(
-        update(EjecucionTerritorial)
-        .where(
-            EjecucionTerritorial.id == ejecucion_id,
-            EjecucionTerritorial.estado == EstadoTerritorial.EN_PROCESO,
+    registrado = filas_afectadas(
+        s.execute(
+            update(EjecucionTerritorial)
+            .where(
+                col(EjecucionTerritorial.id) == ejecucion_id,
+                col(EjecucionTerritorial.estado) == EstadoTerritorial.EN_PROCESO,
+            )
+            .values(
+                estado=EstadoTerritorial.FALLIDA,
+                territorios_evaluados=evaluados,
+                territorios_publicados=0,
+                detalle=motivo,
+                terminada_en=ahora(),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            estado=EstadoTerritorial.FALLIDA,
-            territorios_evaluados=evaluados,
-            territorios_publicados=0,
-            detalle=motivo,
-            terminada_en=ahora(),
-        )
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    )
     s.commit()
     if registrado:
         log.warning("ejecucion territorial %s fallida: %s", etiqueta, motivo)
@@ -450,9 +463,9 @@ def _conteo_de_decisiones(ejecucion_decision_id: int, corrida_id: int) -> Select
     """Cuantas decisiones tiene la ejecucion, y cuantas de ellas son de cuentas de su corrida. El
     JOIN no pierde decisiones: la llave foranea garantiza que cada una apunta a una cuenta."""
     return (
-        select(func.count(), func.count().filter(Cuenta.corrida_id == corrida_id))
+        select(func.count(), func.count().filter(col(Cuenta.corrida_id) == corrida_id))
         .select_from(DecisionCuenta)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(DecisionCuenta.ejecucion_decision_id == ejecucion_decision_id)
     )
 
@@ -466,18 +479,18 @@ def _agregados(ejecucion_decision_id: int, corrida_id: int) -> Select[Any]:
     como Decimal, sin pasar por float. El orden por clave solo hace la consulta repetible: el orden
     publicado lo decide territorial/v1.
     """
-    es_campo = DecisionCuenta.canal_recomendado == CANAL_CAMPO
+    es_campo = col(DecisionCuenta.canal_recomendado) == CANAL_CAMPO
     return (
-        select(
-            Cuenta.cve_entidad,
-            Cuenta.cve_municipio,
+        seleccionar(
+            col(Cuenta.cve_entidad),
+            col(Cuenta.cve_municipio),
             func.count().label("cuentas_total"),
             func.sum(Cuenta.saldo_total).label("saldo_total"),
             func.count().filter(es_campo).label("cuentas_campo"),
             func.coalesce(func.sum(Cuenta.saldo_total).filter(es_campo), 0).label("saldo_campo"),
         )
         .select_from(DecisionCuenta)
-        .join(Cuenta, DecisionCuenta.cuenta_id == Cuenta.id)
+        .join(Cuenta, col(DecisionCuenta.cuenta_id) == Cuenta.id)
         .where(
             DecisionCuenta.ejecucion_decision_id == ejecucion_decision_id,
             Cuenta.corrida_id == corrida_id,

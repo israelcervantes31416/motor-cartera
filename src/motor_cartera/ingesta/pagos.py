@@ -26,7 +26,7 @@ from pathlib import Path
 
 from sqlalchemy import case, update
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from motor_cartera.config import Config, config
@@ -39,8 +39,9 @@ from motor_cartera.db.modelos import (
     EstadoIngestaPagos,
     IngestaPagos,
     ahora,
+    id_de,
 )
-from motor_cartera.db.sesion import insertar_en_savepoint, restriccion, sesion
+from motor_cartera.db.sesion import filas_afectadas, insertar_en_savepoint, restriccion, sesion
 from motor_cartera.fuentes.almacen import ArtefactoCorrupto
 from motor_cartera.fuentes.artefactos import (
     ArtefactoGuardado,
@@ -55,6 +56,7 @@ from motor_cartera.fuentes.lotes import abrir_fuente
 from motor_cartera.historia.ejecuciones import abrir_historia
 from motor_cartera.ingesta.fuente_oficial import Cronometro, JuicioDeFuente, Rechazado
 from motor_cartera.ingesta.lectores import ErrorDeLectura
+from motor_cartera.invariantes import presente
 
 log = logging.getLogger(__name__)
 
@@ -97,15 +99,18 @@ def abrir_ingesta_pagos(
     if (contenido is None) == (guardado is None):
         raise ValueError("Una ingesta se abre con su contenido o con su artefacto ya guardado.")
     if guardado is None:
-        guardado = guardar_contenido(almacen_de(config), contenido, origen)
+        guardado = guardar_contenido(
+            almacen_de(config), presente(contenido, "el contenido"), origen
+        )
     firma = guardado.objeto.sha256
     artefacto = registrar_artefacto(s, guardado)
+    error: IntegrityError | None = None
     for _ in range(INTENTOS_DE_APERTURA):
         previa = s.exec(_previa(firma)).first()
         if previa is not None:
             raise PagosDuplicados(previa)
         ingesta = IngestaPagos(
-            artefacto_fuente_id=artefacto.id,
+            artefacto_fuente_id=id_de(artefacto),
             origen=origen,
             firma=firma,
             version_contrato=VERSION_CONTRATO_PAGOS,
@@ -121,7 +126,7 @@ def abrir_ingesta_pagos(
         if restriccion(error) != INDICE_PAGOS_EN_PROCESO:
             raise error
     else:
-        raise error
+        raise presente(error, "el ultimo choque de la apertura")
     if confirmar:
         s.commit()
         s.refresh(ingesta)
@@ -198,7 +203,7 @@ def juzgar_y_aceptar(
             juicio = JuicioDeFuente(
                 CONTRATO_PAGOS,
                 directorio,
-                rechazar=lambda rechazados: _copiar_rechazos(s, ingesta.id, rechazados),
+                rechazar=lambda rechazados: _copiar_rechazos(s, id_de(ingesta), rechazados),
                 filas_por_lote=config.filas_por_lote,
                 cronometro=cronometro,
             )
@@ -221,7 +226,7 @@ def juzgar_y_aceptar(
 
         def conformar(canonicos, hojas) -> None:
             with cronometro.fase("conformado"):
-                escritor.escribir(canonicos, hojas)
+                presente(escritor, "el escritor del conformado").escribir(canonicos, hojas)
 
         firma = juicio.segunda_pasada(conformar if acepta else None)
         firma_contenido = firma.hexdigest()
@@ -235,8 +240,8 @@ def juzgar_y_aceptar(
                 dataset = DatasetConformado(
                     contrato=CONTRATO_PAGOS.version,
                     ingesta_pagos_id=ingesta.id,
-                    artefacto_original_id=artefacto.id,
-                    artefacto_conformado_id=parquet.id,
+                    artefacto_original_id=id_de(artefacto),
+                    artefacto_conformado_id=id_de(parquet),
                     firma_contenido=firma_contenido,
                     filas=escritor.filas,
                     columnas=len(CONTRATO_PAGOS.columnas),
@@ -292,7 +297,7 @@ def ingerir_pagos(ruta: str | Path, *, tolerancia: float | None = None) -> Inges
         guardado = guardar_artefacto(almacen_de(config), archivo, ruta.name)
     with sesion() as s:
         ingesta = abrir_ingesta_pagos(s, origen=ruta.name, guardado=guardado, tolerancia=tolerancia)
-    procesar_ingesta_pagos(ingesta.id)
+    procesar_ingesta_pagos(id_de(ingesta))
     with sesion() as s:
         return s.get_one(IngestaPagos, ingesta.id)
 
@@ -302,9 +307,11 @@ def _previa(firma: str) -> SelectOfScalar[IngestaPagos]:
         select(IngestaPagos)
         .where(
             IngestaPagos.firma == firma,
-            IngestaPagos.estado.in_([EstadoIngestaPagos.EXITOSA, EstadoIngestaPagos.EN_PROCESO]),
+            col(IngestaPagos.estado).in_(
+                [EstadoIngestaPagos.EXITOSA, EstadoIngestaPagos.EN_PROCESO]
+            ),
         )
-        .order_by(case((IngestaPagos.estado == EstadoIngestaPagos.EXITOSA, 0), else_=1))
+        .order_by(case((col(IngestaPagos.estado) == EstadoIngestaPagos.EXITOSA, 0), else_=1))
     )
 
 
@@ -322,12 +329,17 @@ def _copiar_rechazos(s: Session, ingesta_id: int, rechazados: list[Rechazado]) -
 
 def _fallar(s: Session, ingesta_id: int, etiqueta: object, motivo: str) -> None:
     """FALLIDA, solo si sigue EN_PROCESO: un fallo que llega tarde no cambia un estado terminal."""
-    registrado = s.execute(
-        update(IngestaPagos)
-        .where(IngestaPagos.id == ingesta_id, IngestaPagos.estado == EstadoIngestaPagos.EN_PROCESO)
-        .values(estado=EstadoIngestaPagos.FALLIDA, detalle=motivo, terminada_en=ahora())
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    registrado = filas_afectadas(
+        s.execute(
+            update(IngestaPagos)
+            .where(
+                col(IngestaPagos.id) == ingesta_id,
+                col(IngestaPagos.estado) == EstadoIngestaPagos.EN_PROCESO,
+            )
+            .values(estado=EstadoIngestaPagos.FALLIDA, detalle=motivo, terminada_en=ahora())
+            .execution_options(synchronize_session=False)
+        )
+    )
     s.commit()
     if registrado:
         log.warning("ingesta de pagos %s fallida: %s", etiqueta, motivo)

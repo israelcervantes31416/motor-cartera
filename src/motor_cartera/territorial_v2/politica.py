@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -169,7 +170,7 @@ def asignar(
     cvegeo: str | None,
     candidatas: list[Candidata],
     *,
-    inactivas: list[str] = (),
+    inactivas: Sequence[str] = (),
     politica: PoliticaTerritorial = PUBLIC_V2,
 ) -> Asignacion:
     """La regla de una cuenta: su geografia, el CVEGEO de su municipio espacial, las bases activas

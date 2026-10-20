@@ -165,7 +165,7 @@ la lista entera filtrada y ordenada aparte, por los dos caminos.
 la tabla), tarda 24 s en construirse y cada ingesta de un corte lo pagaría, igual que el de días de
 atraso. Contar las cuentas `ALTA` y `CAMPO` juntas revisa las filas de una de las dos en su tabla:
 483 ms. v0.17 no agrega índices ni la migración 0018 por un orden y un filtro combinado que no son
-los de omisión: es de v0.18 si el uso lo pide ([decisión 270](decisiones.md#270-sin-índices-nuevos-ni-particionado-sin-evidencia)).
+los de omisión: se agregan si un uso lo pide ([decisión 270](decisiones.md#270-sin-índices-nuevos-ni-particionado-sin-evidencia)).
 
 ## La sesión (v0.18)
 

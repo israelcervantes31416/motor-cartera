@@ -32,13 +32,14 @@ from datetime import date
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import (
     EjecucionMotorPagos,
     EstadoMotorPagos,
     ResultadoMotorPagos,
+    id_de,
 )
 from motor_cartera.db.sesion import sesion
 from motor_cartera.motor_pagos.ejecuciones import Ventana, abrir_ventana
@@ -121,7 +122,7 @@ def diagnosticar(s: Session) -> Diagnostico:
     for ejecucion in s.exec(
         select(EjecucionMotorPagos)
         .where(EjecucionMotorPagos.version_motor == VERSION_MOTOR_PAGOS)
-        .order_by(EjecucionMotorPagos.id)
+        .order_by(col(EjecucionMotorPagos.id))
     ).all():
         llave = (ejecucion.despacho_id, ejecucion.cartera_id, ejecucion.periodo_desde)
         por_ventana[llave].append(ejecucion)
@@ -130,7 +131,7 @@ def diagnosticar(s: Session) -> Diagnostico:
         for llave, todas in por_ventana.items()
         if (exitosas := [e for e in todas if e.estado == EstadoMotorPagos.EXITOSA])
     }
-    sin_conciliar = _por_conciliar(s, [v.id for v in vigentes.values()])
+    sin_conciliar = _por_conciliar(s, [id_de(v) for v in vigentes.values()])
     al_dia = en_cola = 0
     listas: dict[str, list[EstadoDeVentana]] = defaultdict(list)
     for despacho, cartera, desde, observaciones in conteos:
@@ -146,7 +147,7 @@ def diagnosticar(s: Session) -> Diagnostico:
             interpretadas=vigente.observaciones_leidas if vigente else 0,
             vigente=vigente.motor_pagos_run_id if vigente else None,
             ultimo_resultado=fallidas[-1].resultado if fallidas else None,
-            por_conciliar=sin_conciliar.get(vigente.id, 0) if vigente else 0,
+            por_conciliar=sin_conciliar.get(id_de(vigente), 0) if vigente else 0,
         )
         if any(e.estado == EstadoMotorPagos.EN_PROCESO for e in todas):
             en_cola += 1

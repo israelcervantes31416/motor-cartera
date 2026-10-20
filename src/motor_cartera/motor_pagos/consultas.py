@@ -21,7 +21,7 @@ from uuid import UUID
 
 from sqlalchemy import ColumnElement, and_, func, text
 from sqlalchemy.orm import aliased
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import Select
 
 from motor_cartera.db.modelos import (
@@ -37,8 +37,11 @@ from motor_cartera.db.modelos import (
     ResultadoPagoObservado,
     SnapshotCuenta,
     TrabajoOrquestacion,
+    id_de,
 )
+from motor_cartera.db.sesion import con_columnas, seleccionar
 from motor_cartera.historia import cuenta360
+from motor_cartera.invariantes import presente
 from motor_cartera.motor_pagos import contexto
 from motor_cartera.motor_pagos.contexto import ContextoTemporal
 from motor_cartera.motor_pagos.reglas import Clasificacion
@@ -55,20 +58,19 @@ class MovimientoNoEncontrado(Exception):
 def vigentes(s: Session, version: str) -> list[int]:
     """Los id de las ejecuciones vigentes de la version: una por ventana. Son pocas (una por mes de
     cada cartera), y se pasan como arreglo a las consultas que filtran por ellas."""
-    return list(
-        s.exec(
-            select(func.max(EjecucionMotorPagos.id))
-            .where(
-                EjecucionMotorPagos.version_motor == version,
-                EjecucionMotorPagos.estado == EstadoMotorPagos.EXITOSA,
-            )
-            .group_by(
-                EjecucionMotorPagos.despacho_id,
-                EjecucionMotorPagos.cartera_id,
-                EjecucionMotorPagos.periodo_desde,
-            )
-        ).all()
-    )
+    vigentes_ = s.exec(
+        select(func.max(EjecucionMotorPagos.id))
+        .where(
+            EjecucionMotorPagos.version_motor == version,
+            EjecucionMotorPagos.estado == EstadoMotorPagos.EXITOSA,
+        )
+        .group_by(
+            EjecucionMotorPagos.despacho_id,
+            EjecucionMotorPagos.cartera_id,
+            col(EjecucionMotorPagos.periodo_desde),
+        )
+    ).all()
+    return [presente(i, "el id de una interpretacion vigente") for i in vigentes_]
 
 
 # --- las ejecuciones ------------------------------------------------------------------------------
@@ -84,7 +86,7 @@ class EjecucionVista:
 def _ejecuciones() -> Select[Any]:
     return select(EjecucionMotorPagos, TrabajoOrquestacion.trabajo_id).outerjoin(
         TrabajoOrquestacion,
-        TrabajoOrquestacion.ejecucion_motor_pagos_id == EjecucionMotorPagos.id,
+        col(TrabajoOrquestacion.ejecucion_motor_pagos_id) == EjecucionMotorPagos.id,
     )
 
 
@@ -126,7 +128,7 @@ def listar_ejecuciones(
     filas = s.exec(
         _ejecuciones()
         .where(*condiciones)
-        .order_by(EjecucionMotorPagos.periodo_desde.desc(), EjecucionMotorPagos.id.desc())
+        .order_by(col(EjecucionMotorPagos.periodo_desde).desc(), col(EjecucionMotorPagos.id).desc())
         .offset(desplazamiento)
         .limit(limite)
     ).all()
@@ -148,27 +150,28 @@ class ResultadoVisto:
 
 def _resultados_vistos() -> Select[Any]:
     return (
-        select(
+        seleccionar(
             ResultadoPagoObservado,
             PagoObservado,
-            MovimientoEconomicoCanonico.movimiento_id,
-            IngestaPagos.pagos_run_id,
-            DatasetConformado.dataset_id,
+            col(MovimientoEconomicoCanonico.movimiento_id),
+            col(IngestaPagos.pagos_run_id),
+            col(DatasetConformado.dataset_id),
         )
         .join(
             PagoObservado,
             and_(
-                PagoObservado.dataset_conformado_id == ResultadoPagoObservado.dataset_conformado_id,
-                PagoObservado.source_row == ResultadoPagoObservado.source_row,
+                col(PagoObservado.dataset_conformado_id)
+                == ResultadoPagoObservado.dataset_conformado_id,
+                col(PagoObservado.source_row) == ResultadoPagoObservado.source_row,
             ),
         )
         .outerjoin(
             MovimientoEconomicoCanonico,
-            MovimientoEconomicoCanonico.id
+            col(MovimientoEconomicoCanonico.id)
             == ResultadoPagoObservado.movimiento_economico_canonico_id,
         )
-        .join(IngestaPagos, IngestaPagos.id == PagoObservado.ingesta_pagos_id)
-        .join(DatasetConformado, DatasetConformado.id == PagoObservado.dataset_conformado_id)
+        .join(IngestaPagos, col(IngestaPagos.id) == PagoObservado.ingesta_pagos_id)
+        .join(DatasetConformado, col(DatasetConformado.id) == PagoObservado.dataset_conformado_id)
     )
 
 
@@ -194,31 +197,31 @@ def resultados_de(
     llenar la pagina, en lugar de ordenar todos los pagos observados de la cartera. El total cuenta
     los resultados sin unirlos a sus pagos, salvo cuando hace falta su cliente."""
     de_los_resultados: list[ColumnElement] = [
-        ResultadoPagoObservado.ejecucion_motor_pagos_id == ejecucion.id
+        col(ResultadoPagoObservado.ejecucion_motor_pagos_id) == ejecucion.id
     ]
     if clasificacion is not None:
-        de_los_resultados.append(ResultadoPagoObservado.clasificacion == clasificacion.value)
+        de_los_resultados.append(col(ResultadoPagoObservado.clasificacion) == clasificacion.value)
     if firma_exacta is not None:
-        de_los_resultados.append(ResultadoPagoObservado.firma_exacta == firma_exacta)
+        de_los_resultados.append(col(ResultadoPagoObservado.firma_exacta) == firma_exacta)
     if firma_legacy is not None:
-        de_los_resultados.append(ResultadoPagoObservado.firma_legacy == firma_legacy)
+        de_los_resultados.append(col(ResultadoPagoObservado.firma_legacy) == firma_legacy)
     de_la_ventana: list[ColumnElement] = [
-        PagoObservado.despacho_id == ejecucion.despacho_id,
-        PagoObservado.cartera_id == ejecucion.cartera_id,
-        PagoObservado.fecha_recepcion >= _instante(ejecucion.periodo_desde),
-        PagoObservado.fecha_recepcion < _instante(ejecucion.periodo_hasta),
+        col(PagoObservado.despacho_id) == ejecucion.despacho_id,
+        col(PagoObservado.cartera_id) == ejecucion.cartera_id,
+        col(PagoObservado.fecha_recepcion) >= _instante(ejecucion.periodo_desde),
+        col(PagoObservado.fecha_recepcion) < _instante(ejecucion.periodo_hasta),
     ]
     if cliente_unico is not None:
-        de_la_ventana.append(PagoObservado.cliente_unico == cliente_unico)
+        de_la_ventana.append(col(PagoObservado.cliente_unico) == cliente_unico)
         total = s.exec(
             select(func.count())
             .select_from(ResultadoPagoObservado)
             .join(
                 PagoObservado,
                 and_(
-                    PagoObservado.dataset_conformado_id
+                    col(PagoObservado.dataset_conformado_id)
                     == ResultadoPagoObservado.dataset_conformado_id,
-                    PagoObservado.source_row == ResultadoPagoObservado.source_row,
+                    col(PagoObservado.source_row) == ResultadoPagoObservado.source_row,
                 ),
             )
             .where(*de_los_resultados, *de_la_ventana)
@@ -231,9 +234,9 @@ def resultados_de(
         _resultados_vistos()
         .where(*de_los_resultados, *de_la_ventana)
         .order_by(
-            PagoObservado.fecha_recepcion,
-            ResultadoPagoObservado.dataset_conformado_id,
-            ResultadoPagoObservado.source_row,
+            col(PagoObservado.fecha_recepcion),
+            col(ResultadoPagoObservado.dataset_conformado_id),
+            col(ResultadoPagoObservado.source_row),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -257,16 +260,16 @@ def _movimientos_vistos() -> Select[Any]:
     return (
         select(
             MovimientoEconomicoCanonico,
-            EjecucionMotorPagos.motor_pagos_run_id,
-            EjecucionMotorPagos.periodo_desde,
-            CuentaCanonica.cuenta_id,
+            col(EjecucionMotorPagos.motor_pagos_run_id),
+            col(EjecucionMotorPagos.periodo_desde),
+            col(CuentaCanonica.cuenta_id),
         )
         .join(
             EjecucionMotorPagos,
-            EjecucionMotorPagos.id == MovimientoEconomicoCanonico.ejecucion_motor_pagos_id,
+            col(EjecucionMotorPagos.id) == MovimientoEconomicoCanonico.ejecucion_motor_pagos_id,
         )
         .outerjoin(
-            CuentaCanonica, CuentaCanonica.id == MovimientoEconomicoCanonico.cuenta_canonica_id
+            CuentaCanonica, col(CuentaCanonica.id) == MovimientoEconomicoCanonico.cuenta_canonica_id
         )
     )
 
@@ -290,22 +293,24 @@ def listar_movimientos(
     indice de los movimientos de una cuenta."""
     actuales = vigentes(s, version)
     condiciones: list[ColumnElement] = [
-        MovimientoEconomicoCanonico.ejecucion_motor_pagos_id.in_(actuales),
-        MovimientoEconomicoCanonico.despacho_id == despacho_id,
-        MovimientoEconomicoCanonico.cartera_id == cartera_id,
+        col(MovimientoEconomicoCanonico.ejecucion_motor_pagos_id).in_(actuales),
+        col(MovimientoEconomicoCanonico.despacho_id) == despacho_id,
+        col(MovimientoEconomicoCanonico.cartera_id) == cartera_id,
     ]
     if cliente_unico is not None:
-        condiciones.append(MovimientoEconomicoCanonico.cliente_unico == cliente_unico)
+        condiciones.append(col(MovimientoEconomicoCanonico.cliente_unico) == cliente_unico)
     if desde is not None:
-        condiciones.append(MovimientoEconomicoCanonico.fecha_recepcion >= _instante(desde))
+        condiciones.append(col(MovimientoEconomicoCanonico.fecha_recepcion) >= _instante(desde))
     if hasta is not None:
         condiciones.append(
-            MovimientoEconomicoCanonico.fecha_recepcion < _instante(hasta + timedelta(1))
+            col(MovimientoEconomicoCanonico.fecha_recepcion) < _instante(hasta + timedelta(1))
         )
     if tipo is not None:
-        condiciones.append(MovimientoEconomicoCanonico.tipo_movimiento == tipo)
+        condiciones.append(col(MovimientoEconomicoCanonico.tipo_movimiento) == tipo)
     if estado_conciliacion is not None:
-        condiciones.append(MovimientoEconomicoCanonico.estado_conciliacion == estado_conciliacion)
+        condiciones.append(
+            col(MovimientoEconomicoCanonico.estado_conciliacion) == estado_conciliacion
+        )
     total = s.exec(
         select(func.count()).select_from(MovimientoEconomicoCanonico).where(*condiciones)
     ).one()
@@ -313,8 +318,8 @@ def listar_movimientos(
         _movimientos_vistos()
         .where(*condiciones)
         .order_by(
-            MovimientoEconomicoCanonico.fecha_recepcion.desc(),
-            MovimientoEconomicoCanonico.movimiento_id,
+            col(MovimientoEconomicoCanonico.fecha_recepcion).desc(),
+            col(MovimientoEconomicoCanonico.movimiento_id),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -328,7 +333,7 @@ def movimientos_por_id(s: Session, ids: list[int]) -> dict[int, MovimientoVisto]
     consulta, como la linea de tiempo de una cuenta o la atribucion de sus movimientos."""
     if not ids:
         return {}
-    filas = s.exec(_movimientos_vistos().where(MovimientoEconomicoCanonico.id.in_(ids))).all()
+    filas = s.exec(_movimientos_vistos().where(col(MovimientoEconomicoCanonico.id).in_(ids))).all()
     actuales = {
         version: set(vigentes(s, version)) for version in {f[0].version_motor for f in filas}
     }
@@ -360,7 +365,7 @@ def obtener_movimiento(s: Session, movimiento_id: UUID, version: str) -> Movimie
             MovimientoEconomicoCanonico.movimiento_id == movimiento_id,
             MovimientoEconomicoCanonico.version_motor == version,
         )
-        .order_by(MovimientoEconomicoCanonico.ejecucion_motor_pagos_id.desc())
+        .order_by(col(MovimientoEconomicoCanonico.ejecucion_motor_pagos_id).desc())
     ).all()
     if not filas:
         raise MovimientoNoEncontrado(movimiento_id)
@@ -385,7 +390,7 @@ def detalle(s: Session, visto: MovimientoVisto) -> DetalleDelMovimiento:
     representante = ResultadoVisto(*fila)
     original = s.exec(
         select(ArtefactoFuente)
-        .join(DatasetConformado, DatasetConformado.artefacto_original_id == ArtefactoFuente.id)
+        .join(DatasetConformado, col(DatasetConformado.artefacto_original_id) == ArtefactoFuente.id)
         .where(DatasetConformado.id == representante.pago.dataset_conformado_id)
     ).one()
     if m.cuenta_canonica_id is None:
@@ -408,21 +413,20 @@ def observaciones_de(
     despues sus copias exactas, cada uno con su archivo original y su fila."""
     m = visto.movimiento
     del_movimiento = and_(
-        ResultadoPagoObservado.ejecucion_motor_pagos_id == m.ejecucion_motor_pagos_id,
-        ResultadoPagoObservado.movimiento_economico_canonico_id == m.id,
+        col(ResultadoPagoObservado.ejecucion_motor_pagos_id) == m.ejecucion_motor_pagos_id,
+        col(ResultadoPagoObservado.movimiento_economico_canonico_id) == m.id,
     )
     total = s.exec(
         select(func.count()).select_from(ResultadoPagoObservado).where(del_movimiento)
     ).one()
     filas = s.exec(
-        _resultados_vistos()
-        .add_columns(ArtefactoFuente)
-        .join(ArtefactoFuente, ArtefactoFuente.id == DatasetConformado.artefacto_original_id)
+        con_columnas(_resultados_vistos(), ArtefactoFuente)
+        .join(ArtefactoFuente, col(ArtefactoFuente.id) == DatasetConformado.artefacto_original_id)
         .where(del_movimiento)
         .order_by(
-            (ResultadoPagoObservado.clasificacion == Clasificacion.DUPLICADO_EXACTO.value),
+            (col(ResultadoPagoObservado.clasificacion) == Clasificacion.DUPLICADO_EXACTO.value),
             ArtefactoFuente.sha256,
-            ResultadoPagoObservado.source_row,
+            col(ResultadoPagoObservado.source_row),
         )
         .offset(desplazamiento)
         .limit(limite)
@@ -478,7 +482,7 @@ def contextos_de(
     """El contexto temporal de cada movimiento entre los snapshots de la cuenta, con los snapshots
     que nombra. Lee los cortes de la cuenta y los de la cartera una vez, y despues solo los
     snapshots que hacen falta, por el indice de la historia de la cuenta."""
-    presentes = cuenta360.fechas_observadas(s, cuenta.id)
+    presentes = cuenta360.fechas_observadas(s, id_de(cuenta))
     cortes = [
         c.fecha_corte
         for c in cuenta360.cortes_de_la_cartera(s, cuenta.despacho_id, cuenta.cartera_id)
@@ -489,7 +493,7 @@ def contextos_de(
     }
     snapshots = {}
     if fechas:
-        for snapshot, corte_id in s.exec(_snapshots(cuenta.id, sorted(fechas))).all():
+        for snapshot, corte_id in s.exec(_snapshots(id_de(cuenta), sorted(fechas))).all():
             snapshots[snapshot.fecha_corte] = (corte_id, snapshot)
     return [
         (
@@ -503,10 +507,10 @@ def contextos_de(
 def _snapshots(cuenta_canonica_id: int, fechas: list[date]) -> Select[Any]:
     return (
         select(SnapshotCuenta, CorteCanonico.corte_id)
-        .join(CorteCanonico, CorteCanonico.id == SnapshotCuenta.corte_canonico_id)
+        .join(CorteCanonico, col(CorteCanonico.id) == SnapshotCuenta.corte_canonico_id)
         .where(
             SnapshotCuenta.cuenta_canonica_id == cuenta_canonica_id,
-            SnapshotCuenta.fecha_corte.in_(fechas),
+            col(SnapshotCuenta.fecha_corte).in_(fechas),
         )
     )
 
@@ -575,29 +579,29 @@ def resumen_de_cuenta(
     ).one()
     actuales = vigentes(s, version)
     condiciones: list[ColumnElement] = [
-        MovimientoEconomicoCanonico.ejecucion_motor_pagos_id.in_(actuales),
-        MovimientoEconomicoCanonico.despacho_id == cuenta.despacho_id,
-        MovimientoEconomicoCanonico.cartera_id == cuenta.cartera_id,
-        MovimientoEconomicoCanonico.cliente_unico == cuenta.cliente_unico,
+        col(MovimientoEconomicoCanonico.ejecucion_motor_pagos_id).in_(actuales),
+        col(MovimientoEconomicoCanonico.despacho_id) == cuenta.despacho_id,
+        col(MovimientoEconomicoCanonico.cartera_id) == cuenta.cartera_id,
+        col(MovimientoEconomicoCanonico.cliente_unico) == cuenta.cliente_unico,
     ]
     reverso = aliased(MovimientoEconomicoCanonico)
     if limite is None:
-        anulado = MovimientoEconomicoCanonico.anulado_por_movimiento_id.is_not(None)
+        anulado = col(MovimientoEconomicoCanonico.anulado_por_movimiento_id).is_not(None)
     else:
-        condiciones.append(MovimientoEconomicoCanonico.fecha_recepcion < limite)
-        anulado = reverso.id.is_not(None)
+        condiciones.append(col(MovimientoEconomicoCanonico.fecha_recepcion) < limite)
+        anulado = col(reverso.id).is_not(None)
     consulta = select(
         func.count(),
         func.count().filter(anulado),
         func.coalesce(
             func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
-                MovimientoEconomicoCanonico.tipo_movimiento == "PAGO", ~anulado
+                col(MovimientoEconomicoCanonico.tipo_movimiento) == "PAGO", ~anulado
             ),
             0,
         ),
         func.coalesce(
             func.sum(MovimientoEconomicoCanonico.monto_reportado).filter(
-                MovimientoEconomicoCanonico.tipo_movimiento == "POSIBLE_REVERSO"
+                col(MovimientoEconomicoCanonico.tipo_movimiento) == "POSIBLE_REVERSO"
             ),
             0,
         ),
@@ -607,9 +611,9 @@ def resumen_de_cuenta(
         consulta = consulta.outerjoin(
             reverso,
             and_(
-                reverso.movimiento_id == MovimientoEconomicoCanonico.anulado_por_movimiento_id,
-                reverso.ejecucion_motor_pagos_id.in_(actuales),
-                reverso.fecha_recepcion < limite,
+                col(reverso.movimiento_id) == MovimientoEconomicoCanonico.anulado_por_movimiento_id,
+                col(reverso.ejecucion_motor_pagos_id).in_(actuales),
+                col(reverso.fecha_recepcion) < limite,
             ),
         )
     movimientos, anulados, bruta, posibles = s.exec(consulta.where(*condiciones)).one()

@@ -9,6 +9,8 @@ from typing import Annotated
 
 import typer
 
+from motor_cartera.invariantes import presente
+
 app = typer.Typer(
     help="Motor de cartera: fuentes oficiales, ingesta, validacion, persistencia y su worker."
 )
@@ -862,7 +864,7 @@ def comparar_decisiones(
     de la corrida que lo publico: cuantas prioridades y canales coinciden y cuantos no, y por que
     puede ser (el ajuste por saldo de v1, los modificadores de v2). Es un diagnostico: no dice
     cual es mejor, y no se usa para ajustar la politica."""
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     from motor_cartera.config import config
     from motor_cartera.db.modelos import CorteCanonico, EjecucionDecisionV2, EstadoDecisionV2
@@ -873,14 +875,14 @@ def comparar_decisiones(
     with sesion() as s:
         ejecucion = s.exec(
             select(EjecucionDecisionV2)
-            .join(CorteCanonico, CorteCanonico.id == EjecucionDecisionV2.corte_canonico_id)
+            .join(CorteCanonico, col(CorteCanonico.id) == EjecucionDecisionV2.corte_canonico_id)
             .where(
                 CorteCanonico.despacho_id == config.despacho_id,
                 CorteCanonico.cartera_id == config.cartera_id,
                 CorteCanonico.fecha_corte == fecha,
                 EjecucionDecisionV2.estado == EstadoDecisionV2.EXITOSA,
             )
-            .order_by(EjecucionDecisionV2.known_at.desc(), EjecucionDecisionV2.id.desc())
+            .order_by(col(EjecucionDecisionV2.known_at).desc(), col(EjecucionDecisionV2.id).desc())
         ).first()
         if ejecucion is None:
             typer.echo(
@@ -1594,7 +1596,7 @@ def exportar_plan_campo(
     from uuid import UUID
 
     from motor_cartera.campo_v2 import consultas
-    from motor_cartera.db.modelos import EstadoCampoV2
+    from motor_cartera.db.modelos import EstadoCampoV2, id_de
     from motor_cartera.db.sesion import sesion
 
     ruta = Path(destino)
@@ -1608,7 +1610,7 @@ def exportar_plan_campo(
         if v.ejecucion.estado != EstadoCampoV2.EXITOSA:
             typer.echo(f"El plan {plan} esta {v.ejecucion.estado}: no publico nada.", err=True)
             raise typer.Exit(code=1)
-        conexion = s.connection().connection.driver_connection
+        conexion = presente(s.connection().connection.driver_connection, "la conexion de la sesion")
         consulta = (
             "COPY (SELECT c.cuenta_id, a.estado, a.prioridad, a.orden_prioridad, "
             "b.codigo AS base, g.codigo AS gestor, a.zona_id, a.subzona_id, a.tramo_id, "
@@ -1616,7 +1618,7 @@ def exportar_plan_campo(
             "JOIN cuenta_canonica c ON c.id = a.cuenta_canonica_id "
             "LEFT JOIN base_operativa b ON b.id = a.base_operativa_id "
             "LEFT JOIN gestor_campo g ON g.id = a.gestor_campo_id "
-            f"WHERE a.ejecucion_campo_v2_id = {int(v.ejecucion.id)} "
+            f"WHERE a.ejecucion_campo_v2_id = {int(id_de(v.ejecucion))} "
             "ORDER BY b.codigo NULLS LAST, g.codigo NULLS LAST, a.orden_prioridad, c.cuenta_id) "
             "TO STDOUT WITH (FORMAT csv, HEADER true)"
         )
@@ -1786,7 +1788,9 @@ def preparar_red_vial(
             url_fuente=url_fuente,
         )
         distribucion = (
-            red_vial.distribucion_docker() if docker else red_vial.distribucion_nativa(osrm_bin)
+            red_vial.distribucion_docker()
+            if docker
+            else red_vial.distribucion_nativa(presente(osrm_bin, "--osrm-bin"))
         )
         preparacion = red_vial.preparar_directorio(fuente, descripcion, distribucion, Path(destino))
     except red_vial.RedVialInvalida as exc:
@@ -1810,12 +1814,13 @@ def preparar_red_vial(
         )
         return
     try:
-        red_vial.ejecutar_nativa(preparacion, osrm_bin)
+        red_vial.ejecutar_nativa(preparacion, presente(osrm_bin, "--osrm-bin"))
         with sesion() as s:
             publicada = red_vial.registrar(s, preparacion.directorio)
             s.commit()
+            manifiesto = presente(publicada.version.hash_manifest, "el manifiesto publicado")
             typer.echo(
-                f"PUBLICADA, manifiesto {publicada.version.hash_manifest[:12]}...: "
+                f"PUBLICADA, manifiesto {manifiesto[:12]}...: "
                 f"{publicada.version.metadatos.get('cobertura', {})}"
             )
     except red_vial.RedVialInvalida as exc:
@@ -1883,9 +1888,10 @@ def registrar_red_vial(
     typer.echo(f"red vial {version.red_vial_version_id}: {version.estado}")
     typer.echo(f"  {'reutilizada' if registro.reutilizada else 'nueva'}, huella {version.huella}")
     if registro.misma_preparacion is False:
+        manifiesto = presente(version.hash_manifest, "el manifiesto publicado")
         typer.echo(
             "  Este directorio es OTRA preparacion de la misma red (su manifiesto no es el "
-            f"publicado, {version.hash_manifest[:12]}...): da los mismos snaps y las mismas "
+            f"publicado, {manifiesto[:12]}...): da los mismos snaps y las mismas "
             "duraciones, pero una distancia puede diferir en un metro. Para reconstruir una "
             "ejecucion exacta, sirve la preparacion publicada."
         )
@@ -2300,7 +2306,7 @@ def construir_manifiesto_analytics(
             err=True,
         )
         raise typer.Exit(code=1)
-    r = propuesta.resuelto
+    r = presente(propuesta.resuelto, "el manifiesto resuelto de una propuesta sin ambiguedades")
     ruta = Path(destino)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     ruta.write_text(
@@ -2644,7 +2650,7 @@ def backfill_analytics(
     --dry-run, encola los trabajos ANALYTICS; los ejecuta un worker."""
     from datetime import timedelta as dias
 
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     from motor_cartera.analytics import ejecuciones as analytics
     from motor_cartera.analytics import manifiesto, seleccion
@@ -2679,11 +2685,13 @@ def backfill_analytics(
         if hasta is not None:
             condiciones.append(CorteCanonico.fecha_corte <= hasta.date())
         cortes = s.exec(
-            select(CorteCanonico).where(*condiciones).order_by(CorteCanonico.fecha_corte)
+            select(CorteCanonico).where(*condiciones).order_by(col(CorteCanonico.fecha_corte))
         ).all()
         for corte in cortes:
             dia = (
-                as_of.date() if as_of is not None else corte.fecha_corte + dias(days=horizonte - 1)
+                as_of.date()
+                if as_of is not None
+                else corte.fecha_corte + dias(days=presente(horizonte, "--horizonte") - 1)
             )
             if dia < corte.fecha_corte:
                 fuera.append(corte.fecha_corte)
@@ -2708,7 +2716,8 @@ def backfill_analytics(
             estados = set(
                 s.exec(
                     select(EjecucionAnalytics.estado).where(
-                        EjecucionAnalytics.firma_inputs == propuesta.resuelto.firma
+                        EjecucionAnalytics.firma_inputs
+                        == presente(propuesta.resuelto, "el manifiesto resuelto").firma
                     )
                 ).all()
             )
@@ -2785,7 +2794,7 @@ def _pendiente(pendiente) -> str:
 
 def _avisar_historia(*, corrida_id: int | None = None, ingesta_pagos_id: int | None = None) -> None:
     """Si la ingesta publico un dataset conformado, su historia queda en la cola: lo dice."""
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     from motor_cartera.db.modelos import DatasetConformado, EjecucionHistoria
     from motor_cartera.db.sesion import sesion
@@ -2799,10 +2808,11 @@ def _avisar_historia(*, corrida_id: int | None = None, ingesta_pagos_id: int | N
         fila = s.exec(
             select(EjecucionHistoria.historia_run_id, EjecucionHistoria.estado)
             .join(
-                DatasetConformado, DatasetConformado.id == EjecucionHistoria.dataset_conformado_id
+                DatasetConformado,
+                col(DatasetConformado.id) == EjecucionHistoria.dataset_conformado_id,
             )
             .where(condicion)
-            .order_by(EjecucionHistoria.id.desc())
+            .order_by(col(EjecucionHistoria.id).desc())
         ).first()
     if fila is not None:
         typer.echo(
@@ -2838,7 +2848,9 @@ def generar_escenario_predictivo(
     if (perfil is None) == (cuentas is None):
         typer.echo("Declara --perfil o --cuentas, uno de los dos.", err=True)
         raise typer.Exit(code=2)
-    total = cuentas if cuentas is not None else cuentas_del_perfil(perfil.upper())
+    total = (
+        cuentas if cuentas is not None else cuentas_del_perfil(presente(perfil, "--perfil").upper())
+    )
     escenario = generar(
         destino, cuentas=total, cortes=cortes, primer_corte=primer_corte.date(), semilla=semilla
     )
@@ -3173,7 +3185,11 @@ def score_predictivo(
     except ValueError as exc:
         typer.echo(f"--modo es OPERATIVO o BACKTEST, no {modo}.", err=True)
         raise typer.Exit(code=2) from exc
-    objetivo = UUID(corte_id) if corte_id is not None else _corte_por_fecha(corte.date())
+    objetivo = (
+        UUID(corte_id)
+        if corte_id is not None
+        else _corte_por_fecha(presente(corte, "--corte").date())
+    )
     try:
         e = puntuar_predictivo_en_primer_plano(
             modelo_version_id=UUID(modelo),
@@ -3189,13 +3205,12 @@ def score_predictivo(
         raise typer.Exit(code=1) from exc
     typer.echo(f"scoring {e.scoring_run_id}: {e.estado} ({e.resultado})")
     if e.hash_predicciones:
+        drift = presente(e.drift_resumen, "el resumen del drift de un scoring publicado")
         typer.echo(
             f"  {e.predicciones_publicadas:,} predicciones, hash {e.hash_predicciones}; drift "
             f"{e.hash_drift}"
         )
-        typer.echo(
-            f"  drift: {e.drift_resumen['feature']} features, {e.drift_resumen['score']} salidas"
-        )
+        typer.echo(f"  drift: {drift['feature']} features, {drift['score']} salidas")
     typer.echo(f"  {e.detalle}")
     if e.estado != EstadoScoringPredictivo.EXITOSA:
         raise typer.Exit(code=1)
@@ -3226,7 +3241,7 @@ def drift_predictivo(
             typer.echo(f"El scoring esta {v.ejecucion.estado}: no tiene drift.", err=True)
             raise typer.Exit(code=1)
         filas = sorted(consultas.drift(s, v.ejecucion), key=lambda f: (-f.psi, f.tipo, f.nombre))
-        resumen = v.ejecucion.drift_resumen
+        resumen = presente(v.ejecucion.drift_resumen, "el resumen del drift de un scoring EXITOSA")
     typer.echo(f"drift del scoring {scoring_} (modelo {v.modelo_version_id}):")
     typer.echo(
         f"  features {resumen['feature']}, salidas {resumen['score']}, NULL {resumen['faltantes']}"

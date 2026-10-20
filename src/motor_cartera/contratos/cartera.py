@@ -14,6 +14,7 @@ import numbers
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import pandas as pd
 import pandera.pandas as pa
@@ -73,7 +74,9 @@ class CarteraCruda(pa.DataFrameModel):
         nullable=False, dtype_kwargs={"to_datetime_kwargs": {"format": "ISO8601"}}
     )
 
-    class Config:
+    # La configuracion anidada que documenta pandera; su DataFrameModel la declara como una
+    # variable de clase mutable, y el verificador no acepta la clase que la reemplaza.
+    class Config:  # pyright: ignore[reportIncompatibleVariableOverride]
         strict = "filter"  # columnas extra se descartan, no rompen
         coerce = True
 
@@ -173,9 +176,11 @@ def _descartar_fechas_inconvertibles(
     if not isinstance(tipo, DateTime):
         return datos
     crudo = datos[columna.name]
-    convertido = pd.to_datetime(crudo, errors="coerce", **(tipo.to_datetime_kwargs or {}))
+    # El registro de tipos de pandera no deja ver los campos de su DateTime al verificador.
+    opciones = getattr(tipo, "to_datetime_kwargs", None) or {}
+    convertido = pd.to_datetime(crudo, errors="coerce", **opciones)
     inconvertibles = crudo.notna() & convertido.isna()
-    motivo = Motivo(columna.name, f"coerce_dtype('{tipo}')")
+    motivo = Motivo(str(columna.name), f"coerce_dtype('{tipo}')")
     for fila in datos.index[inconvertibles]:
         motivos.setdefault(int(fila), []).append(motivo)
     return datos[~inconvertibles]
@@ -264,7 +269,7 @@ def _linea(valores: list[str | None]) -> str:
     return json.dumps(valores, ensure_ascii=False, separators=(",", ":"))
 
 
-def _canonico(valor: object) -> str | None:
+def _canonico(valor: Any) -> str | None:
     """Un valor, ya convertido por el contrato, en su texto canonico."""
     if valor is None or pd.isna(valor):
         return None
