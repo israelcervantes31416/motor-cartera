@@ -39,13 +39,13 @@ REPORTES = {
 }
 UNIDADES = {"tiempo": "s", "memoria": "MiB", "consulta": "ms"}
 TOLERANCIAS = {
-    "tiempo": {"relativa": 0.50, "absoluta": 2.0},
+    "tiempo": {"relativa": 0.60, "absoluta": 2.0},
     "memoria": {"relativa": 0.20, "absoluta": 64.0},
     "consulta": {"relativa": 0.50, "absoluta": 25.0},
 }
-"""Las de una linea base que no declara las suyas. Calibradas con tres corridas del perfil M en
-runners de dos CPU distintas (docs/rendimiento.md): una sola corrida en la CPU mas lenta quedo hasta
-48 % arriba de la mediana en un tiempo, y la memoria vario menos de 1 %."""
+"""Las de una linea base que no declara las suyas. Calibradas con dos tandas de tres corridas del
+perfil M (docs/rendimiento.md): con las tres en la CPU mas lenta de los runners, un tiempo quedo
+46 % arriba de la linea base sin ningun cambio de codigo, y la memoria vario menos de 10 %."""
 
 
 def _fuente(escala: dict, nombre: str) -> dict:

@@ -48,7 +48,7 @@
   ],
   "tolerancias": {
     "tiempo": {
-      "relativa": 0.5,
+      "relativa": 0.6,
       "absoluta": 2.0
     },
     "memoria": {

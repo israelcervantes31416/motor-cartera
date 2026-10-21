@@ -118,10 +118,11 @@ def test_la_mediana_de_las_repeticiones_y_su_variacion(tmp_path):
     ("escala", "consulta_ms", "esperado"),
     [
         (1.05, 20.0, {}),
-        # Lo que vario entre runners de CPU distintas (hasta 48 % en un tiempo) queda dentro.
-        (1.45, 20.0, {}),
-        (1.6, 20.0, {"ingesta.cartera_v2": "REGRESION", "motor_pagos.interpretacion": "REGRESION"}),
-        (0.4, 20.0, {"ingesta.cartera_v2": "MEJORA"}),
+        # Lo que movio la CPU de los runners, sin ningun cambio de codigo (hasta 46 % en un tiempo),
+        # queda dentro.
+        (1.47, 20.0, {}),
+        (1.7, 20.0, {"ingesta.cartera_v2": "REGRESION", "motor_pagos.interpretacion": "REGRESION"}),
+        (0.3, 20.0, {"ingesta.cartera_v2": "MEJORA"}),
         (1.0, 35.0, {}),
         (1.0, 60.0, {"consulta.pagos.movimientos_de_una_cuenta": "REGRESION"}),
     ],

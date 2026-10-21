@@ -57,19 +57,25 @@ cuentas decididas; cada corrida tardó de 5 a 6.5 minutos.
 
 Las 31 consultas tienen medianas de 2.9 a 112 ms. **Lo que variaron:** los tiempos, de 3 a 20 % (el
 coeficiente de variación); la corrida en el EPYC 7763 fue la más lenta, hasta 48 % arriba de la
-mediana en `decision/v1`; la memoria, menos de 1 %; las consultas, de 7 a 23 %. De ahí las
-tolerancias, y no de un número redondo:
+mediana en `decision/v1`; la memoria, menos de 1 %; las consultas, de 7 a 23 %.
+
+**Una segunda tanda**, contra esa línea base y sin ningún cambio en el código medido, cayó con sus
+tres corridas en el EPYC 7763: los tiempos quedaron de 3.7 a 46.3 % arriba (`decision/v1` el que más),
+las consultas hasta 35 % y la memoria de 8.7 % abajo a 0.1 % abajo; ninguna métrica se marcó. La CPU
+del runner, que nadie elige, mueve un tiempo casi la mitad. De ahí las tolerancias, y no de un número
+redondo:
 
 | Clase | Relativa | Absoluta |
 | --- | ---: | ---: |
-| Tiempo | 50 % | 2 s |
+| Tiempo | 60 % | 2 s |
 | Memoria | 20 % | 64 MiB |
 | Consulta | 50 % | 25 ms |
 
-Con la CPU que cambia de un runner a otro, una sola corrida en la más lenta habría pasado una
-tolerancia de 30 %; por eso cada corrida programada es la mediana de tres, y la de tiempo es de 50 %.
-Detecta una regresión grande (un motor que tarda el doble, una consulta que pierde su índice), no una
-de 10 %: para eso hacen falta mediciones en una máquina dedicada.
+Con una tolerancia de tiempo de 30 %, la segunda tanda habría marcado `decision/v1` (46.3 % y 2.28 s
+arriba) como una regresión que no existe; con 50 %, quedó a 3.7 puntos de marcarla. Por eso cada
+corrida programada es la mediana de tres runners, y la tolerancia de tiempo es de 60 %. Detecta una regresión grande (un motor que tarda el
+doble, una consulta que pierde su índice), no una de 10 %: para eso hacen falta mediciones en una
+máquina dedicada.
 
 Una línea base nueva son las medianas de varias corridas del mismo commit, cada una en su runner, con
 sus tolerancias por clase de métrica (tiempo, memoria y consulta):
