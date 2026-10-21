@@ -8,6 +8,8 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Web: actualiza ocho dependencias compatibles de la app (React Query, Playwright, user-event, plugin de React para Vite, axe-core, jsdom, Prettier y typescript-eslint) sin cambiar Node, TypeScript, Vitest, React ni Vite de rama mayor.
+
 - Observabilidad: actualiza Grafana OSS de 13.1.8 a 13.2.4 en el compose de producción, manteniendo la línea 13.x y el pin por digest.
 
 - Seguridad de la cadena de suministro: actualiza `uv` de 0.12.21 a 0.13.4 en Docker y todos los workflows que lo ejecutan; 0.13.4 retira una raíz de confianza afectada por intermediarios comprometidos (GHSA-hq85-5cpj-mr62).
