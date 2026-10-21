@@ -395,24 +395,28 @@ XL; ninguno es parte del CI.
 ## Validación local en Windows
 
 El CI prueba los dos compose en Linux. En la máquina de desarrollo (Windows 11, 16 GB de RAM, Docker
-Desktop 29.8 con Compose v5.6 sobre WSL2) se verificó, el 2026-10-19, con el código de v0.18.1:
+Desktop 29.8 con Compose v5.6 sobre WSL2) se verificó, el 2026-10-21, con el código candidato de
+v1.0.0 (el del PR #38), en un clon limpio del repositorio y con nombres de proyecto propios, sin
+tocar los volúmenes de desarrollo:
 
-- `docker compose config` de los dos compose;
-- **el compose de desarrollo**: `docker compose up --build -d --wait` (la base, las migraciones, la
-  API, el worker y la app, sanos); la prueba de humo del flujo automático hasta el ruteo y la de la
-  superficie web (`--web http://localhost:8080`); una cartera oficial subida como en el
-  [inicio rápido](../README.md#inicio-rápido), con su corte y sus cuentas en la app; Playwright con
-  axe-core contra la app (51 pruebas; las 7 de la sesión son del compose de producción), y las
-  capturas del README con `web/scripts/capturas-readme.mjs`, con el Chrome del sistema;
-- **el compose de producción**, sin los perfiles `ruteo` ni `observabilidad`: los secretos
-  efímeros, las imágenes, el simulacro de restauración en un entorno nuevo (el respaldo del compose
-  de desarrollo, validado, y los alterados, negados), el esquema y el almacén restaurados, la prueba
-  de humo del edge (TLS 1.3, el inicio de sesión con PKCE, la cookie `__Host-`, la fijación de
-  sesión, el callback repetido, las cabeceras de identidad del cliente que no elevan a nadie y el
-  cierre de sesión con su revocación: 81 comprobaciones), la interna (26, con OSRM y la
-  observabilidad no verificables sin sus perfiles), la de los contenedores endurecidos (77; Windows
-  no controla los permisos de un secreto montado) y Playwright por el edge con los usuarios de Dex
-  (58 pruebas), con oauth2-proxy v7.15.5.
+- **una instalación limpia del compose de desarrollo**: `docker compose up --build`, las
+  migraciones desde cero, los datos sintéticos y sus tres pruebas de humo (de punta a punta por la
+  API, 302 comprobaciones; predictivo y optimización, 60; la superficie web, 63); Playwright con
+  axe-core contra la app de esa imagen (55 pruebas; una, la paginación del explorador, agotó su
+  tiempo una vez y pasó en las tres repeticiones siguientes), y las capturas del README con
+  `web/scripts/capturas-readme.mjs`, con el Chrome del sistema;
+- **ninguna de las 32 pantallas de la app desborda** a 320 ni a 390 px, medidas en Chrome;
+- **el respaldo, la destrucción y la restauración**: el respaldo del compose de desarrollo después de
+  sus pruebas de humo (83 tablas, 156,297 filas), ese entorno destruido con sus volúmenes y, en un
+  compose de producción nuevo (sin los perfiles `ruteo` ni `observabilidad`): los secretos
+  efímeros, las imágenes, el simulacro de restauración (los cinco respaldos alterados, negados con
+  su código; la restauración, `VALIDADA` con sus 97 artefactos en 11.9 s), el esquema en
+  `0017 (head)` y sin diferencias con los modelos, los 97 artefactos intactos, la prueba de humo del
+  edge (TLS 1.3, el inicio de sesión con PKCE, la cookie `__Host-`, la fijación de sesión, el
+  callback repetido, las cabeceras de identidad del cliente que no elevan a nadie y el cierre de
+  sesión con su revocación: 81 comprobaciones), la interna (26, con OSRM y la observabilidad no
+  verificables sin sus perfiles), la de los contenedores endurecidos (77; Windows no controla los
+  permisos de un secreto montado) y Playwright por el edge con los usuarios de Dex (62 pruebas).
 
 No se corrieron aquí los simulacros de falla ni la carga: los corre el job `produccion` del CI en
 cada run. macOS no está probado.
