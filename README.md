@@ -10,7 +10,7 @@ observabilidad de producción.
 [![CI](https://github.com/israelcervantes31416/motor-cartera/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/israelcervantes31416/motor-cartera/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/israelcervantes31416/motor-cartera/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/israelcervantes31416/motor-cartera/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/israelcervantes31416/motor-cartera)](https://github.com/israelcervantes31416/motor-cartera/releases/latest)
-[![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776AB)](pyproject.toml)
 [![Licencia](https://img.shields.io/badge/licencia-todos%20los%20derechos%20reservados-lightgrey)](LICENSE)
 
 ![La app: el resumen de un corte sintético, con lo que publicó cada motor](docs/assets/overview.png)
@@ -111,6 +111,9 @@ El detalle, con los componentes, el almacenamiento y el linaje, está en
   no publica un plan sin su prueba de optimalidad.
 - **Una app de solo lectura**, y una producción con OpenID Connect, permisos por ruta,
   observabilidad sin datos personales y restauración ensayada.
+- **Una versión estable que se puede verificar.** Semantic Versioning sobre una superficie escrita
+  ([docs/versioning.md](docs/versioning.md)), Python 3.12 a 3.14 probado en cada run, y releases que
+  se niegan antes de publicar y llevan la atestación de procedencia de cada asset.
 
 ## Un ejemplo: una decisión explicada
 
@@ -151,16 +154,19 @@ features y verifica que da exactamente lo mismo ([docs/decision_v2.md](docs/deci
 
 | Evidencia | Resultado |
 |---|---|
-| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,912 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
-| Pruebas de la app (Vitest) | 134 pruebas en 18 archivos; 90.8 % de cobertura de sentencias |
-| Playwright con axe-core | 51 pruebas contra el compose de desarrollo y 58 contra el de producción, con usuarios de Dex |
+| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,951 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
+| Pruebas de la app (Vitest) | 136 pruebas en 18 archivos; 90.8 % de cobertura de sentencias |
+| Playwright con axe-core | 55 pruebas contra el compose de desarrollo y 62 contra el de producción, con usuarios de Dex |
+| Compatibilidad de Python | En cada run, en 3.12, 3.13 y 3.14: el entorno del lock, cada módulo, la línea de comandos, 772 pruebas puras y el mismo OpenAPI, byte por byte |
 | Núcleos puros contra su SQL | Cada motor tiene un núcleo puro y su ejecución por conjuntos en PostgreSQL; una prueba compara los dos cuenta por cuenta, y los goldens se calculan a mano |
 | Migraciones | En cada run suben desde cero, coinciden con los modelos (`alembic check`), bajan y vuelven a subir |
 | Contrato de la app | Los tipos de la app se generan del OpenAPI de la API; el CI falla si alguien no los regeneró |
 | Prueba de humo de punta a punta | En cada run: de la cartera sintética al ruteo, la historia, los pagos, el lifecycle, `decision/v2`, la geografía, campo, ruteo por calle, analytics, predictivo y optimización, por HTTP |
 | Respaldo y restauración | En cada run: el respaldo de la base y del almacén se restaura en un entorno nuevo y se valida |
 | Simulacros y carga | En cada run, la caída de la base, la API, el worker, OSRM y la telemetría, y una carga corta con k6 |
-| Seguridad de la cadena de suministro | gitleaks sobre el historial, Trivy (lockfiles e imágenes), pip-audit, npm audit, CodeQL y un SBOM CycloneDX |
+| Seguridad de la cadena de suministro | gitleaks sobre el historial, Trivy (lockfiles e imágenes), pip-audit, npm audit, CodeQL con cada alerta clasificada y un SBOM CycloneDX |
+| Releases | El OpenAPI, los SBOM y su `SHA256SUMS`, con la atestación de procedencia de cada uno, publicados por un workflow que se niega antes de publicar ([cadena-de-suministro.md](docs/cadena-de-suministro.md#las-releases)) |
+| Rendimiento | El perfil M (100,000 cuentas) cada semana, contra su línea base: una señal de regresión, no un objetivo de servicio ([rendimiento.md](docs/rendimiento.md)) |
 | Tipos | Pyright: 0 errores en los 219 archivos de `src/motor_cartera` (standard; strict en 13 módulos) |
 | Infraestructura como código | OpenTofu: `fmt`, `validate` y el plan de staging y production en cada run, sin credenciales; nunca aplicado |
 
@@ -189,7 +195,7 @@ Cada benchmark, con su máquina, sus supuestos y su variación, está en
 
 | Capa | Tecnología |
 |---|---|
-| Backend | Python 3.12+, FastAPI, SQLModel y SQLAlchemy, Alembic, Pydantic, Typer |
+| Backend | Python 3.12 (probado también en 3.13 y 3.14), FastAPI, SQLModel y SQLAlchemy, Alembic, Pydantic, Typer |
 | Datos | PostgreSQL 16, PyArrow y Parquet, pandas, pandera |
 | Optimización y modelos | SciPy con HiGHS (MILP), NumPy, GLM propios (logística L2, Tweedie, Platt) |
 | Geoespacial | PostGIS 3.5, el Marco Geoestadístico del INEGI, OSRM v26.9.0 con OpenStreetMap |
@@ -198,7 +204,7 @@ Cada benchmark, con su máquina, sus supuestos y su variación, está en
 | Seguridad | OpenID Connect con oauth2-proxy (Dex en local), PyJWT, una matriz de permisos |
 | Observabilidad | OpenTelemetry, Prometheus, Alertmanager, Grafana, Jaeger |
 | Infraestructura | OpenTofu (una referencia de Google Cloud, no desplegada) |
-| CI | GitHub Actions: pytest, Vitest, Playwright, Pyright, ruff, CodeQL, Trivy, gitleaks, k6 |
+| CI | GitHub Actions: pytest, Vitest, Playwright, Pyright, ruff, CodeQL, Trivy, gitleaks, k6; releases con atestaciones de procedencia |
 
 ## Inicio rápido
 
@@ -299,14 +305,13 @@ Las más importantes; todas, por área, en [docs/limitaciones.md](docs/limitacio
 
 ## Estado
 
-**Versión estable: v0.18.1**
-([release](https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.1)), un parche
-de seguridad (oauth2-proxy v7.15.5) y de calidad del repositorio sobre v0.18.0. Cada versión, de
-v0.1.0 a hoy, está en el [CHANGELOG](CHANGELOG.md).
-
-**Lo que sigue: ➡️ v1.0.0 — Collection Intelligence Platform**: integrar lo que cada versión
-construyó en una plataforma completa de inteligencia de cobranza, sin perder la auditabilidad, el
-punto en el tiempo, la privacidad ni la seguridad.
+**Versión estable: v1.0.0**
+([release](https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.0)), Collection
+Intelligence Platform: la primera versión estable, con lo que construyeron v0.1.0 a v0.18.1 cerrado
+como una plataforma. Desde ella, cada versión sigue Semantic Versioning sobre la superficie que
+define [docs/versioning.md](docs/versioning.md), y cada release trae su OpenAPI, los SBOM de las
+imágenes, sus SHA-256 y su procedencia. Cada versión, de v0.1.0 a hoy, está en el
+[CHANGELOG](CHANGELOG.md).
 
 ## Licencia
 

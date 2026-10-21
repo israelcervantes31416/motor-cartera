@@ -544,11 +544,13 @@ def test_las_decisiones_estan_todas_y_en_orden():
     assert "las 304 a 312, de la Collection Intelligence Platform" in introduccion
 
 
-def test_el_readme_marca_la_version_estable_y_la_que_sigue():
+def test_el_readme_marca_la_version_estable_y_su_politica():
     texto = " ".join((DOCS.parent / "README.md").read_text(encoding="utf-8").split())
 
     assert f"**Versión estable: v{__version__}**" in texto
-    assert "➡️ v1.0.0 — Collection Intelligence Platform" in texto
+    # Desde v1.0.0 no se anuncia "lo que sigue": cada versión sigue la política de versionado.
+    assert "Lo que sigue" not in texto
+    assert "[docs/versioning.md](docs/versioning.md)" in texto
     assert "[CHANGELOG](CHANGELOG.md)" in texto
     # El compose de desarrollo sigue sin usuarios, y el README lo dice tal cual.
     assert "Desarrollo local sin usuarios (clave de servicio del proxy)" in texto
