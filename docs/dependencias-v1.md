@@ -1,88 +1,82 @@
 # Las dependencias en v1.0
 
-El triage de los PRs de Dependabot al publicar v1.0.0 (2026-10-21). Los que se fusionaron, cada uno en
-su propio PR y con el CI completo verde; los demás, abiertos y con su decisión: **ninguno bloquea
-v1.0**, y ninguno se fusiona por reflejo. La política de Dependabot está en
+Estado de la cola de Dependabot después de publicar v1.0.0 (2026-10-21). Este documento es una
+**foto de triage**, no una orden de actualización: ningún PR se fusiona por reflejo y una cola abierta
+no invalida una release estable. La política está en
 [cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
+
+La rama estable sigue en Python 3.12 como runtime, PostgreSQL 16/PostGIS 3.5 y Node 24. Las versiones
+3.13 y 3.14 de Python se prueban en la matriz de compatibilidad, pero no sustituyen por sí solas al
+runtime de producción.
 
 ## Fusionados desde v0.18.0
 
 | PR | Componente | Cambio | Por qué |
 | --- | --- | --- | --- |
-| #21 | oauth2-proxy | v7.15.4 → v7.15.5 | **Seguridad**, en v0.18.1: GHSA-hhqp-vx7f-5c6m sí aplicaba (abajo) |
-| #23 | astral-sh/setup-uv | 10.2.0 → 10.3.0 | La acción del CI; el `uv` que instala sigue fijado en 0.12.21 |
-| #20 | Jaeger | 2.21.0 → 2.22.0 | Un menor del perfil de observabilidad |
-| #36 | vite | 8.3.2 → 8.3.4 | **Seguridad**: GHSA-698v-4r3x-3vcv (abajo) |
+| #21 | oauth2-proxy | v7.15.4 → v7.15.5 | **Seguridad**, en v0.18.1: GHSA-hhqp-vx7f-5c6m sí aplicaba |
+| #23 | astral-sh/setup-uv | 10.2.0 → 10.3.0 | Acción de CI, con la versión de uv todavía fijada explícitamente |
+| #20 | Jaeger | 2.21.0 → 2.22.0 | Menor del perfil de observabilidad |
+| #36 | Vite | 8.3.2 → 8.3.4 | **Seguridad**: GHSA-698v-4r3x-3vcv en el servidor de desarrollo de Windows |
 
-## Abiertos, y por qué no bloquean v1.0
+## Cola abierta actual
 
-| PR | Componente | Actual → propuesta | Tipo | CI | Decisión |
-| --- | --- | --- | --- | --- | --- |
-| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | menor | verde | No así: `-386` es la imagen de linux/386; la multiplataforma es `0.162.0` |
-| #24 | OSRM | v26.9.0 → 26.10.0 | menor | rojo | Después de v1.0: un cambio coordinado que vuelve a preparar las redes |
-| #25 | Valkey | 8.1.10 → 9.1.2 | mayor | verde | Después de v1.0: una migración de las sesiones, aparte |
-| #26 | uv (imagen) | 0.12.21 → 0.13.1 | menor de 0.x | verde | Después de v1.0: se mueve junto con el CI y el que genera `uv.lock` |
-| #27 | Python (imagen) | 3.12 → 3.14 | menor del runtime | rojo | No: el runtime de producción sigue en 3.12 (3.14 se prueba en la matriz) |
-| #28 | PostGIS (respaldo) | 16 → 17 | mayor | rojo | No: el respaldo es del mismo mayor que el servidor |
-| #29 | nginx-unprivileged | 1.30.6 → 1.31.6 | estable → mainline | verde | No: se queda en la rama estable 1.30.x |
-| #30 | Node (imagen) | 24.21 → 26.11 | mayor | rojo | Después de v1.0: Node 26 cambia también `engines` y `web/.node-version` |
-| #31 | grupo Python (10) | ver abajo | 1 mayor | rojo | Después de v1.0, separado en sus partes |
-| #37 | grupo web (14) | ver abajo | 6 mayores | rojo | Después de v1.0, separado en sus partes |
+Los PR antiguos que Dependabot cerró y regeneró al entrar la política de v1 ya no se listan como
+pendientes. En particular, #26, #31 y #37 fueron reemplazados por PR nuevos; conservar sus números
+como si siguieran abiertos hacía que este documento quedara desfasado.
 
-## Por qué
+| PR | Componente | Actual → propuesta | Base/CI observado | Decisión |
+| --- | --- | --- | --- | --- |
+| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | detrás de v1; último CI verde | **No fusionar así**: `-386` es la imagen linux/386; la variante esperada es la multiplataforma |
+| #24 | OSRM | v26.9.0 → 26.10.0 | detrás de v1; compose/pruebas rojos | Migración coordinada: imagen, red preparada y contrato deben moverse juntos |
+| #25 | Valkey | 8.1.10 → 9.1.2 | detrás de v1; último CI verde | Mayor; evaluar como migración de sesiones, no como mantenimiento automático |
+| #27 | Python (imagen) | 3.12 → 3.14 | detrás de v1; producción roja | No sustituye al runtime 3.12; la compatibilidad 3.14 ya se prueba aparte |
+| #28 | PostGIS (respaldo) | 16 → 17 | detrás de v1; producción roja | PostgreSQL/PostGIS 17 requiere migración coordinada con el servidor y restore |
+| #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | detrás de v1; último CI verde | No cambiar de rama estable a mainline por una actualización automática |
+| #30 | Node (imagen) | 24.21 → 26.11 | detrás de v1; compose rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
+| #39 | Grafana | 13.1.8 → 13.2.4 | sobre v1; CI completo verde | Candidato compatible para una siguiente actualización de mantenimiento |
+| #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | sobre v1; compose rojo | Mismo cambio mayor que #28: no se hace por piezas |
+| #41 | uv (imagen) | 0.12.21 → 0.13.4 | sobre v1; CI completo verde | Prioridad de mantenimiento, pero **coordinada** con todos los pins de uv; no fusionar solo el Dockerfile |
+| #42 | grupo web | 8 actualizaciones compatibles | sobre v1; CI completo verde | Candidato para mantenimiento; sin los majors que el grupo anterior mezclaba |
+| #43 | grupo Python | 9 actualizaciones | sobre v1; `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
 
-- **#21 se fusionó en v0.18.1.** v7.15.5 corrige dos avisos críticos (GHSA-63jm-59jj-478j y
-  GHSA-wr5q-7wxw-x568), que en esta configuración no aplicaban (no hay reglas `skip-auth` ni
-  `--trusted-ip`, y el edge reescribe las cabeceras de la IP del cliente), y uno moderado,
-  GHSA-hhqp-vx7f-5c6m (credenciales en el log del callback), que **sí aplicaba**: apagar el log de
-  autenticación no lo mitigaba. Antes de fusionarlo, el CI del compose de producción repitió el
-  inicio de sesión con PKCE, la cookie `__Host-`, el callback repetido, las cabeceras falsificadas, el
-  cierre de sesión y Playwright con los usuarios de Dex.
-- **#36 se fusionó antes de v1.0.0.** GHSA-698v-4r3x-3vcv (moderado): `launch-editor`, que usa el
-  servidor de desarrollo de Vite, no escapaba `%` al llamar a `cmd` en Windows. Solo afecta al
-  servidor de desarrollo (la app de producción es el build estático servido por nginx), pero el
-  desarrollo de este proyecto es en Windows, así que aplicaba. Es un parche de una dependencia de
-  desarrollo, que Dependabot propuso como actualización de seguridad.
-- **#22.** El CI pasa porque un runner amd64 ejecuta binarios i386; no se despliega una imagen de
-  otra arquitectura.
-- **#24.** La imagen de OSRM está fijada en tres lugares: los dos compose, `red_vial.IMAGEN_OSRM` (la
-  que prepara la red) y el CI. Dependabot solo cambia los compose, y la prueba
-  `test_el_compose_arranca_osrm_con_la_misma_imagen_que_prepara_la_red` lo detiene.
-- **#26.** El `uv` de la imagen, el `version` de setup-uv en el CI y el que generó `uv.lock` son el
-  mismo (0.12.21) a propósito: se mueven juntos o no se mueven.
-- **#27.** Además del cambio de runtime, la base `python:3.14-slim` trae paquetes con
-  vulnerabilidades altas con corrección (no de `uv.lock`) que Trivy detiene en el job `produccion`.
-  Que el código funciona en 3.13 y 3.14 lo prueba la matriz de compatibilidad, sin cambiar la imagen.
-- **#28.** Con `pg_restore` 17 contra un servidor 16, la restauración se niega. Un mayor de
-  PostgreSQL necesita su propio plan.
-- **#29.** nginx usa los menores pares para la rama estable y los impares para la mainline.
-- **#30.** `web/package.json` pide `node >=24.15.0 <25` y `web/.node-version` fija 24.21.0: Node 26
-  cambia esos dos, la imagen y `@types/node` (#37) a la vez.
-- **#31.** pandera 0.33.1 → 0.34.1, sqlmodel 0.0.47 → 0.0.48, typer 0.27.2 → 0.27.3, fastapi 0.142.1 →
-  0.143.0, **pyarrow 25.0.1 → 26.0.0**, numpy 2.5.3 → 2.5.4, opentelemetry 1.45.0 → 1.45.1 y ruff
-  0.16.9 → 0.17.0. Está rojo porque sqlmodel 0.0.48 cambia los tipos de `select()` y Pyright (en el
-  CI desde v0.18.1) los rechaza; y pyarrow escribe los Parquet de las fuentes conformadas, donde un
-  mayor puede cambiar los bytes.
-- **#37** reemplazó a #32 cuando #36 cambió `web/package-lock.json` (Dependabot cerró #32 el
-  2026-10-21). Trae los mismos seis mayores (typescript 5.9 → 7.0, vitest y @vitest/coverage-v8 4 → 5,
-  msw 2 → 3, @tanstack/react-table 8 → 9, @types/node 24 → 26), y `npm ci` falla: openapi-typescript
-  7.13 no acepta typescript 7.
+## Notas de los casos que requieren cuidado
 
-Desde v1.0, Dependabot propone los menores y los parches de cada ecosistema juntos y **cada mayor en
-su propio PR** (`update-types` en sus grupos): los grupos #31 y #37 se rehacen así en su siguiente
-corrida, y cada mayor se evalúa como la migración que es.
+- **#22.** `0.162.0-386` no es la variante normal del collector para este proyecto. Que un runner
+  pueda ejecutarla no es razón para publicarla.
+- **#24.** OSRM está fijado en los compose y en la versión con que se prepara la red vial. Cambiarlo
+  exige volver a preparar y verificar esa red.
+- **#27.** Python 3.14 ya forma parte de la matriz ligera de compatibilidad. Eso no convierte una
+  actualización de la imagen de producción en un cambio automático.
+- **#28 y #40.** El cliente de respaldo y el servidor deben permanecer compatibles. PostgreSQL 17
+  será una migración explícita, no dos merges independientes.
+- **#29.** La rama 1.31 es mainline; el proyecto no cambia de canal de nginx únicamente porque
+  Dependabot encuentre una etiqueta más nueva.
+- **#30.** Node 26 es una migración de runtime del frontend. La versión estable de v1 permanece en
+  Node 24 hasta que ese cambio se haga deliberadamente.
+- **#41.** Las notas de uv 0.13.4 incluyen GHSA-hq85-5cpj-mr62 y una actualización de certificados
+  raíz. El proyecto fija uv en el Dockerfile y en varios workflows, por lo que la actualización se
+  debe hacer en conjunto y volver a pasar el CI completo; el PR automático solo cambia el
+  Dockerfile.
+- **#42.** Es el resultado de la nueva política que deja fuera los majors del grupo web. Su CI
+  completo está verde sobre v1, pero una release estable no se mueve solo para vaciar la cola.
+- **#43.** El grupo Python nuevo ya no incluye PyArrow 26, pero sigue fallando por el cambio de tipos
+  de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
 
-## La seguridad
+## Seguridad y criterio de actualización
 
-Las alertas de Dependabot y sus actualizaciones de seguridad están activadas desde v0.18.1, y el
-reporte privado de vulnerabilidades también ([política de seguridad](../.github/SECURITY.md)). La
-única alerta que abrió Dependabot hasta v1.0.0 fue la de vite (#36), y se cerró con su corrección.
-Además está el CI: pip-audit, npm audit, Trivy sobre los lockfiles y las imágenes, gitleaks y
-CodeQL ([cadena-de-suministro.md](cadena-de-suministro.md#lo-que-se-escanea)).
+Las alertas de Dependabot, sus actualizaciones de seguridad, CodeQL, pip-audit, npm audit, Trivy y
+gitleaks siguen siendo los controles del proyecto. Una actualización de seguridad **aplicable** se
+atiende con prioridad; un PR de versión normal, incluso verde, no se vuelve obligatorio por existir.
 
-## Reglas
+Desde v1.0, Dependabot agrupa parches/menores compatibles cuando tiene sentido y deja los mayores
+separados. Los mayores no se ignoran para siempre: se tratan como migraciones explícitas bajo
+[versioning.md](versioning.md).
 
-Ningún PR de Dependabot se fusiona por reflejo, ni con el CI verde; no hay auto-merge; ninguna versión
-se ignora para siempre. Una actualización de seguridad que aplica se atiende de inmediato, en su
-propio PR. Un mayor es una migración: su propio PR, su plan y, si cambia la superficie estable, su
-versión ([versioning.md](versioning.md)).
+## Regla operativa
+
+- No auto-merge.
+- No perseguir “0 PR abiertos”.
+- No fusionar un PR que esté detrás de `main` usando resultados viejos como evidencia suficiente.
+- No dividir una migración acoplada solo para aceptar PRs automáticos.
+- Antes de cada merge: actualizar a la cabeza de `main`, ejecutar los checks actuales y revisar el
+  diff real.
