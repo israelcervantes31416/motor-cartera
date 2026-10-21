@@ -1,0 +1,40 @@
+name: Generar lock temporal de Vitest
+
+on:
+  push:
+    branches: [chore/vitest-4.1.12-security]
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Regenerar solo el lock de Vitest
+        working-directory: web
+        run: npm install --package-lock-only --ignore-scripts --save-exact vitest@4.1.12 @vitest/coverage-v8@4.1.12
+
+      - name: Verificar versiones corregidas
+        working-directory: web
+        run: |
+          node -e "const p=require('./package-lock.json'); const pk=p.packages; for (const n of ['node_modules/vitest','node_modules/@vitest/coverage-v8','node_modules/@vitest/mocker']) { console.log(n, pk[n]?.version); if (pk[n]?.version !== '4.1.12') process.exit(1) }"
+
+      - name: Publicar lock
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-lock-vitest-4.1.12
+          path: web/package-lock.json
+          if-no-files-found: error
+          retention-days: 1
