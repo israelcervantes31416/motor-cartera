@@ -1,0 +1,119 @@
+name: Compatibilidad de Python
+
+# La matriz ligera de las versiones de Python que declara requires-python (3.12, 3.13 y 3.14; la
+# prueba tests/test_compatibilidad.py exige que coincidan). No repite el CI: en cada version, el
+# entorno exacto del uv.lock, la compilacion, cada modulo del paquete importado, el contrato de la
+# app web identico al del repositorio, la linea de comandos y las pruebas puras de los nucleos de
+# cada motor, sin PostgreSQL, Docker ni OSRM. Al final, el OpenAPI completo de las tres versiones
+# tiene que ser el mismo, byte por byte. Lo que necesita infraestructura (la suite completa, las
+# migraciones, los compose, Playwright, el respaldo, Trivy) corre solo en 3.12, en ci.yml. Cada
+# semana corre otra vez: un parche nuevo de Python o de una dependencia se nota sin esperar un PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "37 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: compatibilidad (${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+
+    env:
+      PYTHON_ESPERADO: ${{ matrix.python }}
+      # Las pruebas de esta matriz no abren una base: conftest.py solo exige que el nombre sea de
+      # pruebas, y esta direccion no responde.
+      MC_DATABASE_URL_PRUEBAS: postgresql+psycopg://sin-base@127.0.0.1:9/sin_base_test
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # El mismo uv que genero el uv.lock (el del CI y del Dockerfile), con el Python de la pierna.
+      - name: uv y Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.21"
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+
+      # Las versiones exactas del lock, con sus hashes; --locked falla si el lock no corresponde.
+      - name: El entorno del uv.lock
+        run: uv sync --locked --extra dev
+
+      - name: La version de Python y la compilacion
+        run: |
+          python -c "import sys; v = '%d.%d' % sys.version_info[:2]; print(sys.version); assert v == '$PYTHON_ESPERADO', v"
+          python -m compileall -q src scripts migraciones tests
+
+      # Sin escribir nada: el contrato de la app web que genera esta version tiene que ser el del
+      # repositorio. Y el OpenAPI completo, para compararlo entre las tres versiones.
+      - name: El contrato de la API
+        run: |
+          python scripts/exportar_contrato_web.py --verificar
+          python scripts/exportar_openapi.py --destino "$RUNNER_TEMP/openapi/openapi-$PYTHON_ESPERADO.json"
+
+      # La linea de comandos instalada: su ayuda y la cartera oficial sintetica mas chica, con sus
+      # pagos, que no necesitan base.
+      - name: La linea de comandos
+        run: |
+          motor-cartera --help > /dev/null
+          motor-cartera generar-oficial --destino "$RUNNER_TEMP/oficial" --perfil XS \
+            --formato zip --fecha-corte 2026-09-30
+
+      # Los modulos, la version y la matriz (tests/test_compatibilidad.py), los contratos de las
+      # fuentes, la lectura por lotes, el generador y el nucleo puro de cada motor: decision/v1 y
+      # v2, el motor de pagos, la atribucion, la evaluacion de promesas, la historia, la geografia,
+      # territorial/v2, campo/v2, ruteo/v2, analytics, los GLM predictivos contra scikit-learn y el
+      # MILP de la optimizacion con HiGHS.
+      - name: Pruebas puras
+        run: >-
+          pytest tests/test_compatibilidad.py tests/test_contratos.py tests/test_contrato_fuente.py
+          tests/test_lotes.py tests/test_generador.py tests/test_decision_reglas.py
+          tests/test_motor_pagos_reglas.py tests/test_decision_v2_politica.py
+          tests/test_decision_v2_features.py tests/test_atribucion_reglas.py
+          tests/test_evaluacion_reglas.py tests/test_historia_presencia.py
+          tests/test_geografia_reglas.py tests/test_territorial_v2_politica.py
+          tests/test_campo_v2_politica.py tests/test_ruteo_v2_politica.py
+          tests/test_analytics_politica.py tests/test_predictivo_modelos.py
+          tests/test_optimizacion_formulacion.py
+
+      - name: El OpenAPI de esta version
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openapi-${{ matrix.python }}
+          path: ${{ runner.temp }}/openapi/
+          retention-days: 7
+          if-no-files-found: error
+
+  # La misma API en cada version: los tres OpenAPI completos, byte por byte.
+  contrato:
+    name: compatibilidad (contrato)
+    needs: [python]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Los OpenAPI de las tres versiones
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: openapi-*
+          merge-multiple: true
+          path: openapi
+
+      - name: Son el mismo
+        run: |
+          sha256sum openapi/*.json | tee hashes.txt
+          test "$(wc -l < hashes.txt)" -eq 3
+          test "$(cut -d' ' -f1 hashes.txt | sort -u | wc -l)" -eq 1

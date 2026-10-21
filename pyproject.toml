@@ -3,7 +3,10 @@ name = "motor-cartera"
 version = "0.18.1"
 description = "Plataforma de inteligencia de cobranza (collection intelligence) sobre una cartera sintética: ingeniería de datos point-in-time, decisión explicable, analytics, modelos predictivos, optimización de capacidad y ruteo vial."
 readme = "README.md"
-requires-python = ">=3.12"
+# Las versiones de Python que se prueban (.github/workflows/compatibilidad.yml): 3.12 es el runtime
+# de las imagenes y del CI completo. En 3.15 el uv.lock no se instala sin compilar (pyarrow 25.0.1 no
+# publica ruedas para 3.15); soportarla sera una version menor (docs/versioning.md).
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "pandas>=2.2",
     "pandera>=0.24",
