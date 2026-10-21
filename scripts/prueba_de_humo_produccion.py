@@ -197,6 +197,9 @@ def revisar_csp(valor: str) -> None:
 def el_edge(base: str, ca: Path, usuarios: Path, claves: Path | None) -> None:
     _resolver_localhost()
     contexto = ssl.create_default_context(cafile=str(ca))
+    # El piso explicito, aunque el contexto por omision ya lo tenga: el cliente de esta prueba no
+    # acepta menos de TLS 1.2. Solo `vieja`, abajo, ofrece TLS 1.1, para ver que el edge lo niega.
+    contexto.minimum_version = ssl.TLSVersion.TLSv1_2
     cuentas = json.loads(usuarios.read_text(encoding="utf-8"))
     anfitrion = urllib.parse.urlsplit(base).hostname or ""
     puerto = urllib.parse.urlsplit(base).port or 443
