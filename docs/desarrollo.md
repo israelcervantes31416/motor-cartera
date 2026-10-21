@@ -61,10 +61,12 @@ termina cuando vence el lease. No crea flujo, así que las demás etapas se pide
 con código 1 si la corrida no publica, para que un script lo note.
 
 Las versiones exactas de todas las dependencias están en `uv.lock`, y el CI y la imagen
-instalan esas mismas. Si cambias una dependencia en `pyproject.toml`, corre `uv lock` y sube
-los dos archivos juntos: con el lock desfasado, el CI falla. El lock sirve para cualquier
-Python desde 3.12 (el piso de `requires-python` y la versión del CI), no solo para el que
-tengas instalado.
+instalan esas mismas. Si cambias una dependencia en `pyproject.toml`, corre `uv lock` (con el `uv`
+0.12.21 del proyecto) y sube los dos archivos juntos: con el lock desfasado, el CI falla. El lock
+sirve para cada Python que declara `requires-python`, 3.12, 3.13 y 3.14, y la matriz de
+compatibilidad lo instala en cada una ([El CI](#el-ci)); 3.12 es el runtime de las imágenes. En
+3.15 no se instala sin compilar (pyarrow 25.0.1 no publica ruedas para ella), así que
+`requires-python` la deja fuera hasta que sus dependencias la soporten sin forzar un mayor.
 
 ## Los datos
 
@@ -367,9 +369,28 @@ Sus cuatro trabajos son los checks obligatorios de `main`:
   SBOM CycloneDX y el informe de las de terceros.
 
 `.github/workflows/codeql.yml` corre el análisis estático de CodeQL sobre Python y
-JavaScript/TypeScript en cada pull request, en cada push a `main` y cada semana. Los benchmarks de
-escala son un workflow aparte, que solo corre a mano, y los demás se corren con su script sobre una
-base `*_bench` que ya tiene el XL; ninguno es parte del CI.
+JavaScript/TypeScript en cada pull request, en cada push a `main` y cada semana.
+
+`.github/workflows/compatibilidad.yml` es la matriz ligera de Python: en 3.12, 3.13 y 3.14 (las de
+`requires-python`; `tests/test_compatibilidad.py` exige que coincidan), el entorno exacto del
+`uv.lock`, la compilación, cada módulo del paquete importado, el contrato de la app web idéntico al
+del repositorio, la línea de comandos (su ayuda y una cartera oficial sintética) y las pruebas puras
+del núcleo de cada motor, sin PostgreSQL, Docker ni OSRM; al final, el OpenAPI completo de las tres
+tiene que ser el mismo, byte por byte. Corre en cada pull request, en cada push a `main` y cada
+semana, y no repite el CI: lo que necesita infraestructura corre solo en 3.12, en `ci.yml`. Sin una
+base, las pruebas puras corren igual en local:
+
+```bash
+MC_DATABASE_URL_PRUEBAS=postgresql+psycopg://sin-base@127.0.0.1:9/sin_base_test \
+  pytest tests/test_compatibilidad.py tests/test_decision_reglas.py tests/test_motor_pagos_reglas.py
+```
+
+`.github/workflows/release.yml` publica una versión, solo a mano y solo después de revisar sus
+precondiciones; cómo, en [cadena-de-suministro.md](cadena-de-suministro.md#las-releases).
+`.github/workflows/performance.yml` mide cada semana el perfil M contra su línea base: una señal que
+no detiene nada ([rendimiento.md](rendimiento.md)). Los benchmarks de escala son un workflow aparte,
+que solo corre a mano, y los demás se corren con su script sobre una base `*_bench` que ya tiene el
+XL; ninguno es parte del CI.
 
 ## Validación local en Windows
 

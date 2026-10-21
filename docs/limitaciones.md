@@ -1,7 +1,7 @@
 # Limitaciones actuales
 
 Lo que motor-cartera no hace hoy, o hace con un límite conocido, por área y sin maquillar. Cada una
-se revisó contra el código de v0.18.1: lo que una versión posterior resolvió ya no está aquí. Lo que
+se revisó contra el código de v1.0.0: lo que una versión posterior resolvió ya no está aquí. Lo que
 es del diseño, y no un pendiente, va al final. Cada motor detalla las suyas en su documento
 ([índice](README.md)).
 
@@ -16,7 +16,9 @@ es del diseño, y no un pendiente, va al final. Cada motor detalla las suyas en 
 - **Sin historia de operación real.** Los objetivos de servicio y los umbrales de las alertas son
   iniciales, y no hubo un pentest externo.
 - **Medido en una máquina de desarrollo, que no era dedicada.** Los benchmarks de cada motor dicen
-  su máquina y su variación entre corridas; nada se midió en un servidor de producción.
+  su máquina y su variación entre corridas; nada se midió en un servidor de producción. El perfil M
+  se mide cada semana en runners compartidos de GitHub: una señal de regresión, no un objetivo de
+  servicio ([rendimiento.md](rendimiento.md)).
 - **Nada actúa sola.** La app es de solo lectura y ningún motor ejecuta una acción de cobranza; las
   predicciones y los planes óptimos corren en sombra.
 
@@ -53,6 +55,12 @@ es del diseño, y no un pendiente, va al final. Cada motor detalla las suyas en 
 - **El compose se prueba en Linux en el CI.** En la máquina de desarrollo (Windows 11 con Docker
   Desktop sobre WSL2) se verificó lo que dice [desarrollo.md](desarrollo.md#validación-local-en-windows);
   macOS no está probado.
+- **Python 3.12 a 3.14.** Las tres se prueban en la matriz de compatibilidad, sin infraestructura; la
+  suite completa, los compose y las imágenes corren solo en 3.12. Python 3.15 no se soporta: el
+  `uv.lock` no se instala en ella sin compilar pyarrow ([versioning.md](versioning.md)).
+- **No se publican imágenes.** Cada release trae el OpenAPI y el SBOM de las imágenes que probó el
+  CI, con su procedencia, pero no las imágenes: se construyen desde la etiqueta
+  ([cadena-de-suministro.md](cadena-de-suministro.md#las-releases)).
 
 ## La orquestación
 

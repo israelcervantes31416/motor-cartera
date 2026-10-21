@@ -2,13 +2,16 @@
 
 ## Versiones soportadas
 
-Solo la última versión estable recibe correcciones de seguridad, salvo que se decida otra cosa de
-forma explícita en su aviso.
+Las correcciones de seguridad salen sobre la última versión menor de 1.x, como un parche (o un menor,
+si agregan algo), salvo que su aviso diga otra cosa de forma explícita. Qué puede cambiar una
+corrección de seguridad, incluso si rompe la compatibilidad, lo dice la
+[política de versionado](../docs/versioning.md#la-seguridad).
 
 | Versión | Soportada |
 |---|---|
-| La última release estable (hoy, v0.18.1) | Sí |
-| Las anteriores | No: se corrige en una versión nueva |
+| La última menor de 1.x (hoy, v1.0) | Sí |
+| Las menores anteriores de 1.x | No: se actualiza a la última, sin romper nada |
+| 0.x | No |
 
 ## Cómo reportar una vulnerabilidad
 

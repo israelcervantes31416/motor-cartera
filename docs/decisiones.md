@@ -1,4 +1,4 @@
-# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence, Optimización Matemática, App + Dashboards y Cloud, Observabilidad y Hardening
+# Decisiones de diseño — fase 1, Decision Engine, Motor Territorial, Motor de Ruteo, Orquestación Durable, Fuentes Oficiales, Modelo Histórico, Motor de Pagos, Lifecycle de Cobranza, Decision Engine v2, Geografía Real, Campo v2, Ruteo Vial v2, Collection Analytics, Predictive Intelligence, Optimización Matemática, App + Dashboards, Cloud, Observabilidad y Hardening y Collection Intelligence Platform
 
 Por qué la fase 1 (v0.1.0), el Decision Engine (v0.2.0), el Motor Territorial (v0.3.0), el Motor
 de Ruteo (v0.4.0), la Orquestación Durable (v0.5.0), las Fuentes Oficiales, Evidencia Inmutable y
@@ -9,8 +9,9 @@ Capacidad, Partición y Asignación Operativa (v0.12.0), el Ruteo Vial v2: Red V
 Factibilidad de Jornada (v0.13.0), Collection Analytics: Métricas, Cohortes y Embudos
 Point-in-Time (v0.14.0), Predictive Intelligence: Modelos Temporales, Calibración y Drift
 (v0.15.0), la Optimización Matemática: Priorización, Capacidad y Asignación Restringida
-(v0.16.0), la App + Dashboards: Superficie Operacional y Cuenta 360 (v0.17.0) y Cloud,
-Observabilidad y Hardening: Production Readiness (v0.18.0) están hechos como están, y qué haría
+(v0.16.0), la App + Dashboards: Superficie Operacional y Cuenta 360 (v0.17.0), Cloud,
+Observabilidad y Hardening: Production Readiness (v0.18.0) y la Collection Intelligence
+Platform (v1.0.0) están hechos como están, y qué haría
 distinto o cuándo cambiaría cada decisión.
 El uso está en el [README](../README.md), en [fuentes.md](fuentes.md), en
 [historia.md](historia.md), en [cuenta_360.md](cuenta_360.md), en [motor_pagos.md](motor_pagos.md),
@@ -32,8 +33,8 @@ en [lifecycle.md](lifecycle.md), en [atribucion.md](atribucion.md), en
 [production.md](production.md), en [security.md](security.md), en
 [threat-model.md](threat-model.md), en [observability.md](observability.md), en
 [slos.md](slos.md), en [backups.md](backups.md), en [carga.md](carga.md), en
-[cadena-de-suministro.md](cadena-de-suministro.md) y en [cloud-gcp.md](cloud-gcp.md); aquí va el
-porqué.
+[cadena-de-suministro.md](cadena-de-suministro.md), en [cloud-gcp.md](cloud-gcp.md) y en
+[versioning.md](versioning.md); aquí va el porqué.
 
 Las secciones 1 a 15 son de la fase 1; las 16 a 22, del Decision Engine; las 23 a 30, del Motor
 Territorial; las 31 a 41, del Motor de Ruteo; las 42 a 53, de la Orquestación Durable; las 54 a 70,
@@ -42,7 +43,8 @@ de las Fuentes Oficiales; las 71 a 84, del Modelo Histórico; las 85 a 98, del M
 v2; las 122 a 137, de la Geografía Real, Territorial v2 y las Bases Operativas; las 138 a 153,
 de Campo v2; las 154 a 174, del Ruteo Vial v2; las 175 a 196, de Collection Analytics; las
 197 a 222, de Predictive Intelligence; las 223 a 247, de la Optimización Matemática; las 248 a
-274, de la App + Dashboards, y las 275 a 303, de Cloud, Observabilidad y Hardening.
+274, de la App + Dashboards; las 275 a 303, de Cloud, Observabilidad y Hardening, y las 304 a 312,
+de la Collection Intelligence Platform.
 Donde las de la fase 1 hablan de la orquestación de la fase 3, hoy es la orquestación durable de
 v0.5.0. Las secciones que una versión posterior cambió lo dicen al final, en un párrafo *Desde
 v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde v0.10.0* o
@@ -351,6 +353,15 @@ v0.5.0*, *Desde v0.6.0*, *Desde v0.7.0*, *Desde v0.8.0*, *Desde v0.9.0*, *Desde 
 301. [La referencia de Google Cloud: un servicio con tres contenedores, nunca aplicada desde aquí](#301-la-referencia-de-google-cloud-un-servicio-con-tres-contenedores-nunca-aplicada-desde-aquí)
 302. [El despliegue solo a mano, con aprobación y sin llaves](#302-el-despliegue-solo-a-mano-con-aprobación-y-sin-llaves)
 303. [Qué no resuelve v0.18.0](#303-qué-no-resuelve-v0180)
+304. [Semantic Versioning desde 1.0.0, sobre una superficie escrita](#304-semantic-versioning-desde-100-sobre-una-superficie-escrita)
+305. [Lo versionado cambia con otra versión; lo estable, en dos pasos](#305-lo-versionado-cambia-con-otra-versión-lo-estable-en-dos-pasos)
+306. [Tres versiones de Python, probadas sin infraestructura, y un techo en requires-python](#306-tres-versiones-de-python-probadas-sin-infraestructura-y-un-techo-en-requires-python)
+307. [Una señal de rendimiento, no un umbral de servicio](#307-una-señal-de-rendimiento-no-un-umbral-de-servicio)
+308. [La release la hace un workflow que se niega antes de publicar](#308-la-release-la-hace-un-workflow-que-se-niega-antes-de-publicar)
+309. [Procedencia nativa, y sin imágenes en un registro](#309-procedencia-nativa-y-sin-imágenes-en-un-registro)
+310. [Dependabot: los menores juntos, cada mayor aparte](#310-dependabot-los-menores-juntos-cada-mayor-aparte)
+311. [Cada alerta de CodeQL, con su razón](#311-cada-alerta-de-codeql-con-su-razón)
+312. [Qué no resuelve v1.0.0](#312-qué-no-resuelve-v100)
 
 ---
 
@@ -5772,3 +5783,123 @@ bloquear; las imágenes no son reproducibles bit por bit; no hubo pentest extern
 ninguna acción de cobranza. Lo que sigue es v1.0, Collection Intelligence Platform: integrar lo que
 cada versión construyó en una plataforma completa de inteligencia de cobranza, sin perder la
 auditabilidad, el punto en el tiempo, la privacidad ni la seguridad.
+
+## 304. Semantic Versioning desde 1.0.0, sobre una superficie escrita
+
+**Decisión.** Desde v1.0.0 el proyecto sigue Semantic Versioning sobre la superficie que define
+`docs/versioning.md`: la API (rutas, campos, estados, la forma de los errores y cada `codigo`), los
+permisos, los contratos de archivo, lo que publica cada motor por su versión, `app/v1`, los
+identificadores públicos, las exportaciones, la línea de comandos y la configuración documentadas,
+los formatos de la operación y las versiones de Python. Lo que no está ahí no es contrato: el esquema
+de PostgreSQL, el código de Python, el texto para personas, los datos del generador y la
+observabilidad.
+
+**Por qué.** Una promesa de compatibilidad sin su lista es una promesa de todo, y no se puede cumplir:
+cada migración rompería a quien lee las tablas. Escribirla obliga a decidir qué se mantiene, y lo
+demás puede mejorar sin pedir permiso. El esquema queda fuera a propósito: la puerta es la API y la
+línea de comandos, y la base cambia con cada motor.
+
+## 305. Lo versionado cambia con otra versión; lo estable, en dos pasos
+
+**Decisión.** Una superficie con su versión en el nombre (`decision/v2`, `app/v1`,
+`respaldo-motor-cartera/v1`...) no cambia en su lugar: un comportamiento nuevo es otra versión, que
+llega en un menor junto a la anterior. Lo estable sin versión se marca obsoleto en un menor, con lo
+que lo reemplaza, y se quita en el siguiente mayor. Una corrección de seguridad puede romper la
+compatibilidad dentro de 1.x, y lo dice.
+
+**Por qué.** Es lo que el proyecto ya hacía (`decision/v1` y `v2` conviven, y nada publicado se
+reescribe): la política lo nombra en lugar de inventar otra cosa. La excepción de seguridad existe
+porque negar una configuración insegura que antes se aceptaba es una ruptura que no puede esperar a
+2.0.
+
+## 306. Tres versiones de Python, probadas sin infraestructura, y un techo en requires-python
+
+**Decisión.** Una matriz ligera prueba 3.12, 3.13 y 3.14: el entorno exacto del lock, cada módulo del
+paquete importado, el contrato de la app y el OpenAPI completo idénticos entre las tres, la línea de
+comandos y las pruebas puras del núcleo de cada motor. Lo que necesita PostgreSQL, Docker u OSRM corre
+solo en 3.12. `requires-python` pasa de `>=3.12` a `>=3.12,<3.15`, y una prueba exige que la matriz y
+`requires-python` digan lo mismo.
+
+**Por qué.** `>=3.12` prometía 3.15, ya publicada, en la que el `uv.lock` no se instala sin compilar
+pyarrow 25.0.1, que no publica ruedas para ella: era una promesa falsa, y cumplirla pedía un mayor de
+pyarrow. Triplicar la suite de 45 minutos para probar lo que no cambia entre versiones (el SQL, los
+compose) no compra nada; lo que sí cambia (la importación, los tipos de pydantic, la numérica) lo
+cubre la matriz en minutos.
+
+## 307. Una señal de rendimiento, no un umbral de servicio
+
+**Decisión.** `performance.yml` mide cada semana el perfil M (100,000 cuentas, tres cortes) con los
+benchmarks de siempre (la ingesta, la historia, el motor de pagos, el lifecycle con su atribución y la
+evaluación de promesas, y `decision/v1` y `v2`), con la memoria pico de cada proceso y la mediana de
+sus consultas, y compara la mediana de sus repeticiones con una línea base medida en los mismos
+runners. Una métrica es una regresión solo si empeora más que su tolerancia relativa y que la
+absoluta, a la vez. No es un check obligatorio ni detiene una release; XL y XXL siguen a mano.
+
+**Por qué.** Los runners compartidos de GitHub cambian de máquina y de carga de una corrida a otra: un
+umbral fijo fallaría por ruido, o sería tan holgado que no detectaría nada. La doble tolerancia
+ignora unos puntos de ruido y los milisegundos de una consulta. Con pocas mediciones comparables, un
+gate bloqueante fingiría una precisión que esos runners no tienen; una señal semanal, con su tabla y
+sus reportes, es honesta.
+
+## 308. La release la hace un workflow que se niega antes de publicar
+
+**Decisión.** `release.yml`, a mano y desde `main`, revisa primero, sin escribir nada, cada
+precondición: la pide el dueño, la versión está en cada superficie, el commit es la cabeza de `main`,
+cada check que exige la protección de `main` (leído de sus reglas) terminó en `success`, CodeQL no
+tiene alertas abiertas, el CI de `main` de ese commit pasó, y ni la etiqueta ni la release existen.
+Después arma los assets, firma su procedencia, crea la etiqueta anotada y la release, y verifica lo
+publicado. Sin `publicar`, es un ensayo. Los jobs que escriben no ejecutan código del repositorio, y
+la verificación de la cadena de suministro solo admite permisos de escritura de una lista explícita,
+por job.
+
+**Por qué.** Hasta v0.18.1 cada release se hacía a mano, con sus assets subidos uno por uno: el
+procedimiento vivía en la memoria de quien lo hacía. Leer los checks de las reglas, y no de una lista
+fija, hace que un check obligatorio nuevo proteja también las releases. El check agregado de CodeQL
+solo existe en los pull requests; sobre `main`, su equivalente es el análisis de ese commit y ninguna
+alerta abierta.
+
+## 309. Procedencia nativa, y sin imágenes en un registro
+
+**Decisión.** Cada asset de una release lleva su atestación de procedencia de GitHub (SLSA, firmada
+con Sigstore por OIDC), creada por un job que solo recibe los assets ya armados, y verificada antes y
+después de publicar. La release no publica imágenes en GHCR.
+
+**Por qué.** Una atestación de verdad dice qué workflow, en qué commit y desde qué rama produjo cada
+archivo, y cualquiera la verifica con `gh attestation verify`; un archivo llamado «procedencia» no
+diría nada. Publicar imágenes sería un canal de distribución para un código que es visible pero sin
+licencia para redistribuirlo, y el despliegue de referencia ya construye las suyas y las despliega
+por digest.
+
+## 310. Dependabot: los menores juntos, cada mayor aparte
+
+**Decisión.** Los grupos de Python y de la app web juntan solo menores y parches (`update-types`);
+cada mayor llega en su propio PR. Ninguno se ignora, y las actualizaciones de seguridad llegan solas
+y sin esperar el cooldown.
+
+**Por qué.** Los grupos de v0.18 mezclaban un mayor de pyarrow con nueve menores y parches, y seis
+mayores de la app con ocho menores: el grupo entero quedaba rojo por una sola parte, y lo que era
+seguro esperaba a lo que no lo era.
+
+## 311. Cada alerta de CodeQL, con su razón
+
+**Decisión.** Las cinco alertas abiertas desde el primer análisis se clasificaron una por una: una
+corregida (el piso explícito de TLS 1.2 del cliente de la prueba de humo) y cuatro descartadas en Code
+scanning con su razón (dos usadas en pruebas y dos falsos positivos). Ni el detector ni sus consultas
+cambiaron, y desde v1.0.0 una release se niega con cualquier alerta abierta en `main`.
+
+**Por qué.** Una alerta sin clasificar es ruido que esconde a la siguiente: con cinco abiertas, una
+sexta real no se notaría, y una release no podría exigir cero. Descartar con su razón, sin tocar el
+detector, deja cada decisión a la vista y revisable.
+
+## 312. Qué no resuelve v1.0.0
+
+**Qué deja v1.0.0.** La primera frontera estable: una política de compatibilidad escrita, tres
+versiones de Python probadas, la app con una estructura consistente y sin desbordes en pantallas
+angostas, una señal de rendimiento semanal, releases que se niegan antes de publicar y llevan su
+procedencia, y las alertas de CodeQL clasificadas.
+
+**Qué no resuelve.** Lo de [limitaciones.md](limitaciones.md) sigue: los datos son sintéticos, no hay
+un despliegue en la nube ni alta disponibilidad, no hubo un pentest externo, la señal de rendimiento
+no es un objetivo de servicio, Python 3.15 no se soporta, no se publican imágenes, y la cola de
+Dependabot (#22 y #24 a #32) espera la decisión de cada PR. Lo que siga se hará bajo Semantic
+Versioning.

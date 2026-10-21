@@ -533,7 +533,7 @@ def test_las_decisiones_estan_todas_y_en_orden():
     numeros = [int(n) for n in re.findall(r"^## (\d+)\. ", texto, re.MULTILINE)]
     indice = [int(n) for n in re.findall(r"^(\d+)\. \[", texto, re.MULTILINE)]
 
-    assert numeros == list(range(1, 304))
+    assert numeros == list(range(1, 313))
     assert indice == numeros
     introduccion = " ".join(texto[:5000].split())
     assert "las 175 a 196, de Collection Analytics" in introduccion
@@ -541,6 +541,7 @@ def test_las_decisiones_estan_todas_y_en_orden():
     assert "las 223 a 247, de la Optimización Matemática" in introduccion
     assert "las 248 a 274, de la App + Dashboards" in introduccion
     assert "las 275 a 303, de Cloud, Observabilidad y Hardening" in introduccion
+    assert "las 304 a 312, de la Collection Intelligence Platform" in introduccion
 
 
 def test_el_readme_marca_la_version_estable_y_la_que_sigue():
