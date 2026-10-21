@@ -15,7 +15,7 @@ su procedencia. El porqué, en las decisiones 298 a 300 y 308 a 311 de [decision
 | Imágenes que corren los scripts y el CI | por digest: k6, OpenTofu, Trivy, gitleaks, OSRM | el mismo script |
 | Acciones de GitHub | por el SHA de su commit, con su versión en un comentario (`# v7.0.1`) | el mismo script |
 | Proveedores de OpenTofu | `infra/gcp/.terraform.lock.hcl`, con hashes; el CI inicializa con `-lockfile=readonly` | el CI |
-| `uv` y Node | `uv` 0.12.21 (el CI, el Dockerfile y el lock), Node de `web/.node-version` | el CI |
+| `uv` y Node | `uv` 0.13.4 (el CI y el Dockerfile; `--locked` valida `uv.lock`), Node de `web/.node-version` | el CI |
 
 El script también exige que cada workflow declare sus permisos, que ninguno use `write-all` y que
 cada checkout deje la credencial fuera del disco (`persist-credentials: false`). Ningún permiso de
