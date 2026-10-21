@@ -8,6 +8,8 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Documentación: sincroniza el triage de Dependabot con la cola regenerada después de v1.0.0; sin cambios de runtime, dependencias ni contratos públicos.
+
 ## [v1.0.0] — Collection Intelligence Platform — 2026-10-21
 
 La primera versión estable: lo que construyeron v0.1.0 a v0.18.1, cerrado como una plataforma con
