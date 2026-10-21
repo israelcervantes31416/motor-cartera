@@ -5901,5 +5901,5 @@ procedencia, y las alertas de CodeQL clasificadas.
 **Qué no resuelve.** Lo de [limitaciones.md](limitaciones.md) sigue: los datos son sintéticos, no hay
 un despliegue en la nube ni alta disponibilidad, no hubo un pentest externo, la señal de rendimiento
 no es un objetivo de servicio, Python 3.15 no se soporta, no se publican imágenes, y la cola de
-Dependabot (#22 y #24 a #32) espera la decisión de cada PR. Lo que siga se hará bajo Semantic
-Versioning.
+Dependabot ([dependencias-v1.md](dependencias-v1.md)) espera la decisión de cada PR. Lo que siga se
+hará bajo Semantic Versioning.

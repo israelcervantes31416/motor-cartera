@@ -27,7 +27,7 @@ v1.0**, y ninguno se fusiona por reflejo. La política de Dependabot está en
 | #29 | nginx-unprivileged | 1.30.6 → 1.31.6 | estable → mainline | verde | No: se queda en la rama estable 1.30.x |
 | #30 | Node (imagen) | 24.21 → 26.11 | mayor | rojo | Después de v1.0: Node 26 cambia también `engines` y `web/.node-version` |
 | #31 | grupo Python (10) | ver abajo | 1 mayor | rojo | Después de v1.0, separado en sus partes |
-| #32 | grupo web (14) | ver abajo | 6 mayores | rojo | Después de v1.0, separado en sus partes |
+| #37 | grupo web (14) | ver abajo | 6 mayores | rojo | Después de v1.0, separado en sus partes |
 
 ## Por qué
 
@@ -57,18 +57,19 @@ v1.0**, y ninguno se fusiona por reflejo. La política de Dependabot está en
   PostgreSQL necesita su propio plan.
 - **#29.** nginx usa los menores pares para la rama estable y los impares para la mainline.
 - **#30.** `web/package.json` pide `node >=24.15.0 <25` y `web/.node-version` fija 24.21.0: Node 26
-  cambia esos dos, la imagen y `@types/node` (#32) a la vez.
+  cambia esos dos, la imagen y `@types/node` (#37) a la vez.
 - **#31.** pandera 0.33.1 → 0.34.1, sqlmodel 0.0.47 → 0.0.48, typer 0.27.2 → 0.27.3, fastapi 0.142.1 →
   0.143.0, **pyarrow 25.0.1 → 26.0.0**, numpy 2.5.3 → 2.5.4, opentelemetry 1.45.0 → 1.45.1 y ruff
   0.16.9 → 0.17.0. Está rojo porque sqlmodel 0.0.48 cambia los tipos de `select()` y Pyright (en el
   CI desde v0.18.1) los rechaza; y pyarrow escribe los Parquet de las fuentes conformadas, donde un
   mayor puede cambiar los bytes.
-- **#32.** Trae seis mayores (typescript 5.9 → 7.0, vitest y @vitest/coverage-v8 4 → 5, msw 2 → 3,
-  @tanstack/react-table 8 → 9, @types/node 24 → 26), y `npm ci` falla: openapi-typescript 7.13 no
-  acepta typescript 7.
+- **#37** reemplazó a #32 cuando #36 cambió `web/package-lock.json` (Dependabot cerró #32 el
+  2026-10-21). Trae los mismos seis mayores (typescript 5.9 → 7.0, vitest y @vitest/coverage-v8 4 → 5,
+  msw 2 → 3, @tanstack/react-table 8 → 9, @types/node 24 → 26), y `npm ci` falla: openapi-typescript
+  7.13 no acepta typescript 7.
 
 Desde v1.0, Dependabot propone los menores y los parches de cada ecosistema juntos y **cada mayor en
-su propio PR** (`update-types` en sus grupos): los grupos #31 y #32 se rehacen así en su siguiente
+su propio PR** (`update-types` en sus grupos): los grupos #31 y #37 se rehacen así en su siguiente
 corrida, y cada mayor se evalúa como la migración que es.
 
 ## La seguridad
