@@ -8,6 +8,8 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Seguridad del tooling web: actualiza `vitest` y `@vitest/coverage-v8` de 4.1.11 a 4.1.12 para resolver `@vitest/mocker` 4.1.12, versión corregida para GHSA-xp26-3454-mjgp.
+
 - Web: actualiza ocho dependencias compatibles de la app (React Query, Playwright, user-event, plugin de React para Vite, axe-core, jsdom, Prettier y typescript-eslint) sin cambiar Node, TypeScript, Vitest, React ni Vite de rama mayor.
 
 - Observabilidad: actualiza Grafana OSS de 13.1.8 a 13.2.4 en el compose de producción, manteniendo la línea 13.x y el pin por digest.
