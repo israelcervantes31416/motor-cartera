@@ -35,7 +35,7 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
 | #30 | Node (imagen) | 24.21 → 26.11 | detrás de v1; compose rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
 | #39 | Grafana | 13.1.8 → 13.2.4 | sobre v1; CI completo verde | Candidato compatible para una siguiente actualización de mantenimiento |
 | #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | sobre v1; compose rojo | Mismo cambio mayor que #28: no se hace por piezas |
-| #41 | uv (imagen) | 0.12.21 → 0.13.4 | sobre v1; CI completo verde | Prioridad de mantenimiento, pero **coordinada** con todos los pins de uv; no fusionar solo el Dockerfile |
+| #41 | uv (imagen) | 0.12.21 → 0.13.4 | reemplazado por #45 | Cerrado en favor de la actualización coordinada de Dockerfile + workflows |
 | #42 | grupo web | 8 actualizaciones compatibles | sobre v1; CI completo verde | Candidato para mantenimiento; sin los majors que el grupo anterior mezclaba |
 | #43 | grupo Python | 9 actualizaciones | sobre v1; `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
 
@@ -53,10 +53,9 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
   Dependabot encuentre una etiqueta más nueva.
 - **#30.** Node 26 es una migración de runtime del frontend. La versión estable de v1 permanece en
   Node 24 hasta que ese cambio se haga deliberadamente.
-- **#41.** Las notas de uv 0.13.4 incluyen GHSA-hq85-5cpj-mr62 y una actualización de certificados
-  raíz. El proyecto fija uv en el Dockerfile y en varios workflows, por lo que la actualización se
-  debe hacer en conjunto y volver a pasar el CI completo; el PR automático solo cambia el
-  Dockerfile.
+- **#41 / #45.** Las notas de uv 0.13.4 incluyen GHSA-hq85-5cpj-mr62 y una actualización de
+  certificados raíz. #41 solo cambiaba el Dockerfile; #45 lo reemplaza y mueve juntos el Dockerfile,
+  CI, compatibilidad, benchmarks, performance y release, todos con `--locked` para validar el lock.
 - **#42.** Es el resultado de la nueva política que deja fuera los majors del grupo web. Su CI
   completo está verde sobre v1, pero una release estable no se mueve solo para vaciar la cola.
 - **#43.** El grupo Python nuevo ya no incluye PyArrow 26, pero sigue fallando por el cambio de tipos
