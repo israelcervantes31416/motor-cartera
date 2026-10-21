@@ -1,7 +1,7 @@
 # El almacen de artefactos (MC_SOURCE_STORE_ROOT): cada archivo recibido, por su SHA-256. La API
 # lo escribe y el worker lo lee, asi que es un sistema de archivos compartido con renombrado atomico
 # y fsync: Filestore (NFS), montado en el servicio web de Cloud Run y en el worker. Un almacen nativo
-# de objetos (GCS) es trabajo de v1.0: la interfaz SourceArtifactStore ya lo permite.
+# de objetos (GCS) no esta en v1.0: la interfaz SourceArtifactStore lo permite.
 resource "google_filestore_instance" "fuentes" {
   name     = "${local.prefijo}-fuentes"
   location = var.zona

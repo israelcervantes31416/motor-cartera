@@ -14,7 +14,7 @@ import { Copiable } from "../../components/Copiar";
 import { InsigniaEstado, ValorOpcional } from "../../components/Estado";
 import { Fuente } from "../../components/Fuente";
 import { Ficha, Indicador, Indicadores } from "../../components/Kpi";
-import { Paginacion, TablaDatos } from "../../components/Tabla";
+import { Paginacion, RegionDeTabla, TablaDatos } from "../../components/Tabla";
 import { comoNumero, comoRegistro } from "../../lib/datos";
 import {
   etiquetaDeCodigo,
@@ -55,122 +55,128 @@ function Campo({ contexto }: ContextoListo) {
               <Fuente nombre="campo/v2" runId={p.campo_run_id} estado={p.estado}>
                 {`operación ${formatearFecha(p.fecha_operacion)} · ${p.version_politica} · ${p.configuracion.nombre} (${p.configuracion.zona_horaria})`}
               </Fuente>
-              <Indicadores etiqueta="El plan de campo">
-                <Indicador etiqueta="Candidatas">
-                  {formatearEntero(p.conteos.candidatas_campo)}
-                </Indicador>
-                <Indicador etiqueta="Asignadas">{formatearEntero(p.conteos.asignadas)}</Indicador>
-                <Indicador etiqueta="Sin capacidad">
-                  {formatearEntero(p.conteos.sin_capacidad)}
-                </Indicador>
-                <Indicador etiqueta="Sin gestor disponible">
-                  {formatearEntero(p.conteos.sin_gestor)}
-                </Indicador>
-                <Indicador etiqueta="Revisión territorial">
-                  {formatearEntero(p.conteos.revision_territorial)}
-                </Indicador>
-                <Indicador etiqueta="Rebalanceadas">
-                  {formatearEntero(p.conteos.rebalanceadas)}
-                </Indicador>
-                <Indicador
-                  etiqueta="Utilización"
-                  detalle={`${formatearEntero(p.capacidad.capacidad_utilizada)} de ${formatearEntero(p.capacidad.capacidad_total)} cupos`}
-                >
-                  <ValorOpcional valor={p.capacidad.utilizacion} formatear={formatearPorcentaje} />
-                </Indicador>
-              </Indicadores>
-              <Ficha
-                etiqueta="Entradas del plan"
-                filas={[
-                  [
-                    "Decisión",
-                    <Copiable key="d" valor={p.decision_run_id} etiqueta="la decisión" />,
-                  ],
-                  [
-                    "Territorial",
-                    <Copiable key="t" valor={p.territorial_run_id} etiqueta="la territorial" />,
-                  ],
-                  [
-                    "Configuración",
-                    <Copiable
-                      key="c"
-                      valor={p.configuracion.configuracion_campo_version_id}
-                      etiqueta="la configuración"
-                    />,
-                  ],
-                  [
-                    "Hash de la configuración",
-                    <Copiable
-                      key="h"
-                      valor={p.configuracion.hash_configuracion}
-                      etiqueta="el hash"
-                      largo={12}
-                    />,
-                  ],
-                  [
-                    "Firma",
-                    <Copiable key="f" valor={p.firma_inputs} etiqueta="la firma" largo={12} />,
-                  ],
-                ]}
-              />
-              {porBase.length > 0 ? (
-                <div className="tabla-contenedor" role="region" aria-label="Por base" tabIndex={0}>
-                  <table className="tabla tabla--compacta">
-                    <caption>Por base operativa, como lo publicó el plan</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Base</th>
-                        <th scope="col" className="tabla__numerica">
-                          Candidatas
-                        </th>
-                        <th scope="col" className="tabla__numerica">
-                          Asignadas
-                        </th>
-                        <th scope="col" className="tabla__numerica">
-                          Capacidad
-                        </th>
-                        <th scope="col" className="tabla__numerica">
-                          Utilización
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {porBase.map(([base, v]) => {
-                        const r = comoRegistro(v);
-                        return (
-                          <tr key={base}>
-                            <th scope="row">{base}</th>
-                            <td className="tabla__numerica">
-                              <ValorOpcional
-                                valor={comoNumero(r?.["candidatas"])}
-                                formatear={formatearEntero}
-                              />
-                            </td>
-                            <td className="tabla__numerica">
-                              <ValorOpcional
-                                valor={comoNumero(r?.["asignadas"])}
-                                formatear={formatearEntero}
-                              />
-                            </td>
-                            <td className="tabla__numerica">
-                              <ValorOpcional
-                                valor={comoNumero(r?.["capacidad"])}
-                                formatear={formatearEntero}
-                              />
-                            </td>
-                            <td className="tabla__numerica">
-                              <ValorOpcional
-                                valor={comoNumero(r?.["utilizacion"])}
-                                formatear={formatearPorcentaje}
-                              />
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
+              <section className="tarjeta" aria-labelledby="campo-plan">
+                <h2 id="campo-plan">El plan de campo</h2>
+                <Indicadores etiqueta="El plan de campo">
+                  <Indicador etiqueta="Candidatas">
+                    {formatearEntero(p.conteos.candidatas_campo)}
+                  </Indicador>
+                  <Indicador etiqueta="Asignadas">{formatearEntero(p.conteos.asignadas)}</Indicador>
+                  <Indicador etiqueta="Sin capacidad">
+                    {formatearEntero(p.conteos.sin_capacidad)}
+                  </Indicador>
+                  <Indicador etiqueta="Sin gestor disponible">
+                    {formatearEntero(p.conteos.sin_gestor)}
+                  </Indicador>
+                  <Indicador etiqueta="Revisión territorial">
+                    {formatearEntero(p.conteos.revision_territorial)}
+                  </Indicador>
+                  <Indicador etiqueta="Rebalanceadas">
+                    {formatearEntero(p.conteos.rebalanceadas)}
+                  </Indicador>
+                  <Indicador
+                    etiqueta="Utilización"
+                    detalle={`${formatearEntero(p.capacidad.capacidad_utilizada)} de ${formatearEntero(p.capacidad.capacidad_total)} cupos`}
+                  >
+                    <ValorOpcional
+                      valor={p.capacidad.utilizacion}
+                      formatear={formatearPorcentaje}
+                    />
+                  </Indicador>
+                </Indicadores>
+                <Ficha
+                  etiqueta="Entradas del plan"
+                  filas={[
+                    [
+                      "Decisión",
+                      <Copiable key="d" valor={p.decision_run_id} etiqueta="la decisión" />,
+                    ],
+                    [
+                      "Territorial",
+                      <Copiable key="t" valor={p.territorial_run_id} etiqueta="la territorial" />,
+                    ],
+                    [
+                      "Configuración",
+                      <Copiable
+                        key="c"
+                        valor={p.configuracion.configuracion_campo_version_id}
+                        etiqueta="la configuración"
+                      />,
+                    ],
+                    [
+                      "Hash de la configuración",
+                      <Copiable
+                        key="h"
+                        valor={p.configuracion.hash_configuracion}
+                        etiqueta="el hash"
+                        largo={12}
+                      />,
+                    ],
+                    [
+                      "Firma",
+                      <Copiable key="f" valor={p.firma_inputs} etiqueta="la firma" largo={12} />,
+                    ],
+                  ]}
+                />
+                {porBase.length > 0 ? (
+                  <RegionDeTabla etiqueta="Por base" compacta>
+                    <table className="tabla tabla--compacta">
+                      <caption>Por base operativa, como lo publicó el plan</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Base</th>
+                          <th scope="col" className="tabla__numerica">
+                            Candidatas
+                          </th>
+                          <th scope="col" className="tabla__numerica">
+                            Asignadas
+                          </th>
+                          <th scope="col" className="tabla__numerica">
+                            Capacidad
+                          </th>
+                          <th scope="col" className="tabla__numerica">
+                            Utilización
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {porBase.map(([base, v]) => {
+                          const r = comoRegistro(v);
+                          return (
+                            <tr key={base}>
+                              <th scope="row">{base}</th>
+                              <td className="tabla__numerica">
+                                <ValorOpcional
+                                  valor={comoNumero(r?.["candidatas"])}
+                                  formatear={formatearEntero}
+                                />
+                              </td>
+                              <td className="tabla__numerica">
+                                <ValorOpcional
+                                  valor={comoNumero(r?.["asignadas"])}
+                                  formatear={formatearEntero}
+                                />
+                              </td>
+                              <td className="tabla__numerica">
+                                <ValorOpcional
+                                  valor={comoNumero(r?.["capacidad"])}
+                                  formatear={formatearEntero}
+                                />
+                              </td>
+                              <td className="tabla__numerica">
+                                <ValorOpcional
+                                  valor={comoNumero(r?.["utilizacion"])}
+                                  formatear={formatearPorcentaje}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </RegionDeTabla>
+                ) : null}
+              </section>
             </>
           );
         }}

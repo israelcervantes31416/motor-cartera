@@ -24,6 +24,9 @@ h2,
 h3 {
   line-height: 1.2;
   margin: 0 0 var(--espacio-3);
+  /* Un titulo con un codigo largo (RECUPERACION_POSITIVA_MONTO_30D) se parte antes que ensanchar
+     la pagina en una pantalla angosta. */
+  overflow-wrap: anywhere;
 }
 
 h1 {

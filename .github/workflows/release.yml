@@ -1,0 +1,231 @@
+name: Release
+
+# La release vX.Y.Z del commit de main: solo a mano, y solo si se cumple todo antes de publicar nada
+# (docs/cadena-de-suministro.md). Primero, sin escribir nada, las precondiciones
+# (scripts/verificar_release.py: la pide el dueno desde main; la version en cada superficie; el
+# commit es la cabeza de main; cada check obligatorio de main y los de la matriz de Python en
+# success; CodeQL sin alertas abiertas; el CI de main de ese commit; la etiqueta y la release
+# todavia no existen) y los assets con sus SHA-256: el OpenAPI generado de ese commit y los SBOM
+# que genero su CI. Sin `publicar`, ahi termina: es el ensayo. Con `publicar`: la atestacion de
+# procedencia de cada asset; otra vez la cabeza de main y la etiqueta; la etiqueta anotada sobre
+# ese commit; la release con sus assets, marcada Latest; y lo publicado, verificado de vuelta.
+# Cada job pide solo sus permisos, y los que ejecutan codigo del repositorio no escriben nada.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "La version, X.Y.Z (sin la v)"
+        type: string
+        required: true
+      publicar:
+        description: "Publicar. Sin esto, solo se revisan las precondiciones y se arman los assets"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  precondiciones:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Solo lee: los checks, las corridas, Code scanning y el repositorio.
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      security-events: read
+    outputs:
+      sha: ${{ steps.revisar.outputs.sha }}
+      ci_run: ${{ steps.revisar.outputs.ci_run }}
+      titulo: ${{ steps.revisar.outputs.titulo }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Con el Python del runner: la biblioteca estandar y la API de GitHub. La version llega por el
+      # entorno, nunca interpolada en el script.
+      - name: Las precondiciones
+        id: revisar
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: >-
+          python3 scripts/verificar_release.py precondiciones --version "$VERSION"
+          --sha "$GITHUB_SHA" --salida "$GITHUB_OUTPUT"
+
+  artefactos:
+    needs: [precondiciones]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Lee el artefacto del CI de main con los SBOM; no escribe nada.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ inputs.version }}
+      SHA: ${{ needs.precondiciones.outputs.sha }}
+      CI_RUN: ${{ needs.precondiciones.outputs.ci_run }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.precondiciones.outputs.sha }}
+          persist-credentials: false
+
+      - name: uv y Python 3.12
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.21"
+          python-version: "3.12"
+          activate-environment: true
+
+      - name: Dependencias
+        run: uv sync --locked
+
+      - name: El OpenAPI de este commit
+        run: python scripts/exportar_openapi.py --destino "release/assets/openapi-v$VERSION.json"
+
+      # Los SBOM de las imagenes que el CI de main construyo y probo en este mismo commit.
+      - name: Los SBOM del CI de main
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: produccion-evidencia
+          run-id: ${{ needs.precondiciones.outputs.ci_run }}
+          github-token: ${{ github.token }}
+          path: evidencia
+
+      - name: Los assets, su SHA256SUMS y las notas
+        run: >-
+          python scripts/verificar_release.py assets --version "$VERSION" --sha "$SHA"
+          --ci-run "$CI_RUN" --evidencia evidencia --destino release
+
+      - name: Los SHA-256, otra vez con sha256sum
+        working-directory: release/assets
+        run: sha256sum -c SHA256SUMS
+
+      - name: Los assets de la release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-v${{ inputs.version }}
+          path: release/
+          retention-days: 30
+          if-no-files-found: error
+
+  # La procedencia de cada asset (SLSA, firmada con Sigstore por OIDC). Este job no ejecuta codigo
+  # del repositorio: recibe los assets ya armados y vuelve a revisar sus SHA-256.
+  atestar:
+    if: inputs.publicar
+    needs: [artefactos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Los assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-v${{ inputs.version }}
+          path: release
+
+      - name: Los mismos bytes
+        working-directory: release/assets
+        run: sha256sum -c SHA256SUMS
+
+      - name: La atestacion de procedencia
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/assets/*
+
+  # La etiqueta y la release, con la API de GitHub. Tampoco ejecuta codigo del repositorio.
+  publicar:
+    if: inputs.publicar
+    needs: [precondiciones, atestar]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      VERSION: ${{ inputs.version }}
+      SHA: ${{ needs.precondiciones.outputs.sha }}
+      TITULO: ${{ needs.precondiciones.outputs.titulo }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # La etiqueta la firma, como las anteriores, el mantenedor, que es quien puede pedirla.
+      ETIQUETADOR_NOMBRE: Israel Cervantes Juárez
+      ETIQUETADOR_CORREO: israelcervantes31416@users.noreply.github.com
+
+    steps:
+      - name: Los assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-v${{ inputs.version }}
+          path: release
+
+      # Antes de publicar: los mismos bytes, y la procedencia de cada uno desde este workflow, en
+      # main y en este commit.
+      - name: Los SHA-256 y la procedencia de cada asset
+        run: |
+          (cd release/assets && sha256sum -c SHA256SUMS)
+          for archivo in release/assets/*; do
+            gh attestation verify "$archivo" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-ref refs/heads/main --source-digest "$SHA" --deny-self-hosted-runners
+          done
+
+      - name: Main sigue en el commit, y la etiqueta y la release siguen libres
+        run: |
+          cabeza=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          if [ "$cabeza" != "$SHA" ]; then echo "main avanzo a $cabeza: no se publica."; exit 1; fi
+          if gh api "repos/$GH_REPO/git/ref/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "La etiqueta v$VERSION ya existe."; exit 1
+          fi
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "La release v$VERSION ya existe."; exit 1
+          fi
+
+      - name: La etiqueta anotada sobre el commit
+        run: |
+          objeto=$(gh api "repos/$GH_REPO/git/tags" -f tag="v$VERSION" \
+            -f message="v$VERSION — $TITULO" -f object="$SHA" -f type=commit \
+            -f "tagger[name]=$ETIQUETADOR_NOMBRE" -f "tagger[email]=$ETIQUETADOR_CORREO" \
+            -f "tagger[date]=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --jq .sha)
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$objeto" > /dev/null
+          echo "OBJETO_ETIQUETA=$objeto" >> "$GITHUB_ENV"
+
+      - name: La release, con sus assets
+        run: >-
+          gh release create "v$VERSION" release/assets/* --verify-tag --latest
+          --title "v$VERSION — $TITULO" --notes-file release/notas.md
+
+      # Lo publicado, leido de vuelta: la etiqueta anotada apunta al commit; la release no es un
+      # borrador ni preliminar y es la mas reciente; cada asset descargado tiene sus bytes y su
+      # procedencia.
+      - name: Lo publicado
+        run: |
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/v$VERSION" --jq .object.type)" = tag
+          test "$(gh api "repos/$GH_REPO/git/tags/$OBJETO_ETIQUETA" --jq .object.sha)" = "$SHA"
+          test "$(gh release view "v$VERSION" --json isDraft,isPrerelease \
+            --jq '"\(.isDraft) \(.isPrerelease)"')" = "false false"
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v$VERSION"
+          gh release download "v$VERSION" --dir publicada
+          publicados=$(find publicada -type f | wc -l)
+          test "$publicados" -eq "$(find release/assets -type f | wc -l)"
+          (cd publicada && sha256sum -c SHA256SUMS)
+          for archivo in release/assets/*; do
+            cmp "$archivo" "publicada/$(basename "$archivo")"
+            gh attestation verify "publicada/$(basename "$archivo")" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-ref refs/heads/main --source-digest "$SHA" --deny-self-hosted-runners
+          done
+          echo "v$VERSION: etiqueta $OBJETO_ETIQUETA sobre $SHA, $publicados assets verificados."

@@ -3,10 +3,38 @@
 Las versiones de motor-cartera, de la más reciente a la más antigua, con su fecha de publicación
 (UTC) y lo esencial de cada una. Las notas completas están en su release de GitHub. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), y las versiones,
-[Semantic Versioning](https://semver.org/lang/es/): en `0.x`, una versión menor puede cambiar un
-contrato.
+[Semantic Versioning](https://semver.org/lang/es/): desde v1.0.0, sobre la superficie que define
+[docs/versioning.md](docs/versioning.md); en `0.x`, una versión menor podía cambiar un contrato.
 
 ## [Unreleased]
+
+## [v1.0.0] — Collection Intelligence Platform — 2026-10-21
+
+La primera versión estable: lo que construyeron v0.1.0 a v0.18.1, cerrado como una plataforma con
+una frontera que se promete mantener. No agrega motores.
+
+- **Semantic Versioning desde 1.0.0**, sobre una superficie pública escrita: la API y la forma de sus
+  errores, los permisos, los contratos de archivo, lo que publica cada motor por su versión, `app/v1`,
+  los identificadores públicos, las exportaciones, la línea de comandos y la configuración
+  documentadas, con su política de obsolescencia ([docs/versioning.md](docs/versioning.md)). El
+  esquema de PostgreSQL no es parte de ella.
+- **Python 3.12, 3.13 y 3.14**, cada una probada en una matriz ligera: el entorno exacto del lock,
+  cada módulo importado, el mismo OpenAPI byte por byte, la línea de comandos y las pruebas puras de
+  cada motor. `requires-python` deja de prometer lo que no se prueba: `>=3.12,<3.15`.
+- **La app, consistente**: cada pantalla de un motor con la misma estructura, ninguna que se desborde
+  a 320 px, los filtros alineados, un ancho de lectura para el texto y los colores y medidas sueltos
+  como tokens; la prueba de móvil, que nunca fallaba, ahora compara con el ancho del dispositivo.
+- **Una señal de rendimiento** semanal en el perfil M: la ingesta, la historia, el motor de pagos, el
+  lifecycle y la decisión, contra una línea base medida en los mismos runners
+  ([docs/rendimiento.md](docs/rendimiento.md)). Informa; no bloquea.
+- **Releases que se niegan antes de publicar**: un workflow a mano revisa la versión, la cabeza de
+  `main`, cada check obligatorio (leído de su protección), CodeQL sin alertas abiertas y que la
+  etiqueta no exista; publica el OpenAPI, los SBOM y sus SHA-256 con la atestación de procedencia de
+  cada uno, y verifica lo publicado.
+- **Seguridad**: vite 8.3.4 en la app web (GHSA-698v-4r3x-3vcv, del servidor de desarrollo en
+  Windows); cada alerta de CodeQL clasificada, con una corregida; cada permiso de escritura de un
+  workflow en una lista explícita; y cada versión mayor de una dependencia, en su propio PR.
+- Jaeger 2.22.0, setup-uv 10.3.0 y el CI fijado en Ubuntu 24.04.
 
 ## [v0.18.1] — Parche de Seguridad y Calidad del Repositorio — 2026-10-20
 
@@ -129,7 +157,8 @@ contrato.
 - Ingesta y certificación: una cartera se publica solo si pasa su contrato, y cada rechazo queda con
   su motivo.
 
-[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v1.0.0...HEAD
+[v1.0.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.0
 [v0.18.1]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.1
 [v0.18.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.0
 [v0.17.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.17.0

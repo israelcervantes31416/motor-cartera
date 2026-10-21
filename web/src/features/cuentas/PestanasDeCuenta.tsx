@@ -36,7 +36,7 @@ import { InsigniaEstado, ValorOpcional } from "../../components/Estado";
 import { SinFuente } from "../../components/Fuente";
 import { Barras, Figura } from "../../components/Graficas";
 import { Ficha } from "../../components/Kpi";
-import { Paginacion, TablaDatos } from "../../components/Tabla";
+import { Paginacion, RegionDeTabla, TablaDatos } from "../../components/Tabla";
 import { comoRegistro, textoDe } from "../../lib/datos";
 import { rutaConContexto, type Contexto } from "../../lib/contexto";
 import {
@@ -536,38 +536,40 @@ export function PestanaDecision({ cuenta }: { readonly cuenta: Cuenta360 }) {
                 ],
               ]}
             />
-            <table className="tabla">
-              <caption>Cada regla de la política, evaluada sobre las features publicadas</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Regla</th>
-                  <th scope="col">Aplicó</th>
-                  <th scope="col" className="tabla__numerica">
-                    Efecto
-                  </th>
-                  <th scope="col">Condiciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.reglas.map((r) => (
-                  <tr key={r.codigo}>
-                    <th scope="row">{etiquetaDeCodigo(r.codigo)}</th>
-                    <td>{r.activa ? "Sí" : "No"}</td>
-                    <td className="tabla__numerica">{formatearEntero(r.efecto)}</td>
-                    <td>
-                      <ul className="lista-compacta">
-                        {r.condiciones.map((c, i) => (
-                          <li key={i}>
-                            <code>{c.feature}</code> {c.operador} {c.umbral}: {c.valor ?? "NULL"} (
-                            {c.cumple ? "cumple" : "no cumple"})
-                          </li>
-                        ))}
-                      </ul>
-                    </td>
+            <RegionDeTabla etiqueta="Reglas de la política">
+              <table className="tabla">
+                <caption>Cada regla de la política, evaluada sobre las features publicadas</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Regla</th>
+                    <th scope="col">Aplicó</th>
+                    <th scope="col" className="tabla__numerica">
+                      Efecto
+                    </th>
+                    <th scope="col">Condiciones</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {d.reglas.map((r) => (
+                    <tr key={r.codigo}>
+                      <th scope="row">{etiquetaDeCodigo(r.codigo)}</th>
+                      <td>{r.activa ? "Sí" : "No"}</td>
+                      <td className="tabla__numerica">{formatearEntero(r.efecto)}</td>
+                      <td>
+                        <ul className="lista-compacta">
+                          {r.condiciones.map((c, i) => (
+                            <li key={i}>
+                              <code>{c.feature}</code> {c.operador} {c.umbral}: {c.valor ?? "NULL"}{" "}
+                              ({c.cumple ? "cumple" : "no cumple"})
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </RegionDeTabla>
             <details className="detalles">
               <summary>Features publicadas ({Object.keys(d.features).length})</summary>
               <Ficha

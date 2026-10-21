@@ -7,7 +7,8 @@
 :root {
   color-scheme: light;
 
-  /* Espaciado: una escala de 4 px. */
+  /* Espaciado: una escala de 4 px, con medio paso para lo mas denso (tablas compactas, listas). */
+  --espacio-0: 2px;
   --espacio-1: 4px;
   --espacio-2: 8px;
   --espacio-3: 12px;
@@ -52,8 +53,13 @@
   --enlace: #1c5cab;
   --enlace-visitado: #1c4f8f;
   --acento: #1c5cab;
+  --acento-fuerte: #184f95;
   --acento-texto: #ffffff;
   --foco: #1c5cab;
+
+  /* El medidor de utilizacion: la pista y su relleno, con el azul de las graficas. */
+  --medidor-pista: #cde2fb;
+  --medidor-relleno: #2a78d6;
 
   /* Estados: fondo, borde y texto, con contraste AA del texto sobre su fondo. */
   --ok-fondo: #e6f4e6;
@@ -74,4 +80,10 @@
 
   --sombra: 0 1px 2px rgba(11, 11, 11, 0.06);
   --ancho-navegacion: 220px;
+
+  /* La altura de los controles (botones, campos y selectores) y la de los discretos. */
+  --alto-control: 34px;
+  --alto-control-discreto: 28px;
+  /* El ancho de lectura de un texto corrido; las tablas y las rejillas usan todo el ancho. */
+  --medida-lectura: 80ch;
 }

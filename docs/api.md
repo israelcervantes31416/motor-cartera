@@ -2,9 +2,10 @@
 
 Cada operación de la API REST, con sus respuestas, la forma común de los errores y las reglas que un
 cliente tiene que conocer. La referencia interactiva (OpenAPI) está en `/docs` del compose de
-desarrollo, y el contrato exacto de cada versión se publica con su release. Quién puede llamar cada
-operación en producción, en [matriz-autorizacion.md](matriz-autorizacion.md); la superficie de solo
-lectura de la app (`app/v1`), en [app.md](app.md).
+desarrollo, y el contrato exacto de cada versión se publica con su release (`openapi-vX.Y.Z.json`);
+qué se mantiene entre versiones, y qué no, lo dice [versioning.md](versioning.md). Quién puede llamar
+cada operación en producción, en [matriz-autorizacion.md](matriz-autorizacion.md); la superficie de
+solo lectura de la app (`app/v1`), en [app.md](app.md).
 
 | Método y ruta | Qué hace | Respuestas |
 |---|---|---|

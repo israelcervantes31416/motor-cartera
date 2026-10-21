@@ -3,10 +3,11 @@
 import { abrir, datos, enContexto, expect, test } from "./datos";
 
 async function sinDesborde(page: import("@playwright/test").Page): Promise<void> {
-  const { ancho, contenido } = await page.evaluate(() => ({
-    ancho: window.innerWidth,
-    contenido: document.documentElement.scrollWidth,
-  }));
+  // Contra el ancho del dispositivo, no contra window.innerWidth: en movil, Chrome achica la pagina
+  // para que quepa lo que desborda, y innerWidth crece con ella (asi la comparacion nunca fallaba).
+  const ancho = page.viewportSize()?.width ?? 0;
+  const contenido = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(ancho).toBeGreaterThan(0);
   expect(contenido).toBeLessThanOrEqual(ancho);
 }
 
@@ -26,7 +27,16 @@ for (const [nombre, ruta, encabezado] of [
   ["el resumen", () => enContexto("/resumen"), "Resumen"],
   ["las cuentas", () => enContexto("/cuentas"), "Cuentas"],
   ["la Cuenta 360", () => enContexto(`/cuentas/${datos().cuenta}`), /Cuenta 360/],
+  // Sus reglas, con sus condiciones en codigo, son la tabla mas ancha de la app.
+  [
+    "la decision de una cuenta",
+    () => enContexto(`/cuentas/${datos().cuenta}/decision`),
+    /Cuenta 360/,
+  ],
   ["analytics", () => enContexto("/analytics"), "Analytics"],
+  ["el desempeno predictivo", () => enContexto("/predictivo/desempeno"), "Predictivo"],
+  ["campo", () => enContexto("/campo"), "Campo"],
+  ["ruteo", () => enContexto("/ruteo"), "Ruteo"],
   ["la optimizacion", () => enContexto("/optimizacion/restricciones"), "Optimización"],
   ["la auditoria", () => enContexto("/auditoria"), "Auditoría y linaje"],
 ] as const) {

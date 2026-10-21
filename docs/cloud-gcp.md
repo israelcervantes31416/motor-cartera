@@ -90,8 +90,8 @@ estado es privado, con versionado, y solo lo lee la identidad de despliegue.
   disponibilidad) en production. Los roles de la aplicación se crean como en
   `infra/postgres/20-roles.sh`.
 - **El almacén en Filestore**: la aplicación necesita un sistema de archivos compartido con renombrado
-  atómico y `fsync`. Un almacén nativo de objetos (GCS) es trabajo de v1.0: la interfaz
-  `SourceArtifactStore` ya lo permite.
+  atómico y `fsync`. Un almacén nativo de objetos (GCS) no está en v1.0: la interfaz
+  `SourceArtifactStore` lo permite, y agregarlo sería una versión menor.
 - **Los respaldos** ([backups.md](backups.md)): además de los de Cloud SQL, el job nocturno de
   `scripts/respaldo.py` lleva la base y el almacén juntos al bucket, verificables y restaurables en
   cualquier PostgreSQL 16.

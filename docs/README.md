@@ -11,6 +11,7 @@ cada versión, el [CHANGELOG](../CHANGELOG.md).
 | [flujo_completo.md](flujo_completo.md) | El recorrido completo por la API y la línea de comandos, motor por motor, y la prueba de humo |
 | [desarrollo.md](desarrollo.md) | Correrlo sin Docker, los datos sintéticos, las pruebas, la verificación de tipos y el CI |
 | [api.md](api.md) | Cada operación de la API, la forma de los errores y las reglas que un cliente tiene que conocer |
+| [versioning.md](versioning.md) | Semantic Versioning desde v1.0.0: qué es la superficie estable, qué no, y cómo cambia |
 | [limitaciones.md](limitaciones.md) | Lo que no hace hoy, o hace con un límite conocido |
 
 ## Arquitectura
@@ -19,7 +20,7 @@ cada versión, el [CHANGELOG](../CHANGELOG.md).
 |---|---|
 | [architecture.md](architecture.md) | Los componentes, el flujo de los datos, el almacenamiento, la seguridad, la observabilidad, la referencia de despliegue y el código con su linaje |
 | [orquestacion.md](orquestacion.md) | La cola durable sobre PostgreSQL, el worker, el lease, el flujo automático y sus parámetros |
-| [decisiones.md](decisiones.md) | Por qué cada pieza está hecha como está: 303 decisiones numeradas, por versión (abajo) |
+| [decisiones.md](decisiones.md) | Por qué cada pieza está hecha como está: 312 decisiones numeradas, por versión (abajo) |
 
 ## Datos, contratos e historia
 
@@ -112,10 +113,12 @@ Las decisiones de [decisiones.md](decisiones.md), por la versión que las tomó:
 | 223 a 247 | v0.16.0, Optimización Matemática |
 | 248 a 274 | v0.17.0, App + Dashboards |
 | 275 a 303 | v0.18.0, Cloud, Observabilidad y Hardening |
+| 304 a 312 | v1.0.0, Collection Intelligence Platform |
 
 ## Benchmarks
 
-Cada benchmark corre fuera del CI, con su script, y dice su máquina, sus supuestos y su variación:
+Cada benchmark corre fuera del CI, con su script, y dice su máquina, sus supuestos y su variación.
+El perfil M, además, se mide cada semana contra su línea base: [rendimiento.md](rendimiento.md).
 
 | Qué se mide | Dónde |
 |---|---|

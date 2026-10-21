@@ -1,0 +1,157 @@
+name: Rendimiento
+
+# La senal de regresion de rendimiento del perfil M (docs/rendimiento.md), aparte del CI: cada
+# domingo, a mano, y en un pull request que cambia la propia medicion. Con los benchmarks de siempre,
+# contra PostgreSQL con PostGIS: la ingesta de cartera/v2 y pagos/v1 de 100,000 cuentas, la historia
+# y el motor de pagos de tres cortes, el lifecycle con su atribucion y la evaluacion de promesas, y
+# decision/v1 y v2 del ultimo corte, con la memoria pico de cada proceso y la mediana de sus
+# consultas. Tres repeticiones, cada una en su runner (la CPU cambia de uno a otro), y su mediana se
+# compara con la linea base (docs/rendimiento/linea-base-M.json): el job falla si una metrica empeora
+# mas que sus dos tolerancias. No es un check obligatorio ni detiene una release: es una senal. XL y
+# XXL siguen a mano, en benchmark.yml.
+on:
+  schedule:
+    - cron: "23 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      repeticiones:
+        description: "Cuantas corridas, cada una en su runner (5 para calibrar la linea base)"
+        type: choice
+        options: ["1", "3", "5"]
+        default: "3"
+  pull_request:
+    paths:
+      - .github/workflows/performance.yml
+      - scripts/comparar_rendimiento.py
+      - docs/rendimiento/linea-base-M.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rendimiento-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  medir:
+    name: medir (${{ matrix.repeticion }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        repeticion: ${{ fromJSON(inputs.repeticiones == '5' && '[1, 2, 3, 4, 5]' || inputs.repeticiones == '1' && '[1]' || '[1, 2, 3]') }}
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+        env:
+          POSTGRES_USER: motor
+          POSTGRES_PASSWORD: motor
+          POSTGRES_DB: cartera_bench
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U motor -d cartera_bench"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      MC_DATABASE_URL: postgresql+psycopg://motor:motor@localhost:5432/cartera_bench
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # En el disco temporal del runner. Lo que se sube son solo los reportes; los archivos
+      # generados se quedan ahi.
+      - name: Las rutas de trabajo
+        run: |
+          echo "MC_SOURCE_STORE_ROOT=$RUNNER_TEMP/almacen" >> "$GITHUB_ENV"
+          echo "RESULTADOS=$RUNNER_TEMP/rendimiento" >> "$GITHUB_ENV"
+
+      - name: uv y Python 3.12
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.21"
+          python-version: "3.12"
+          activate-environment: true
+
+      # Con las de desarrollo: las consultas de los benchmarks van por el TestClient de la API.
+      - name: Dependencias
+        run: uv sync --locked --extra dev
+
+      - name: Ingesta de cartera/v2 y pagos/v1
+        run: >-
+          python scripts/benchmark_escala.py --perfil M --formato zip
+          --destino "$RUNNER_TEMP/escala" --salida "$RESULTADOS/escala/benchmark_escala.json"
+
+      - name: Historia y motor de pagos
+        run: |
+          mkdir -p "$RESULTADOS/motor_pagos"
+          python scripts/benchmark_motor_pagos.py --perfil M --cortes 3 --formato zip \
+            --destino "$RUNNER_TEMP/motor_pagos" \
+            --salida "$RESULTADOS/motor_pagos/benchmark_motor_pagos.json"
+
+      - name: Lifecycle, atribucion y evaluacion de promesas
+        run: |
+          python scripts/benchmark_lifecycle.py --escenario "$RUNNER_TEMP/motor_pagos" \
+            --destino "$RUNNER_TEMP/lifecycle" --intensidad 0.5
+          mkdir -p "$RESULTADOS/lifecycle"
+          cp "$RUNNER_TEMP/lifecycle/benchmark_lifecycle.json" "$RESULTADOS/lifecycle/"
+
+      - name: decision/v1 y decision/v2
+        run: |
+          python scripts/benchmark_decision_v2.py --destino "$RUNNER_TEMP/decision_v2"
+          mkdir -p "$RESULTADOS/decision_v2"
+          cp "$RUNNER_TEMP/decision_v2/benchmark_decision_v2.json" "$RESULTADOS/decision_v2/"
+
+      - name: La maquina
+        run: python scripts/comparar_rendimiento.py --entorno "$RESULTADOS"
+
+      - name: Los reportes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rendimiento-${{ matrix.repeticion }}
+          path: ${{ runner.temp }}/rendimiento/
+          retention-days: 30
+          if-no-files-found: error
+
+  comparar:
+    needs: [medir]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Los reportes de cada repeticion
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rendimiento-*
+          path: rendimiento
+
+      # Con el Python del runner: solo la biblioteca estandar.
+      - name: Comparar con la linea base
+        run: >-
+          python3 scripts/comparar_rendimiento.py --resultados rendimiento/rendimiento-*
+          --linea-base docs/rendimiento/linea-base-M.json --salida rendimiento.json
+          --markdown rendimiento.md
+
+      - name: El resumen
+        if: always()
+        run: if [ -f rendimiento.md ]; then cat rendimiento.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: El resultado
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rendimiento
+          path: |
+            rendimiento.json
+            rendimiento.md
+          retention-days: 90
+          if-no-files-found: warn

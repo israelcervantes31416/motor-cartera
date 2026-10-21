@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { Paginacion, TablaDatos } from "./Tabla";
+import { Paginacion, RegionDeTabla, TablaDatos } from "./Tabla";
 
 interface Fila {
   readonly id: string;
@@ -70,6 +70,38 @@ describe("TablaDatos", () => {
   it("dice que no hay filas en lugar de una tabla vacia", () => {
     render(<TablaDatos titulo="T" columnas={COLUMNAS} filas={[]} vacio="Ninguna cuenta." />);
     expect(screen.getByText("Ninguna cuenta.")).toBeInTheDocument();
+  });
+});
+
+describe("RegionDeTabla", () => {
+  it("es una region con nombre que se alcanza con el teclado, para desplazar su tabla", async () => {
+    render(
+      <RegionDeTabla etiqueta="Reglas de la política">
+        <table>
+          <caption>Reglas</caption>
+        </table>
+      </RegionDeTabla>,
+    );
+
+    const region = screen.getByRole("region", { name: "Reglas de la política" });
+    expect(region).toHaveClass("tabla-contenedor");
+    expect(region).not.toHaveClass("tabla-contenedor--compacta");
+    expect(within(region).getByRole("table", { name: "Reglas" })).toBeInTheDocument();
+    await userEvent.tab();
+    expect(region).toHaveFocus();
+  });
+
+  it("la compacta va sin marco, dentro de su tarjeta", () => {
+    render(
+      <RegionDeTabla etiqueta="Por base" compacta>
+        <table />
+      </RegionDeTabla>,
+    );
+
+    expect(screen.getByRole("region", { name: "Por base" })).toHaveClass(
+      "tabla-contenedor",
+      "tabla-contenedor--compacta",
+    );
   });
 });
 
