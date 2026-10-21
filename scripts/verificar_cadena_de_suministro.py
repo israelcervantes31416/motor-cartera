@@ -7,7 +7,10 @@
 - cada accion de GitHub fijada por el SHA de su commit (40 hexadecimales), con su version en un
   comentario;
 - cada workflow con permisos explicitos y minimos (nunca write-all), y cada checkout sin dejar la
-  credencial en el disco (persist-credentials: false).
+  credencial en el disco (persist-credentials: false);
+- ningun permiso de escritura en el nivel superior de un workflow, y en un job solo los de
+  ESCRITURAS_PERMITIDAS: subir los resultados de CodeQL, el token OIDC del despliegue de referencia,
+  la atestacion de los assets de una release y la publicacion de la release.
 
     python scripts/verificar_cadena_de_suministro.py
 
@@ -23,6 +26,20 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}\b")
 SHA_DE_ACCION = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}\s+#\s*v\d")
+
+ESCRITURAS_PERMITIDAS: dict[tuple[str, str], set[str]] = {
+    # Subir los resultados del analisis a Code scanning.
+    ("codeql.yml", "analisis"): {"security-events"},
+    # El token OIDC con que Workload Identity Federation entrega una credencial corta de GCP.
+    ("deploy.yml", "desplegar"): {"id-token"},
+    # La atestacion de procedencia de los assets de una release, firmada por OIDC. Este job no
+    # ejecuta codigo del repositorio: recibe los archivos ya construidos.
+    ("release.yml", "atestar"): {"attestations", "id-token"},
+    # La etiqueta y la release, despues de todas las precondiciones. Tampoco ejecuta codigo del
+    # repositorio: solo la API de GitHub.
+    ("release.yml", "publicar"): {"contents"},
+}
+"""Los unicos (workflow, job) que piden un permiso `write`, y cuales."""
 
 
 def dockerfiles(raiz: Path) -> list[Path]:
@@ -93,6 +110,39 @@ def problemas_de_compose(ruta: Path) -> list[str]:
     return problemas
 
 
+def permisos_de_escritura(texto: str) -> list[tuple[int, str | None, str]]:
+    """Cada permiso `write` de un workflow: su linea, su job (None en el nivel superior) y el
+    permiso, en un bloque `permissions:` o en linea (`permissions: {contents: write}`)."""
+    escrituras: list[tuple[int, str | None, str]] = []
+    seccion = None
+    job = None
+    bloque = None
+    for numero, linea in enumerate(texto.splitlines(), 1):
+        contenido = linea.split("#", 1)[0].rstrip()
+        if not contenido.strip():
+            continue
+        sangria = len(contenido) - len(contenido.lstrip())
+        if bloque is not None and sangria <= bloque:
+            bloque = None
+        if sangria == 0:
+            seccion = contenido.split(":", 1)[0]
+            job = None
+        elif seccion == "jobs" and sangria == 2:
+            job = contenido.strip().rstrip(":")
+        permisos = re.match(r"^(\s*)permissions:\s*(.*)$", contenido)
+        if permisos:
+            if permisos.group(2):
+                for permiso in re.findall(r"([\w-]+)\s*:\s*write\b", permisos.group(2)):
+                    escrituras.append((numero, job, permiso))
+            else:
+                bloque = len(permisos.group(1))
+            continue
+        escritura = re.match(r"^\s+([\w-]+):\s*write$", contenido)
+        if bloque is not None and escritura:
+            escrituras.append((numero, job, escritura.group(1)))
+    return escrituras
+
+
 def problemas_de_workflow(ruta: Path) -> list[str]:
     problemas = []
     texto = ruta.read_text(encoding="utf-8")
@@ -101,6 +151,11 @@ def problemas_de_workflow(ruta: Path) -> list[str]:
         problemas.append(f"{ruta.name}: sin permissions de nivel superior")
     if "write-all" in texto:
         problemas.append(f"{ruta.name}: permissions write-all")
+    for numero, job, permiso in permisos_de_escritura(texto):
+        if job is None:
+            problemas.append(f"{ruta.name}:{numero}: {permiso}: write en el nivel superior")
+        elif permiso not in ESCRITURAS_PERMITIDAS.get((ruta.name, job), set()):
+            problemas.append(f"{ruta.name}:{numero}: el job {job} pide {permiso}: write")
     for numero, linea in enumerate(lineas, 1):
         uso = re.match(r"^\s*(?:-\s+)?uses:\s*(.+?)\s*$", linea)
         if uso and not uso.group(1).startswith("./"):

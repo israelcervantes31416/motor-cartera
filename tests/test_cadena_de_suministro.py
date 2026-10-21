@@ -118,6 +118,39 @@ def test_write_all_se_detecta(tmp_path):
     assert "ci.yml: permissions write-all" in cadena.problemas_de_workflow(workflow)
 
 
+def test_un_permiso_de_escritura_solo_vale_en_su_job(tmp_path):
+    """Ninguna escritura en el nivel superior; en un job, solo las de ESCRITURAS_PERMITIDAS: la
+    atestacion de una release no la puede pedir el job que ejecuta el codigo del repositorio."""
+    workflow = _escribir(
+        tmp_path / "release.yml",
+        "name: Release\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "  issues: write  # nadie la necesita\n"
+        "jobs:\n"
+        "  atestar:\n"
+        "    permissions:\n"
+        "      contents: read\n"
+        "      id-token: write\n"
+        "      attestations: write\n"
+        "    steps: []\n"
+        "  artefactos:\n"
+        "    permissions:\n"
+        "      contents: read\n"
+        "      id-token: write\n"
+        "    steps: []\n"
+        "  publicar:\n"
+        "    permissions: { contents: write, packages: write }\n"
+        "    steps: []\n",
+    )
+
+    assert cadena.problemas_de_workflow(workflow) == [
+        "release.yml:4: issues: write en el nivel superior",
+        "release.yml:15: el job artefactos pide id-token: write",
+        "release.yml:18: el job publicar pide packages: write",
+    ]
+
+
 def test_una_imagen_que_corre_un_script_sin_digest_se_detecta(tmp_path):
     _escribir(
         tmp_path / "scripts" / "carga.py",
