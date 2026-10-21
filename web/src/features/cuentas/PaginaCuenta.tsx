@@ -164,7 +164,7 @@ function ResumenDeCuenta({ cuenta }: { readonly cuenta: Cuenta360 }) {
   const s = cuenta.snapshot;
   const p = cuenta.presencia;
   return (
-    <div className="rejilla">
+    <div className="rejilla rejilla--dos">
       <section className="tarjeta" aria-labelledby="cuenta-corte">
         <h2 id="cuenta-corte">En el corte del {formatearFecha(cuenta.fecha_corte)}</h2>
         {s === null ? (

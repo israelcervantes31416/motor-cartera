@@ -28,6 +28,7 @@ import {
   TablaHistograma,
 } from "../../components/Graficas";
 import { Indicador, Indicadores } from "../../components/Kpi";
+import { RegionDeTabla } from "../../components/Tabla";
 import { comoNumero, comoRegistro, conteosDe, formatearSegunUnidad } from "../../lib/datos";
 import {
   etiquetaDeCodigo,
@@ -188,47 +189,49 @@ function BloqueAnalytics({ r }: { readonly r: ResumenApp }) {
 
 function TablaEmbudo({ etapas }: { readonly etapas: readonly EtapaDeEmbudo[] }) {
   return (
-    <table className="tabla">
-      <caption>Etapas del embudo</caption>
-      <thead>
-        <tr>
-          <th scope="col">Etapa</th>
-          <th scope="col">Estado</th>
-          <th scope="col" className="tabla__numerica">
-            Cuentas
-          </th>
-          <th scope="col" className="tabla__numerica">
-            De la etapa anterior
-          </th>
-          <th scope="col" className="tabla__numerica">
-            De la cohorte
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {etapas.map((e) => (
-          <tr key={e.etapa}>
-            <th scope="row">{ETAPAS[e.etapa] ?? etiquetaDeCodigo(e.etapa)}</th>
-            <td>
-              <InsigniaEstado estado={e.estado_valor} />
-            </td>
-            <td className="tabla__numerica">
-              <ValorConEstado
-                estado={e.estado_valor}
-                valor={e.cuentas}
-                formatear={formatearEntero}
-              />
-            </td>
-            <td className="tabla__numerica">
-              <ValorOpcional valor={e.pct_etapa_anterior} formatear={formatearPorcentaje} />
-            </td>
-            <td className="tabla__numerica">
-              <ValorOpcional valor={e.pct_cohorte} formatear={formatearPorcentaje} />
-            </td>
+    <RegionDeTabla etiqueta="Etapas del embudo" compacta>
+      <table className="tabla">
+        <caption>Etapas del embudo</caption>
+        <thead>
+          <tr>
+            <th scope="col">Etapa</th>
+            <th scope="col">Estado</th>
+            <th scope="col" className="tabla__numerica">
+              Cuentas
+            </th>
+            <th scope="col" className="tabla__numerica">
+              De la etapa anterior
+            </th>
+            <th scope="col" className="tabla__numerica">
+              De la cohorte
+            </th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {etapas.map((e) => (
+            <tr key={e.etapa}>
+              <th scope="row">{ETAPAS[e.etapa] ?? etiquetaDeCodigo(e.etapa)}</th>
+              <td>
+                <InsigniaEstado estado={e.estado_valor} />
+              </td>
+              <td className="tabla__numerica">
+                <ValorConEstado
+                  estado={e.estado_valor}
+                  valor={e.cuentas}
+                  formatear={formatearEntero}
+                />
+              </td>
+              <td className="tabla__numerica">
+                <ValorOpcional valor={e.pct_etapa_anterior} formatear={formatearPorcentaje} />
+              </td>
+              <td className="tabla__numerica">
+                <ValorOpcional valor={e.pct_cohorte} formatear={formatearPorcentaje} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </RegionDeTabla>
   );
 }
 
@@ -425,51 +428,53 @@ function BloqueOptimizacion({ r }: { readonly r: ResumenApp }) {
                   />
                 </Indicador>
               </Indicadores>
-              <table className="tabla tabla--compacta">
-                <caption>Capacidad por canal</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Canal</th>
-                    <th scope="col" className="tabla__numerica">
-                      Capacidad
-                    </th>
-                    <th scope="col" className="tabla__numerica">
-                      Utilizada
-                    </th>
-                    <th scope="col" className="tabla__numerica">
-                      Utilización
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {canales.map(([canal, valor]) => {
-                    const c = comoRegistro(valor);
-                    return (
-                      <tr key={canal}>
-                        <th scope="row">{canal}</th>
-                        <td className="tabla__numerica">
-                          <ValorOpcional
-                            valor={comoNumero(c?.["capacidad"])}
-                            formatear={formatearEntero}
-                          />
-                        </td>
-                        <td className="tabla__numerica">
-                          <ValorOpcional
-                            valor={comoNumero(c?.["utilizada"])}
-                            formatear={formatearEntero}
-                          />
-                        </td>
-                        <td className="tabla__numerica">
-                          <ValorOpcional
-                            valor={comoNumero(c?.["utilizacion"])}
-                            formatear={formatearPorcentaje}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <RegionDeTabla etiqueta="Capacidad por canal" compacta>
+                <table className="tabla tabla--compacta">
+                  <caption>Capacidad por canal</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Canal</th>
+                      <th scope="col" className="tabla__numerica">
+                        Capacidad
+                      </th>
+                      <th scope="col" className="tabla__numerica">
+                        Utilizada
+                      </th>
+                      <th scope="col" className="tabla__numerica">
+                        Utilización
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {canales.map(([canal, valor]) => {
+                      const c = comoRegistro(valor);
+                      return (
+                        <tr key={canal}>
+                          <th scope="row">{canal}</th>
+                          <td className="tabla__numerica">
+                            <ValorOpcional
+                              valor={comoNumero(c?.["capacidad"])}
+                              formatear={formatearEntero}
+                            />
+                          </td>
+                          <td className="tabla__numerica">
+                            <ValorOpcional
+                              valor={comoNumero(c?.["utilizada"])}
+                              formatear={formatearEntero}
+                            />
+                          </td>
+                          <td className="tabla__numerica">
+                            <ValorOpcional
+                              valor={comoNumero(c?.["utilizacion"])}
+                              formatear={formatearPorcentaje}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </RegionDeTabla>
             </>
           )}
         </>

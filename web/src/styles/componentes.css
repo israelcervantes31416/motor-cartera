@@ -80,7 +80,7 @@
 }
 
 .boton.boton--discreto {
-  min-height: 28px;
+  min-height: var(--alto-control-discreto);
   padding: 0 var(--espacio-2);
   font-size: var(--letra-2);
 }
@@ -165,6 +165,15 @@
   max-width: 72ch;
 }
 
+/* Un texto corrido dentro de una tarjeta se lee a un ancho de lectura, aunque la tarjeta ocupe
+   toda la pantalla: las definiciones, los usos y las limitaciones. Los avisos, las alertas y la
+   linea de la fuente no: ocupan su ancho, como en el resto de la pagina. */
+.tarjeta p:not(.aviso, .alerta, .fuente),
+.tarjeta li,
+.ficha dd {
+  max-width: var(--medida-lectura);
+}
+
 .nota {
   color: var(--texto-secundario);
   font-size: var(--letra-3);
@@ -208,7 +217,7 @@
 
 .contexto__lista {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: var(--espacio-2) var(--espacio-4);
   margin-bottom: var(--espacio-2);
   font-size: var(--letra-2);
@@ -476,7 +485,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--espacio-1);
-  min-height: 34px;
+  min-height: var(--alto-control);
   padding: var(--espacio-1) var(--espacio-3);
   border: 1px solid var(--borde-fuerte);
   border-radius: var(--radio-2);
@@ -509,7 +518,7 @@
 }
 
 .boton--primario:hover {
-  background: #184f95;
+  background: var(--acento-fuerte);
 }
 
 .boton--icono {
@@ -526,6 +535,12 @@
   gap: var(--espacio-3);
   align-items: flex-end;
   margin: var(--espacio-3) 0 var(--espacio-4);
+}
+
+/* Los filtros no tienen botones: se alinean por arriba, para que la ayuda de un campo no suba su
+   control por encima de los demas. */
+.filtros {
+  align-items: flex-start;
 }
 
 .formulario--rejilla {
@@ -554,7 +569,7 @@
 
 .campo input,
 .campo select {
-  min-height: 34px;
+  min-height: var(--alto-control);
   padding: var(--espacio-1) var(--espacio-2);
   border: 1px solid var(--borde-fuerte);
   border-radius: var(--radio-2);
@@ -633,6 +648,8 @@
 
 /* --- tablas ------------------------------------------------------------------------------------ */
 
+/* Toda tabla va en su region: si no cabe, se desplaza ella (tambien con el teclado) y la pagina no
+   se ensancha. La compacta va dentro de una tarjeta, sin marco propio. */
 .tabla-contenedor {
   max-width: 100%;
   overflow-x: auto;
@@ -640,6 +657,12 @@
   border: 1px solid var(--borde);
   border-radius: var(--radio-2);
   background: var(--superficie);
+}
+
+.tabla-contenedor--compacta {
+  border: 0;
+  border-radius: 0;
+  background: none;
 }
 
 .tabla {
@@ -703,7 +726,7 @@
 
 .tabla--compacta th,
 .tabla--compacta td {
-  padding: 2px var(--espacio-2);
+  padding: var(--espacio-0) var(--espacio-2);
 }
 
 .tabla__orden {
@@ -733,7 +756,7 @@
 }
 
 .paginacion__tamano select {
-  min-height: 34px;
+  min-height: var(--alto-control);
   border: 1px solid var(--borde-fuerte);
   border-radius: var(--radio-2);
 }
@@ -749,7 +772,7 @@
   display: inline-block;
   width: 64px;
   height: 8px;
-  background: #cde2fb;
+  background: var(--medidor-pista);
   border-radius: var(--radio-pildora);
   overflow: hidden;
 }
@@ -757,7 +780,7 @@
 .medidor__relleno {
   display: block;
   height: 100%;
-  background: #2a78d6;
+  background: var(--medidor-relleno);
 }
 
 /* --- graficas ---------------------------------------------------------------------------------- */
@@ -838,7 +861,7 @@
   margin: 0 0 var(--espacio-3);
   font-size: var(--letra-2);
   display: grid;
-  gap: 2px;
+  gap: var(--espacio-0);
 }
 
 .sugerencia__ejecuciones li {
@@ -884,7 +907,7 @@
 }
 
 .linea__detalle {
-  margin: 2px 0 0;
+  margin: var(--espacio-0) 0 0;
   font-size: var(--letra-3);
   color: var(--texto-secundario);
 }

@@ -146,6 +146,31 @@ export function TablaDatos<T>({
   );
 }
 
+/**
+ * La region de una tabla escrita a mano, como la de TablaDatos: si no cabe, se desplaza ella (con el
+ * teclado tambien) y la pagina no se ensancha. La compacta va dentro de una tarjeta, sin marco.
+ */
+export function RegionDeTabla({
+  etiqueta,
+  compacta = false,
+  children,
+}: {
+  readonly etiqueta: string;
+  readonly compacta?: boolean;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div
+      className={compacta ? "tabla-contenedor tabla-contenedor--compacta" : "tabla-contenedor"}
+      role="region"
+      aria-label={etiqueta}
+      tabIndex={0}
+    >
+      {children}
+    </div>
+  );
+}
+
 export const TAMANOS_DE_PAGINA = [25, 50, 100] as const;
 
 export function Paginacion({
