@@ -117,7 +117,9 @@ precondición y las reporta todas; si falta cualquiera, nada se publica:
 Después arma los assets: el OpenAPI completo (`scripts/exportar_openapi.py`, determinista: desde el
 código de v0.18.1 reproduce byte por byte el asset que entonces se publicó a mano) y los SBOM de las
 tres imágenes que el CI de `main` construyó y probó en ese commit, cada uno revisado, con su
-`SHA256SUMS`. Sin `publicar`, ahí termina: es el ensayo. Con `publicar`, un job que no ejecuta código
+`SHA256SUMS`, y las notas, de la entrada del CHANGELOG (cada enlace relativo, al archivo de la
+etiqueta: en la página de la release, `docs/x.md` daría 404). Sin `publicar`, ahí termina: es el
+ensayo. Con `publicar`, un job que no ejecuta código
 del repositorio firma la atestación de procedencia de cada asset (las
 [atestaciones de artefactos](https://docs.github.com/en/actions/concepts/security/artifact-attestations)
 de GitHub: SLSA, firmadas con Sigstore); otro vuelve a verificar los SHA-256 y las atestaciones, que

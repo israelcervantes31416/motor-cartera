@@ -22,7 +22,8 @@ Solo lee: la API de GitHub, con el token del job, y los archivos del checkout.
 `assets` arma lo que se publica, junto al OpenAPI que ya genero scripts/exportar_openapi.py: los
 SBOM de las tres imagenes propias, del CI de main de ese commit, con el nombre de la version (cada
 uno revisado: CycloneDX, de su imagen y con componentes), el SHA256SUMS de los bytes que se publican
-y las notas de la release, de su entrada del CHANGELOG.
+y las notas de la release, de su entrada del CHANGELOG (sus enlaces relativos, a los archivos de la
+etiqueta).
 
     python scripts/verificar_release.py precondiciones --version 1.0.0 --sha <commit> \\
         [--salida $GITHUB_OUTPUT]
@@ -109,6 +110,18 @@ def notas_del_changelog(texto: str, version: str) -> str:
         re.MULTILINE | re.DOTALL,
     )
     return entrada.group(1).strip() if entrada else ""
+
+
+def enlaces_de_la_etiqueta(texto: str, repositorio: str, version: str) -> str:
+    """Cada enlace relativo de las notas, al archivo de la etiqueta. En el CHANGELOG, `docs/x.md` es
+    un archivo del repositorio; en la pagina de la release, el navegador lo resolveria contra
+    `/releases/tag/` y daria 404. Los enlaces absolutos y las anclas quedan como estan."""
+    base = f"https://github.com/{repositorio}/blob/v{version}/"
+    return re.sub(
+        r"\]\((?![a-zA-Z][a-zA-Z0-9+.-]*:|#|//)([^)\s]+)\)",
+        lambda enlace: f"]({base}{enlace.group(1).removeprefix('./').lstrip('/')})",
+        texto,
+    )
 
 
 def lenguajes_de_codeql(raiz: Path) -> list[str]:
@@ -387,8 +400,9 @@ def notas(changelog: str, repositorio: str, version: str, sha: str, ci_run: str,
     cambios = (
         f"\n\n**Cambios:** {base}/compare/v{anterior}...v{version}" if anterior is not None else ""
     )
+    entrada = enlaces_de_la_etiqueta(notas_del_changelog(changelog, version), repositorio, version)
     return (
-        f"{notas_del_changelog(changelog, version)}\n\n"
+        f"{entrada}\n\n"
         "## Assets\n\n"
         "| Archivo | Qué es | Bytes | SHA-256 |\n| --- | --- | ---: | --- |\n"
         + "\n".join(filas)

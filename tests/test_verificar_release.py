@@ -283,6 +283,27 @@ def test_las_notas_llevan_el_changelog_cada_asset_y_como_verificarlo(tmp_path):
     assert texto.rstrip().endswith("**Cambios:** https://github.com/r/p/compare/v2.0.0...v2.1.0")
 
 
+def test_un_enlace_relativo_del_changelog_apunta_al_archivo_de_la_etiqueta(tmp_path):
+    evidencia, destino = _evidencia(tmp_path)
+    archivos = release.preparar_assets("2.1.0", evidencia, destino)
+    changelog = (
+        "## [v2.1.0] — Algo Nuevo — 2027-01-02\n\n"
+        "- La politica ([docs/x.md](docs/x.md)), la de [abajo](./docs/y.md#uno),"
+        " [SemVer](https://semver.org), [los assets](#assets) y [la carpeta](/web).\n\n"
+        "[v2.1.0]: https://github.com/r/p/releases/tag/v2.1.0\n"
+    )
+
+    texto = release.notas(changelog, "r/p", "2.1.0", SHA, "12345", archivos)
+
+    # En la pagina de la release, `docs/x.md` resolveria contra /releases/tag/ y daria 404.
+    assert texto.startswith(
+        "- La politica ([docs/x.md](https://github.com/r/p/blob/v2.1.0/docs/x.md)),"
+        " la de [abajo](https://github.com/r/p/blob/v2.1.0/docs/y.md#uno),"
+        " [SemVer](https://semver.org), [los assets](#assets)"
+        " y [la carpeta](https://github.com/r/p/blob/v2.1.0/web).\n\n## Assets\n"
+    )
+
+
 def test_los_checks_extra_son_la_matriz_de_python_y_su_contrato():
     assert release.checks_de_compatibilidad(RAIZ) == [
         "compatibilidad (3.12)",

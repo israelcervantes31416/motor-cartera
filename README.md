@@ -154,7 +154,7 @@ features y verifica que da exactamente lo mismo ([docs/decision_v2.md](docs/deci
 
 | Evidencia | Resultado |
 |---|---|
-| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,951 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
+| Pruebas de Python (pytest, contra PostgreSQL con PostGIS) | 3,952 pasan y 1 se omite en el CI; 97 % de cobertura de líneas |
 | Pruebas de la app (Vitest) | 136 pruebas en 18 archivos; 90.8 % de cobertura de sentencias |
 | Playwright con axe-core | 55 pruebas contra el compose de desarrollo y 62 contra el de producción, con usuarios de Dex |
 | Compatibilidad de Python | En cada run, en 3.12, 3.13 y 3.14: el entorno del lock, cada módulo, la línea de comandos, 772 pruebas puras y el mismo OpenAPI, byte por byte |
