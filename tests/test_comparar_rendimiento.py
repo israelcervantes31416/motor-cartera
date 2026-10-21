@@ -118,8 +118,10 @@ def test_la_mediana_de_las_repeticiones_y_su_variacion(tmp_path):
     ("escala", "consulta_ms", "esperado"),
     [
         (1.05, 20.0, {}),
+        # Lo que vario entre runners de CPU distintas (hasta 48 % en un tiempo) queda dentro.
+        (1.45, 20.0, {}),
         (1.6, 20.0, {"ingesta.cartera_v2": "REGRESION", "motor_pagos.interpretacion": "REGRESION"}),
-        (0.5, 20.0, {"ingesta.cartera_v2": "MEJORA"}),
+        (0.4, 20.0, {"ingesta.cartera_v2": "MEJORA"}),
         (1.0, 35.0, {}),
         (1.0, 60.0, {"consulta.pagos.movimientos_de_una_cuenta": "REGRESION"}),
     ],
@@ -146,11 +148,13 @@ def test_una_regresion_supera_la_tolerancia_relativa_y_la_absoluta(
     fuera = {n: m["estado"] for n, m in comparadas.items() if m["estado"] != "DENTRO"}
     for nombre, estado in esperado.items():
         assert fuera[nombre] == estado
-    # Lo demas que se marca va en la direccion del cambio, y sin cambio no se marca nada mas.
-    if escala > 1:
-        assert set(fuera.values()) <= {"REGRESION"}
+    # Sin nada esperado, nada se marca; si no, lo demas que se marca va en la direccion del cambio.
+    if not esperado:
+        assert fuera == {}
+    elif escala > 1:
+        assert set(fuera.values()) == {"REGRESION"}
     elif escala < 1:
-        assert set(fuera.values()) <= {"MEJORA"}
+        assert set(fuera.values()) == {"MEJORA"}
     else:
         assert set(fuera) == set(esperado)
 

@@ -1,0 +1,461 @@
+{
+  "formato": "rendimiento-motor-cartera/v1",
+  "commit": "08db3c906197553e6837c4630fa90f66e1da312a",
+  "origen": "PR #38 (head 4f72518), run 39530343382 de performance.yml: 3 repeticiones",
+  "fecha": "2026-10-21",
+  "entrada": {
+    "perfil": "M",
+    "cuentas": 100000,
+    "cortes": 3,
+    "filas_cartera": 100000,
+    "filas_pagos": 55809,
+    "observaciones_de_pagos": 112153,
+    "eventos_lifecycle": 96115,
+    "cuentas_decididas": 98768
+  },
+  "repeticiones": 3,
+  "entornos": [
+    {
+      "commit": "08db3c906197553e6837c4630fa90f66e1da312a",
+      "run": "39530343382",
+      "runner": "ubuntu24",
+      "imagen": "20261012.334.1",
+      "procesador": "AMD EPYC 7763 64-Core Processor",
+      "cpus": 4,
+      "memoria_mib": 15990,
+      "python": "3.12.3"
+    },
+    {
+      "commit": "08db3c906197553e6837c4630fa90f66e1da312a",
+      "run": "39530343382",
+      "runner": "ubuntu24",
+      "imagen": "20261012.334.1",
+      "procesador": "AMD EPYC 9V74 80-Core Processor",
+      "cpus": 4,
+      "memoria_mib": 15990,
+      "python": "3.12.3"
+    },
+    {
+      "commit": "08db3c906197553e6837c4630fa90f66e1da312a",
+      "run": "39530343382",
+      "runner": "ubuntu24",
+      "imagen": "20261012.334.1",
+      "procesador": "AMD EPYC 9V74 80-Core Processor",
+      "cpus": 4,
+      "memoria_mib": 15990,
+      "python": "3.12.3"
+    }
+  ],
+  "tolerancias": {
+    "tiempo": {
+      "relativa": 0.5,
+      "absoluta": 2.0
+    },
+    "memoria": {
+      "relativa": 0.2,
+      "absoluta": 64.0
+    },
+    "consulta": {
+      "relativa": 0.5,
+      "absoluta": 25.0
+    }
+  },
+  "metricas": {
+    "decision_v1.decision": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 4.911,
+      "minimo": 4.84,
+      "maximo": 7.283,
+      "cv": 0.1999,
+      "n": 3
+    },
+    "decision_v2.decision": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 8.224,
+      "minimo": 8.168,
+      "maximo": 10.102,
+      "cv": 0.1018,
+      "n": 3
+    },
+    "historia.cortes": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 8.971,
+      "minimo": 8.71,
+      "maximo": 10.253,
+      "cv": 0.0724,
+      "n": 3
+    },
+    "historia.pagos": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 3.558,
+      "minimo": 3.191,
+      "maximo": 3.7,
+      "cv": 0.0616,
+      "n": 3
+    },
+    "ingesta.cartera_v2": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 17.068,
+      "minimo": 16.754,
+      "maximo": 20.576,
+      "cv": 0.0955,
+      "n": 3
+    },
+    "ingesta.pagos_v1": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 3.265,
+      "minimo": 3.175,
+      "maximo": 3.944,
+      "cv": 0.0992,
+      "n": 3
+    },
+    "lifecycle.atribucion": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 4.544,
+      "minimo": 4.271,
+      "maximo": 5.423,
+      "cv": 0.1036,
+      "n": 3
+    },
+    "lifecycle.evaluacion": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 1.206,
+      "minimo": 1.192,
+      "maximo": 1.603,
+      "cv": 0.1429,
+      "n": 3
+    },
+    "lifecycle.importacion": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 12.234,
+      "minimo": 12.207,
+      "maximo": 15.495,
+      "cv": 0.116,
+      "n": 3
+    },
+    "motor_pagos.interpretacion": {
+      "clase": "tiempo",
+      "unidad": "s",
+      "valor": 8.948,
+      "minimo": 8.814,
+      "maximo": 9.359,
+      "cv": 0.0256,
+      "n": 3
+    },
+    "decision_v2.memoria": {
+      "clase": "memoria",
+      "unidad": "MiB",
+      "valor": 186.3,
+      "minimo": 186.3,
+      "maximo": 186.4,
+      "cv": 0.0003,
+      "n": 3
+    },
+    "ingesta.cartera_v2.memoria": {
+      "clase": "memoria",
+      "unidad": "MiB",
+      "valor": 824.4,
+      "minimo": 817.6,
+      "maximo": 829.9,
+      "cv": 0.0061,
+      "n": 3
+    },
+    "motor_pagos.memoria": {
+      "clase": "memoria",
+      "unidad": "MiB",
+      "valor": 186.7,
+      "minimo": 186.5,
+      "maximo": 186.8,
+      "cv": 0.0007,
+      "n": 3
+    },
+    "consulta.decision.cuenta_360_con_su_ultima_decision": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 32.08,
+      "minimo": 31.6,
+      "maximo": 43.65,
+      "cv": 0.1557,
+      "n": 3
+    },
+    "consulta.decision.decision_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 5.78,
+      "minimo": 5.62,
+      "maximo": 7.69,
+      "cv": 0.1478,
+      "n": 3
+    },
+    "consulta.decision.decisiones_del_corte": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 4.99,
+      "minimo": 4.88,
+      "maximo": 7.22,
+      "cv": 0.1893,
+      "n": 3
+    },
+    "consulta.decision.ejecucion": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 3.85,
+      "minimo": 3.62,
+      "maximo": 5.3,
+      "cv": 0.1747,
+      "n": 3
+    },
+    "consulta.decision.historia_de_decisiones_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 5.23,
+      "minimo": 5.04,
+      "maximo": 7.16,
+      "cv": 0.1648,
+      "n": 3
+    },
+    "consulta.decision.pagina_por_canal": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 6.32,
+      "minimo": 6.05,
+      "maximo": 9.07,
+      "cv": 0.1909,
+      "n": 3
+    },
+    "consulta.decision.pagina_por_prioridad": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 6.18,
+      "minimo": 5.92,
+      "maximo": 9.37,
+      "cv": 0.2192,
+      "n": 3
+    },
+    "consulta.decision.primera_pagina": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 6.04,
+      "minimo": 5.89,
+      "maximo": 9.35,
+      "cv": 0.2251,
+      "n": 3
+    },
+    "consulta.lifecycle.atribuciones_de_la_cartera": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 5.99,
+      "minimo": 5.54,
+      "maximo": 7.66,
+      "cv": 0.1426,
+      "n": 3
+    },
+    "consulta.lifecycle.atribuciones_de_un_pago": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 9.74,
+      "minimo": 8.54,
+      "maximo": 11.81,
+      "cv": 0.1347,
+      "n": 3
+    },
+    "consulta.lifecycle.candidatas_de_los_pagos_de_un_cliente": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 12.05,
+      "minimo": 10.63,
+      "maximo": 14.65,
+      "cv": 0.1338,
+      "n": 3
+    },
+    "consulta.lifecycle.cuenta_360": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 32.76,
+      "minimo": 30.56,
+      "maximo": 41.8,
+      "cv": 0.1388,
+      "n": 3
+    },
+    "consulta.lifecycle.cuenta_360_con_un_pago_ambiguo": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 33.22,
+      "minimo": 29.9,
+      "maximo": 41.0,
+      "cv": 0.134,
+      "n": 3
+    },
+    "consulta.lifecycle.lifecycle_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 11.13,
+      "minimo": 10.43,
+      "maximo": 13.63,
+      "cv": 0.1171,
+      "n": 3
+    },
+    "consulta.lifecycle.pagos_atribuidos_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 12.32,
+      "minimo": 10.91,
+      "maximo": 15.19,
+      "cv": 0.1391,
+      "n": 3
+    },
+    "consulta.lifecycle.primera_pagina_de_pagos_ambiguos": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 32.44,
+      "minimo": 28.25,
+      "maximo": 37.18,
+      "cv": 0.1118,
+      "n": 3
+    },
+    "consulta.lifecycle.promesas_vigentes_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 13.64,
+      "minimo": 11.87,
+      "maximo": 17.13,
+      "cv": 0.1538,
+      "n": 3
+    },
+    "consulta.lifecycle.ultimas_gestiones_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 9.85,
+      "minimo": 9.75,
+      "maximo": 11.98,
+      "cv": 0.0977,
+      "n": 3
+    },
+    "consulta.pagos.coincidencias_ambiguas_de_una_ventana": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 53.24,
+      "minimo": 51.76,
+      "maximo": 61.15,
+      "cv": 0.0744,
+      "n": 3
+    },
+    "consulta.pagos.cuenta_360_con_resumen_de_pagos": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 5.2,
+      "minimo": 4.78,
+      "maximo": 6.78,
+      "cv": 0.1541,
+      "n": 3
+    },
+    "consulta.pagos.detalle_de_un_movimiento": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 5.87,
+      "minimo": 5.81,
+      "maximo": 7.59,
+      "cv": 0.1285,
+      "n": 3
+    },
+    "consulta.pagos.grupo_legacy": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 3.99,
+      "minimo": 3.95,
+      "maximo": 5.41,
+      "cv": 0.1526,
+      "n": 3
+    },
+    "consulta.pagos.grupo_legacy_sin_cliente": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 54.66,
+      "minimo": 54.37,
+      "maximo": 67.17,
+      "cv": 0.1016,
+      "n": 3
+    },
+    "consulta.pagos.grupo_por_firma_exacta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 3.92,
+      "minimo": 3.84,
+      "maximo": 5.34,
+      "cv": 0.1578,
+      "n": 3
+    },
+    "consulta.pagos.movimientos_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 4.75,
+      "minimo": 4.53,
+      "maximo": 5.9,
+      "cv": 0.1187,
+      "n": 3
+    },
+    "consulta.pagos.movimientos_en_un_intervalo": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 4.62,
+      "minimo": 4.57,
+      "maximo": 6.18,
+      "cv": 0.1459,
+      "n": 3
+    },
+    "consulta.pagos.observaciones_de_un_movimiento": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 4.0,
+      "minimo": 3.81,
+      "maximo": 5.61,
+      "cv": 0.1805,
+      "n": 3
+    },
+    "consulta.pagos.posibles_reversos_de_un_dia_en_la_cartera": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 72.66,
+      "minimo": 70.59,
+      "maximo": 85.77,
+      "cv": 0.088,
+      "n": 3
+    },
+    "consulta.pagos.primera_pagina_de_movimientos_de_la_cartera": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 112.42,
+      "minimo": 111.17,
+      "maximo": 138.76,
+      "cv": 0.1053,
+      "n": 3
+    },
+    "consulta.pagos.primera_pagina_de_resultados_de_una_ventana": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 12.45,
+      "minimo": 12.04,
+      "maximo": 17.29,
+      "cv": 0.1712,
+      "n": 3
+    },
+    "consulta.pagos.resumen_de_pagos_de_una_cuenta": {
+      "clase": "consulta",
+      "unidad": "ms",
+      "valor": 2.91,
+      "minimo": 2.64,
+      "maximo": 3.76,
+      "cv": 0.1538,
+      "n": 3
+    }
+  }
+}

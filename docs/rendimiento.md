@@ -34,11 +34,48 @@ regresión (o si falta una métrica de la línea base), deja su tabla en el resu
 
 ## La línea base
 
-La línea base son las medianas de varias corridas del mismo commit, cada una en su runner, con sus
-tolerancias por clase de métrica (tiempo, memoria y consulta):
+La de v1.0 (`docs/rendimiento/linea-base-M.json`) son las medianas de tres corridas del mismo commit
+(PR #38, el 2026-10-21), cada una en su runner: una con un AMD EPYC 7763 y dos con un AMD EPYC 9V74,
+de 4 núcleos y 16 GB. El perfil M fueron 100,000 cuentas, 55,809 movimientos en el archivo de pagos
+de la ingesta, 112,153 observaciones de pagos en tres cortes, 96,115 eventos del lifecycle y 98,768
+cuentas decididas; cada corrida tardó de 5 a 6.5 minutos.
+
+| Métrica | Mediana | Rango de las tres |
+| --- | ---: | ---: |
+| Ingesta de `cartera/v2` | 17.1 s | 16.8–20.6 s |
+| Ingesta de `pagos/v1` | 3.3 s | 3.2–3.9 s |
+| Historia de los cortes | 9.0 s | 8.7–10.3 s |
+| Historia de los pagos | 3.6 s | 3.2–3.7 s |
+| Interpretación del motor de pagos | 8.9 s | 8.8–9.4 s |
+| Importación del lifecycle | 12.2 s | 12.2–15.5 s |
+| Atribución | 4.5 s | 4.3–5.4 s |
+| Evaluación de promesas | 1.2 s | 1.2–1.6 s |
+| `decision/v1` | 4.9 s | 4.8–7.3 s |
+| `decision/v2` | 8.2 s | 8.2–10.1 s |
+| Memoria pico de la ingesta de cartera | 824 MiB | 818–830 MiB |
+| Memoria pico del motor de pagos y de `decision/v2` | 187 y 186 MiB | variación menor a 1 % |
+
+Las 31 consultas tienen medianas de 2.9 a 112 ms. **Lo que variaron:** los tiempos, de 3 a 20 % (el
+coeficiente de variación); la corrida en el EPYC 7763 fue la más lenta, hasta 48 % arriba de la
+mediana en `decision/v1`; la memoria, menos de 1 %; las consultas, de 7 a 23 %. De ahí las
+tolerancias, y no de un número redondo:
+
+| Clase | Relativa | Absoluta |
+| --- | ---: | ---: |
+| Tiempo | 50 % | 2 s |
+| Memoria | 20 % | 64 MiB |
+| Consulta | 50 % | 25 ms |
+
+Con la CPU que cambia de un runner a otro, una sola corrida en la más lenta habría pasado una
+tolerancia de 30 %; por eso cada corrida programada es la mediana de tres, y la de tiempo es de 50 %.
+Detecta una regresión grande (un motor que tarda el doble, una consulta que pierde su índice), no una
+de 10 %: para eso hacen falta mediciones en una máquina dedicada.
+
+Una línea base nueva son las medianas de varias corridas del mismo commit, cada una en su runner, con
+sus tolerancias por clase de métrica (tiempo, memoria y consulta):
 
 ```bash
-# Varias corridas comparables: a mano, con 3 o 5 repeticiones, cada una en su runner.
+# Varias corridas comparables: a mano, con 5 repeticiones, cada una en su runner.
 gh workflow run performance.yml -f repeticiones=5
 # Sus reportes, y la línea base de sus medianas.
 gh run download <run> --pattern 'rendimiento-*' --dir rendimiento
