@@ -8,6 +8,8 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Observabilidad: actualiza Grafana OSS de 13.1.8 a 13.2.4 en el compose de producción, manteniendo la línea 13.x y el pin por digest.
+
 - Seguridad de la cadena de suministro: actualiza `uv` de 0.12.21 a 0.13.4 en Docker y todos los workflows que lo ejecutan; 0.13.4 retira una raíz de confianza afectada por intermediarios comprometidos (GHSA-hq85-5cpj-mr62).
 
 - Documentación: sincroniza el triage de Dependabot con la cola regenerada después de v1.0.0; sin cambios de runtime, dependencias ni contratos públicos.
