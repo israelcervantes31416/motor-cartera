@@ -1,6 +1,11 @@
-# Las actualizaciones de dependencias: Dependabot abre un PR por grupo, y el CI completo (pruebas,
+# Las actualizaciones de dependencias: Dependabot abre sus PRs, y el CI completo (pruebas,
 # auditorias, la prueba de humo y Trivy) decide. Cada fuente espera 7 dias despues de una version
 # nueva antes de proponerla: una version comprometida suele descubrirse en esos dias.
+#
+# Los menores y los parches de Python y de la app web llegan juntos, en un PR por ecosistema; cada
+# mayor llega en su propio PR, porque es una migracion que se decide aparte
+# (docs/dependencias-v1.md). Ningun mayor se ignora. Las actualizaciones de seguridad no esperan el
+# cooldown y llegan cada una en su PR.
 version: 2
 
 updates:
@@ -13,6 +18,7 @@ updates:
     groups:
       python:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: /web
@@ -23,6 +29,7 @@ updates:
     groups:
       web:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: /
