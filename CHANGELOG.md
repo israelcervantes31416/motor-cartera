@@ -8,6 +8,14 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+## [v1.0.2] — Parche de Concurrencia y Seguridad — 2026-10-23
+
+Un parche sobre v1.0.1: corrige una carrera de concurrencia en tres publicaciones y una
+vulnerabilidad de OpenTelemetry. No cambia la superficie estable
+([docs/versioning.md](docs/versioning.md)): el OpenAPI completo es el de v1.0.1 byte por byte, salvo
+`info.version`; no hay migraciones, y ni los identificadores públicos ni lo que publica cada motor
+cambian.
+
 - **Corrección: dos publicaciones simultáneas de la misma identidad ya no terminan en un error
   interno.** El `INSERT ... ON CONFLICT DO NOTHING` del corte canónico, el de las cuentas canónicas
   nuevas y el del artefacto fuente arbitraban un solo índice único, pero su fila tiene dos que salen
@@ -196,7 +204,8 @@ una frontera que se promete mantener. No agrega motores.
 - Ingesta y certificación: una cartera se publica solo si pasa su contrato, y cada rechazo queda con
   su motivo.
 
-[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v1.0.2...HEAD
+[v1.0.2]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.2
 [v1.0.1]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.1
 [v1.0.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.0
 [v0.18.1]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.1

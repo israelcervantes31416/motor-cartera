@@ -1,6 +1,6 @@
 [project]
 name = "motor-cartera"
-version = "1.0.1"
+version = "1.0.2"
 description = "Plataforma de inteligencia de cobranza (collection intelligence) sobre una cartera sintética: ingeniería de datos point-in-time, decisión explicable, analytics, modelos predictivos, optimización de capacidad y ruteo vial."
 readme = "README.md"
 # Las versiones de Python que se prueban (.github/workflows/compatibilidad.yml): 3.12 es el runtime
