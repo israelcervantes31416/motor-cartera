@@ -62,7 +62,7 @@ con código 1 si la corrida no publica, para que un script lo note.
 
 Las versiones exactas de todas las dependencias están en `uv.lock`, y el CI y la imagen
 instalan esas mismas. Si cambias una dependencia en `pyproject.toml`, corre `uv lock` (con el `uv`
-0.12.21 del proyecto) y sube los dos archivos juntos: con el lock desfasado, el CI falla. El lock
+0.13.4 del proyecto) y sube los dos archivos juntos: con el lock desfasado, el CI falla. El lock
 sirve para cada Python que declara `requires-python`, 3.12, 3.13 y 3.14, y la matriz de
 compatibilidad lo instala en cada una ([El CI](#el-ci)); 3.12 es el runtime de las imágenes. En
 3.15 no se instala sin compilar (pyarrow 25.0.1 no publica ruedas para ella), así que

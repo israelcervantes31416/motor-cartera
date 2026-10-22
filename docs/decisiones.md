@@ -705,7 +705,7 @@ ejecuta, con lease, latido y reintentos (ver 42 a 47). `BackgroundTasks` ya no s
 
 **Decisión.** `uv.lock` fija la versión exacta y el hash de cada dependencia, directa o no.
 El CI y la imagen instalan con `uv sync --locked`, que falla si el lock ya no corresponde al
-`pyproject.toml`, y con la misma versión de uv con que se generó el lock: 0.12.21, fijada en
+`pyproject.toml`, y con la misma versión de uv con que se generó el lock: 0.13.4, fijada en
 el CI y en el Dockerfile (ahí también por digest, porque una etiqueta se puede mover).
 Subirla es cambiar los dos lugares a la vez. Los mínimos del `pyproject.toml` siguen siendo
 lo que el proyecto admite; el lock es la combinación que se probó.
