@@ -1,6 +1,6 @@
 # Las dependencias en v1.0
 
-Estado de la cola de Dependabot después de publicar v1.0.0 (2026-10-21). Este documento es una
+Estado de la cola de Dependabot al preparar v1.0.1 (2026-10-22). Este documento es una
 **foto de triage**, no una orden de actualización: ningún PR se fusiona por reflejo y una cola abierta
 no invalida una release estable. La política está en
 [cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
@@ -20,24 +20,29 @@ runtime de producción.
 | #45 | uv | 0.12.21 → 0.13.4 | **Seguridad**: actualización coordinada de Dockerfile y workflows por GHSA-hq85-5cpj-mr62 |
 | #46 | Grafana | 13.1.8 → 13.2.4 | Actualización compatible validada otra vez sobre el `main` posterior a v1 y uv |
 | #47 | grupo web | 8 actualizaciones compatibles | Menores/parches del frontend, validados nuevamente sobre el `main` actual |
+| #48 | Vitest | 4.1.11 → 4.1.12 | **Seguridad**: GHSA-qxg6-89mg-rqv8 y GHSA-xp26-3454-mjgp en `@vitest/mocker`, una herramienta de desarrollo |
 
 ## Cola abierta actual
 
 Los PR antiguos que Dependabot cerró y regeneró al entrar la política de v1 ya no se listan como
 pendientes. En particular, #26, #31 y #37 fueron reemplazados por PR nuevos; conservar sus números
-como si siguieran abiertos hacía que este documento quedara desfasado.
+como si siguieran abiertos hacía que este documento quedara desfasado. #27 (la imagen de Python, de
+3.12 a 3.14) ya no está en la cola: Dependabot lo cerró el 2026-10-21 sin fusionarse, y el runtime
+sigue en 3.12.
 
-| PR | Componente | Actual → propuesta | Base/CI observado | Decisión |
+Cada PR de la tabla está sobre un `main` posterior a v1.0.0, pero detrás del actual; su CI es el de
+esa base, y antes de cualquier merge se vuelve a correr sobre la cabeza de `main`.
+
+| PR | Componente | Actual → propuesta | CI observado | Decisión |
 | --- | --- | --- | --- | --- |
-| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | detrás de v1; último CI verde | **No fusionar así**: `-386` es la imagen linux/386; la variante esperada es la multiplataforma |
-| #24 | OSRM | v26.9.0 → 26.10.0 | detrás de v1; compose/pruebas rojos | Migración coordinada: imagen, red preparada y contrato deben moverse juntos |
-| #25 | Valkey | 8.1.10 → 9.1.2 | detrás de v1; último CI verde | Mayor; evaluar como migración de sesiones, no como mantenimiento automático |
-| #27 | Python (imagen) | 3.12 → 3.14 | detrás de v1; producción roja | No sustituye al runtime 3.12; la compatibilidad 3.14 ya se prueba aparte |
-| #28 | PostGIS (respaldo) | 16 → 17 | detrás de v1; producción roja | PostgreSQL/PostGIS 17 requiere migración coordinada con el servidor y restore |
-| #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | detrás de v1; último CI verde | No cambiar de rama estable a mainline por una actualización automática |
-| #30 | Node (imagen) | 24.21 → 26.11 | detrás de v1; compose rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
-| #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | sobre v1; compose rojo | Mismo cambio mayor que #28: no se hace por piezas |
-| #43 | grupo Python | 9 actualizaciones | sobre v1; `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
+| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | verde | **No fusionar así**: `-386` es la imagen linux/386; la variante esperada es la multiplataforma |
+| #24 | OSRM | v26.9.0 → 26.10.0 | `compose` y `pruebas` rojos | Migración coordinada: imagen, red preparada y contrato deben moverse juntos |
+| #25 | Valkey | 8.1.10 → 9.1.2 | verde | Mayor; evaluar como migración de sesiones, no como mantenimiento automático |
+| #28 | PostGIS (respaldo) | 16 → 17 | `produccion` rojo | PostgreSQL/PostGIS 17 requiere migración coordinada con el servidor y restore |
+| #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | verde | No cambiar de rama estable a mainline por una actualización automática |
+| #30 | Node (imagen) | 24.21 → 26.11 | `compose` rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
+| #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | `compose` rojo | Mismo cambio mayor que #28: no se hace por piezas |
+| #43 | grupo Python | 9 actualizaciones | `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
 
 ## Notas de los casos que requieren cuidado
 
@@ -45,8 +50,9 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
   pueda ejecutarla no es razón para publicarla.
 - **#24.** OSRM está fijado en los compose y en la versión con que se prepara la red vial. Cambiarlo
   exige volver a preparar y verificar esa red.
-- **#27.** Python 3.14 ya forma parte de la matriz ligera de compatibilidad. Eso no convierte una
-  actualización de la imagen de producción en un cambio automático.
+- **#27 (cerrado).** Python 3.14 ya forma parte de la matriz ligera de compatibilidad. Eso no
+  convierte una actualización de la imagen de producción en un cambio automático, si Dependabot la
+  vuelve a proponer.
 - **#28 y #40.** El cliente de respaldo y el servidor deben permanecer compatibles. PostgreSQL 17
   será una migración explícita, no dos merges independientes.
 - **#29.** La rama 1.31 es mainline; el proyecto no cambia de canal de nginx únicamente porque
@@ -60,6 +66,11 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
 - **#47.** El grupo web de ocho actualizaciones menores/parches quedó integrado tras repetir lint,
   tipos, Vitest, Playwright, bundle, auditorías, compose y el CI completo sobre el `main` actual;
   #42 quedó cerrado sin fusionarse.
+- **#48.** Dependabot no podía abrir la actualización de seguridad (`security_update_not_possible`):
+  Vitest y `@vitest/coverage-v8` están fijados exactamente y `@vitest/mocker` solo llega a 4.1.12 si
+  los dos se mueven juntos. Lo hizo un PR propio, con el CI completo sobre el `main` de entonces, y
+  al fusionarse quedaron corregidas las alertas #2 y #3, las dos de `@vitest/mocker`: ninguna alerta
+  de Dependabot queda abierta.
 - **#43.** El grupo Python nuevo ya no incluye PyArrow 26, pero sigue fallando por el cambio de tipos
   de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
 
