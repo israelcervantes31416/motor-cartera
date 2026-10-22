@@ -2,7 +2,7 @@
 # los del mismo mayor que el servidor, porque es la misma imagen de PostGIS fijada por su digest. Solo
 # agrega Python y psycopg de Alpine. Sin servidor: el entrypoint es la herramienta.
 
-FROM postgis/postgis:16-3.5-alpine@sha256:47e961a569fd52ff31f0fe205ed91eeab17d9f5fff6722e6d7ea6b588748b293
+FROM postgis/postgis:17-3.5-alpine@sha256:894f570c0cf0664ed5576a8fd5d5bfb8fb1b19d592885b686c3a88c8bd90c41f
 
 # Python y psycopg de Alpine, y las correcciones de seguridad que Alpine publico despues de la base
 # (el CI escanea la imagen con Trivy). Sin gosu: lo usa el entrypoint de PostgreSQL para cambiar de
