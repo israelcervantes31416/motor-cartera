@@ -8,6 +8,10 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- **OpenTelemetry 1.45.1**, en lugar de 1.45.0, por seguridad: `opentelemetry-api` leía la cabecera
+  `tracestate` sin límite (GHSA-xcq7-p3pf-p88h, CVE-2026-114603, media). La API, el SDK y el
+  exportador OTLP se mueven juntos, con sus paquetes hermanos (0.66b1). El exportador vuelve a
+  depender de `requests`, así que el lock suma `requests`, `certifi` y `charset-normalizer`.
 - Documentación: el triage de Dependabot con #50, que reemplazó a #43 cuando v1.0.1 regeneró
   `uv.lock`.
 
