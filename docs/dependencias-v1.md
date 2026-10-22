@@ -1,6 +1,6 @@
 # Las dependencias en v1.0
 
-Estado de la cola de Dependabot al preparar v1.0.1 (2026-10-22). Este documento es una
+Estado de la cola de Dependabot después de v1.0.1 (2026-10-22). Este documento es una
 **foto de triage**, no una orden de actualización: ningún PR se fusiona por reflejo y una cola abierta
 no invalida una release estable. La política está en
 [cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
@@ -28,7 +28,8 @@ Los PR antiguos que Dependabot cerró y regeneró al entrar la política de v1 y
 pendientes. En particular, #26, #31 y #37 fueron reemplazados por PR nuevos; conservar sus números
 como si siguieran abiertos hacía que este documento quedara desfasado. #27 (la imagen de Python, de
 3.12 a 3.14) ya no está en la cola: Dependabot lo cerró el 2026-10-21 sin fusionarse, y el runtime
-sigue en 3.12.
+sigue en 3.12. #43 (el grupo Python) tampoco: Dependabot lo cerró el 2026-10-22, cuando v1.0.1
+regeneró `uv.lock`, y lo reemplazó #50.
 
 Cada PR de la tabla está sobre un `main` posterior a v1.0.0, pero detrás del actual; su CI es el de
 esa base, y antes de cualquier merge se vuelve a correr sobre la cabeza de `main`.
@@ -42,7 +43,7 @@ esa base, y antes de cualquier merge se vuelve a correr sobre la cabeza de `main
 | #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | verde | No cambiar de rama estable a mainline por una actualización automática |
 | #30 | Node (imagen) | 24.21 → 26.11 | `compose` rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
 | #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | `compose` rojo | Mismo cambio mayor que #28: no se hace por piezas |
-| #43 | grupo Python | 9 actualizaciones | `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
+| #50 | grupo Python | 10 actualizaciones | `pruebas` rojo (Pyright) | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
 
 ## Notas de los casos que requieren cuidado
 
@@ -71,8 +72,9 @@ esa base, y antes de cualquier merge se vuelve a correr sobre la cabeza de `main
   los dos se mueven juntos. Lo hizo un PR propio, con el CI completo sobre el `main` de entonces, y
   al fusionarse quedaron corregidas las alertas #2 y #3, las dos de `@vitest/mocker`: ninguna alerta
   de Dependabot queda abierta.
-- **#43.** El grupo Python nuevo ya no incluye PyArrow 26, pero sigue fallando por el cambio de tipos
-  de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
+- **#50 (antes #43).** El grupo Python trae las nueve actualizaciones de #43 (FastAPI ya en 0.143.1)
+  y pydantic-settings 2.16.0. Ya no incluye PyArrow 26, pero sigue fallando en «Tipos de Python» por
+  el cambio de tipos de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
 
 ## Seguridad y criterio de actualización
 

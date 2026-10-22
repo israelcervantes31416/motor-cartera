@@ -8,6 +8,9 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Documentación: el triage de Dependabot con #50, que reemplazó a #43 cuando v1.0.1 regeneró
+  `uv.lock`.
+
 ## [v1.0.1] — Parche de Seguridad de la Cadena de Suministro — 2026-10-22
 
 Un parche sobre v1.0.0: herramientas y dependencias al día, dos de ellas por seguridad. No cambia la
