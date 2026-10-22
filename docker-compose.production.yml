@@ -216,7 +216,7 @@ services:
 
   osrm:
     <<: *endurecido
-    image: ghcr.io/project-osrm/osrm-backend:v26.9.0-debian@sha256:8a1b1bc938412f15f9b5b32d794c4ec6bf4a85dfbbabfa0a014b70b187edb53b
+    image: ghcr.io/project-osrm/osrm-backend:26.10.0-debian@sha256:55dbfd47d984c2cacd64e32901b4321c86b5ec761438e69aa053dc78698a786f
     profiles: ["ruteo"]
     user: "65534:65534"
     command:
