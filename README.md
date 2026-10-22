@@ -305,13 +305,13 @@ Las más importantes; todas, por área, en [docs/limitaciones.md](docs/limitacio
 
 ## Estado
 
-**Versión estable: v1.0.0**
-([release](https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.0)), Collection
-Intelligence Platform: la primera versión estable, con lo que construyeron v0.1.0 a v0.18.1 cerrado
-como una plataforma. Desde ella, cada versión sigue Semantic Versioning sobre la superficie que
-define [docs/versioning.md](docs/versioning.md), y cada release trae su OpenAPI, los SBOM de las
-imágenes, sus SHA-256 y su procedencia. Cada versión, de v0.1.0 a hoy, está en el
-[CHANGELOG](CHANGELOG.md).
+**Versión estable: v1.0.1**
+([release](https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.1)), un parche de
+seguridad de la cadena de suministro sobre v1.0.0, Collection Intelligence Platform: la primera
+versión estable, con lo que construyeron v0.1.0 a v0.18.1 cerrado como una plataforma. Desde v1.0.0,
+cada versión sigue Semantic Versioning sobre la superficie que define
+[docs/versioning.md](docs/versioning.md), y cada release trae su OpenAPI, los SBOM de las imágenes,
+sus SHA-256 y su procedencia. Cada versión, de v0.1.0 a hoy, está en el [CHANGELOG](CHANGELOG.md).
 
 ## Licencia
 
