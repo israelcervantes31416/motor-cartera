@@ -8,6 +8,16 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- **Corrección: dos publicaciones simultáneas de la misma identidad ya no terminan en un error
+  interno.** El `INSERT ... ON CONFLICT DO NOTHING` del corte canónico, el de las cuentas canónicas
+  nuevas y el del artefacto fuente arbitraban un solo índice único, pero su fila tiene dos que salen
+  de la misma clave: la fecha y el `corte_id`, la clave y el `cuenta_id`, el SHA-256 y el
+  `storage_key`. Si dos llegaban al `INSERT` en el mismo instante, la segunda pasaba la revisión
+  previa del árbitro, esperaba a la primera en el otro índice y recibía un `unique_violation`: su
+  historia quedaba `FALLIDA` con `ERROR_INTERNO` en lugar de `FUENTE_EQUIVALENTE`,
+  `CORTE_CANONICO_CONFLICTIVO` o `CORTE_PUBLICADO`, y el registro de un artefacto fallaba en vez
+  de reusar la fila. Ahora cada uno arbitra todos los índices únicos de su tabla. Sin migración y
+  sin cambios en la API, los identificadores ni los datos publicados.
 - Documentación: el triage de Dependabot con #50, que reemplazó a #43 cuando v1.0.1 regeneró
   `uv.lock`.
 

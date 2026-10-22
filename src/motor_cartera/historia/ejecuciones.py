@@ -77,8 +77,6 @@ VERSION_MODELO_HISTORIA = "historia/v1"
 
 INDICE_HISTORIA_EXITOSA = "ux_ejecucion_historia_exitosa"
 INDICE_HISTORIA_EN_PROCESO = "ux_ejecucion_historia_en_proceso"
-CORTE_POR_FECHA = "uq_corte_canonico_fecha"
-CUENTA_POR_CLAVE = "uq_cuenta_canonica_clave"
 
 INTENTOS_DE_APERTURA = 3
 """Cuantas veces se revisa y se inserta una ejecucion que pierde la carrera contra otra apertura del
@@ -363,7 +361,7 @@ def _cartera(
         # Otra ejecucion publico ese corte mientras esta leia su dataset: el INSERT espero a que
         # confirmara, y ahora se juzga contra el.
         _equivalente_o_conflicto(
-            s, ejecucion, dataset, presente(_corte(s, clave), "el corte publicado")
+            s, ejecucion, dataset, presente(_corte(s, clave), "el corte con el que choco el INSERT")
         )
         return
     with cronometro.fase("cuentas"):
@@ -432,7 +430,14 @@ def _insertar_corte(
     s: Session, clave: _Clave, dataset: DatasetConformado, cuentas: int
 ) -> CorteCanonico | None:
     """El corte, si nadie publico ya uno de esa fecha; si no, None. Si otra transaccion lo esta
-    publicando, PostgreSQL espera a que termine antes de decidir."""
+    publicando, PostgreSQL espera a que termine antes de decidir.
+
+    El ON CONFLICT no nombra un arbitro: el corte_id sale de la misma clave que
+    uq_corte_canonico_fecha, asi que dos publicaciones del mismo corte chocan en los dos indices,
+    y PostgreSQL solo resuelve con DO NOTHING los choques de sus arbitros. Con uno solo, la que
+    llegaba a la vez que la otra pasaba su revision previa y recibia un unique_violation del otro
+    indice. Un choque con algo que no sea el corte de esta fecha no pasa inadvertido: quien llama
+    no lo encuentra."""
     fila = s.execute(
         insert(CorteCanonico)
         .values(
@@ -446,7 +451,7 @@ def _insertar_corte(
             dataset_conformado_id=dataset.id,
             creado_en=ahora(),
         )
-        .on_conflict_do_nothing(constraint=CORTE_POR_FECHA)
+        .on_conflict_do_nothing()
         .returning(col(CorteCanonico.id))
     ).first()
     return None if fila is None else s.get_one(CorteCanonico, fila[0])
@@ -456,7 +461,10 @@ def _crear_cuentas(s: Session, clave: _Clave) -> int:
     """Las cuentas canonicas que el corte trae por primera vez, en una sola operacion. En orden de
     CLIENTE_UNICO: dos cortes que se materializan a la vez y comparten cuentas nuevas las bloquean
     en el mismo orden, asi que uno espera al otro y nunca se bloquean entre si. Si otra transaccion
-    ya creo una, no se crea dos veces. Devuelve cuantas creo."""
+    ya creo una, no se crea dos veces: el cuenta_id sale de la misma clave que
+    uq_cuenta_canonica_clave, y el ON CONFLICT arbitra los dos indices, como el del corte. Una
+    cuenta que otro choque dejara sin crear no tendria snapshot, y el conteo de los snapshots lo
+    detiene. Devuelve cuantas creo."""
     return filas_afectadas(
         s.execute(
             text(
@@ -467,7 +475,7 @@ def _crear_cuentas(s: Session, clave: _Clave) -> int:
                 f"FROM {carga.STAGING} st "
                 "WHERE NOT EXISTS (SELECT 1 FROM cuenta_canonica c WHERE c.despacho_id = :despacho "
                 "AND c.cartera_id = :cartera AND c.cliente_unico = st.cliente_unico) "
-                f"ORDER BY st.cliente_unico ON CONFLICT ON CONSTRAINT {CUENTA_POR_CLAVE} DO NOTHING"
+                "ORDER BY st.cliente_unico ON CONFLICT DO NOTHING"
             ),
             {"despacho": clave.despacho_id, "cartera": clave.cartera_id},
         )

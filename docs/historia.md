@@ -90,7 +90,12 @@ tienen SHA-256 distintos y la misma firma de contenido. Al materializarse:
   con otro, con su auditoría) no son de v0.7.
 
 Lo mismo pasa si las dos fuentes se materializan a la vez: el `INSERT ... ON CONFLICT` del corte
-hace que la segunda espere a que la primera confirme, y entonces se juzga contra ella.
+hace que la segunda espere a que la primera confirme, y entonces se juzga contra ella. Ese
+`ON CONFLICT` no nombra un árbitro: el `corte_id` sale de la misma clave que la fecha, así que las
+dos publicaciones chocan en los dos índices únicos, y PostgreSQL solo resuelve con `DO NOTHING` los
+choques de sus árbitros. Hasta v1.0.1 arbitraba solo la fecha, y la segunda, si llegaba al `INSERT`
+en el mismo instante que la primera, recibía un `unique_violation` del `corte_id` y quedaba
+`FALLIDA` con `ERROR_INTERNO` en lugar de equivalente o conflictiva.
 
 ## `SnapshotCuenta`: una cuenta en un corte
 
@@ -215,9 +220,10 @@ Un corte de cartera/v2, en una sola transacción, con la ejecución bloqueada:
 2. el Parquet se lee por lotes de `MC_FILAS_POR_LOTE` filas, solo con las columnas que hacen falta;
    cada lote se convierte a CSV con el escritor de Arrow (en C++) y se copia con `COPY` a una tabla
    temporal (`ON COMMIT DROP`), junto con el `cuenta_id` determinista y las claves del INEGI;
-3. se publica el corte, con `INSERT ... ON CONFLICT DO NOTHING` sobre su fecha;
+3. se publica el corte, con `INSERT ... ON CONFLICT DO NOTHING` sobre su fecha y su `corte_id`;
 4. las cuentas canónicas nuevas se insertan en una sola operación, `INSERT ... SELECT` con
-   `NOT EXISTS`, en orden de `CLIENTE_UNICO` y con `ON CONFLICT DO NOTHING`;
+   `NOT EXISTS`, en orden de `CLIENTE_UNICO` y con `ON CONFLICT DO NOTHING` sobre su clave y su
+   `cuenta_id`;
 5. los snapshots se insertan en otra, con sus cuentas resueltas por `JOIN`, en orden de cuenta;
 6. se cuenta: lo leído tiene que ser lo que el dataset dice, y lo publicado, lo leído;
 7. la ejecución se cierra `EXITOSA` y se confirma todo junto.

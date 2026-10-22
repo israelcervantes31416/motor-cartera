@@ -104,6 +104,8 @@ def registrar_artefacto(s: Session, guardado: ArtefactoGuardado) -> ArtefactoFue
     Hay una fila por contenido. Si ese SHA-256 ya estaba registrado, devuelve esa fila, con el
     nombre y el formato de la primera vez: el nombre de cada subida lo conserva su corrida. Dos
     registros simultaneos del mismo contenido no chocan: el segundo espera al primero y lo reusa.
+    Por eso el ON CONFLICT arbitra todos los indices unicos: el storage_key sale del SHA-256, y el
+    mismo contenido choca en los dos; con uno solo, el segundo podia recibir un unique_violation.
     """
     objeto = guardado.objeto
     s.execute(
@@ -118,7 +120,7 @@ def registrar_artefacto(s: Session, guardado: ArtefactoGuardado) -> ArtefactoFue
             storage_key=objeto.clave,
             creado_en=ahora(),
         )
-        .on_conflict_do_nothing(index_elements=["sha256"])
+        .on_conflict_do_nothing()
     )
     return s.exec(select(ArtefactoFuente).where(ArtefactoFuente.sha256 == objeto.sha256)).one()
 
