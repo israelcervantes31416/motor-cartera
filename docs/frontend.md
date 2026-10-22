@@ -12,15 +12,15 @@ el contexto que leen, en [contexto_operativo.md](contexto_operativo.md); la API 
 | Node | 24.21.0 (`web/.node-version`; `engines` `>=24.15.0 <25`) | construir y probar; el CI y el Dockerfile usan esa |
 | React y React DOM | 19.3.0 | la interfaz, sin SSR (ni Next, ni Remix) |
 | TypeScript | 5.9.3, `strict` con `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` y `noImplicitOverride` | los tipos; sin `any` |
-| Vite | 8.3.2 | el servidor de desarrollo, el preview y el build |
+| Vite | 8.3.4 | el servidor de desarrollo, el preview y el build |
 | React Router | 8.4.0 | las rutas, cada pantalla en su paquete diferido |
-| TanStack Query | 5.104.1 | el estado del servidor: consultas, cache e invalidación |
+| TanStack Query | 5.104.2 | el estado del servidor: consultas, cache e invalidación |
 | TanStack Table | 8.21.3 | tablas *headless*, con el orden y la paginación del servidor |
 | Recharts | 3.10.1 | las gráficas, en su propio paquete diferido |
 | openapi-typescript | 7.13.0 | los tipos del contrato de la API |
-| Vitest, Testing Library, MSW, jsdom | 4.1.11, 16.3.3, 2.15.0, 30.1.1 | las pruebas de componentes y de pantallas |
-| Playwright y axe-core | 1.63.0 y 4.13.0 | las pruebas de punta a punta y de accesibilidad |
-| ESLint, typescript-eslint, Prettier | 10.12.0, 8.71.0, 3.9.9 | el lint y el formato |
+| Vitest, Testing Library, MSW, jsdom | 4.1.12, 16.3.3, 2.15.0, 30.1.2 | las pruebas de componentes y de pantallas |
+| Playwright y axe-core | 1.64.0 y 4.14.0 (`@axe-core/playwright` 4.13.0) | las pruebas de punta a punta y de accesibilidad |
+| ESLint, typescript-eslint, Prettier | 10.12.0, 8.71.2, 3.9.10 | el lint y el formato |
 
 Cada versión es exacta en `package.json` (`.npmrc`: `save-exact`, `engine-strict`) y en
 `package-lock.json`; se instala con `npm ci --ignore-scripts`. Las imágenes del Dockerfile (Node

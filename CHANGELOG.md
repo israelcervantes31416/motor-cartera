@@ -8,15 +8,27 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
-- Seguridad del tooling web: actualiza `vitest` y `@vitest/coverage-v8` de 4.1.11 a 4.1.12 para resolver `@vitest/mocker` 4.1.12, versión corregida para GHSA-xp26-3454-mjgp.
+## [v1.0.1] — Parche de Seguridad de la Cadena de Suministro — 2026-10-22
 
-- Web: actualiza ocho dependencias compatibles de la app (React Query, Playwright, user-event, plugin de React para Vite, axe-core, jsdom, Prettier y typescript-eslint) sin cambiar Node, TypeScript, Vitest, React ni Vite de rama mayor.
+Un parche sobre v1.0.0: herramientas y dependencias al día, dos de ellas por seguridad. No cambia la
+superficie estable ([docs/versioning.md](docs/versioning.md)): el OpenAPI completo es el de v1.0.0
+byte por byte, salvo `info.version`, y no cambian ni el código de Python, ni las migraciones, ni el
+de la app.
 
-- Observabilidad: actualiza Grafana OSS de 13.1.8 a 13.2.4 en el compose de producción, manteniendo la línea 13.x y el pin por digest.
-
-- Seguridad de la cadena de suministro: actualiza `uv` de 0.12.21 a 0.13.4 en Docker y todos los workflows que lo ejecutan; 0.13.4 retira una raíz de confianza afectada por intermediarios comprometidos (GHSA-hq85-5cpj-mr62).
-
-- Documentación: sincroniza el triage de Dependabot con la cola regenerada después de v1.0.0; sin cambios de runtime, dependencias ni contratos públicos.
+- **uv 0.13.4**, en lugar de 0.12.21, en el Dockerfile y en cada workflow que lo usa: el almacén de
+  certificados que trae uv confiaba en una raíz de emSign cuyas intermedias tienen las llaves
+  comprometidas (GHSA-hq85-5cpj-mr62, crítica).
+- **Vitest 4.1.12** y `@vitest/coverage-v8` 4.1.12 en la app web: `@vitest/mocker` 4.1.11 tenía dos
+  vulnerabilidades (GHSA-qxg6-89mg-rqv8 y GHSA-xp26-3454-mjgp, medias). Son herramientas de
+  desarrollo: la imagen de la app solo lleva los archivos que construye Vite.
+- **Grafana 13.2.4** (de 13.1.8) en el perfil de observabilidad del compose de producción, fijada por
+  su digest.
+- **Ocho dependencias compatibles de la app web**, ninguna de versión mayor: TanStack Query 5.104.2,
+  Playwright 1.64.0, user-event 14.6.8, el plugin de React para Vite 6.1.2, axe-core 4.14.0, jsdom
+  30.1.2, Prettier 3.9.10 y typescript-eslint 8.71.2.
+- La documentación, con esas versiones: el stack de [docs/frontend.md](docs/frontend.md), la versión
+  de uv del desarrollo y de las decisiones, y el triage de Dependabot en
+  [docs/dependencias-v1.md](docs/dependencias-v1.md).
 
 ## [v1.0.0] — Collection Intelligence Platform — 2026-10-21
 
@@ -167,7 +179,8 @@ una frontera que se promete mantener. No agrega motores.
 - Ingesta y certificación: una cartera se publica solo si pasa su contrato, y cada rechazo queda con
   su motivo.
 
-[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/israelcervantes31416/motor-cartera/compare/v1.0.1...HEAD
+[v1.0.1]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.1
 [v1.0.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v1.0.0
 [v0.18.1]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.1
 [v0.18.0]: https://github.com/israelcervantes31416/motor-cartera/releases/tag/v0.18.0

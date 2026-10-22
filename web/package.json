@@ -1,6 +1,6 @@
 {
   "name": "motor-cartera-web",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "La superficie operacional de motor-cartera: una SPA de solo lectura sobre app/v1, analytics/v1, predictive/model-v1 y optimization/v1.",
   "type": "module",
