@@ -3,7 +3,8 @@
 Lo que motor-cartera no hace hoy, o hace con un límite conocido, por área y sin maquillar. Cada una
 se revisó contra el código de v1.0.0: lo que una versión posterior resolvió ya no está aquí. Lo que
 es del diseño, y no un pendiente, va al final. Cada motor detalla las suyas en su documento
-([índice](README.md)).
+([índice](README.md)). Lo que falta para operar con un despacho real, ordenado por lo que bloquea,
+está en [implantacion.md](implantacion.md).
 
 ## Alcance
 

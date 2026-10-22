@@ -8,6 +8,9 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- Documentación: lo que falta para operar con un despacho real, en un backlog priorizado
+  ([docs/implantacion.md](docs/implantacion.md)).
+
 ## [v1.0.2] — Parche de Concurrencia y Seguridad — 2026-10-23
 
 Un parche sobre v1.0.1: corrige una carrera de concurrencia en tres publicaciones y una
