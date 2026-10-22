@@ -2428,8 +2428,8 @@ queda como evidencia. Una prueba borra el original del almacén y la historia se
 ## 82. Concurrencia sin bloqueos mutuos
 
 **Decisión.** La ejecución se toma con su fila bloqueada; el corte se publica con
-`INSERT ... ON CONFLICT DO NOTHING` sobre su fecha; las cuentas nuevas se insertan en orden de
-`CLIENTE_UNICO` con `ON CONFLICT DO NOTHING`.
+`INSERT ... ON CONFLICT DO NOTHING` sobre su fecha y su `corte_id`; las cuentas nuevas se insertan
+en orden de `CLIENTE_UNICO` con `ON CONFLICT DO NOTHING` sobre su clave y su `cuenta_id`.
 
 **Por qué.** Dos workers con el mismo dataset: el segundo espera la fila y la encuentra terminada.
 Dos fuentes del mismo corte: el segundo `INSERT` espera a que el primero confirme y entonces se juzga
@@ -2438,6 +2438,13 @@ en común: como los dos las insertan en el mismo orden, el que llega segundo esp
 común, y no puede haber un ciclo de esperas. Un worker que pierde su lease después de calcular sigue
 teniendo la ejecución bloqueada: publica una vez, y el trabajo lo cierra su dueño vigente. Las
 pruebas fuerzan cada caso con dos hilos y PostgreSQL real.
+
+Ningún `ON CONFLICT` nombra un árbitro (desde v1.0.2): el `corte_id` y el `cuenta_id` salen de la
+misma clave que el índice natural, así que dos publicaciones de la misma identidad chocan en los dos
+índices, y PostgreSQL solo resuelve con `DO NOTHING` los choques de sus árbitros. Con uno solo, la
+que llegaba al `INSERT` en el mismo instante que la otra pasaba su revisión previa, la esperaba en
+el otro índice y recibía un `unique_violation`: `ERROR_INTERNO` en lugar de su resultado. Las
+pruebas lo fuerzan con una transacción que retiene el identificador hasta que las dos llegan.
 
 **El costo.** Mientras un corte publica sus cuentas nuevas, otro que comparte algunas espera a que
 termine. Con cortes de una misma cartera que llegan uno por semana, es raro y breve.

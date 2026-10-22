@@ -5,16 +5,21 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
+import time
 from datetime import date
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import func, select
 from typer.testing import CliRunner
 
 from motor_cartera.cli import app as cli_app
 from motor_cartera.config import Config
 from motor_cartera.db.modelos import ArtefactoFuente, Corrida, EstadoCorrida
-from motor_cartera.db.sesion import sesion
+from motor_cartera.db.sesion import crear_motor, sesion
+from motor_cartera.fuentes import artefactos
 from motor_cartera.fuentes.artefactos import (
     almacen_de,
     auditar_artefactos,
@@ -54,6 +59,71 @@ def test_el_mismo_contenido_se_registra_una_sola_vez_con_el_nombre_de_la_primera
     )
     assert artefacto.sha256 == hashlib.sha256(contenido).hexdigest()
     assert artefacto.storage_key == f"sha256/{artefacto.sha256[:2]}/{artefacto.sha256}"
+
+
+def test_dos_registros_simultaneos_del_mismo_contenido_dan_la_misma_fila(almacen, monkeypatch):
+    # El storage_key sale del SHA-256 (ck_artefacto_storage_key): dos registros del mismo contenido
+    # chocan en uq_artefacto_fuente_sha256 y en uq_artefacto_fuente_storage_key. El segundo se
+    # detiene en su INSERT, con un artifact_id que otra transaccion retiene, mientras el primero se
+    # registra y confirma; despues se revierte el reten. Si el ON CONFLICT arbitrara solo el
+    # SHA-256, el segundo ya habria pasado su revision previa y recibiria un unique_violation del
+    # storage_key; debe esperar y reusar la fila del primero.
+    guardado = guardar_contenido(almacen, b"cliente,saldo\nCU0000000001,10.00\n", "enero.csv")
+    ajeno = hashlib.sha256(b"otro contenido").hexdigest()
+    retenido = uuid4()
+    pendientes = iter([retenido])
+    original = artefactos.uuid4
+    monkeypatch.setattr(artefactos, "uuid4", lambda: next(pendientes, None) or original())
+
+    def registrar() -> int | None:
+        with sesion() as s:
+            artefacto = registrar_artefacto(s, guardado)
+            s.commit()
+            return artefacto.id
+
+    segundo: dict = {}
+
+    def en_otro_hilo() -> None:
+        try:
+            segundo["id"] = registrar()
+        except BaseException as exc:
+            segundo["error"] = exc
+
+    with crear_motor().connect() as conexion:
+        reten = conexion.begin()
+        conexion.execute(
+            text(
+                "INSERT INTO artefacto_fuente (artifact_id, sha256, tamano_bytes, nombre_original, "
+                "formato, media_type, storage_key, creado_en) VALUES (:artifact_id, :sha256, 1, "
+                "'ajeno.csv', 'csv', 'text/csv', :clave, now())"
+            ),
+            {"artifact_id": retenido, "sha256": ajeno, "clave": f"sha256/{ajeno[:2]}/{ajeno}"},
+        )
+        pid = conexion.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        hilo = threading.Thread(target=en_otro_hilo, daemon=True)
+        hilo.start()
+        limite = time.monotonic() + 60
+        while True:
+            with sesion() as s:
+                esperando = s.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE :pid = ANY(pg_blocking_pids(pid))"
+                    ),
+                    {"pid": pid},
+                ).scalar_one()
+            if esperando:
+                break
+            assert time.monotonic() < limite, "el segundo registro no llego al reten"
+            time.sleep(0.05)
+        primero = registrar()
+        reten.rollback()
+    hilo.join(60)
+
+    assert "error" not in segundo, segundo.get("error")
+    assert segundo["id"] == primero
+    (artefacto,) = _artefactos()
+    assert artefacto.sha256 == guardado.objeto.sha256
 
 
 def test_la_evidencia_sobrevive_a_la_ingesta_y_a_reiniciar_la_api_y_el_worker(tmp_path, almacen):

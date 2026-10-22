@@ -94,7 +94,8 @@ $MC_SOURCE_STORE_ROOT/
 ```
 
 - **Por contenido.** El mismo archivo subido dos veces, con el nombre que sea, es un solo objeto: no
-  se duplican bytes. El nombre original es metadata en la base.
+  se duplican bytes. El nombre original es metadata en la base. En ella también es una sola fila,
+  aunque las dos subidas lleguen a la vez: la segunda espera a la primera y la reusa.
 - **Atómico.** Se escribe a un temporal en la misma raíz, se hace `fsync` y se mueve con
   `os.replace`. Un objeto existe completo o no existe; una escritura interrumpida deja, a lo más,
   un temporal.
