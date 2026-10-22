@@ -68,7 +68,7 @@ x-entorno-app: &entorno-app
 services:
   postgres:
     <<: *endurecido
-    image: postgis/postgis:16-3.5-alpine@sha256:47e961a569fd52ff31f0fe205ed91eeab17d9f5fff6722e6d7ea6b588748b293
+    image: postgis/postgis:17-3.5-alpine@sha256:894f570c0cf0664ed5576a8fd5d5bfb8fb1b19d592885b686c3a88c8bd90c41f
     # Como el usuario postgres desde el arranque: el volumen ya es suyo, y asi no necesita ninguna
     # capacidad para cambiar de usuario ni de dueno.
     user: "70:70"
