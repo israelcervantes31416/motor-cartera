@@ -19,6 +19,7 @@ runtime de producción.
 | #36 | Vite | 8.3.2 → 8.3.4 | **Seguridad**: GHSA-698v-4r3x-3vcv en el servidor de desarrollo de Windows |
 | #45 | uv | 0.12.21 → 0.13.4 | **Seguridad**: actualización coordinada de Dockerfile y workflows por GHSA-hq85-5cpj-mr62 |
 | #46 | Grafana | 13.1.8 → 13.2.4 | Actualización compatible validada otra vez sobre el `main` posterior a v1 y uv |
+| #47 | grupo web | 8 actualizaciones compatibles | Menores/parches del frontend, validados nuevamente sobre el `main` actual |
 
 ## Cola abierta actual
 
@@ -36,7 +37,6 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
 | #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | detrás de v1; último CI verde | No cambiar de rama estable a mainline por una actualización automática |
 | #30 | Node (imagen) | 24.21 → 26.11 | detrás de v1; compose rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
 | #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | sobre v1; compose rojo | Mismo cambio mayor que #28: no se hace por piezas |
-| #42 | grupo web | 8 actualizaciones compatibles | reemplazado por #47 | El PR original quedó sobre una base anterior; #47 repite exactamente el grupo sobre el `main` actual |
 | #43 | grupo Python | 9 actualizaciones | sobre v1; `pruebas` rojo | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
 
 ## Notas de los casos que requieren cuidado
@@ -57,9 +57,9 @@ como si siguieran abiertos hacía que este documento quedara desfasado.
   validando el lock; #41 quedó cerrado sin fusionarse.
 - **#46.** Grafana 13.2.4 quedó integrado después de repetir el CI completo sobre el `main` actual;
   #39 quedó cerrado sin fusionarse.
-- **#42 / #47.** El grupo web contiene ocho actualizaciones menores/parches y deja fuera los majors.
-  #42 estaba basado en un `main` anterior; #47 reproduce sus dos archivos sobre el `main` actual y
-  debe volver a demostrar lint, tipos, Vitest, Playwright, bundle, auditorías y compose.
+- **#47.** El grupo web de ocho actualizaciones menores/parches quedó integrado tras repetir lint,
+  tipos, Vitest, Playwright, bundle, auditorías, compose y el CI completo sobre el `main` actual;
+  #42 quedó cerrado sin fusionarse.
 - **#43.** El grupo Python nuevo ya no incluye PyArrow 26, pero sigue fallando por el cambio de tipos
   de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
 
