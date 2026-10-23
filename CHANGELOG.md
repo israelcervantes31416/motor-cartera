@@ -8,6 +8,10 @@ Las versiones de motor-cartera, de la más reciente a la más antigua, con su fe
 
 ## [Unreleased]
 
+- **Dependencias de Python compatibles**: FastAPI 0.143.2, pandera 0.34.1, pydantic-settings 2.16.0,
+  Typer 0.27.3, NumPy 2.5.4 y Ruff 0.17.1, seis de las siete de #54. El OpenAPI exportado no
+  cambia. SQLModel 0.0.48 queda fuera: es una migración de tipos
+  ([docs/dependencias-v1.md](docs/dependencias-v1.md#la-migración-de-sqlmodel-0048)).
 - Documentación: lo que falta para operar con un despacho real, en un backlog priorizado
   ([docs/implantacion.md](docs/implantacion.md)).
 
