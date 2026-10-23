@@ -1,6 +1,6 @@
 # Las dependencias en v1.0
 
-Estado de la cola de Dependabot después de v1.0.1 (2026-10-22). Este documento es una
+Estado de la cola de Dependabot después de v1.0.2 (2026-10-23). Este documento es una
 **foto de triage**, no una orden de actualización: ningún PR se fusiona por reflejo y una cola abierta
 no invalida una release estable. La política está en
 [cadena-de-suministro.md](cadena-de-suministro.md#dependabot).
@@ -21,66 +21,98 @@ runtime de producción.
 | #46 | Grafana | 13.1.8 → 13.2.4 | Actualización compatible validada otra vez sobre el `main` posterior a v1 y uv |
 | #47 | grupo web | 8 actualizaciones compatibles | Menores/parches del frontend, validados nuevamente sobre el `main` actual |
 | #48 | Vitest | 4.1.11 → 4.1.12 | **Seguridad**: GHSA-qxg6-89mg-rqv8 y GHSA-xp26-3454-mjgp en `@vitest/mocker`, una herramienta de desarrollo |
+| #53 | OpenTelemetry | 1.45.0 → 1.45.1 (y 0.66b0 → 0.66b1) | **Seguridad**, en v1.0.2: GHSA-xcq7-p3pf-p88h (CVE-2026-114603) en `opentelemetry-api`; `pip-audit` detenía todo el CI |
+| #56 | grupo Python | 6 de las 7 de #54 | Compatibles, sin SQLModel 0.0.48; ver abajo |
 
 ## Cola abierta actual
 
-Los PR antiguos que Dependabot cerró y regeneró al entrar la política de v1 ya no se listan como
-pendientes. En particular, #26, #31 y #37 fueron reemplazados por PR nuevos; conservar sus números
-como si siguieran abiertos hacía que este documento quedara desfasado. #27 (la imagen de Python, de
-3.12 a 3.14) ya no está en la cola: Dependabot lo cerró el 2026-10-21 sin fusionarse, y el runtime
-sigue en 3.12. #43 (el grupo Python) tampoco: Dependabot lo cerró el 2026-10-22, cuando v1.0.1
-regeneró `uv.lock`, y lo reemplazó #50.
+#50 (el grupo Python) ya no está en la cola: Dependabot lo cerró el 2026-10-22, cuando #53 movió
+OpenTelemetry, y lo reemplazó #54 con las otras siete actualizaciones. Las seis compatibles entraron
+por #56; en #54 queda SQLModel 0.0.48.
 
-Cada PR de la tabla está sobre un `main` posterior a v1.0.0, pero detrás del actual; su CI es el de
-esa base, y antes de cualquier merge se vuelve a correr sobre la cabeza de `main`.
+| PR | Componente | Actual → propuesta | Decisión |
+| --- | --- | --- | --- |
+| #54 | SQLModel | 0.0.47 → 0.0.48 | **Requiere trabajo**: una migración de tipos (abajo); no se fusiona así |
+| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | **No fusionar**: `0.162.0-386` es un manifiesto de una sola arquitectura, linux/386. La etiqueta correcta, `0.162.0`, es multiplataforma; se adopta en un PR propio cuando haga falta |
+| #24 | OSRM | v26.9.0 → 26.10.0 | **Posponer**: migración coordinada de la imagen, la red preparada y su contrato |
+| #25 | Valkey | 8.1.10 → 9.1.2 | **Posponer**: mayor del almacén de sesiones; es una migración, no mantenimiento |
+| #28 | PostGIS (respaldo) | 16 → 17 | **Posponer**: PostgreSQL 17 es una migración de datos coordinada con el servidor |
+| #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | **No fusionar**: el proyecto sigue la rama estable |
+| #30 | Node (imagen) | 24.21 → 26.11 | **Posponer**: mayor del runtime del frontend |
+| #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | **Posponer**: el mismo cambio que #28, nunca por piezas |
 
-| PR | Componente | Actual → propuesta | CI observado | Decisión |
-| --- | --- | --- | --- | --- |
-| #22 | OTel Collector | 0.161.0 → 0.162.0-386 | verde | **No fusionar así**: `-386` es la imagen linux/386; la variante esperada es la multiplataforma |
-| #24 | OSRM | v26.9.0 → 26.10.0 | `compose` y `pruebas` rojos | Migración coordinada: imagen, red preparada y contrato deben moverse juntos |
-| #25 | Valkey | 8.1.10 → 9.1.2 | verde | Mayor; evaluar como migración de sesiones, no como mantenimiento automático |
-| #28 | PostGIS (respaldo) | 16 → 17 | `produccion` rojo | PostgreSQL/PostGIS 17 requiere migración coordinada con el servidor y restore |
-| #29 | nginx-unprivileged | estable 1.30.6 → mainline 1.31.6 | verde | No cambiar de rama estable a mainline por una actualización automática |
-| #30 | Node (imagen) | 24.21 → 26.11 | `compose` rojo | Mayor; cambia también `engines`, `.node-version` y tipos |
-| #40 | PostGIS (compose) | 16-3.5 → 17-3.5 | `compose` rojo | Mismo cambio mayor que #28: no se hace por piezas |
-| #50 | grupo Python | 10 actualizaciones | `pruebas` rojo (Pyright) | No fusionar: SQLModel 0.0.48 expone incompatibilidades de tipos que Pyright detecta |
+Cada PR de la tabla corre su CI sobre la base en que Dependabot lo abrió; antes de cualquier merge
+se actualiza a la cabeza de `main` y se vuelve a correr.
+
+## Cómo se decidió el grupo Python
+
+Las siete de #54, contra el `main` de v1.0.2:
+
+| Paquete | Cambio | Lo que revisa su nota de versión | Decisión |
+| --- | --- | --- | --- |
+| FastAPI | 0.142.1 → 0.143.1 | 0.143.0 hace opcional la configuración automática de exportadores de OpenTelemetry. La app ya la apaga (`telemetry={..., "auto_configure": False}`) y arma su propio proveedor desde `MC_OTEL_ENDPOINT`. El OpenAPI exportado es idéntico byte por byte | compatible |
+| pydantic-settings | 2.15.0 → 2.16.0 | Cambia cómo se usan los alias y pide `python-dotenv>=1.2.2`. La configuración no usa alias (`env_prefix="MC_"`), y el lock ya tiene `python-dotenv` 1.2.3 | compatible |
+| pandera | 0.33.1 → 0.34.1 | Agrega TensorDict; nada que el proyecto use cambia | compatible |
+| Typer | 0.27.2 → 0.27.3 | Escapa los caracteres de control de la terminal en los mensajes de error | compatible |
+| NumPy | 2.5.3 → 2.5.4 | Parche: correcciones de tipos y de `linalg` con infinitos | compatible |
+| Ruff | 0.16.9 → 0.17.0 | Cambian los valores por omisión de la versión de Python y de las reglas. El proyecto fija `target-version` y `select`, y lint y formato ya pasaban con 0.17.0 en #50 | compatible |
+| SQLModel | 0.0.47 → 0.0.48 | `Select` pasa a ser genérico variádico (`SelectBase[Unpack[_Ts]]`, PEP 646) | **migración** |
+
+## La migración de SQLModel 0.0.48
+
+En 0.0.48, `Select[Any]` ya no quiere decir "cualquier select": quiere decir uno de **una** columna.
+Por eso Pyright tipa como `tuple[Any]` las filas de las consultas de varias columnas: falla `*fila`,
+falla `fila._mapping` y falla el desempaquetado. Son 82 errores en 18 archivos (CI de #50, run
+39705015302), todos de esa causa:
+
+- los dos ayudantes de `db/sesion.py`, `seleccionar` y `con_columnas`, que devuelven `Select[Any]`;
+- 36 anotaciones `Select[Any]` en 14 módulos de consultas (`motor_pagos`, `lifecycle`, `ruteo_v2`,
+  `geografia`, `decision_v2`, `campo_v2`, `evaluacion`, `territorial_v2`, `atribucion`, `api`...).
+
+El plan:
+
+1. Los ayudantes devuelven `Select[*tuple[Any, ...]]` (Python 3.12 lo admite) y las anotaciones de
+   las consultas de varias columnas, lo mismo o su forma exacta (`Select[EjecucionX, UUID]`).
+2. Pyright con SQLModel 0.0.48 llega a 0 errores sin un `# type: ignore` nuevo.
+3. El CI completo pasa en el mismo PR que mueve el lock. No cambia el SQL que se emite: es solo de
+   tipos, y las pruebas lo confirman.
 
 ## Notas de los casos que requieren cuidado
 
-- **#22.** `0.162.0-386` no es la variante normal del collector para este proyecto. Que un runner
-  pueda ejecutarla no es razón para publicarla.
-- **#24.** OSRM está fijado en los compose y en la versión con que se prepara la red vial. Cambiarlo
-  exige volver a preparar y verificar esa red.
-- **#27 (cerrado).** Python 3.14 ya forma parte de la matriz ligera de compatibilidad. Eso no
-  convierte una actualización de la imagen de producción en un cambio automático, si Dependabot la
-  vuelve a proponer.
-- **#28 y #40.** El cliente de respaldo y el servidor deben permanecer compatibles. PostgreSQL 17
-  será una migración explícita, no dos merges independientes.
-- **#29.** La rama 1.31 es mainline; el proyecto no cambia de canal de nginx únicamente porque
-  Dependabot encuentre una etiqueta más nueva.
-- **#30.** Node 26 es una migración de runtime del frontend. La versión estable de v1 permanece en
-  Node 24 hasta que ese cambio se haga deliberadamente.
-- **#45.** uv 0.13.4 quedó integrado de forma coordinada en Dockerfile y workflows, con `--locked`
-  validando el lock; #41 quedó cerrado sin fusionarse.
-- **#46.** Grafana 13.2.4 quedó integrado después de repetir el CI completo sobre el `main` actual;
-  #39 quedó cerrado sin fusionarse.
-- **#47.** El grupo web de ocho actualizaciones menores/parches quedó integrado tras repetir lint,
-  tipos, Vitest, Playwright, bundle, auditorías, compose y el CI completo sobre el `main` actual;
-  #42 quedó cerrado sin fusionarse.
-- **#48.** Dependabot no podía abrir la actualización de seguridad (`security_update_not_possible`):
-  Vitest y `@vitest/coverage-v8` están fijados exactamente y `@vitest/mocker` solo llega a 4.1.12 si
-  los dos se mueven juntos. Lo hizo un PR propio, con el CI completo sobre el `main` de entonces, y
-  al fusionarse quedaron corregidas las alertas #2 y #3, las dos de `@vitest/mocker`: ninguna alerta
-  de Dependabot queda abierta.
-- **#50 (antes #43).** El grupo Python trae las nueve actualizaciones de #43 (FastAPI ya en 0.143.1)
-  y pydantic-settings 2.16.0. Ya no incluye PyArrow 26, pero sigue fallando en «Tipos de Python» por
-  el cambio de tipos de SQLModel 0.0.48. Se separa o corrige antes de cualquier merge.
+- **#24 (OSRM 26.10.0).** El proyecto fija OSRM en los dos compose, en el CI y en la versión con que
+  se prepara la red vial (`preparar.sh`, `motor-cartera preparar-red-vial`). La etiqueta cambia de
+  forma (`v26.9.0-debian` → `26.10.0-debian`). El plan: mover a la vez la imagen fijada por digest
+  en esos sitios, volver a preparar la red de las pruebas y la de la prueba de humo, comprobar que
+  sus snaps, duraciones y huellas siguen dentro de lo documentado
+  ([red_vial.md](red_vial.md)) y registrar la versión nueva del motor de ruteo. Su CI está en rojo
+  (`compose` y `pruebas`) porque mueve una sola pieza.
+- **#25 (Valkey 9).** Es el almacén de sesiones de oauth2-proxy, con ACL y sin persistencia. El
+  plan: revisar las notas de Valkey 9 contra esa configuración, correr la prueba de humo del edge y
+  Playwright (sesión, cierre de sesión que la borra en el servidor y cookie copiada que ya no abre
+  nada), y el simulacro de caída, con su nota en el CHANGELOG.
+- **#28 y #40 (PostgreSQL 17).** Un volumen de PostgreSQL 16 no arranca con 17. El plan: subir a la
+  vez el servidor, el cliente de respaldo y el CI; migrar con volcado y restauración (el respaldo
+  `respaldo-motor-cartera/v1` usa `pg_dump` y `pg_restore`, y su simulacro de restauración se puede
+  repetir contra 17) o con `pg_upgrade`; validar PostGIS 3.5 sobre 17, Alembic, `alembic check` y la
+  suite completa. Como exige que quien opera migre sus datos a mano, según
+  [versioning.md](versioning.md) es un cambio mayor, salvo que la migración llegue automatizada.
+- **#29 (nginx 1.31).** 1.31 es la rama mainline. El proyecto sigue en la estable (1.30.x) y pasará
+  a 1.32 cuando nginx la publique como estable.
+- **#30 (Node 26).** Una migración del runtime del frontend: `.node-version`, `engines`, la imagen,
+  los tipos, Vite, Vitest y Playwright juntos. La versión estable de v1 sigue en Node 24.
+- **#22 (OTel Collector).** Que un runner pueda ejecutar la variante linux/386 no es razón para
+  publicarla. Si se actualiza el colector, es a `0.162.0` fijada por el digest de su índice
+  multiplataforma, en un PR propio.
+- Las notas de los PR ya fusionados (#45, #46, #47 y #48) siguen en la historia de este archivo y en
+  el CHANGELOG.
 
 ## Seguridad y criterio de actualización
 
 Las alertas de Dependabot, sus actualizaciones de seguridad, CodeQL, pip-audit, npm audit, Trivy y
 gitleaks siguen siendo los controles del proyecto. Una actualización de seguridad **aplicable** se
 atiende con prioridad; un PR de versión normal, incluso verde, no se vuelve obligatorio por existir.
+El aviso de OpenTelemetry lo encontró `pip-audit` antes que una alerta de Dependabot: un aviso nuevo
+detiene el CI de todos los PR hasta que se corrige, y la corrección va sola, en su propio PR.
 
 Desde v1.0, Dependabot agrupa parches/menores compatibles cuando tiene sentido y deja los mayores
 separados. Los mayores no se ignoran para siempre: se tratan como migraciones explícitas bajo
