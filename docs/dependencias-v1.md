@@ -28,11 +28,11 @@ runtime de producción.
 
 #50 (el grupo Python) ya no está en la cola: Dependabot lo cerró el 2026-10-22, cuando #53 movió
 OpenTelemetry, y lo reemplazó #54 con las otras siete actualizaciones. Las seis compatibles entraron
-por #56; en #54 queda SQLModel 0.0.48.
+por #56; al fusionarse, Dependabot cerró #54 (2026-10-23) y abrió #58 solo con SQLModel 0.0.48.
 
 | PR | Componente | Actual → propuesta | Decisión |
 | --- | --- | --- | --- |
-| #54 | SQLModel | 0.0.47 → 0.0.48 | **Requiere trabajo**: una migración de tipos (abajo); no se fusiona así |
+| #58 | SQLModel | 0.0.47 → 0.0.48 | **Requiere trabajo**: una migración de tipos (abajo); no se fusiona así |
 | #22 | OTel Collector | 0.161.0 → 0.162.0-386 | **No fusionar**: `0.162.0-386` es un manifiesto de una sola arquitectura, linux/386. La etiqueta correcta, `0.162.0`, es multiplataforma; se adopta en un PR propio cuando haga falta |
 | #24 | OSRM | v26.9.0 → 26.10.0 | **Posponer**: migración coordinada de la imagen, la red preparada y su contrato |
 | #25 | Valkey | 8.1.10 → 9.1.2 | **Posponer**: mayor del almacén de sesiones; es una migración, no mantenimiento |
