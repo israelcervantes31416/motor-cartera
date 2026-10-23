@@ -13,6 +13,7 @@ cada versión, el [CHANGELOG](../CHANGELOG.md).
 | [api.md](api.md) | Cada operación de la API, la forma de los errores y las reglas que un cliente tiene que conocer |
 | [versioning.md](versioning.md) | Semantic Versioning desde v1.0.0: qué es la superficie estable, qué no, y cómo cambia |
 | [limitaciones.md](limitaciones.md) | Lo que no hace hoy, o hace con un límite conocido |
+| [implantacion.md](implantacion.md) | Lo que falta para operar con un despacho real: un backlog priorizado |
 
 ## Arquitectura
 
