@@ -17,7 +17,7 @@ RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:782bb89768cc87b7f95c18b95baa1af250e5d451f26794f59363540161147c01
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
 
 # El digest fija la base; las correcciones de seguridad que Alpine publico despues se aplican al
 # construir (el CI escanea la imagen con Trivy y falla con una CVE alta o critica ya corregida).
