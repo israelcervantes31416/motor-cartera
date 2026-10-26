@@ -427,7 +427,7 @@ services:
 
   otel-collector:
     <<: *endurecido
-    image: otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+    image: otel/opentelemetry-collector-contrib:0.163.1-386@sha256:cc79ec8a69421354e7dbcc524d34cbe9a88bb08ed601f5b7b2a55387392f1aba
     profiles: ["observabilidad"]
     user: "10001:10001"
     command: ["--config=/etc/otelcol/config.yaml"]
