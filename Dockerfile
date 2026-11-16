@@ -9,7 +9,7 @@
 #     sin uv, sin compiladores ni el codigo fuente aparte, como el usuario 10001 sin shell. Corre con
 #     el sistema de archivos de solo lectura (el compose de produccion monta /tmp en memoria).
 
-FROM ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS base
 
